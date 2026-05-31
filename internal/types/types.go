@@ -809,6 +809,17 @@ const (
 
 	// Delegation types (work delegation chains)
 	DepDelegatedFrom DependencyType = "delegated-from" // Work delegated from parent; completion cascades up
+
+	// Knowledge-graph types (brain v0.3 ISC-101)
+	// These edges relate knowledge/idea nodes; they do not affect ready-work calculation.
+	// `extends` was added (rather than reused) because brain v0.3 needs an explicit
+	// "this idea extends that idea" edge separate from supersedes/relates-to.
+	// `learned-from` was added (rather than remapped onto DepDiscoveredFrom) because
+	// brain v0.3's knowledge-derivation semantics ("I learned X by reading Y") are
+	// distinct from bd's audit-trail discovered-from ("I created this issue while
+	// working on that one"). Keeping them separate avoids overloading either label.
+	DepExtends     DependencyType = "extends"
+	DepLearnedFrom DependencyType = "learned-from"
 )
 
 // IsValid checks if the dependency type value is valid.
@@ -826,6 +837,7 @@ func WellKnownDependencyTypes() []DependencyType {
 		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
 		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
 		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom,
+		DepExtends, DepLearnedFrom,
 	}
 }
 
