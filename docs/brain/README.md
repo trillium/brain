@@ -6,9 +6,9 @@ Anything that's specifically about the brain layer — the `kind` discriminator,
 
 ## What lives here
 
-This directory will grow as brain v0.3 is built. At genesis it's empty except for this README.
+- [`BRAIN_VS_BD.md`](BRAIN_VS_BD.md) — plain-English explainer with ASCII diagrams: how `brain new / show / list / link / related` differ from bd's existing commands, the `kind` discriminator, the full 18-edge-type vocabulary, and the BrainVerb → storage → exfiltrator plumbing diagram. Start here if you've never used brain before.
 
-Expected residents:
+This directory will grow as brain v0.3 is built. Beyond the explainer above, expected residents:
 
 - `exfiltration-hook.md` — how `BrainExfiltrationDecorator` stacks on `HookFiringStore` and writes `entries/{kind}/{slug}.md` on every mutation.
 - `fts5-cache.md` — the new `internal/storage/fts/` package, schema, column weights, and rebuild strategy.
