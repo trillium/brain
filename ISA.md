@@ -6,7 +6,7 @@ phase: observe
 progress: 0/51
 mode: standard
 started: 2026-05-31
-updated: 2026-05-31T13:00
+updated: 2026-05-31T13:30
 ---
 
 # Brain — Project ISA (v0.3, bd-merger)
@@ -362,6 +362,12 @@ Four architectural decisions ratified by Trillium 2026-05-31 in response to the 
 - **Why:** Dependability via safety net. A hard cutover at v0.3.0 risks data loss if the importer has edge-case bugs. Soft sunset keeps both surfaces live during the proving period. Importer is Go (not the throwaway TS brain-v0.2 codebase), so it satisfies Decision #1.
 - **How to apply:** ISC-137-141 updated to reflect dual-namespace ship at v0.3.0 with read-only legacy access; hard-deprecation moves to v0.3.1. Migration section retitled "v0.2 to v0.3 migration (soft-sunset model)."
 
+**Decision 5 — Modularity-first architecture (build forward, swap cheaply).**
+
+- **What:** v0.3 picks defaults eagerly and ships working code rather than wait on ratification, but every default is quarantined behind one of five named interface boundaries so reversal is hours, not days. The five seams: **`BrainVerb`** — per-verb CLI behavior, one Cobra file per verb at `cmd/bd/brain_<verb>.go` (new, show, list, link, related, jot, legacy, etc.). **`Exfiltrator`** — `Render(node) error`; default writes markdown to `~/data/knowledge/entries/{kind}/{id}.md`, wired via a HookFiringStore-style decorator. **`Reconciler`** — `Reconcile(ctx, scope) (Report, error)`; default diffs filesystem vs Dolt and applies idempotent fixes. **`SearchBackend`** — `Index(node); Search(query) []Result`; default is sqlite FTS5 in `internal/storage/fts/`. **`LegacyImporter`** — `Import(source) (Report, error)`; default reads brain v0.2 JSON + markdown into Dolt. Each interface lives in its own `internal/brain/<thing>/` package so the bd codebase stays unpolluted.
+- **Why:** Trillium's direction 2026-05-31: "It is OK if we pick the wrong thing... as long as I know the choices that have been made and we can address them. Make sure to design the code so it is modular — we would like to be able to swap out parts and plug in other parts in case any of the parts we have built are not correct." Modularity is the safety net that lets every other First-Tranche decision stay cheap: Go-only stays cheap because each subsystem is one interface and one default; the soft sunset stays cheap because the importer is one interface, not a re-shaped storage layer; the `.brain/` config dir + binary rename (Decision #3 coexistence) becomes a one-file swap instead of a refactor.
+- **How to apply:** Future Forge runs implement each ISC against its named seam. CLI alias ISCs (104-109) go through `BrainVerb` + `cmd/bd/brain_<verb>.go`. FTS5 ISCs (126-129) go through `SearchBackend`. Reconcile / exfiltrate ISCs (117-125) go through `Exfiltrator` + `Reconciler`. Legacy migration ISCs (137-141) go through `LegacyImporter`. Storage ISCs (100, 200-204) stay in `internal/storage/`. Each new engine package gets its own test surface. See `divergence/0003-modularity-first.md` for the paired divergence-trail entry, including a Modularity Test section naming three concrete swap scenarios future-Trillium can audit to check whether modularity is real or aspirational.
+
 ### Preserved from v0.2 (historical, do not re-verify)
 
 - v0.2 ISC-3 (body-text search), ISC-4 (JSON ranking), ISC-11 (title boost), ISC-12 (p50 < 100ms warm), ISC-13 (typo tolerance) were verified 2026-05-31 against the brain v0.2 in-process search index. v0.3 supersedes these with FTS5-backed search (ISC-126-129). The v0.2 search ranking weights (title=8, tags=4, id=3, body=1) inform FTS5 column weights but are not re-applied verbatim.
@@ -369,6 +375,7 @@ Four architectural decisions ratified by Trillium 2026-05-31 in response to the 
 
 ## Changelog
 
+- 2026-05-31T13:30 — Decision #5 added: modularity-first architecture; five named interface boundaries (BrainVerb, Exfiltrator, Reconciler, SearchBackend, LegacyImporter); per-verb Cobra file convention. See `divergence/0003-modularity-first.md`.
 - 2026-05-31 — **conjecture**: the bd-brain merger needed a new tool name (bd-brain or similar) to avoid confusion with the prior brain. **refutation**: Trillium said "just brain." **learning**: the tool absorbs the functionality; the name stays. **criterion_now**: ISA frontmatter is `project: brain`, not `project: bd-brain`. CLI binary stays `./brain`. bd is retired in name as well as in process.
 - 2026-05-31 — **conjecture**: Pulse could query Dolt directly for fresher reads. **refutation**: coupling Pulse to Dolt means Pulse breaks when Dolt is down, and the markdown-survives-the-tool property is lost. **learning**: derived views are a safety property, not a performance compromise. **criterion_now**: ISC-148 enforces zero Dolt client references in Pulse `/brain/*` source.
 - 2026-05-31 — **conjecture**: the kind discriminator could be modeled as two separate tables (`tasks`, `knowledge`) joined by a polymorphic edge table. **refutation**: that fragments the row shape and makes shared verbs (search, link, related) write two queries every time. **learning**: kind is a write-mode for verbs, not a type for storage. **criterion_now**: ISC-100 enforces a single `nodes` table; ISC-102 enforces kind values.
