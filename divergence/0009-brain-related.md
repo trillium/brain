@@ -5,7 +5,7 @@ isc: [111]
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [67e633594]
 touches:
   - internal/brain/verb/related/related.go
   - internal/brain/verb/related/related_test.go
