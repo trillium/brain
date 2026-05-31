@@ -694,6 +694,9 @@ func TestDependencyTypeIsValid(t *testing.T) {
 		{DepAuthoredBy, true},
 		{DepAssignedTo, true},
 		{DepApprovedBy, true},
+		// brain v0.3 ISC-101 edge types
+		{DepExtends, true},
+		{DepLearnedFrom, true},
 		{DependencyType("custom-type"), true}, // Custom types are now valid
 		{DependencyType("any-string"), true},  // Any non-empty string is valid
 		{DependencyType(""), false},           // Empty is still invalid
@@ -730,6 +733,10 @@ func TestDependencyTypeIsWellKnown(t *testing.T) {
 		{DepUntil, true},
 		{DepCausedBy, true},
 		{DepValidates, true},
+		// brain v0.3 ISC-101 edge types — must be well-known so the brain
+		// CLI surfaces them in completions, validation, and renderers.
+		{DepExtends, true},
+		{DepLearnedFrom, true},
 		{DependencyType("custom-type"), false},
 		{DependencyType("unknown"), false},
 	}
@@ -766,6 +773,9 @@ func TestDependencyTypeAffectsReadyWork(t *testing.T) {
 		{DepUntil, false},
 		{DepCausedBy, false},
 		{DepValidates, false},
+		// brain v0.3 edge types — knowledge-graph edges, not workflow blockers.
+		{DepExtends, false},
+		{DepLearnedFrom, false},
 		{DependencyType("custom-type"), false},
 	}
 
