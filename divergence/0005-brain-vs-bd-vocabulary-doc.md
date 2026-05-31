@@ -2,10 +2,10 @@
 id: 0005
 title: brain vs bd CLI vocabulary explainer
 isc: []
-status: proposed
+status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [16be4657b8a09bc8d2d15fd425edd7befdccb119]
 touches: [docs/brain/BRAIN_VS_BD.md, docs/brain/README.md]
 upstream_rebase_notes: |
   Both files are brain-only. `docs/brain/` did not exist upstream
