@@ -2,10 +2,10 @@
 id: 0006
 title: brain primitives reframe — brain IS bd renamed, tasks and knowledge mix freely
 isc: [ISC-104, ISC-105, ISC-106, ISC-107, ISC-108, ISC-109, ISC-111, ISC-114, ISC-117, ISC-118, ISC-251]
-status: proposed
+status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [523accff2f31fc83d46a7a0bb0b9a3cd04cebaae]
 touches:
   - docs/brain/WHAT_IS_BRAIN.md
   - docs/brain/BRAIN_VS_BD.md
