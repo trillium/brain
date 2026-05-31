@@ -2,10 +2,10 @@
 id: 0004
 title: brain verb seam and parent command
 isc: [ISC-111]
-status: proposed
+status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [5149a9e535554b405a2759882502a4e5f69e20fc]
 touches: [internal/brain/verb/verb.go, internal/brain/verb/verb_test.go, cmd/bd/brain.go, cmd/bd/brain_test.go]
 upstream_rebase_notes: |
   Both files are brain-only. `internal/brain/verb/` did not exist
