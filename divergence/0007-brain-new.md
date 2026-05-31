@@ -5,7 +5,7 @@ isc: [104, 105, 106]
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [7467d98b9350f2efc7c90da427799e839c833030]
 touches:
   - internal/brain/verb/new/new.go
   - internal/brain/verb/new/new_test.go
