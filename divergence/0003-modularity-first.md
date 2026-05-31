@@ -5,7 +5,7 @@ isc: [ISC-100, ISC-104, ISC-105, ISC-106, ISC-107, ISC-108, ISC-109, ISC-111, IS
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [5a14a37669a3ff0197173a2f55932306712cc447]
 touches: [ISA.md, divergence/0003-modularity-first.md]
 upstream_rebase_notes: |
   Decision content is brain-only — lives in `ISA.md` under
