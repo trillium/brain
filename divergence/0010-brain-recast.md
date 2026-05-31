@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [d650dcce3]
 touches:
   - internal/brain/verb/recast/recast.go
   - internal/brain/verb/recast/recast_test.go
