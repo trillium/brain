@@ -6,7 +6,7 @@ Anything that's specifically about the brain layer — the `kind` discriminator,
 
 ## What lives here
 
-- [`BRAIN_VS_BD.md`](BRAIN_VS_BD.md) — plain-English explainer with ASCII diagrams: how `brain new / show / list / link / related` differ from bd's existing commands, the `kind` discriminator, the full 18-edge-type vocabulary, and the BrainVerb → storage → exfiltrator plumbing diagram. Start here if you've never used brain before.
+- [`WHAT_IS_BRAIN.md`](WHAT_IS_BRAIN.md) — plain-English explainer with ASCII diagrams and Given/When/Then scenarios. **brain IS bd, renamed.** One binary, one bag of brain docs (kind ∈ {task, knowledge, both}), four added verbs (`new`, `link`, `related`, `recast`), two added edge types (`extends`, `learned-from`), and a markdown-exfiltration hook. Start here if you've never used brain before. (Replaces the earlier `BRAIN_VS_BD.md` whose "verb-vocabulary lens over bd" framing was wrong — see `divergence/0006`.)
 
 This directory will grow as brain v0.3 is built. Beyond the explainer above, expected residents:
 
