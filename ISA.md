@@ -6,7 +6,7 @@ phase: observe
 progress: 0/51
 mode: standard
 started: 2026-05-31
-updated: 2026-05-31T12:00
+updated: 2026-05-31T13:00
 ---
 
 # Brain — Project ISA (v0.3, bd-merger)
@@ -83,7 +83,7 @@ Cross-machine sync rides `com.pai.bridge`. The retired `com.pai.sync` rsync laye
 
 ## Goal
 
-Ship brain v0.3: one CLI, one Dolt substrate, one Pulse module at `/brain/*`, with every node — task or knowledge or both — visible and searchable from my phone, and with the 181 existing v0.2 entries migrated in without loss. Done means the v0.2 store is retired, both old and new smoke tests pass, and I can do a full capture-to-phone-browse cycle in under a minute from any machine I own.
+Ship brain v0.3: one Go CLI, one Dolt substrate, with every node — task or knowledge or both — captureable, searchable, and inspectable from the CLI, and with the 203 existing v0.2 entries imported into Dolt without loss. v0.3.0 ships the `brain legacy *` read-only namespace alongside the new substrate; v0.3.1 removes legacy after parity and adds the Pulse `/brain/*` module for phone-readable browsing. Done for v0.3 means: Go binary builds, smoke green (new + v0.2 baseline), legacy reads work, and full capture → list → search → related → state → reconcile cycle is verifiable from the CLI on any machine I own. (Pulse + phone-browse are v0.3.1 — see First-Tranche Decision #3.)
 
 ## Criteria
 
@@ -106,6 +106,10 @@ Atomic binary tool probes. All new IDs start at ISC-100 to preserve v0.2 ID stab
 - [ ] ISC-109: `brain link <from> <to> --type=relates-to` inserts a row into the edges table
 - [ ] ISC-110: `brain search "phrase"` queries the FTS5 sqlite index and returns ranked results across both kinds
 - [ ] ISC-111: `brain related <id>` reads edges and returns connected nodes ordered by edge type
+
+### Jot alias namespace (brain-flavored wisp wrappers)
+
+- [ ] ISC-251: `brain jot save "phrase"` exits 0 and creates an ephemeral wisp via the underlying `bd mol wisp create` mechanism; `brain jot list`, `brain jot show <id>`, `brain jot promote <id>`, and `brain jot gc` are likewise thin Cobra aliases. Implementation lives in `cmd/bd/brain_jot.go` (~50 LOC). No new storage paths.
 
 ### Kind-sharded verb constraints
 
@@ -137,23 +141,27 @@ Atomic binary tool probes. All new IDs start at ISC-100 to preserve v0.2 ID stab
 - [ ] ISC-128: The FTS5 schema indexes title, tags, kind, category, and body as separately weighted columns
 - [ ] ISC-129: A title hit ranks above a body-only hit for the same query
 
-### Pulse `/brain/*` module
+### Pulse `/brain/*` module (DEFERRED v0.3.1)
 
-- [ ] ISC-130: `curl -s http://localhost:31337/brain/` returns HTTP 200 with HTML listing recent nodes across both kinds
-- [ ] ISC-131: `curl -s http://localhost:31337/brain/{slug}` returns the rendered markdown for that node, themed like `/plans/` and `/status/`
-- [ ] ISC-132: `curl -s http://localhost:31337/brain/api/search?q=phrase` returns JSON results from the FTS5 index in under 100ms
-- [ ] ISC-133: The Pulse `/brain/*` module source contains zero references to mysql, dolt, or any Dolt client (grep confirms)
-- [ ] ISC-134: The Pulse `/brain/` page is phone-readable: viewport meta tag set, no horizontal scroll at 375px width
-- [ ] ISC-135: After `brain new` writes a node, the corresponding Pulse page is reachable within 3 seconds (ISR revalidation via `revalidatePath`)
-- [ ] ISC-136: Pulse `/brain/{slug}` pages render bidirectional links as clickable anchors to other `/brain/{slug}` pages
+All ISCs in this section are deferred to v0.3.1 per the Go-only constitutional decision (see `## Decisions` → First-Tranche Decisions, 2026-05-31). v0.3 ships CLI-only; Pulse is Next.js (TypeScript) and falls outside the v0.3 single-language constraint.
 
-### v0.2 to v0.3 migration
+- [ ] ISC-130 (DEFERRED v0.3.1): `curl -s http://localhost:31337/brain/` returns HTTP 200 with HTML listing recent nodes across both kinds
+- [ ] ISC-131 (DEFERRED v0.3.1): `curl -s http://localhost:31337/brain/{slug}` returns the rendered markdown for that node, themed like `/plans/` and `/status/`
+- [ ] ISC-132 (DEFERRED v0.3.1): `curl -s http://localhost:31337/brain/api/search?q=phrase` returns JSON results from the FTS5 index in under 100ms
+- [ ] ISC-133 (DEFERRED v0.3.1): The Pulse `/brain/*` module source contains zero references to mysql, dolt, or any Dolt client (grep confirms)
+- [ ] ISC-134 (DEFERRED v0.3.1): The Pulse `/brain/` page is phone-readable: viewport meta tag set, no horizontal scroll at 375px width
+- [ ] ISC-135 (DEFERRED v0.3.1): After `brain new` writes a node, the corresponding Pulse page is reachable within 3 seconds (ISR revalidation via `revalidatePath`)
+- [ ] ISC-136 (DEFERRED v0.3.1): Pulse `/brain/{slug}` pages render bidirectional links as clickable anchors to other `/brain/{slug}` pages
 
-- [ ] ISC-137: `brain migrate-v02` reads every entry under the old `entries/{category}/{id}.md` layout and inserts a kind=knowledge row in Dolt for each
+### v0.2 to v0.3 migration (soft-sunset model)
+
+Per First-Tranche Decision #4 (2026-05-31), v0.3.0 ships with the `brain legacy *` namespace **read-only and live**, alongside the new Go importer. The legacy namespace is hard-deprecated and removed in v0.3.1 after parity is proven. Importer is Go (`cmd/bd/brain_legacy.go`), satisfying Decision #1 (Go-only). The 203 v0.2 entries (corrected count) remain reachable throughout the proving window.
+
+- [ ] ISC-137: `brain migrate-v02` (Go one-shot in `cmd/bd/brain_legacy.go`) reads every entry under the old `entries/{category}/{id}.md` layout and inserts a kind=knowledge row in Dolt for each
 - [ ] ISC-138: After migration, the Dolt node count matches the v0.2 entry count exactly (no losses, no duplicates)
 - [ ] ISC-139: Every wikilink in a migrated entry resolves to a Dolt row id (no dangling links)
-- [ ] ISC-140: `brain legacy show <old-id>` still works during migration window, reading from the v0.2 brain.json index
-- [ ] ISC-141: After cutover, `brain legacy` verbs are removed and brain.json is moved to `entries/.archive/brain-v02.json` as historical record
+- [ ] ISC-140 (v0.3.0): `brain legacy show <old-id>` reads the v0.2 brain.json index read-only and continues working throughout v0.3.0; legacy namespace ships in the v0.3.0 release artifact
+- [ ] ISC-141 (v0.3.1): After v0.3.1 parity verification, `brain legacy` verbs are removed; brain.json is moved to `entries/.archive/brain-v02.json` as historical record. Removal lands in v0.3.1, not v0.3.0.
 
 ### Smoke and integration
 
@@ -230,6 +238,7 @@ Each ISC is verified by a single binary tool probe.
 | ISC-148 | anti | grep Pulse `/brain/*` source for `mysql\|dolt-client\|sql-import` | grep |
 | ISC-149 | anti | hand-edit one markdown file, run CLI verbs, edit survives until next reconcile | Bash |
 | ISC-150 | anti | `test -f go.mod && ! test -f package.json && ! test -f requirements.txt` at brain repo root | Bash |
+| ISC-251 | cli | `brain jot save "x"` exit code, then `bd mol wisp list` shows the row; `brain jot promote <id>` succeeds and the row appears as a permanent bead | Bash + bd |
 
 ## Features
 
@@ -243,12 +252,12 @@ Work breakdown from v0.2 to v0.3.
 | exfiltration-hook | `BrainExfiltrationDecorator` stacked on `HookFiringStore`; markdown render on every mutation + checkpoint | ISC-117-121 | cli-aliases | partly | SMALL — ~150-250 Go LOC |
 | reconciler | idempotent walk, orphan removal, drift check mode (`brain reconcile [--check]`) | ISC-122-125 | exfiltration-hook | no | MEDIUM — ~200-400 Go LOC |
 | fts5-indexer | new `internal/storage/fts/` package; build FTS5 from markdown; `brain search` query path | ISC-110, ISC-126-129 | exfiltration-hook | partly | MEDIUM — ~300-500 Go LOC |
-| pulse-brain-module | Next.js ISR module at `/brain/*` reading markdown + sqlite | ISC-130-136 | fts5-indexer | partly | SMALL — mirrors `/plans/*` |
+| pulse-brain-module (DEFERRED v0.3.1) | Next.js ISR module at `/brain/*` reading markdown + sqlite. Deferred per Go-only constraint (First-Tranche Decision #1, 2026-05-31); v0.3 ships CLI-only. | ISC-130-136 | fts5-indexer | partly | DEFERRED to v0.3.1 |
 | migration-script | one-shot Go importer: v0.2 brain.json + frontmatter → bd issues rows; legacy namespace | ISC-137-141 | reconciler | no | SMALL — ~150 Go LOC |
 | smoke-extension | brain-v0.3 probes added to bd's test infrastructure | ISC-142, ISC-143 | migration-script | no | SMALL |
 | editability-mobile-guards | frontmatter linter, mobile viewport check | ISC-144, ISC-145 | pulse-brain-module | yes | TRIVIAL |
 | anti-coverage | enforcement greps + assertions for ISC-146-150 (note ISC-150 now expects `go.mod`, not bans it) | ISC-146-150 | migration-script | yes | TRIVIAL |
-| jot-alias | optional brain-flavored Cobra alias namespace over `bd mol wisp` + `bd promote` if Trillium wants `brain jot ...` to read naturally — otherwise use bd verbs directly | n/a (no ISC) | cli-aliases | yes | TRIVIAL — ~50 Go LOC OR drop entirely |
+| jot-alias | brain-flavored Cobra alias namespace over `bd mol wisp` + `bd promote` + `bd mol wisp gc` — `brain jot save/list/show/promote/gc`. New file `cmd/bd/brain_jot.go`. Decided 2026-05-31 (First-Tranche Decision #2); supersedes the prior "TRIVIAL or drop" indecision. | ISC-251 | cli-aliases | yes | TRIVIAL — ~50 Go LOC |
 
 ## Decisions
 
@@ -325,6 +334,34 @@ Per-ISC tag of inheritance from bd:
 - **dolt push/pull** — git-backed sync of the canonical store. Brain v0.2 sync rode `com.pai.bridge` over markdown; bd adds a SQL-delta sync option if we ever want it (deferred per Decisions 2026-05-31).
 - **JSON output everywhere** — bd's `--json` flag is universal. Brain v0.2 had partial JSON output; now uniform.
 
+### First-Tranche Decisions (2026-05-31)
+
+Four architectural decisions ratified by Trillium 2026-05-31 in response to the ask: "sensible defaults that center around the tool being dependable, written in one programming language, with all choices documented." Decision #1 is the constitutional gate; #3 and #4 follow from it; #2 is a UX continuity pick that fits the gate cleanly. See `divergence/0002-first-tranche-decisions.md` for the paired divergence-trail entry.
+
+**Decision 1 — v0.3 is Go-only (constitutional).**
+
+- **What:** The brain v0.3 surface is the `brain` Go binary. No TypeScript, JavaScript, Python, or other language in the v0.3 critical path. Web/UI surfaces (Pulse `/brain/*` module) deferred until v0.3.1.
+- **Why:** Dependability via single-language constraint. One toolchain, one test runner, one deployment artifact, one set of failure modes. Reduces v0.3 release variance and shrinks the verifiable surface.
+- **How to apply:** Reject any ISC that introduces non-Go code into the v0.3 critical path. This is the constitutional gate; Decisions #3 and #4 below cascade from it.
+
+**Decision 2 — `brain jot` is a Cobra alias namespace (~50 LOC).**
+
+- **What:** Implement `brain jot save/list/show/promote/gc` as thin Cobra wrappers over bd's existing `mol wisp create/list/show` + `promote` + `mol wisp gc` commands. New file: `cmd/bd/brain_jot.go`. Zero new storage paths.
+- **Why:** Ergonomic continuity with brain v0.2. The muscle memory is `brain jot save`, not `brain mol wisp create`. The bd verbs already cover the entire jot pattern (verified by the Capability Audit above); wrapping them preserves UX without duplicating mechanism. ~50 LOC is trivially maintainable.
+- **How to apply:** ISC-251 (`jot-alias`) added to the Criteria + Test Strategy + Features sections. Depends on ISC-104-109 CLI aliases landing first. Supersedes the prior "TRIVIAL or drop" indecision in the Capability Audit and the `project-brain-v03-lift` project memory.
+
+**Decision 3 — Pulse `/brain/*` module deferred to v0.3.1.**
+
+- **What:** ISCs 130-136 (Pulse module) marked DEFERRED in the ISA with a `v0.3.1` milestone tag. v0.3 ships CLI-only.
+- **Why:** Pulse is Next.js (TypeScript). Including it in v0.3 violates Decision #1 (Go-only). Excluding it ships v0.3 ~2-3 weeks faster with a smaller verifiable surface. v0.3.1 picks Pulse up as its own focused tranche.
+- **How to apply:** ISC-130 through ISC-136 section header and per-ISC rows tagged `(DEFERRED v0.3.1)`. The v0.3 first tranche stops at ISC-126-129 (FTS5).
+
+**Decision 4 — v0.2 → v0.3 cutover via soft sunset (legacy ships in v0.3.0, deprecates in v0.3.1).**
+
+- **What:** v0.3.0 ships with `brain legacy *` read-only namespace + a one-shot Go importer (`cmd/bd/brain_legacy.go`). The 203 v0.2 entries remain reachable through migration. v0.3.1 removes the legacy namespace after parity verification.
+- **Why:** Dependability via safety net. A hard cutover at v0.3.0 risks data loss if the importer has edge-case bugs. Soft sunset keeps both surfaces live during the proving period. Importer is Go (not the throwaway TS brain-v0.2 codebase), so it satisfies Decision #1.
+- **How to apply:** ISC-137-141 updated to reflect dual-namespace ship at v0.3.0 with read-only legacy access; hard-deprecation moves to v0.3.1. Migration section retitled "v0.2 to v0.3 migration (soft-sunset model)."
+
 ### Preserved from v0.2 (historical, do not re-verify)
 
 - v0.2 ISC-3 (body-text search), ISC-4 (JSON ranking), ISC-11 (title boost), ISC-12 (p50 < 100ms warm), ISC-13 (typo tolerance) were verified 2026-05-31 against the brain v0.2 in-process search index. v0.3 supersedes these with FTS5-backed search (ISC-126-129). The v0.2 search ranking weights (title=8, tags=4, id=3, body=1) inform FTS5 column weights but are not re-applied verbatim.
@@ -337,6 +374,7 @@ Per-ISC tag of inheritance from bd:
 - 2026-05-31 — **conjecture**: the kind discriminator could be modeled as two separate tables (`tasks`, `knowledge`) joined by a polymorphic edge table. **refutation**: that fragments the row shape and makes shared verbs (search, link, related) write two queries every time. **learning**: kind is a write-mode for verbs, not a type for storage. **criterion_now**: ISC-100 enforces a single `nodes` table; ISC-102 enforces kind values.
 - 2026-05-31 — **conjecture**: spawning the Architect to supersede an uncommitted ISA was safe. **refutation**: the prior-turn prompt drifted substrate direction (Dolt=source instead of the prior synthesis R7's markdown=source); the Architect followed instructions and overwrote the prior v0.2 ISA; the file was untracked in git, so the prior 27kb of v0.2 articulation was unrecoverable. **learning**: any writer agent operating on an existing ISA must first commit it; uncommitted artifacts have no rollback path. **criterion_now**: follow-up — add Anti-ISC during BUILD that any superseding write to an ISA requires the prior version to be committed (or stashed) first. Logged here as a learning, deferred from the ISC list until BUILD opens it.
 - 2026-05-31 — **conjecture**: implementation-language choice (TS harness around bd vs Go fork of bd) was a tradeoff in Trillium's daily ergonomics. **refutation**: Trillium reframed — he is not the one writing the code, so the language is cost-free at the executor side. Dependability becomes the only deciding axis. **learning**: when the executor is the implementer, "which language does the user prefer" is a phantom tradeoff; the real axes are single-writer property, transaction atomicity, integration-seam count, and rebase exposure. **criterion_now**: Decisions log records fork-direct selection on dependability grounds; Features section is reinterpreted with Go semantics (Cobra subcommands in `cmd/bd/brain_*.go`, schema migrations in `internal/storage/schema/migrations/`, hook decorator at `internal/storage/hook_decorator.go`); brain v0.2 TS codebase becomes throwaway after migration parity (ISC-137-141).
+- 2026-05-31 — **conjecture**: v0.3 should ship Pulse + a TypeScript importer alongside Go core for capability parity at release. **refutation**: that violates the single-language dependability constraint Trillium asked for; one toolchain reduces failure modes. **learning**: cutting scope to one language for v0.3 ships faster with a smaller verifiable surface; Pulse and migration parity become v0.3.1 work. **criterion_now**: First-Tranche Decisions (2026-05-31) — #1 Go-only, #2 jot alias (~50 LOC), #3 Pulse deferred to v0.3.1, #4 legacy namespace soft-sunsets (ships read-only in v0.3.0, removed in v0.3.1). See `divergence/0002-first-tranche-decisions.md`.
 - 2026-05-31 — **conjecture**: jot was a 295-line v0.2 subsystem that would port to ~400-600 Go LOC because ephemeral cache management is genuinely complex. **refutation**: bd already ships the entire ephemeral-cache pattern as `wisps` — a parallel main-DB table with `Ephemeral=true`, TTL-aware `bd mol wisp gc` (1h default, cascade-aware, --exclude-type), `bd mol wisp list` with old-detection (>24h), and `bd promote <wisp-id>` that moves wisp → permanent bead preserving ID/labels/dependencies/events/comments and writing a promotion comment. brain v0.2 jot verbs map 1:1 onto these primitives. **learning**: capability-inheritance audits should run before any "port the old subsystem" estimate is trusted; the new substrate's idioms may already cover the old subsystem completely. **criterion_now**: jot drops from a feature row to an optional alias row in the Features table; ISC-150 was flipped (Go is now expected, not forbidden); lift posture revised MEDIUM → MEDIUM-LOW (~1500-2500 Go LOC delta, down from ~2500-4000). The bd verbs `wisp` + `promote` are the answer to "do we still need jot?" — no, not as a fresh implementation.
 
 ## Verification
