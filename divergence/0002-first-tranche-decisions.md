@@ -5,7 +5,7 @@ isc: [ISC-130, ISC-131, ISC-132, ISC-133, ISC-134, ISC-135, ISC-136, ISC-137, IS
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: [<TBD>]
+commits: [452ac0ec1e5c05a77cf607a2a4e73522a088855d]
 touches: [ISA.md, divergence/0002-first-tranche-decisions.md]
 upstream_rebase_notes: |
   Decision content lives entirely in ISA.md `## Decisions` (the new
