@@ -5,7 +5,11 @@ isc: [117, 118, 119, 120, 121]
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits:
+  - 628cb34ee  # feat(brain): add markdown exfiltrator package
+  - 5bc14b732  # feat(brain): add BrainExfiltrationDecorator on DoltStorage
+  - 1413816ab  # feat(brain): wire BrainExfiltrationDecorator into bd binary
+  - 58045877a  # docs(brain): land divergence/0012 for exfiltration decorator
 touches:
   - internal/brain/exfiltrator/exfiltrator.go
   - internal/brain/exfiltrator/exfiltrator_test.go
