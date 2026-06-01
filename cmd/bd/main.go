@@ -1153,6 +1153,18 @@ var rootCmd = &cobra.Command{
 			store = storage.NewHookFiringStore(store, hookRunner)
 		}
 
+		// Wrap store with brain markdown exfiltration decorator so
+		// brain-kind mutations (kind ∈ {task, knowledge, both}) write
+		// entries/{kind}/{slug}.md under the configured knowledge root.
+		// Non-brain-kind mutations passthrough — bd's own behavior is
+		// unchanged. Set BRAIN_NO_EXFIL=1 to disable rendering (useful
+		// for bulk imports, migrations, or non-brain workflows).
+		if store != nil && os.Getenv("BRAIN_NO_EXFIL") == "" {
+			if exf := newBrainExfiltrator(); exf != nil {
+				store = storage.NewBrainExfiltrationDecorator(store, exf)
+			}
+		}
+
 		// Warn if multiple databases detected in directory hierarchy
 		warnMultipleDatabases(dbPath)
 
