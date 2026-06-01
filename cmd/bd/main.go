@@ -1133,7 +1133,7 @@ var rootCmd = &cobra.Command{
 		// unchanged. Set BRAIN_NO_EXFIL=1 to disable rendering (useful
 		// for bulk imports, migrations, or non-brain workflows).
 		if store != nil && os.Getenv("BRAIN_NO_EXFIL") == "" {
-			if exf := newBrainExfiltrator(); exf != nil {
+			if exf := newBrainExfiltrator(store); exf != nil {
 				store = storage.NewBrainExfiltrationDecorator(store, exf)
 			}
 		}
