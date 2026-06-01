@@ -94,11 +94,11 @@ Examples:
 		// Each descendant prints with its incoming edge type as
 		// `├─[<edge>]→ <id> · <title>          [kind=<kind>...]` (or
 		// `└─[<edge>]→ ...` for the last child of its parent).
-		renderTree(result.Center)
+		renderRelatedTree(result.Center)
 	},
 }
 
-// renderTree prints the result tree to stdout. The center is the root;
+// renderRelatedTree prints the result tree to stdout. The center is the root;
 // each descendant carries its EdgeFromParent and is rendered with the
 // box-drawing tee or elbow depending on whether it's the last sibling.
 //
@@ -106,7 +106,7 @@ Examples:
 // package) because rendering is a presentation concern; see the
 // "Why the verb returns a tree" rationale in
 // internal/brain/verb/related/related.go.
-func renderTree(center *relatedverb.Node) {
+func renderRelatedTree(center *relatedverb.Node) {
 	if center == nil {
 		return
 	}
