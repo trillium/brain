@@ -5,7 +5,7 @@ isc: [104, 105, 106, 109, 111, 151, 152]
 status: landed
 created: 2026-05-31
 updated: 2026-05-31
-commits: []
+commits: [0d984baa4f8efbf8b4d0701f916290c96a10cfdd]
 touches:
   - ISA.md
 upstream_rebase_notes: |
