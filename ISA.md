@@ -126,11 +126,11 @@ Atomic binary tool probes. All new IDs start at ISC-100 to preserve v0.2 ID stab
 
 ### Exfiltration write hook
 
-- [ ] ISC-117: After `brain new task "x"`, a markdown file exists at `entries/task/{slug}.md` with frontmatter mirroring the Dolt row and body matching exactly
-- [ ] ISC-118: After `brain new knowledge tech "x"`, a markdown file exists at `entries/knowledge/{slug}.md`
-- [ ] ISC-119: After `brain edit <id>` changes a frontmatter field, the markdown file is rewritten and the new field is present
-- [ ] ISC-120: The exfiltration hook completes within 500ms of the Dolt write returning
-- [ ] ISC-121: If the exfiltration hook fails partway, a write-ahead checkpoint at `entries/.checkpoint.json` records the pending node id so `brain reconcile` can finish the job
+- [x] ISC-117: After `brain new task "x"`, a markdown file exists at `entries/task/{slug}.md` with frontmatter mirroring the Dolt row and body matching exactly. Landed divergence/0012 (`internal/brain/exfiltrator/` + `internal/storage/brain_exfiltration_decorator.go`).
+- [x] ISC-118: After `brain new knowledge "x"`, a markdown file exists at `entries/knowledge/{slug}.md`. Wording amended (`tech` positional dropped) consistent with ISC-105's post-reframe amendment in divergence/0011 — the verb is now `brain new <kind> <title>`, no category positional. Landed divergence/0012.
+- [x] ISC-119: After `brain edit <id>` changes a frontmatter field, the markdown file is rewritten and the new field is present. Decorator re-renders on every `UpdateIssue`. Landed divergence/0012.
+- [x] ISC-120: The exfiltration hook completes within 500ms of the Dolt write returning. `BenchmarkRender` measures 10.4ms/op on M1 Max — two orders of magnitude under budget. Landed divergence/0012.
+- [x] ISC-121: If the exfiltration hook fails partway, a write-ahead checkpoint at `entries/.checkpoint.json` records the pending node id so `brain reconcile` can finish the job. Checkpoint is written BEFORE the on-disk render and cleared AFTER success. Landed divergence/0012.
 
 ### Idempotent reconciler
 
