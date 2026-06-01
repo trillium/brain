@@ -143,6 +143,12 @@ func (s *fakeBrainStore) UpdateIssue(_ context.Context, id string, updates map[s
 	if v, ok := updates["description"].(string); ok {
 		issue.Description = v
 	}
+	if v, ok := updates["issue_type"].(string); ok {
+		issue.IssueType = types.IssueType(v)
+	}
+	if v, ok := updates["status"].(string); ok {
+		issue.Status = types.Status(v)
+	}
 	return nil
 }
 
@@ -513,6 +519,109 @@ func TestBrainExfDecorator_UpdateIssueType_NonBrainToBrainWritesFile(t *testing.
 	}
 	if _, err := osStatRequire(t, root, "entries/task/inbound.md"); err != nil {
 		t.Fatalf("expected task file after transition into brain: %v", err)
+	}
+}
+
+// ── UpdateIssue with issue_type (the brain recast code path) ───────
+//
+// `brain recast` does NOT call UpdateIssueType — it calls UpdateIssue
+// with `"issue_type": <new>` in the updates map (see
+// internal/brain/verb/recast/recast.go). The decorator must therefore
+// honour the same kind-transition cleanup rules on UpdateIssue that it
+// does on UpdateIssueType. These tests pin that contract.
+
+func TestBrainExfDecorator_UpdateIssue_BrainToBrainRemovesOldFile(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	issue := brainIssue("B-rc1", "recast-bb", types.TypeKnowledge)
+	if err := d.CreateIssue(context.Background(), issue, "tester"); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := osStatRequire(t, root, "entries/knowledge/recast-bb.md"); err != nil {
+		t.Fatalf("expected knowledge file: %v", err)
+	}
+
+	// Simulate the exact updates map `brain recast` builds.
+	updates := map[string]interface{}{"issue_type": string(types.TypeTask)}
+	if err := d.UpdateIssue(context.Background(), "B-rc1", updates, "tester"); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	if _, err := osStatRequire(t, root, "entries/task/recast-bb.md"); err != nil {
+		t.Fatalf("expected task file after recast: %v", err)
+	}
+	if err := osStatNotExist(t, root, "entries/knowledge/recast-bb.md"); err != nil {
+		t.Fatalf("old knowledge file should be gone after recast: %v", err)
+	}
+}
+
+func TestBrainExfDecorator_UpdateIssue_BrainToNonBrainRemovesFile(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	issue := brainIssue("B-rc2", "recast-out", types.TypeKnowledge)
+	if err := d.CreateIssue(context.Background(), issue, "tester"); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := osStatRequire(t, root, "entries/knowledge/recast-out.md"); err != nil {
+		t.Fatalf("expected knowledge file: %v", err)
+	}
+
+	updates := map[string]interface{}{"issue_type": string(types.TypeBug)}
+	if err := d.UpdateIssue(context.Background(), "B-rc2", updates, "tester"); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	if err := osStatNotExist(t, root, "entries/knowledge/recast-out.md"); err != nil {
+		t.Fatalf("old knowledge file should be gone after transition out of brain: %v", err)
+	}
+	if err := osStatNotExist(t, root, "entries/bug/recast-out.md"); err != nil {
+		t.Fatalf("bug file should not be created: %v", err)
+	}
+}
+
+func TestBrainExfDecorator_UpdateIssue_TitleOnlyDoesNotTriggerRemove(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	issue := brainIssue("B-rc3", "edit-only", types.TypeKnowledge)
+	if err := d.CreateIssue(context.Background(), issue, "tester"); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := osStatRequire(t, root, "entries/knowledge/edit-only.md"); err != nil {
+		t.Fatalf("expected knowledge file: %v", err)
+	}
+
+	// A title-only update must NOT cross into the kind-transition path.
+	// Slug derivation is stable across title edits (persisted in
+	// issues.metadata.brain_slug), so the file stays exactly where it
+	// was, and no Remove should fire on the old location.
+	updates := map[string]interface{}{"title": "renamed"}
+	if err := d.UpdateIssue(context.Background(), "B-rc3", updates, "tester"); err != nil {
+		t.Fatalf("UpdateIssue: %v", err)
+	}
+
+	if _, err := osStatRequire(t, root, "entries/knowledge/edit-only.md"); err != nil {
+		t.Fatalf("file should still be present after title edit: %v", err)
 	}
 }
 

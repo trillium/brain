@@ -80,10 +80,37 @@ func (d *BrainExfiltrationDecorator) CreateIssues(ctx context.Context, issues []
 
 // UpdateIssue updates an issue and re-renders the markdown if the
 // updated issue is a brain-kind doc.
+//
+// When the updates map carries an "issue_type" field, the call is
+// effectively a kind transition (this is the path `brain recast` takes;
+// see internal/brain/verb/recast/recast.go). The decorator snapshots
+// the (oldKind, oldSlug) BEFORE the storage write so it can remove the
+// stale file from `entries/<oldKind>/` afterwards — mirroring the
+// dedicated UpdateIssueType path and honouring divergence/0012's
+// "kind transitions move the file" decision.
 func (d *BrainExfiltrationDecorator) UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error {
+	var (
+		hasKindChange bool
+		oldKind       types.IssueType
+		oldSlug       string
+		newKind       types.IssueType
+	)
+	if raw, ok := updates["issue_type"]; ok {
+		if s, ok := raw.(string); ok && s != "" {
+			oldKind, oldSlug = d.snapshotKindAndSlug(ctx, id)
+			newKind = types.IssueType(s)
+			hasKindChange = true
+		}
+	}
+
 	if err := d.inner.UpdateIssue(ctx, id, updates, actor); err != nil {
 		return err
 	}
+
+	if hasKindChange {
+		d.applyKindTransitionCleanup(ctx, id, oldKind, oldSlug, newKind)
+	}
+
 	d.renderByID(ctx, id)
 	return nil
 }
@@ -111,19 +138,37 @@ func (d *BrainExfiltrationDecorator) UpdateIssueType(ctx context.Context, id str
 	}
 
 	newKind := types.IssueType(issueType)
-	switch {
-	case exfiltrator.IsBrainKind(oldKind) && oldKind != newKind:
-		// brain → (brain | non-brain): remove the old file. The
-		// new render (if newKind is brain) happens below via renderByID.
-		if oldSlug != "" && d.exf != nil {
-			_ = d.exf.Remove(ctx, id, oldKind, oldSlug)
-		}
-	}
+	d.applyKindTransitionCleanup(ctx, id, oldKind, oldSlug, newKind)
 
 	if exfiltrator.IsBrainKind(newKind) {
 		d.renderByID(ctx, id)
 	}
 	return nil
+}
+
+// applyKindTransitionCleanup removes the stale `entries/<oldKind>/<oldSlug>.md`
+// file when an issue's kind has just changed. Caller is responsible for
+// snapshotting (oldKind, oldSlug) BEFORE the storage write — this helper
+// only consumes the snapshot.
+//
+// No-ops when:
+//   - oldKind is not a brain kind (no markdown was ever written),
+//   - oldKind == newKind (e.g. a status-only update that happened to
+//     pass through this path),
+//   - oldSlug is empty (the snapshot didn't resolve a slug), or
+//   - the exfiltrator is nil (passthrough mode).
+//
+// Remove failures are intentionally swallowed: the storage mutation
+// already succeeded and the reconciler is the documented safety net for
+// any orphan file (divergence/0012 § Decisions #5).
+func (d *BrainExfiltrationDecorator) applyKindTransitionCleanup(ctx context.Context, id string, oldKind types.IssueType, oldSlug string, newKind types.IssueType) {
+	if d.exf == nil || oldSlug == "" {
+		return
+	}
+	if !exfiltrator.IsBrainKind(oldKind) || oldKind == newKind {
+		return
+	}
+	_ = d.exf.Remove(ctx, id, oldKind, oldSlug)
 }
 
 // CloseIssue closes an issue and re-renders.
