@@ -98,14 +98,14 @@ Atomic binary tool probes. All new IDs start at ISC-100 to preserve v0.2 ID stab
 
 ### CLI core and verb dispatch
 
-- [ ] ISC-104: `brain new task "ship the indexer"` exits 0 and inserts a row with kind=task into Dolt
-- [ ] ISC-105: `brain new knowledge tech "what I learned"` exits 0 and inserts a row with kind=knowledge, category=tech into Dolt
-- [ ] ISC-106: `brain new both "active investigation"` exits 0 and inserts a row with kind=both
+- [x] ISC-104: `brain new task "ship the indexer"` exits 0 and inserts a row with kind=task into Dolt — landed divergence/0007
+- [x] ISC-105: `brain new knowledge "what I learned"` exits 0 and inserts a row with kind=knowledge into Dolt — landed divergence/0007. **Amended 2026-05-31** per divergence/0011: the reframe (divergence/0006) reset the verb signature to `<kind> <title>`, dropping the `category` positional arg. Category-as-flag is deferred future work.
+- [x] ISC-106: `brain new both "active investigation"` exits 0 and inserts a row with kind=both — landed divergence/0007
 - [ ] ISC-107: `brain show <id>` reads from Dolt and prints frontmatter plus body to stdout
 - [ ] ISC-108: `brain list --kind=task` returns only task and both rows; `brain list --kind=knowledge` returns only knowledge and both rows
-- [ ] ISC-109: `brain link <from> <to> --type=relates-to` inserts a row into the edges table
+- [x] ISC-109: `brain link <from> <to> --type=relates-to` inserts a row into the edges table — landed divergence/0008. Verb also accepts `--extends`, `--learned-from`, `--related` as first-class flags.
 - [ ] ISC-110: `brain search "phrase"` queries the FTS5 sqlite index and returns ranked results across both kinds
-- [ ] ISC-111: `brain related <id>` reads edges and returns connected nodes ordered by edge type
+- [x] ISC-111: `brain related <id>` reads edges and returns connected nodes ordered by edge type — landed divergence/0009. BFS with depth cap (default 2), cycle detection, deterministic ordering.
 
 ### Jot alias namespace (brain-flavored wisp wrappers)
 
@@ -118,6 +118,11 @@ Atomic binary tool probes. All new IDs start at ISC-100 to preserve v0.2 ID stab
 - [ ] ISC-114: `brain ready` lists only kind=task and kind=both nodes whose dependencies are satisfied
 - [ ] ISC-115: `brain file <id> --category=tech` succeeds when kind=knowledge or kind=both; refuses on kind=task with a clear error
 - [ ] ISC-116: Shared verbs (`search`, `link`, `show`, `related`) accept any kind without error
+
+### Post-reframe CLI additions (divergence/0006 + 0010 + 0011)
+
+- [x] ISC-151: `brain recast <id> --to=<kind>` shifts an existing brain doc's kind in place — same ID, same edges, same comments, same body. Status defaults to `open` on knowledge→task / knowledge→both transitions when current status is not closed; preserved on all other transitions. Idempotent (no-op when current kind equals target). Landed divergence/0010.
+- [x] ISC-152: `brain promote <args>` prints a redirect hint pointing at `brain recast` and `bd promote`, exit non-zero. UX-only namespace-collision affordance — `bd promote` graduates wisps to beads; `brain recast` shifts kind. Landed divergence/0010 (`cmd/bd/brain_promote.go`).
 
 ### Exfiltration write hook
 
