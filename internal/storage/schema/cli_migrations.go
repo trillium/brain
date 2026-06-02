@@ -38,6 +38,11 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		return cliMigration0046AddIsBlocked
 	case "0049_longtext_large_content_columns.up.sql":
 		return cliMigration0049LongtextLargeContentColumns
+	case "0050_add_isa_columns.up.sql":
+		// Fresh bundles have no `issues` rows yet, so only the schema delta
+		// is needed; the runtime migration's INFORMATION_SCHEMA guards exist
+		// for upgrades of existing databases and are dead work here.
+		return cliMigration0050AddIsaColumns
 	default:
 		return sqlText
 	}
@@ -114,3 +119,12 @@ ALTER TABLE issues MODIFY COLUMN close_reason LONGTEXT DEFAULT '';
 ALTER TABLE wisps MODIFY COLUMN description LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN design LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN acceptance_criteria LONGTEXT NOT NULL DEFAULT '', MODIFY COLUMN notes LONGTEXT NOT NULL DEFAULT '';
 ALTER TABLE wisps MODIFY COLUMN close_reason LONGTEXT DEFAULT '';
 ALTER TABLE comments MODIFY COLUMN text LONGTEXT NOT NULL;`
+
+const cliMigration0050AddIsaColumns = `ALTER TABLE issues ADD COLUMN slug VARCHAR(255) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_phase VARCHAR(32) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_progress_m INT DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_progress_n INT DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_effort VARCHAR(8) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_mode VARCHAR(32) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_started_at DATETIME NULL DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_updated_at DATETIME NULL DEFAULT NULL;`
