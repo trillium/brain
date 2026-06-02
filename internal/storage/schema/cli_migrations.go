@@ -49,6 +49,13 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// bundles already have the base wisp tables, and the Dolt CLI test
 		// path needs direct DML for deterministic fixture repair.
 		return cliMigration0053RepairRigWisps
+	case "0054_add_isa_columns.up.sql":
+		// Brain addition (renumbered from 0052 on rebase onto upstream
+		// v1.1.0-rc.1, which claimed 0052 for add_date_indexes). Fresh
+		// bundles have no `issues` rows yet, so only the schema delta is
+		// needed; the runtime migration's INFORMATION_SCHEMA guards exist
+		// for upgrades of existing databases and are dead work here.
+		return cliMigration0054AddIsaColumns
 	default:
 		return sqlText
 	}
@@ -264,3 +271,12 @@ WHERE w.issue_type = 'rig';
 DELETE FROM wisps WHERE issue_type = 'rig';
 
 SET FOREIGN_KEY_CHECKS = 1;`
+
+const cliMigration0054AddIsaColumns = `ALTER TABLE issues ADD COLUMN slug VARCHAR(255) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_phase VARCHAR(32) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_progress_m INT DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_progress_n INT DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_effort VARCHAR(8) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_mode VARCHAR(32) DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_started_at DATETIME NULL DEFAULT NULL;
+ALTER TABLE issues ADD COLUMN isa_updated_at DATETIME NULL DEFAULT NULL;`
