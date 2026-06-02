@@ -557,6 +557,12 @@ const TypeEvent IssueType = "event"
 const (
 	TypeKnowledge IssueType = "knowledge"
 	TypeBoth      IssueType = "both"
+	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — see PAI/DOCUMENTATION/IsaFormat.md).
+	// Rides on the same issue_type TEXT column as task/knowledge/both/etc.
+	// Tracked sections live in the isa_sections table (migration 0051);
+	// ISA-specific columns (isa_phase, isa_progress_m/n, etc.) live on
+	// the issues row itself (migration 0050).
+	TypeISA IssueType = "isa"
 )
 
 // Note: Most orchestrator types (convoy, merge-request, slot, agent, role, rig)
@@ -578,7 +584,8 @@ func (t IssueType) IsValid() bool {
 		// brain v0.3 kind values (divergence/0007). These ride on the same
 		// TEXT column as bd's existing IssueType values; the kind discriminator
 		// is just a tag, not a separate column.
-		TypeKnowledge, TypeBoth:
+		// TypeISA (brain v0.3 F1d) joins the same lineage — see TypeISA const.
+		TypeKnowledge, TypeBoth, TypeISA:
 		return true
 	}
 	return false
