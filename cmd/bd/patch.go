@@ -193,6 +193,18 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 
 	commandDidWrite.Store(true)
 	SetLastTouchedID(result.ResolvedID)
+
+	// ISC-33: auto-render after a successful ISA-field patch. The DB write
+	// has already committed; this is a best-effort post-commit step. Per
+	// ISC-40, a render failure is NOT rolled back — the brain row is
+	// canonical, the markdown is a shadow. We log a warning to stderr and
+	// continue; `bd isa-render-pending` will list this row as stale.
+	if path, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: brain write succeeded but markdown render failed: %v\n", rerr)
+		_ = path
+	}
+
 	emitSuccess(result.ResolvedID, field, value, kind)
 }
 
@@ -223,6 +235,19 @@ func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 
 	commandDidWrite.Store(true)
 	SetLastTouchedID(result.ResolvedID)
+
+	// ISC-33: slug patches on ISA rows change the canonical render path.
+	// Auto-render best-effort post-commit so the new slug's ISA.md is
+	// produced; the old slug's file is left in place (orphaned) and is the
+	// caller's responsibility to clean up via filesystem tools. ISC-40
+	// semantics apply: render failure is warning-only.
+	if kind == "isa" {
+		if _, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: brain write succeeded but markdown render failed: %v\n", rerr)
+		}
+	}
+
 	emitSuccess(result.ResolvedID, patchverb.FieldSlug, value, kind)
 }
 
@@ -244,6 +269,17 @@ func runPatchPassthrough(ctx context.Context, result *RoutedResult, field, value
 	if updated != nil {
 		kind = string(updated.IssueType)
 	}
+
+	// ISC-33: a passthrough patch (e.g. title, description) on an ISA row
+	// changes content the render emits. Auto-render best-effort post-commit.
+	// Non-ISA rows: no render. ISC-40 semantics apply.
+	if kind == "isa" {
+		if _, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: brain write succeeded but markdown render failed: %v\n", rerr)
+		}
+	}
+
 	emitSuccess(result.ResolvedID, field, value, kind)
 }
 

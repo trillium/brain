@@ -102,27 +102,20 @@ func runISARender(cmd *cobra.Command, args []string) {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	row, err := loadRenderRow(ctx, db, id)
+	path, err := renderISAByIDWithDB(ctx, db, id)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			FatalErrorRespectJSON("isa not found: %s", id)
-		}
-		var wk *wrongKindError
-		if errors.As(err, &wk) {
-			FatalErrorRespectJSON("%s is not an ISA (kind=%s)", wk.id, wk.kind)
-		}
-		FatalErrorRespectJSON("reading isa: %v", err)
-	}
-
-	path, err := renderRowToDisk(row)
-	if err != nil {
-		// Path-traversal and other input-shape errors → exit 2.
+		// Path-traversal and other input-shape errors → exit 2. errors.As
+		// traverses the helper's fmt.Errorf("%w") wrapping, so typed checks
+		// still fire on wrapped *PathTraversalError / *InputError.
 		var pte *isarenderverb.PathTraversalError
 		var ie *isarenderverb.InputError
 		if errors.As(err, &pte) || errors.As(err, &ie) {
 			exitRenderValidation(err)
 		}
-		FatalErrorRespectJSON("rendering %s: %v", id, err)
+		// not-found and wrong-kind come back as plain errors with
+		// "not found" / "not an ISA" substrings; the helper formats them so
+		// the existing CLI contract (exit 1) is preserved.
+		FatalErrorRespectJSON("%v", err)
 	}
 
 	emitRenderSuccess(id, path)
@@ -302,13 +295,7 @@ func runISARenderAll(cmd *cobra.Command, args []string) {
 
 	anyFailed := false
 	for _, id := range ids {
-		row, err := loadRenderRow(ctx, db, id)
-		if err != nil {
-			anyFailed = true
-			fmt.Printf("%s\t\tfailed: %v\n", id, err)
-			continue
-		}
-		path, err := renderRowToDisk(row)
+		path, err := renderISAByIDWithDB(ctx, db, id)
 		if err != nil {
 			anyFailed = true
 			fmt.Printf("%s\t\tfailed: %v\n", id, err)
