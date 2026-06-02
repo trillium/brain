@@ -140,6 +140,17 @@ func runISASection(cmd *cobra.Command, args []string) {
 
 	commandDidWrite.Store(true)
 	SetLastTouchedID(result.ResolvedID)
+
+	// ISC-34: auto-render after a successful section UPSERT. Section writes
+	// are ISA-only by construction (upsertISASection's gated UPDATE rejects
+	// non-isa rows before we get here), so no kind check is needed. Per
+	// ISC-40, render failure is warning-only — the brain row is canonical
+	// and `bd isa-render-pending` will surface the stale shadow.
+	if _, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: brain write succeeded but markdown render failed: %v\n", rerr)
+	}
+
 	emitISASectionSuccess(result.ResolvedID, sectionName, len(body), kind)
 }
 
