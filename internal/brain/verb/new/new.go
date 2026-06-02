@@ -46,8 +46,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/brain/verb"
+	"github.com/steveyegge/beads/internal/brain/verb/slug"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -55,15 +57,49 @@ import (
 // positional. It is intentionally a slice (not a map) so error
 // messages can list values in a deterministic order.
 //
-// The list mirrors the three values WHAT_IS_BRAIN.md § 6 names as
+// The list mirrors the four values WHAT_IS_BRAIN.md § 6 names as
 // the brain-flavoured extension of bd's `issues.issue_type` column.
-// If a future tranche adds a fourth kind, append it here AND extend
+// If a future tranche adds another kind, append it here AND extend
 // types.IssueType.IsValid() in internal/types/types.go so storage's
 // ValidateWithCustom path keeps accepting writes.
 var validKinds = []string{
 	string(types.TypeTask),
 	string(types.TypeKnowledge),
 	string(types.TypeBoth),
+	string(types.TypeISA),
+}
+
+// SlugCollisionError is returned by Run when the storage layer rejects a
+// slug write with a uniqueness-constraint violation. The Cobra wrapper
+// type-asserts on this error with errors.As and exits with code 2 — the
+// documented contract for validation/conflict failures.
+//
+// Detection is string-based against the storage backend's error text
+// because Dolt/MySQL report uniqueness collisions as opaque messages
+// containing "Duplicate" / "UNIQUE" / "unique"; we cannot rely on a
+// typed driver error here without importing a Dolt-specific package
+// into the verb (which would break the modularity guarantee).
+type SlugCollisionError struct {
+	Slug string
+}
+
+func (e *SlugCollisionError) Error() string {
+	return fmt.Sprintf("slug already exists: %s", e.Slug)
+}
+
+// isSlugCollision returns true iff err's message contains a substring
+// that storage backends emit for unique-index conflicts. Lower-cased
+// on both sides so case differences across drivers don't slip past.
+func isSlugCollision(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "unique constraint") ||
+		strings.Contains(msg, "unique index") ||
+		strings.Contains(msg, "uniqueness violation") ||
+		strings.Contains(msg, "slug_unique")
 }
 
 // Args carries the positional + flag inputs the Cobra wrapper parses.
@@ -72,8 +108,8 @@ var validKinds = []string{
 // Run does not read os.Args or flag state; Args is the complete input.
 type Args struct {
 	// Kind is the brain doc's kind discriminator. Required. Must be
-	// one of "task" | "knowledge" | "both". An empty string or any
-	// other value causes Run to return an error before any storage
+	// one of "task" | "knowledge" | "both" | "isa". An empty string or
+	// any other value causes Run to return an error before any storage
 	// write.
 	Kind string
 
@@ -85,6 +121,18 @@ type Args struct {
 	// existing `issues.description` column. Empty is allowed and
 	// produces a doc with no body.
 	Body string
+
+	// Slug is the optional human-readable identifier persisted on the
+	// issues.slug column (added in migration 0050, unique-indexed in
+	// migration 0052).
+	//
+	// For kind=isa, slug is REQUIRED. If empty, Run auto-generates one
+	// from Title via slug.Auto; if Title yields no alphanumerics the
+	// auto path fails and the user must supply --slug explicitly.
+	//
+	// For other kinds, slug is OPTIONAL. If non-empty it is validated
+	// and persisted; if empty the slug column stays NULL.
+	Slug string
 }
 
 // Result is what the verb returns on success. The Cobra wrapper formats
@@ -99,6 +147,12 @@ type Result struct {
 	// so the wrapper can print the confirmation line without a
 	// second round-trip through Args.
 	Kind string
+
+	// Slug is the final slug persisted on the row. May be empty for
+	// non-isa kinds that did not supply a slug; for kind=isa, always
+	// non-empty (either the user-supplied --slug or the auto-generated
+	// value from Title).
+	Slug string
 }
 
 // IssueCreator is the narrow seam Run needs from storage. Satisfied by
@@ -109,8 +163,18 @@ type Result struct {
 // empty ID, the storage layer allocates one via
 // GenerateIssueIDInTable and writes it back into the struct. Run
 // relies on that contract to populate Result.ID.
+//
+// SetSlug writes the slug column for the row identified by id. It is
+// called after CreateIssue when args.Slug resolves to a non-empty value
+// — separating the slug write from CreateIssue keeps the storage
+// CreateIssue path unchanged (no migration to the bd-shared insert
+// flow) while still letting the verb populate the new column. A
+// uniqueness collision MUST surface as an error whose message contains
+// one of the substrings isSlugCollision recognises so Run can wrap it
+// as *SlugCollisionError.
 type IssueCreator interface {
 	CreateIssue(ctx context.Context, issue *types.Issue, actor string) error
+	SetSlug(ctx context.Context, id, slug string) error
 }
 
 // Verb implements verb.BrainVerb[Args, Result].
@@ -142,15 +206,17 @@ func (Verb) Name() string { return "new" }
 // Run is the entire behaviour of `brain new <kind> <title>`.
 //
 // Validation order matches the spec's Given/When/Then scenarios
-// (WHAT_IS_BRAIN.md § 4.1):
+// (WHAT_IS_BRAIN.md § 4.1) and the F1d ISA-substrate verification matrix:
 //
-//  1. Empty kind        → "kind is required, must be one of task|knowledge|both"
-//     (scenario "missing kind argument")
-//  2. Invalid kind      → 'invalid kind "x", must be one of task|knowledge|both'
-//     (scenario "invalid kind value")
+//  1. Empty kind        → "kind is required, must be one of task|knowledge|both|isa"
+//  2. Invalid kind      → 'invalid kind "x", must be one of task|knowledge|both|isa'
 //  3. Empty title       → "title is required"
-//     (orthogonal guard — Issue.Validate would catch it later, but
-//     we catch it before allocating an ID for a clearer error)
+//  4. Slug validation   → for kind=isa, resolve slug (from --slug or Auto(title));
+//                         for other kinds, validate --slug only when non-empty.
+//                         Slug-shape failures return *slug.ValidationError; an
+//                         empty-title-derived auto-slug for kind=isa returns
+//                         the helper's error directly so the wrapper can hint
+//                         "supply --slug".
 //
 // On success, the brain doc is inserted via the storage layer with:
 //   - IssueType = args.Kind
@@ -159,17 +225,22 @@ func (Verb) Name() string { return "new" }
 //   - Status    = StatusOpen (matches bd's create default)
 //   - Priority  = 2 (matches bd's create default — see cmd/bd/create.go's
 //     registerPriorityFlag default of "2")
+//   - IDPrefix  = "isa" (only when args.Kind == "isa"); this drives
+//     issueops.CreateIssueInTxWithResult to allocate IDs of shape
+//     "<ConfigPrefix>-isa-XXXXX" instead of the bare "<ConfigPrefix>-XXXXX".
 //
-// The storage layer auto-generates the ID; Run reads it back from the
-// mutated issue pointer for Result.ID.
+// After CreateIssue succeeds, if the resolved slug is non-empty, Run
+// calls SetSlug. A uniqueness collision (detected via isSlugCollision)
+// surfaces as *SlugCollisionError; any other SetSlug error is wrapped
+// with %w so the caller can unwrap.
 //
 // Run never writes to stdout/stderr — that is the wrapper's job.
 func (v Verb) Run(ctx context.Context, args Args) (Result, error) {
 	if args.Kind == "" {
-		return Result{}, errors.New("kind is required, must be one of task|knowledge|both")
+		return Result{}, errors.New("kind is required, must be one of task|knowledge|both|isa")
 	}
 	if !isValidKind(args.Kind) {
-		return Result{}, fmt.Errorf("invalid kind %q, must be one of task|knowledge|both", args.Kind)
+		return Result{}, fmt.Errorf("invalid kind %q, must be one of task|knowledge|both|isa", args.Kind)
 	}
 	if args.Title == "" {
 		return Result{}, errors.New("title is required")
@@ -180,6 +251,33 @@ func (v Verb) Run(ctx context.Context, args Args) (Result, error) {
 		return Result{}, errors.New("brain new: storage is not configured")
 	}
 
+	// Resolve the slug.
+	//
+	// kind=isa: slug is required. Auto-derive from Title when --slug
+	// was not supplied. If Title yields no alphanumerics, slug.Auto
+	// returns an error directing the user to supply --slug — we pass
+	// it through unwrapped so the wrapper's --help-style hint is the
+	// helper's own message.
+	//
+	// Other kinds: slug is optional. Validate only when non-empty.
+	resolvedSlug := args.Slug
+	if args.Kind == string(types.TypeISA) {
+		if resolvedSlug == "" {
+			auto, err := slug.Auto(args.Title)
+			if err != nil {
+				return Result{}, err
+			}
+			resolvedSlug = auto
+		}
+		if err := slug.Validate(resolvedSlug); err != nil {
+			return Result{}, err
+		}
+	} else if resolvedSlug != "" {
+		if err := slug.Validate(resolvedSlug); err != nil {
+			return Result{}, err
+		}
+	}
+
 	issue := &types.Issue{
 		Title:       args.Title,
 		Description: args.Body,
@@ -188,14 +286,31 @@ func (v Verb) Run(ctx context.Context, args Args) (Result, error) {
 		IssueType:   types.IssueType(args.Kind),
 		CreatedBy:   v.actor,
 	}
+	if args.Kind == string(types.TypeISA) {
+		// Drives issueops.CreateIssueInTxWithResult to allocate
+		// "<ConfigPrefix>-isa-XXXXX" instead of the bare
+		// "<ConfigPrefix>-XXXXX". See internal/storage/issueops/create.go
+		// lines 88-98 for the prefix-routing logic.
+		issue.IDPrefix = "isa"
+	}
 
 	if err := v.store.CreateIssue(ctx, issue, v.actor); err != nil {
 		return Result{}, fmt.Errorf("brain new: create %s doc: %w", args.Kind, err)
 	}
 
+	if resolvedSlug != "" {
+		if err := v.store.SetSlug(ctx, issue.ID, resolvedSlug); err != nil {
+			if isSlugCollision(err) {
+				return Result{}, &SlugCollisionError{Slug: resolvedSlug}
+			}
+			return Result{}, fmt.Errorf("brain new: set slug %q on %s: %w", resolvedSlug, issue.ID, err)
+		}
+	}
+
 	return Result{
 		ID:   issue.ID,
 		Kind: args.Kind,
+		Slug: resolvedSlug,
 	}, nil
 }
 
