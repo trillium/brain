@@ -56,6 +56,14 @@ func cliCompatibleMigrationSQL(name, sqlText string) string {
 		// needed; the runtime migration's INFORMATION_SCHEMA guards exist
 		// for upgrades of existing databases and are dead work here.
 		return cliMigration0054AddIsaColumns
+	case "0056_add_slug_unique.up.sql":
+		// Brain addition (renumbered from 0054 on rebase onto upstream
+		// v1.1.0-rc.1, because the prior brain ISA columns migration now
+		// occupies 0054). Same reasoning as 0054_add_isa_columns: a fresh
+		// database has no `issues` rows, so the INFORMATION_SCHEMA.STATISTICS
+		// guard in the source migration is dead work for the fresh-schema
+		// bundle. Use the direct CREATE UNIQUE INDEX form here.
+		return cliMigration0056AddSlugUnique
 	default:
 		return sqlText
 	}
@@ -280,3 +288,5 @@ ALTER TABLE issues ADD COLUMN isa_effort VARCHAR(8) DEFAULT NULL;
 ALTER TABLE issues ADD COLUMN isa_mode VARCHAR(32) DEFAULT NULL;
 ALTER TABLE issues ADD COLUMN isa_started_at DATETIME NULL DEFAULT NULL;
 ALTER TABLE issues ADD COLUMN isa_updated_at DATETIME NULL DEFAULT NULL;`
+
+const cliMigration0056AddSlugUnique = `CREATE UNIQUE INDEX idx_issues_slug_unique ON issues (slug);`

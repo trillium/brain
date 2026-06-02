@@ -474,6 +474,136 @@ func TestMigration0055CreatesIsaSectionsTable(t *testing.T) {
 	}
 }
 
+// TestMigration0056SourceUsesIdempotentInformationSchemaGuard verifies that
+// the 0056 up migration uses the INFORMATION_SCHEMA-gated PREPARE/EXECUTE
+// pattern — Dolt does not support `CREATE UNIQUE INDEX IF NOT EXISTS`.
+func TestMigration0056SourceUsesIdempotentInformationSchemaGuard(t *testing.T) {
+	upSQL, err := os.ReadFile("migrations/0056_add_slug_unique.up.sql")
+	if err != nil {
+		t.Fatalf("read 0056 up migration: %v", err)
+	}
+	up := string(upSQL)
+	for _, want := range []string{
+		"@needs_idx",
+		"INFORMATION_SCHEMA.STATISTICS",
+		"INDEX_NAME   = 'idx_issues_slug_unique'",
+		"CREATE UNIQUE INDEX idx_issues_slug_unique ON issues (slug)",
+		"PREPARE stmt FROM @sql",
+		"DEALLOCATE PREPARE stmt",
+	} {
+		if !strings.Contains(up, want) {
+			t.Errorf("0056 up missing required fragment %q", want)
+		}
+	}
+}
+
+// TestMigration0056DownDropsSlugUniqueIndex verifies the down migration drops
+// the UNIQUE index with an INFORMATION_SCHEMA check.
+func TestMigration0056DownDropsSlugUniqueIndex(t *testing.T) {
+	downSQL, err := os.ReadFile("migrations/0056_add_slug_unique.down.sql")
+	if err != nil {
+		t.Fatalf("read 0056 down migration: %v", err)
+	}
+	down := string(downSQL)
+	for _, want := range []string{
+		"INFORMATION_SCHEMA.STATISTICS",
+		"INDEX_NAME   = 'idx_issues_slug_unique'",
+		"DROP INDEX idx_issues_slug_unique ON issues",
+	} {
+		if !strings.Contains(down, want) {
+			t.Errorf("0056 down missing required fragment %q", want)
+		}
+	}
+}
+
+// TestCLICompatibleMigration0056UsesDirectCreateIndexDDL verifies the
+// CLI-direct DDL bundle for 0056 emits a plain CREATE UNIQUE INDEX.
+func TestCLICompatibleMigration0056UsesDirectCreateIndexDDL(t *testing.T) {
+	got := cliCompatibleMigrationSQL("0056_add_slug_unique.up.sql", "source migration")
+	if !strings.Contains(got, "CREATE UNIQUE INDEX idx_issues_slug_unique ON issues (slug)") {
+		t.Fatalf("0056 CLI migration missing direct DDL, got %q", got)
+	}
+	for _, forbidden := range []string{
+		"PREPARE",
+		"EXECUTE",
+		"DEALLOCATE",
+		"@needs_idx",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("0056 CLI migration contains prepared-DDL marker %q", forbidden)
+		}
+	}
+}
+
+// TestMigration0056EnforcesSlugUniquenessAndAllowsMultipleNulls is the
+// behavioural contract: after applying all migrations, two rows with the same
+// non-NULL slug must collide, while multiple NULL-slug rows must coexist.
+func TestMigration0056EnforcesSlugUniquenessAndAllowsMultipleNulls(t *testing.T) {
+	testutil.RequireDoltBinary(t)
+
+	dir := filepath.Join(t.TempDir(), "slug-unique")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create slug-unique test dir: %v", err)
+	}
+	runDoltCommand(t, dir, "init", "--name", "test", "--email", "test@example.com")
+	runDoltSQL(t, dir, AllMigrationsSQL())
+
+	idxRows := queryDoltCSV(t, dir, `
+SELECT INDEX_NAME
+FROM INFORMATION_SCHEMA.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'issues'
+  AND INDEX_NAME = 'idx_issues_slug_unique'`)
+	if len(idxRows) != 1 {
+		t.Fatalf("idx_issues_slug_unique presence: got %d rows, want 1: %v", len(idxRows), idxRows)
+	}
+
+	runDoltSQL(t, dir, `
+INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, created_at, updated_at)
+VALUES ('iss-null-1', 'null slug A', '', '', '', '', 'open', 4, 'task', NOW(), NOW()),
+       ('iss-null-2', 'null slug B', '', '', '', '', 'open', 4, 'task', NOW(), NOW());`)
+
+	runDoltSQL(t, dir, `
+INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, slug, created_at, updated_at)
+VALUES ('iss-slug-1', 'first slug', '', '', '', '', 'open', 4, 'isa', 'shared-slug', NOW(), NOW());`)
+
+	dupCmd := exec.Command("dolt", "sql", "-q", `
+INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, slug, created_at, updated_at)
+VALUES ('iss-slug-2', 'duplicate slug', '', '', '', '', 'open', 4, 'isa', 'shared-slug', NOW(), NOW());`)
+	dupCmd.Dir = dir
+	dupOut, dupErr := dupCmd.CombinedOutput()
+	if dupErr == nil {
+		t.Fatalf("duplicate slug insert should fail UNIQUE, but succeeded. Output: %s", dupOut)
+	}
+
+	dupRows := queryDoltCSV(t, dir, `
+SELECT id FROM issues WHERE slug = 'shared-slug'`)
+	if len(dupRows) != 1 {
+		t.Fatalf("rows with slug='shared-slug' = %d, want 1: %v", len(dupRows), dupRows)
+	}
+}
+
+// TestMigration0056IsIdempotentThroughDoltCLI applies the source 0056.up.sql
+// twice and asserts the second pass is a no-op.
+func TestMigration0056IsIdempotentThroughDoltCLI(t *testing.T) {
+	testutil.RequireDoltBinary(t)
+
+	upSQL0056, err := os.ReadFile("migrations/0056_add_slug_unique.up.sql")
+	if err != nil {
+		t.Fatalf("read 0056 up: %v", err)
+	}
+
+	dir := filepath.Join(t.TempDir(), "idempotent-0056")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create idempotent test dir: %v", err)
+	}
+	runDoltCommand(t, dir, "init", "--name", "test", "--email", "test@example.com")
+	runDoltSQL(t, dir, AllMigrationsSQL())
+
+	runDoltSQL(t, dir, string(upSQL0056))
+	runDoltSQL(t, dir, string(upSQL0056))
+}
+
 func TestCLICompatibleMigration0054UsesDirectAddColumnDDL(t *testing.T) {
 	got := cliCompatibleMigrationSQL("0054_add_isa_columns.up.sql", "source migration")
 	for _, want := range []string{
