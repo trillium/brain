@@ -9,7 +9,14 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 )
 
-// brainRelatedCmd is the Cobra wrapper for `brain related <id> [--depth=N]`.
+// relatedCmd is the Cobra wrapper for the top-level `related <id> [--depth=N]`
+// verb.
+//
+// Hoisted from the prior `brain related` subtree per divergence/0006: the
+// brain verbs (new, related, recast) live at the top level of the bd binary
+// directly. With BD_NAME=brain the binary surfaces them as `brain related
+// ...`; without it they surface as `bd related ...`. Either way no `brain`
+// parent command exists.
 //
 // All TRAVERSAL behaviour — validation, existence check, BFS, cycle
 // detection, deterministic ordering — lives in internal/brain/verb/related
@@ -26,16 +33,14 @@ import (
 //
 // See:
 //   - internal/brain/verb/related/related.go for the verb implementation.
-//   - cmd/bd/brain.go for the parent command this attaches under.
-//   - cmd/bd/brain_link.go for the verb-wrapper template this file
-//     mirrors (minus the writer-side mark — related is read-only).
-//   - divergence/0009 for this tranche's landing notes.
+//   - divergence/0006 for the brain-IS-bd reframe that motivates the hoist.
+//   - divergence/0009 for the initial landing notes.
 //   - docs/brain/WHAT_IS_BRAIN.md § 4.3 for the behavioural spec
 //     (including the rendered sample tree this wrapper reproduces).
-var brainRelatedCmd = &cobra.Command{
+var relatedCmd = &cobra.Command{
 	Use:   "related <id>",
 	Short: "Walk the graph from a center brain doc and print the subgraph as a tree",
-	Long: `brain related performs a breadth-first walk of outgoing edges from
+	Long: `related performs a breadth-first walk of outgoing edges from
 the given center brain doc and prints the reachable subgraph as an
 indented tree.
 
@@ -54,16 +59,16 @@ and prevents an explosion at common hub nodes; a future
 "--bidirectional" flag is conceivable but not in scope.
 
 Examples:
-  bd brain related B-a7b3c
-  bd brain related B-a7b3c --depth=3
-  bd brain related B-a7b3c --depth=0      # print the center alone
-  bd brain related B-a7b3c --json         # machine-readable tree`,
+  brain related B-a7b3c
+  brain related B-a7b3c --depth=3
+  brain related B-a7b3c --depth=0      # print the center alone
+  brain related B-a7b3c --json         # machine-readable tree`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		// brain related is read-only. CheckReadonly is intentionally NOT
-		// called: the verb performs no writes, so there is no readonly
-		// mode to enforce. This is the only structural difference from
-		// brain_new.go / brain_link.go.
+		// related is read-only. CheckReadonly is intentionally NOT called:
+		// the verb performs no writes, so there is no readonly mode to
+		// enforce. This is the only structural difference from new.go
+		// (writer) and bd link / recast.
 
 		depth, _ := cmd.Flags().GetInt("depth")
 
@@ -212,7 +217,7 @@ func formatKindTag(kind string, closed bool) string {
 }
 
 func init() {
-	brainRelatedCmd.Flags().Int("depth", relatedverb.DefaultDepth,
+	relatedCmd.Flags().Int("depth", relatedverb.DefaultDepth,
 		"BFS depth cap (0 prints the center alone; higher walks further)")
-	brainCmd.AddCommand(brainRelatedCmd)
+	rootCmd.AddCommand(relatedCmd)
 }

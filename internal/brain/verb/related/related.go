@@ -1,19 +1,19 @@
-// Package related implements the `brain related <id> [--depth=N]` verb.
+// Package related implements the `related <id> [--depth=N]` verb (surfaced
+// as `brain related ...` when the binary is installed as `brain`).
 //
-// `brain related` is the third of the four verbs brain adds on top of the
-// bd-renamed-as-brain binary (alongside `new`, `link`, and the still-to-land
-// `recast`). Unlike `new` and `link` — which translate brain vocabulary to
-// an existing bd write path — `related` has no bd analogue. `bd dep list`
-// prints a flat one-hop table; `brain related` does a depth-bounded BFS over
-// the same `dependencies` table and returns the subgraph as a tree.
+// `related` is one of the verbs brain adds on top of the bd-renamed-as-brain
+// binary (alongside `new` and `recast`). Unlike `new` — which translates
+// brain vocabulary to an existing bd write path — `related` has no bd
+// analogue. `bd dep list` prints a flat one-hop table; `related` does a
+// depth-bounded BFS over the same `dependencies` table and returns the
+// subgraph as a tree.
 //
 // See docs/brain/WHAT_IS_BRAIN.md § 4.3 for the behavioural spec (including
 // the rendered sample tree) and the Given/When/Then scenarios this
 // package's tests trace back to. See internal/brain/verb/verb.go for the
 // seam (Decision #5, divergence/0003) this package plugs into. See
-// divergence/0009 for this tranche's landing notes. See
-// internal/brain/verb/link/link.go for the verb-package template this
-// file mirrors.
+// divergence/0006 for the brain-IS-bd reframe that motivates the top-level
+// hoist of brain verbs, and divergence/0009 for the initial landing notes.
 //
 // # Shape
 //
@@ -22,8 +22,8 @@
 //
 //   - Node      — `{ID, Title, Kind, Closed, EdgeFromParent, Children,
 //     AlreadyVisited}`; nodes in the result tree. The wrapper at
-//     cmd/bd/brain_related.go renders these into the indented
-//     box-drawing tree; --json marshals the tree directly.
+//     cmd/bd/related.go renders these into the indented box-drawing tree;
+//     --json marshals the tree directly.
 //   - Args      — `{ID, Depth}`; positional + flag-resolved input.
 //   - Result    — `{Center *Node}`; the BFS root. Always non-nil on
 //     success.
@@ -106,10 +106,9 @@ import (
 // DefaultDepth is the depth used when the Cobra wrapper does not pass a
 // `--depth` flag. Run itself does NOT apply this default; it honours
 // whatever Depth value Args carries (including 0, which is a documented
-// scenario: print the center only). The wrapper at
-// cmd/bd/brain_related.go is the single source of the default so that
-// callers constructing Args by hand (e.g. tests) can pin any value they
-// like.
+// scenario: print the center only). The wrapper at cmd/bd/related.go is
+// the single source of the default so that callers constructing Args by
+// hand (e.g. tests) can pin any value they like.
 const DefaultDepth = 2
 
 // Args carries the positional + flag-resolved inputs the Cobra wrapper
