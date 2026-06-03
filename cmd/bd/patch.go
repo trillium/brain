@@ -177,9 +177,16 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 		FatalErrorRespectJSON("checking rows affected: %v", raErr)
 	}
 	if affected == 0 {
-		// Either the row does not exist or it exists with a different kind.
-		// Look up the row to disambiguate so the error message tells the user
-		// which it is.
+		// Three possibilities when an UPDATE matches zero rows:
+		//   1. row does not exist
+		//   2. row exists but issue_type != 'isa' (wrong kind)
+		//   3. row exists, is kind=isa, but Dolt/MySQL reports
+		//      RowsAffected=0 because the new column values equal the existing
+		//      ones AND `isa_updated_at = NOW()` rounds to the same second as
+		//      the previous touch. This is a value-unchanged no-op, not a
+		//      failure — idempotent re-patches (e.g. migration script re-runs)
+		//      legitimately hit this path.
+		// Look up the row to disambiguate.
 		actualKind, lookupErr := fetchIssueKind(ctx, db, result.ResolvedID)
 		if lookupErr != nil {
 			if errors.Is(lookupErr, sql.ErrNoRows) {
@@ -187,8 +194,13 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 			}
 			FatalErrorRespectJSON("verifying issue kind: %v", lookupErr)
 		}
-		// Row exists with a non-isa kind — emit the validation message.
-		exitValidation(patchverb.WrongKindError(field, actualKind))
+		if actualKind != "isa" {
+			exitValidation(patchverb.WrongKindError(field, actualKind))
+		}
+		// Row exists and IS kind=isa — treat as a successful no-op. Skip the
+		// auto-render below because nothing changed.
+		emitSuccess(result.ResolvedID, field, value, actualKind)
+		return
 	}
 
 	commandDidWrite.Store(true)

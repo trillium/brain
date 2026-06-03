@@ -52,16 +52,34 @@ func NewHookFiringStore(store DoltStorage, runner *hooks.Runner) *HookFiringStor
 // (e.g., StoreLocator, RawDBAccessor).
 func (h *HookFiringStore) Inner() DoltStorage { return h.inner }
 
-// UnwrapStore returns the underlying concrete store if s is a
-// HookFiringStore decorator, otherwise returns s unchanged.
-// Use this before type assertions to optional interfaces
-// (StoreLocator, BackupStore, Flattener, etc.) so the assertion
-// reaches the concrete store rather than the decorator.
+// unwrappable is the contract a decorator implements to expose its
+// inner store. Both HookFiringStore and BrainExfiltrationDecorator
+// satisfy this. Any new decorator that stacks on top must add an
+// Inner() DoltStorage method or UnwrapStore will stop at it.
+type unwrappable interface {
+	Inner() DoltStorage
+}
+
+// UnwrapStore peels every decorator layer off s and returns the
+// innermost concrete store. Use this before type assertions to
+// optional interfaces (StoreLocator, RawDBAccessor, BackupStore,
+// Flattener, etc.) so the assertion reaches the concrete store
+// regardless of how many decorators wrap it.
+//
+// The decorator chain in production is:
+//
+//	rawStore → HookFiringStore → BrainExfiltrationDecorator → (caller)
+//
+// Single-level unwrap stops at BrainExfiltrationDecorator and fails the
+// downstream type assertion. Recursive unwrap walks the full chain.
 func UnwrapStore(s DoltStorage) DoltStorage {
-	if h, ok := s.(*HookFiringStore); ok {
-		return h.inner
+	for {
+		u, ok := s.(unwrappable)
+		if !ok {
+			return s
+		}
+		s = u.Inner()
 	}
-	return s
 }
 
 // ── Issue mutations ─────────────────────────────────────────────────

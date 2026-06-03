@@ -233,9 +233,11 @@ func upsertISASection(ctx context.Context, db *sql.DB, id, section string, body 
 		return fmt.Errorf("rows affected: %w", err)
 	}
 	if affected == 0 {
-		// Disambiguate wrong-kind vs not-found via a separate lookup. This
-		// runs inside the same transaction so the read sees the same snapshot
-		// we just (failed to) write against.
+		// Disambiguate wrong-kind vs not-found vs value-unchanged via a
+		// separate lookup. UPDATE...SET isa_updated_at = NOW() returns
+		// RowsAffected=0 when MySQL/Dolt rounds NOW() to the same second as
+		// the existing column value and the row is otherwise unchanged — that
+		// is a successful no-op for idempotent re-runs, not a failure.
 		var actualKind string
 		lookupErr := tx.QueryRowContext(ctx,
 			"SELECT issue_type FROM issues WHERE id = ?", id,
@@ -246,9 +248,13 @@ func upsertISASection(ctx context.Context, db *sql.DB, id, section string, body 
 			}
 			return fmt.Errorf("verifying issue kind: %w", lookupErr)
 		}
-		return &isasectionverb.ValidationError{
-			Msg: fmt.Sprintf("bd isa-section requires kind=isa, got issue_type=%s", actualKind),
+		if actualKind != "isa" {
+			return &isasectionverb.ValidationError{
+				Msg: fmt.Sprintf("bd isa-section requires kind=isa, got issue_type=%s", actualKind),
+			}
 		}
+		// Row exists and IS kind=isa — the touch was a no-op (NOW() collapsed
+		// to the current second). Treat as success and fall through to commit.
 	}
 
 	if err := tx.Commit(); err != nil {
