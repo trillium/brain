@@ -14,7 +14,13 @@ import (
 	"github.com/steveyegge/beads/internal/ui"
 )
 
-// brainNewCmd is the Cobra wrapper for the `brain new <kind> <title>` verb.
+// newCmd is the Cobra wrapper for the top-level `new <kind> <title>` verb.
+//
+// Hoisted from the prior `brain new` subtree per divergence/0006: the brain
+// verbs (new, related, recast) live at the top level of the bd binary
+// directly. With BD_NAME=brain the binary surfaces them as `brain new ...`;
+// without it they surface as `bd new ...`. Either way no `brain` parent
+// command exists.
 //
 // All behaviour lives in internal/brain/verb/new (the BrainVerb seam from
 // Decision #5 / divergence/0003). This file does flag parsing, dependency
@@ -24,13 +30,13 @@ import (
 //
 // See:
 //   - internal/brain/verb/new/new.go for the verb implementation.
-//   - cmd/bd/brain.go for the parent command this attaches under.
-//   - divergence/0007 for this tranche's landing notes.
+//   - divergence/0006 for the brain-IS-bd reframe that motivates the hoist.
+//   - divergence/0007 for the initial landing notes.
 //   - docs/brain/WHAT_IS_BRAIN.md § 4.1 for the behavioural spec.
-var brainNewCmd = &cobra.Command{
+var newCmd = &cobra.Command{
 	Use:   "new <kind> <title>",
 	Short: "Create a new brain doc (kind = task | knowledge | both | isa)",
-	Long: `brain new creates a brain doc of the given kind.
+	Long: `new creates a brain doc of the given kind.
 
 <kind> must be one of:
   task       — work to be done; participates in ready/blocked queues
@@ -52,14 +58,14 @@ column; when empty the column stays NULL. Slug values must be globally unique
 across all kinds — collisions exit with code 2.
 
 Examples:
-  bd brain new task "ship the FTS5 indexer"
-  bd brain new knowledge "Dolt FK constraints are lazy until commit"
-  bd brain new both "Friday cache bug + postmortem" --body "details..."
-  bd brain new isa "Brain as ISA Substrate"
-  bd brain new isa "Custom ISA" --slug=my-custom-slug`,
+  brain new task "ship the FTS5 indexer"
+  brain new knowledge "Dolt FK constraints are lazy until commit"
+  brain new both "Friday cache bug + postmortem" --body "details..."
+  brain new isa "Brain as ISA Substrate"
+  brain new isa "Custom ISA" --slug=my-custom-slug`,
 	Args: cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
-		CheckReadonly("brain new")
+		CheckReadonly("new")
 
 		kind := args[0]
 		title := args[1]
@@ -151,11 +157,11 @@ func (a *brainNewStoreAdapter) SetSlug(ctx context.Context, id, value string) er
 }
 
 func init() {
-	brainNewCmd.Flags().String("body", "", "Optional markdown body (maps to the existing description column)")
-	brainNewCmd.Flags().String("slug", "", "Optional slug (required for kind=isa; auto-generated from title when omitted)")
+	newCmd.Flags().String("body", "", "Optional markdown body (maps to the existing description column)")
+	newCmd.Flags().String("slug", "", "Optional slug (required for kind=isa; auto-generated from title when omitted)")
 	// Help text lists the closed set explicitly so users don't need to read
 	// source to discover the kind vocabulary. Pulled from newverb.ValidKinds
 	// so the help string can never drift from the verb's actual guard.
-	brainNewCmd.Long += "\n\nValid kinds: " + strings.Join(newverb.ValidKinds(), " | ")
-	brainCmd.AddCommand(brainNewCmd)
+	newCmd.Long += "\n\nValid kinds: " + strings.Join(newverb.ValidKinds(), " | ")
+	rootCmd.AddCommand(newCmd)
 }

@@ -28,9 +28,12 @@ import (
 var createCmd = &cobra.Command{
 	Use:     "create [title]",
 	GroupID: "issues",
-	Aliases: []string{"new"},
-	Short:   "Create a new issue (or batch from markdown/graph JSON)",
-	Args:    cobra.MinimumNArgs(0), // Changed to allow no args when using -f
+	// "new" alias removed per divergence/0006 (brain primitives reframe): the
+	// brain verb `new` is hoisted to top-level in cmd/bd/new.go and takes
+	// <kind> <title> args, not bd create's flat title — so the alias would
+	// collide on signature, not just name.
+	Short: "Create a new issue (or batch from markdown/graph JSON)",
+	Args:  cobra.MinimumNArgs(0), // Changed to allow no args when using -f
 	Run: func(cmd *cobra.Command, args []string) {
 		CheckReadonly("create")
 		if usesProxiedServer() {
