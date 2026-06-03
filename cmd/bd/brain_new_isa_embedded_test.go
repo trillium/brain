@@ -159,9 +159,9 @@ func TestBrainNewISA(t *testing.T) {
 	// ===== Backwards-compat sanity: kind=task still works =====
 
 	t.Run("regular_task_still_works", func(t *testing.T) {
-		out, err := bdRunWithFlockRetry(t, bd, dir, "brain", "new", "task", "Regular task")
+		out, err := bdRunWithFlockRetry(t, bd, dir, "new", "task", "Regular task")
 		if err != nil {
-			t.Fatalf("bd brain new task failed: %v\n%s", err, out)
+			t.Fatalf("bd new task failed: %v\n%s", err, out)
 		}
 
 		var (
