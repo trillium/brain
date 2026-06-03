@@ -15,7 +15,7 @@ import (
 // embedded-Dolt store. It traces the F1d verification matrix
 // (ISC-1 .. ISC-5 in MEMORY/WORK/20260602-094500_brain-as-isa-substrate/ISA.md):
 //
-//	ISC-1: kind=isa is accepted by `bd brain new`.
+//	ISC-1: kind=isa is accepted by `bd new`.
 //	ISC-2: kind=isa allocates IDs of shape <prefix>-isa-XXXXX.
 //	ISC-3: --slug is honored when supplied, validated when invalid.
 //	ISC-4: slug uniqueness is enforced at the DB layer.
@@ -36,9 +36,9 @@ func TestBrainNewISA(t *testing.T) {
 	// ===== ISC-1 + ISC-2 + ISC-5: kind=isa with auto-slug, ID shape =====
 
 	t.Run("isa_auto_slug_and_id_shape", func(t *testing.T) {
-		out, err := bdRunWithFlockRetry(t, bd, dir, "brain", "new", "isa", "A New ISA")
+		out, err := bdRunWithFlockRetry(t, bd, dir, "new", "isa", "A New ISA")
 		if err != nil {
-			t.Fatalf("bd brain new isa failed: %v\n%s", err, out)
+			t.Fatalf("bd new isa failed: %v\n%s", err, out)
 		}
 		if !strings.Contains(string(out), "a-new-isa") {
 			t.Errorf("expected stdout to mention auto-slug 'a-new-isa', got: %s", out)
@@ -76,10 +76,10 @@ func TestBrainNewISA(t *testing.T) {
 
 	t.Run("isa_explicit_slug_is_honored", func(t *testing.T) {
 		out, err := bdRunWithFlockRetry(t, bd, dir,
-			"brain", "new", "isa", "Custom", "--slug=my-custom-slug",
+			"new", "isa", "Custom", "--slug=my-custom-slug",
 		)
 		if err != nil {
-			t.Fatalf("bd brain new isa --slug=my-custom-slug failed: %v\n%s", err, out)
+			t.Fatalf("bd new isa --slug=my-custom-slug failed: %v\n%s", err, out)
 		}
 		if !strings.Contains(string(out), "my-custom-slug") {
 			t.Errorf("expected stdout to mention 'my-custom-slug', got: %s", out)
@@ -105,19 +105,19 @@ func TestBrainNewISA(t *testing.T) {
 	t.Run("duplicate_slug_exits_2", func(t *testing.T) {
 		// First write succeeds.
 		out, err := bdRunWithFlockRetry(t, bd, dir,
-			"brain", "new", "isa", "Dup", "--slug=collision-slug",
+			"new", "isa", "Dup", "--slug=collision-slug",
 		)
 		if err != nil {
-			t.Fatalf("first bd brain new with slug=collision-slug failed: %v\n%s", err, out)
+			t.Fatalf("first bd new with slug=collision-slug failed: %v\n%s", err, out)
 		}
 
 		// Second write with the same slug must exit 2 with a clear message.
-		cmd := exec.Command(bd, "brain", "new", "isa", "Dup2", "--slug=collision-slug")
+		cmd := exec.Command(bd, "new", "isa", "Dup2", "--slug=collision-slug")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
 		combined, err := cmd.CombinedOutput()
 		if err == nil {
-			t.Fatalf("second bd brain new with duplicate slug succeeded; expected exit 2:\n%s", combined)
+			t.Fatalf("second bd new with duplicate slug succeeded; expected exit 2:\n%s", combined)
 		}
 		ee, ok := err.(*exec.ExitError)
 		if !ok {
@@ -134,12 +134,12 @@ func TestBrainNewISA(t *testing.T) {
 	// ===== ISC-3: invalid slug exits 2 with regex hint =====
 
 	t.Run("invalid_slug_exits_2_with_regex_hint", func(t *testing.T) {
-		cmd := exec.Command(bd, "brain", "new", "isa", "Bad", "--slug=BadSlug")
+		cmd := exec.Command(bd, "new", "isa", "Bad", "--slug=BadSlug")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
 		combined, err := cmd.CombinedOutput()
 		if err == nil {
-			t.Fatalf("bd brain new isa --slug=BadSlug succeeded; expected exit 2:\n%s", combined)
+			t.Fatalf("bd new isa --slug=BadSlug succeeded; expected exit 2:\n%s", combined)
 		}
 		ee, ok := err.(*exec.ExitError)
 		if !ok {
