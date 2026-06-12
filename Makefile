@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -17,6 +17,9 @@ all: build
 
 BUILD_DIR := .
 GIT_BUILD := $(shell git rev-parse --short HEAD)
+# Brain fork semver — derived from the most recent brain/vX.Y.Z tag.
+# Falls back to "0.0.0-dev" when no brain tag exists yet.
+BRAIN_VERSION := $(shell git describe --tags --match "brain/v*" --abbrev=0 2>/dev/null | sed 's|brain/v||' || echo "0.0.0-dev")
 ifeq ($(OS),Windows_NT)
 INSTALL_DIR := $(USERPROFILE)/.local/bin
 else
@@ -53,14 +56,37 @@ REGRESSION_TIMEOUT ?= 20m
 build:
 	@echo "Building bd..."
 ifeq ($(OS),Windows_NT)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
 else
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD)" -o $(BUILD_DIR)/bd ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION)" -o $(BUILD_DIR)/bd ./cmd/bd
 ifeq ($(shell uname),Darwin)
 	@codesign -s - -f $(BUILD_DIR)/bd 2>/dev/null || true
 	@echo "Signed bd for macOS"
 endif
 endif
+
+# Print the current brain fork version (from most recent brain/vX.Y.Z tag)
+brain-version:
+	@echo "brain/v$(BRAIN_VERSION)"
+
+# Tag a new brain semver release.
+# Usage: make brain-release BUMP=patch   (or minor, major)
+# Creates and pushes a brain/vX.Y.Z tag on HEAD.
+BUMP ?= patch
+brain-release:
+	$(eval CURRENT := $(shell git describe --tags --match "brain/v*" --abbrev=0 2>/dev/null | sed 's|brain/v||' || echo "0.0.0"))
+	$(eval MAJOR := $(shell echo $(CURRENT) | cut -d. -f1))
+	$(eval MINOR := $(shell echo $(CURRENT) | cut -d. -f2))
+	$(eval PATCH := $(shell echo $(CURRENT) | cut -d. -f3))
+	$(eval NEW_VERSION := $(shell \
+		if [ "$(BUMP)" = "major" ]; then echo "$$(($(MAJOR)+1)).0.0"; \
+		elif [ "$(BUMP)" = "minor" ]; then echo "$(MAJOR).$$(($(MINOR)+1)).0"; \
+		else echo "$(MAJOR).$(MINOR).$$(($(PATCH)+1))"; fi))
+	@echo "Tagging brain/v$(NEW_VERSION) (was $(CURRENT), bump=$(BUMP))"
+	git tag -a "brain/v$(NEW_VERSION)" -m "brain release v$(NEW_VERSION)"
+	git push origin "brain/v$(NEW_VERSION)"
+	@echo "Tagged and pushed brain/v$(NEW_VERSION)"
+	@echo "Rebuild with: make install"
 
 # Run all tests (skips known broken tests listed in .test-skip)
 test:
