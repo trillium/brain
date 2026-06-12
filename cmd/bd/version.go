@@ -17,8 +17,9 @@ import (
 var (
 	// Version is the upstream beads version (overridden by ldflags at build time)
 	Version = "1.1.0-rc.1"
-	// BrainVersion is the brain fork version, incremented independently of upstream
-	BrainVersion = "0.3.1"
+	// BrainVersion is the brain fork version, set via -ldflags at build time from
+	// the most recent brain/vX.Y.Z git tag. Falls back to "dev" for manual builds.
+	BrainVersion = "dev"
 	// Build can be set via ldflags at compile time
 	Build = "dev"
 	// Commit and branch the git revision the binary was built from (optional ldflag)
