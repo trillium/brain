@@ -84,9 +84,9 @@ brain-release:
 		else echo "$(MAJOR).$(MINOR).$$(($(PATCH)+1))"; fi))
 	@echo "Tagging brain/v$(NEW_VERSION) (was $(CURRENT), bump=$(BUMP))"
 	git tag -a "brain/v$(NEW_VERSION)" -m "brain release v$(NEW_VERSION)"
-	git push origin "brain/v$(NEW_VERSION)"
-	@echo "Tagged and pushed brain/v$(NEW_VERSION)"
-	@echo "Rebuild with: make install"
+	@echo "Tagged brain/v$(NEW_VERSION) locally."
+	@echo "Push when online: git push origin brain/v$(NEW_VERSION)"
+	@echo "Rebuild now:      make install"
 
 # Run all tests (skips known broken tests listed in .test-skip)
 test:
