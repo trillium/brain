@@ -61,6 +61,15 @@ Examples:
 			return HandleError("search query is required")
 		}
 
+		// Federated mode: search the primary store, then any registered
+		// secondary stores on the same Dolt server. Emits sectioned output
+		// (text) or per-store arrays (JSON). Delegates entirely; the rest
+		// of the standard search path does not run.
+		if federated, _ := cmd.Flags().GetBool("federated"); federated {
+			runFederatedSearch(cmd, query)
+			return
+		}
+
 		// Get filter flags
 		status, _ := cmd.Flags().GetString("status")
 		assignee, _ := cmd.Flags().GetString("assignee")
