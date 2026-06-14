@@ -144,5 +144,5 @@ func (a *transferTransferDB) Conn(ctx context.Context) (*sql.Conn, error) {
 }
 
 func init() {
-	brainCmd.AddCommand(brainTransferCmd)
+	rootCmd.AddCommand(brainTransferCmd)
 }
