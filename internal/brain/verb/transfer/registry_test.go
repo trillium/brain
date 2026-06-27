@@ -66,12 +66,14 @@ func TestLoad_Aliases(t *testing.T) {
 	}
 
 	aliases := map[string]string{
-		"task":     "tasks",
-		"project":  "projects",
-		"agent":    "agents",
-		"decision": "decisions",
-		"idea":     "ideas",
-		"question": "questions",
+		"task":      "tasks",
+		"project":   "projects",
+		"agent":     "agents",
+		"decision":  "decisions",
+		"idea":      "ideas",
+		"question":  "questions",
+		"assertion": "assert",
+		"people":    "person",
 	}
 	for alias, canonical := range aliases {
 		alias, canonical := alias, canonical

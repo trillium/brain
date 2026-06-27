@@ -112,6 +112,7 @@ var builtinRegistry = []struct {
 	{Name: "life", DB: "life", Prefix: "life"},
 	{Name: "questions", DB: "question", Prefix: "question"},
 	{Name: "assert", DB: "assert", Prefix: "assert"},
+	{Name: "person", DB: "person", Prefix: "person"},
 }
 
 // builtinAliases lets the user type either the canonical store name
@@ -122,12 +123,14 @@ var builtinRegistry = []struct {
 //
 //nolint:gochecknoglobals // package-private read-only alias table
 var builtinAliases = map[string]string{
-	"task":     "tasks",
-	"project":  "projects",
-	"agent":    "agents",
-	"decision": "decisions",
-	"idea":     "ideas",
-	"question": "questions",
+	"task":      "tasks",
+	"project":   "projects",
+	"agent":     "agents",
+	"decision":  "decisions",
+	"idea":      "ideas",
+	"question":  "questions",
+	"assertion": "assert",
+	"people":    "person",
 }
 
 // validDBName matches a safe Dolt database name. Mirrors the pattern in
