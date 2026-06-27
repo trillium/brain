@@ -562,3 +562,90 @@ func TestRenderThenRemoveSimulatesKindTransition(t *testing.T) {
 		t.Fatalf("old file should be gone: err=%v", err)
 	}
 }
+
+// TestRender_EveryKnownKindWritesFile is the every-kind contract: removing
+// the brain-trio gate means Render writes a file at entries/<kind>/<slug>.md
+// for every IssueType the substrate recognizes. If a new kind is added to
+// types.IssueType, append it here so this regression test stays exhaustive.
+func TestRender_EveryKnownKindWritesFile(t *testing.T) {
+	t.Parallel()
+
+	kinds := []types.IssueType{
+		types.TypeTask,
+		types.TypeKnowledge,
+		types.TypeBoth,
+		types.TypeBug,
+		types.TypeFeature,
+		types.TypeEpic,
+		types.TypeChore,
+		types.TypeDecision,
+		types.TypeMessage,
+		types.TypeMolecule,
+		types.TypeGate,
+		types.TypeSpike,
+		types.TypeStory,
+		types.TypeMilestone,
+		types.TypeISA,
+	}
+
+	for _, kind := range kinds {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+			issue := mustBrainIssue(t, "B-"+string(kind), "hello "+string(kind), kind)
+
+			if err := exf.Render(context.Background(), issue); err != nil {
+				t.Fatalf("Render(%s): %v", kind, err)
+			}
+
+			want := filepath.Join(root, "entries", string(kind), "hello-"+string(kind)+".md")
+			body, err := os.ReadFile(want)
+			if err != nil {
+				t.Fatalf("expected file at %s: %v", want, err)
+			}
+			gotBody := string(body)
+			for _, mustContain := range []string{
+				"id: B-" + string(kind),
+				"kind: " + string(kind),
+				"# hello " + string(kind),
+			} {
+				if !strings.Contains(gotBody, mustContain) {
+					t.Errorf("file body missing %q. Got:\n%s", mustContain, gotBody)
+				}
+			}
+		})
+	}
+}
+
+// TestRender_EmptyKindErrors locks in the only gate left after the brain-trio
+// gate removal: an issue with no kind cannot be rendered (there is no
+// directory to write to).
+func TestRender_EmptyKindErrors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	issue := &types.Issue{
+		ID:        "B-empty-kind",
+		Title:     "no kind set",
+		IssueType: "",
+	}
+	if err := exf.Render(context.Background(), issue); err == nil {
+		t.Fatal("expected error for empty kind, got nil")
+	}
+	// No file should have been created.
+	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
+		t.Fatal("entries dir created despite empty-kind error")
+	}
+}
+
+// TestRemove_EmptyKindErrors mirrors TestRender_EmptyKindErrors for the
+// Remove path.
+func TestRemove_EmptyKindErrors(t *testing.T) {
+	t.Parallel()
+	exf := exfiltrator.NewMarkdownExfiltrator(t.TempDir(), nil)
+	if err := exf.Remove(context.Background(), "B-bad", "", "slug"); err == nil {
+		t.Fatal("expected error for empty kind, got nil")
+	}
+}
