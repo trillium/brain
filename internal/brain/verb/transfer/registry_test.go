@@ -68,7 +68,9 @@ func TestLoad_Aliases(t *testing.T) {
 	aliases := map[string]string{
 		"task":      "tasks",
 		"project":   "projects",
-		"agent":     "agents",
+		"robot":     "robots",
+		"agent":     "robots",
+		"agents":    "robots",
 		"decision":  "decisions",
 		"idea":      "ideas",
 		"question":  "questions",
