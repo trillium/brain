@@ -28,19 +28,26 @@ brain is not one store — it is a family of stores, each with a focused purpose
 
 ## Store registry
 
-Stores are registered in `~/.config/pai/stores.yaml` via `brain stores add`. This file drives both the binary (for `brain search` federation and `brain transfer`) and shell wrappers (via `~/.config/pai/stores.env`, generated with `brain stores env`).
+Stores are registered in `~/.config/pai/stores.yaml`. The registry drives both the binary (for `brain search` federation and `brain transfer`) and shell wrappers (via `~/.config/pai/stores.env`, generated with `brain stores env`).
 
 ```sh
-brain stores add task ~/data/tasks/.beads
+brain stores create recipes              # provision new store end-to-end (dolt init, entries/, wrapper, registry, env)
+brain stores add task ~/data/tasks/.beads  # register an existing dolt repo without creating files
 brain stores list
-brain stores env       # regenerate ~/.config/pai/stores.env
+brain stores env                         # regenerate ~/.config/pai/stores.env
+brain stores remove recipes              # unregister (does NOT delete files)
 ```
+
+`brain stores create` is idempotent — re-running with the same arguments resumes safely if a prior run was interrupted.
 
 ## What brain adds to beads
 
-- **Multi-store federation.** `brain stores add/list/env`, `brain search` across all stores, `brain transfer` between stores.
+- **Multi-store federation.** `brain stores add/create/list/env`, `brain search` across all stores, `brain transfer` between stores.
+- **One-shot store provisioning.** `brain stores create <name>` does dolt init + entries dir + CLI wrapper + registry write + env regen in a single idempotent command — no manual steps.
 - **Kind discriminator.** One bag of docs — `kind: task | knowledge | both | isa` — so tasks and knowledge live in the same substrate with the same query layer.
-- **Markdown exfiltration.** Every write renders a markdown file to `~/data/knowledge/entries/{kind}/{slug}.md`. Dolt is canonical; markdown is the human view.
+- **Markdown exfiltration on every mutation, every kind.** Every write renders a markdown file to `<store>/entries/<kind>/<slug>.md` — not just the brain trio (task/knowledge/both) but every IssueType bd recognizes (bug, feature, epic, decision, message, etc.). Dolt is canonical; markdown is the human view.
+- **Store-derived exfil root.** Resolution is `BRAIN_KNOWLEDGE_ROOT` → `dirname($BEADS_DIR)/entries` → `~/data/brain/entries` — so each store's markdown lands next to its own `.beads/` directory automatically.
+- **On-demand re-render.** `bd render <id>` and `bd render-all` re-emit markdown from the substrate when the on-disk copy is missing, corrupted, or out of date. `render-all` prints a confirmation summary (`Exfiltrated N / M beads to <root>/entries/ (K failed)`) and supports `--json` for scripting.
 - **ISA primitives.** First-class support for [PAI](https://github.com/danielmiessler/PAI) Algorithm v6.4+ ISAs — `brain new isa`, `brain isa-section`, `brain isa-render`, per-section UPSERT semantics.
 - **Auto-file feature requests.** Unknown flag on a `brain` command? It files a feature request automatically and prints the ID.
 
@@ -62,18 +69,18 @@ Argv[0] dispatch via `BD_NAME` controls display name and brain-mode behavior.
 Double semver: upstream beads version + brain fork version.
 
 ```
-bd version 1.0.5 (brain/0.3.1, abc1234: feat/isa-substrate-f1@abc1234)
+bd version 1.1.0-rc.1 (brain/0.4.0, abc1234: feat/isa-substrate-f1@abc1234)
 ```
 
-- **`1.0.5`** — upstream beads base the fork is rebased on
-- **`brain/0.3.1`** — brain fork version, derived from the most recent `brain/vX.Y.Z` git tag
+- **`1.1.0-rc.1`** — upstream beads base the fork is rebased on
+- **`brain/0.4.0`** — brain fork version, derived from the most recent `brain/vX.Y.Z` git tag
 
 To cut a release:
 
 ```sh
 make brain-release BUMP=patch   # tags brain/vX.Y.Z locally
 make build && cp bd ~/.local/bin/bd
-git push origin brain/v0.3.2    # push when online
+git push origin brain/v0.4.1    # push when online
 ```
 
 ## Key verbs
@@ -101,8 +108,14 @@ brain isa-render brain-abc
 
 # Stores
 brain stores list
-brain stores add idea ~/data/ideas/.beads
+brain stores create idea                 # one-shot provisioning
+brain stores add idea ~/data/ideas/.beads  # register an existing path
 brain stores env
+
+# Render markdown (after corruption, deletion, or layout change)
+bd render <id>                           # one bead
+bd render-all                            # every bead; prints summary on stderr
+bd render-all --json                     # structured: {rendered, failed, total, root, results[]}
 ```
 
 ## Status
