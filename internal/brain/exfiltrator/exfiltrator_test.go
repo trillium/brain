@@ -649,3 +649,39 @@ func TestRemove_EmptyKindErrors(t *testing.T) {
 		t.Fatal("expected error for empty kind, got nil")
 	}
 }
+
+// TestRender_VeryLongTitleTruncatesSlug ensures the slug stays short enough
+// that the atomic-write tmp+rename dance never trips the filesystem's 255-byte
+// component cap. The two real-world failures that prompted this guard were
+// 290+-byte slugs in the brain store.
+func TestRender_VeryLongTitleTruncatesSlug(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+
+	// 400-byte title — longer than any single filesystem path component allows.
+	longTitle := strings.Repeat("really long question about something ", 12)
+	issue := mustBrainIssue(t, "B-long", longTitle, types.TypeKnowledge)
+
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render with long title: %v", err)
+	}
+
+	// The written file must exist and its basename (incl. ".md") must fit.
+	mx := exf
+	slug, _, err := mx.SlugFor(issue)
+	if err != nil {
+		t.Fatalf("SlugFor: %v", err)
+	}
+	if len(slug) > 200 {
+		t.Errorf("slug = %d bytes, want <= 200", len(slug))
+	}
+	path := mx.PathFor(types.TypeKnowledge, slug)
+	base := filepath.Base(path)
+	if len(base) > 255 {
+		t.Fatalf("file basename = %d bytes, exceeds POSIX 255 cap: %s", len(base), base)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file at %s: %v", path, err)
+	}
+}
