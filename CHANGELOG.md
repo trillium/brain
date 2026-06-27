@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-06-26 — session 55a0fc45
+
+Files: divergence/0014-isa-show-json-drops-progress.md, divergence/0015-create-missing-slug-flag.md, divergence/0016-isa-by-slug-json-returns-text.md, divergence/0017-dep-add-silent-orphan-cross-store.md
+
+> AI summary pending — check ProjectDocs Handover in next session.
+## 2026-06-26 — session 55a0fc45
+
+Files: divergence/0014-isa-show-json-drops-progress.md, divergence/0015-create-missing-slug-flag.md, divergence/0016-isa-by-slug-json-returns-text.md, divergence/0017-dep-add-silent-orphan-cross-store.md
+
+> AI summary pending — check ProjectDocs Handover in next session.
+## 2026-06-15 — session 56ef8aa3
+
+Files: ISA.md, cmd/bd/brain_list.go, cmd/bd/brain_jot.go, cmd/bd/brain_guards.go, cmd/bd/brain_reconcile.go, cmd/bd/brain_legacy.go, cmd/bd/list_input.go, cmd/bd/list.go, cmd/bd/search.go, cmd/bd/brain_search_federated.go
+
+> AI summary pending — check ProjectDocs Handover in next session.
 All notable changes to the beads project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
