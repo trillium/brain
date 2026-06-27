@@ -47,7 +47,14 @@ For each issue, one tab-separated line is printed to stdout:
 
 where status is "rendered" or "failed: <reason>". A per-issue failure does not
 stop the run; the exit code is 0 only if every render succeeded. Otherwise
-exit 1 (and individual failure lines on stdout describe what went wrong).`,
+exit 1 (and individual failure lines on stdout describe what went wrong).
+
+A summary line is emitted on stderr at the end:
+  Exfiltrated <ok> / <total> beads to <root>/entries/ (<failed> failed)
+
+With --json, stdout is a single JSON object instead of per-line text:
+  { "rendered": N, "failed": N, "total": N, "root": "<path>",
+    "results": [ { "id", "path", "status", "error" }, ... ] }`,
 	Args: cobra.NoArgs,
 	Run:  runRenderAll,
 }
@@ -87,6 +94,13 @@ func runRender(_ *cobra.Command, args []string) {
 	emitRenderPath(id, path)
 }
 
+type renderAllResult struct {
+	ID     string `json:"id"`
+	Path   string `json:"path"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
 func runRenderAll(_ *cobra.Command, _ []string) {
 	ctx := rootCtx
 
@@ -105,26 +119,80 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 	}
 	defer it.Close()
 
-	anyFailed := false
+	var (
+		results []renderAllResult
+		ok      int
+		failed  int
+	)
 	for it.Next(ctx) {
 		issue := it.Value()
 		if issue == nil {
 			continue
 		}
+		path := renderTargetPath(exf, issue)
 		if err := exf.Render(ctx, issue); err != nil {
-			anyFailed = true
-			fmt.Printf("%s\t\tfailed: %v\n", issue.ID, err)
+			failed++
+			results = append(results, renderAllResult{
+				ID:     issue.ID,
+				Path:   path,
+				Status: "failed",
+				Error:  err.Error(),
+			})
+			if !jsonOutput {
+				fmt.Printf("%s\t\tfailed: %v\n", issue.ID, err)
+			}
 			continue
 		}
-		fmt.Printf("%s\t%s\trendered\n", issue.ID, renderTargetPath(exf, issue))
+		ok++
+		results = append(results, renderAllResult{
+			ID:     issue.ID,
+			Path:   path,
+			Status: "rendered",
+		})
+		if !jsonOutput {
+			fmt.Printf("%s\t%s\trendered\n", issue.ID, path)
+		}
 	}
 	if err := it.Err(); err != nil {
 		FatalErrorRespectJSON("iterating issues: %v", err)
 	}
 
-	if anyFailed {
+	total := ok + failed
+	root := renderRoot(exf)
+
+	if jsonOutput {
+		payload := map[string]interface{}{
+			"rendered": ok,
+			"failed":   failed,
+			"total":    total,
+			"root":     root,
+			"results":  results,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(payload)
+	} else {
+		fmt.Fprintln(os.Stderr, formatRenderAllSummary(ok, total, failed, root))
+	}
+
+	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+func renderRoot(exf exfiltrator.Exfiltrator) string {
+	if mx, ok := exf.(*exfiltrator.MarkdownExfiltrator); ok {
+		return mx.Root()
+	}
+	return ""
+}
+
+// formatRenderAllSummary builds the one-line confirmation `bd render-all`
+// emits on stderr. Extracted so it can be unit-tested without running the
+// full verb.
+func formatRenderAllSummary(ok, total, failed int, root string) string {
+	return fmt.Sprintf("Exfiltrated %d / %d beads to %s/entries/ (%d failed)",
+		ok, total, root, failed)
 }
 
 // renderTargetPath returns the on-disk path the exfiltrator wrote for issue.
@@ -144,7 +212,11 @@ func renderTargetPath(exf exfiltrator.Exfiltrator, issue *types.Issue) string {
 
 func emitRenderPath(id, path string) {
 	if jsonOutput {
-		payload := map[string]interface{}{"id": id, "path": path}
+		payload := map[string]interface{}{
+			"id":     id,
+			"path":   path,
+			"status": "rendered",
+		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(payload)
