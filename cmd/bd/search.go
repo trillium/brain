@@ -67,7 +67,7 @@ Examples:
 		// of the standard search path does not run.
 		if federated, _ := cmd.Flags().GetBool("federated"); federated {
 			runFederatedSearch(cmd, query)
-			return
+			return nil
 		}
 
 		// Get filter flags
