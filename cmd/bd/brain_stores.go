@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -364,6 +365,150 @@ func regenerateStoresEnv(stores map[string]string) (string, error) {
 	return outPath, nil
 }
 
+var (
+	renderAllStoresJSON bool
+)
+
+var brainStoresRenderAllCmd = &cobra.Command{
+	Use:   "render-all",
+	Short: "Run 'bd render-all' against every store in the federation registry",
+	Long: `Iterate every store registered in ~/.config/pai/stores.yaml and
+trigger markdown exfiltration for each one. The current bd binary is
+re-invoked once per store with BEADS_DIR pinned, so per-store summaries
+land on stderr exactly as a stand-alone 'bd render-all' would.
+
+Useful after:
+  - Installing a new bd binary that changes the exfiltration contract
+    (every-kind exfil, store-derived root, etc.).
+  - Restoring a store from backup where the markdown sidecar drifted.
+  - Adding a new store to the registry and wanting it populated.
+
+A federation-level summary line is emitted on stderr at the end:
+  Federation: <N> stores OK, <M> stores failed (rendered <R>, failed <F>)
+
+JSON mode (--json) replaces the per-store stdout streams with one
+structured object per store and a top-level summary.
+
+Exit codes:
+  0 — every store reported success
+  1 — at least one store had per-bead failures or could not be opened`,
+	Args: cobra.NoArgs,
+	Run:  runBrainStoresRenderAll,
+}
+
+type renderAllStoreOutcome struct {
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	Rendered int    `json:"rendered"`
+	Failed   int    `json:"failed"`
+	Total    int    `json:"total"`
+	Status   string `json:"status"`          // "ok" | "failed"
+	Error    string `json:"error,omitempty"` // present when status=failed
+}
+
+func runBrainStoresRenderAll(_ *cobra.Command, _ []string) {
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		FatalError("loading registry: %v", err)
+	}
+	if len(stores) == 0 {
+		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
+		return
+	}
+
+	bd, err := os.Executable()
+	if err != nil || bd == "" {
+		// Fallback to argv[0] — fine for interactive use.
+		bd = os.Args[0]
+	}
+
+	names := sortedKeys(stores)
+	outcomes := make([]renderAllStoreOutcome, 0, len(names))
+	storeOK := 0
+	storeFailed := 0
+	totalRendered := 0
+	totalFailed := 0
+
+	for _, name := range names {
+		beadsDir := stores[name]
+		out := renderAllStoreOutcome{Name: name, Path: beadsDir}
+
+		// Subprocess: bd render-all --json with BEADS_DIR + BD_NAME pinned to
+		// this store. --json gives us machine-readable per-bead counts; the
+		// human-readable summary is reconstructed here at the federation level.
+		sub := exec.Command(bd, "render-all", "--json")
+		sub.Env = append(os.Environ(),
+			"BEADS_DIR="+beadsDir,
+			"BD_NAME="+name,
+			// Disable auto-features the federation walk shouldn't fire per store.
+			"BRAIN_NO_AUTO_FEATURE_REQUEST=1",
+		)
+		stdout, runErr := sub.Output()
+
+		// Parse JSON regardless of exit code — render-all exits 1 when any bead
+		// failed, but still emits the structured summary.
+		var payload struct {
+			Rendered int `json:"rendered"`
+			Failed   int `json:"failed"`
+			Total    int `json:"total"`
+		}
+		if jsonParseErr := json.Unmarshal(stdout, &payload); jsonParseErr == nil {
+			out.Rendered = payload.Rendered
+			out.Failed = payload.Failed
+			out.Total = payload.Total
+		}
+
+		if runErr != nil && (out.Failed == 0 && out.Total == 0) {
+			// Subprocess failed before producing a summary (e.g. bad BEADS_DIR,
+			// dolt unreachable, migration error). Mark the whole store failed.
+			out.Status = "failed"
+			out.Error = runErr.Error()
+			storeFailed++
+		} else if out.Failed > 0 {
+			out.Status = "failed"
+			storeFailed++
+		} else {
+			out.Status = "ok"
+			storeOK++
+		}
+		totalRendered += out.Rendered
+		totalFailed += out.Failed
+		outcomes = append(outcomes, out)
+
+		if !renderAllStoresJSON {
+			if out.Status == "ok" {
+				fmt.Fprintf(os.Stderr, "[%s] %d / %d rendered (0 failed)\n",
+					name, out.Rendered, out.Total)
+			} else if out.Error != "" {
+				fmt.Fprintf(os.Stderr, "[%s] ERROR: %s\n", name, out.Error)
+			} else {
+				fmt.Fprintf(os.Stderr, "[%s] %d / %d rendered (%d failed)\n",
+					name, out.Rendered, out.Total, out.Failed)
+			}
+		}
+	}
+
+	if renderAllStoresJSON {
+		summary := map[string]interface{}{
+			"stores":      outcomes,
+			"stores_ok":   storeOK,
+			"stores_fail": storeFailed,
+			"rendered":    totalRendered,
+			"failed":      totalFailed,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(summary)
+	} else {
+		fmt.Fprintf(os.Stderr, "\nFederation: %d stores OK, %d stores failed (rendered %d, failed %d)\n",
+			storeOK, storeFailed, totalRendered, totalFailed)
+	}
+
+	if storeFailed > 0 {
+		os.Exit(1)
+	}
+}
+
 var brainStoresEnvCmd = &cobra.Command{
 	Use:   "env",
 	Short: "Write ~/.config/pai/stores.env from the registry (for shell wrappers)",
@@ -428,10 +573,14 @@ func init() {
 	brainStoresCreateCmd.Flags().StringVar(&createStoreInitMail, "dolt-email", "",
 		"--email arg to pass to 'dolt init' (skipped if empty)")
 
+	brainStoresRenderAllCmd.Flags().BoolVar(&renderAllStoresJSON, "json", false,
+		"Emit a structured JSON object instead of per-store text summaries")
+
 	brainStoresCmd.AddCommand(brainStoresAddCmd)
 	brainStoresCmd.AddCommand(brainStoresRemoveCmd)
 	brainStoresCmd.AddCommand(brainStoresListCmd)
 	brainStoresCmd.AddCommand(brainStoresCreateCmd)
+	brainStoresCmd.AddCommand(brainStoresRenderAllCmd)
 	brainStoresCmd.AddCommand(brainStoresEnvCmd)
 	brainCmd.AddCommand(brainStoresCmd)
 	rootCmd.AddCommand(brainStoresCmd)
