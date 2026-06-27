@@ -105,7 +105,10 @@ var builtinRegistry = []struct {
 	{Name: "brain", DB: "dolt", Prefix: "brain"},
 	{Name: "tasks", DB: "task", Prefix: "task"},
 	{Name: "projects", DB: "project", Prefix: "project"},
-	{Name: "agents", DB: "agent", Prefix: "agent"},
+	// "robots" was renamed from "agents" in brain v0.4.0. The Dolt DB
+	// and ID prefix stay "agent" so existing bead IDs (agent-XXXXX)
+	// keep resolving cleanly. Aliases below preserve the old names.
+	{Name: "robots", DB: "agent", Prefix: "agent"},
 	{Name: "inbox", DB: "inbox", Prefix: "inbox"},
 	{Name: "decisions", DB: "decision", Prefix: "decision"},
 	{Name: "ideas", DB: "idea", Prefix: "idea"},
@@ -125,7 +128,9 @@ var builtinRegistry = []struct {
 var builtinAliases = map[string]string{
 	"task":      "tasks",
 	"project":   "projects",
-	"agent":     "agents",
+	"robot":     "robots",
+	"agent":     "robots", // legacy: prior name "agents", kept for compat
+	"agents":    "robots", // legacy: prior name "agents", kept for compat
 	"decision":  "decisions",
 	"idea":      "ideas",
 	"question":  "questions",
