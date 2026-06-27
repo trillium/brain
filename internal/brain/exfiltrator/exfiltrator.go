@@ -326,13 +326,26 @@ func metadataSlug(raw json.RawMessage) string {
 //     to "-" — sensible default; we do not ship a transliterator
 var nonSlugRe = regexp.MustCompile(`[^a-z0-9]+`)
 
+// maxSlugBytes caps kebab-cased slugs at a length that survives the full
+// on-disk write path on macOS / Linux. The atomic-write tmpfile prefix is
+// `.exf-<10 digit random>.tmp` (~19 bytes) and the final file gets the
+// `.md` suffix (3 bytes). Both filesystems cap individual path components
+// at 255 bytes (HFS+, APFS, ext4, btrfs). 200 leaves comfortable headroom
+// for the tmp prefix + suffix during atomicWrite's tmp+rename dance.
+const maxSlugBytes = 200
+
 func kebab(s string) string {
 	if s == "" {
 		return ""
 	}
 	lower := strings.ToLower(s)
 	hyphenated := nonSlugRe.ReplaceAllString(lower, "-")
-	return strings.Trim(hyphenated, "-")
+	trimmed := strings.Trim(hyphenated, "-")
+	if len(trimmed) > maxSlugBytes {
+		// Truncate, then re-trim trailing hyphens that the cut may have exposed.
+		trimmed = strings.TrimRight(trimmed[:maxSlugBytes], "-")
+	}
+	return trimmed
 }
 
 // shortID returns the last 6 characters of id (sans any "B-" prefix),
