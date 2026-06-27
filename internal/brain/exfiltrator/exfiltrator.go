@@ -1,5 +1,5 @@
-// Package exfiltrator renders brain issues (kind ∈ {task, knowledge, both})
-// to markdown files under a configurable knowledge root.
+// Package exfiltrator renders every bd issue, regardless of kind, to a
+// markdown file under a configurable knowledge root.
 //
 // The exfiltrator is the *render half* of brain v0.3's Dolt → markdown
 // exfiltration loop. Dolt remains the source of truth; the markdown files
@@ -40,26 +40,6 @@ import (
 
 	"github.com/steveyegge/beads/internal/types"
 )
-
-// BrainKinds is the closed set of IssueType values the exfiltrator
-// renders to disk. Issues outside this set pass through untouched —
-// they are regular bd issues, not brain docs.
-//
-// Mirrors the set newverb.ValidKinds() accepts on the write side, and
-// types.IssueType.IsValid()'s brain branch.
-var BrainKinds = map[types.IssueType]struct{}{
-	types.TypeTask:      {},
-	types.TypeKnowledge: {},
-	types.TypeBoth:      {},
-}
-
-// IsBrainKind reports whether kind is one of {task, knowledge, both}.
-// Non-brain kinds (bug, feature, epic, …) are passthrough — the
-// decorator must NOT render them.
-func IsBrainKind(kind types.IssueType) bool {
-	_, ok := BrainKinds[kind]
-	return ok
-}
 
 // BrainSlugMetadataKey is the JSON field name in issues.metadata where
 // the stable slug is stored. Kept stable here (not derived from the
@@ -115,10 +95,18 @@ type SlugPersister interface {
 // `<root>/entries/{kind}/{slug}.md` files with YAML frontmatter +
 // markdown body. Atomic via tmp+rename. Checkpointed for crash
 // recovery (ISC-121).
+//
+// When BRAIN_EXFIL_FLAT=1, the kind subdirectory is omitted and files
+// land at `<root>/entries/{slug}.md` instead. Use this for dedicated
+// stores where the store name already implies the kind.
 type MarkdownExfiltrator struct {
 	// root is the absolute filesystem path under which `entries/`
 	// lives. Computed at construction; never reread.
 	root string
+
+	// flat skips the {kind}/ subdirectory when true. Set via
+	// BRAIN_EXFIL_FLAT=1 at construction time.
+	flat bool
 
 	// persister, when non-nil, records freshly-derived slugs back
 	// into the storage layer. May be nil in tests.
@@ -147,6 +135,7 @@ type MarkdownExfiltrator struct {
 func NewMarkdownExfiltrator(root string, persister SlugPersister) *MarkdownExfiltrator {
 	return &MarkdownExfiltrator{
 		root:           expandHome(root),
+		flat:           os.Getenv("BRAIN_EXFIL_FLAT") == "1",
 		persister:      persister,
 		allocatedSlugs: make(map[string]string),
 	}
@@ -164,14 +153,11 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 	if issue == nil {
 		return errors.New("exfiltrator: nil issue")
 	}
-	if !IsBrainKind(issue.IssueType) {
-		// Non-brain kinds passthrough. Not an error — the decorator
-		// fires Render for every mutation, and most bd installs will
-		// have non-brain kinds in the mix.
-		return nil
-	}
 	if issue.ID == "" {
 		return errors.New("exfiltrator: issue has no ID")
+	}
+	if issue.IssueType == "" {
+		return errors.New("exfiltrator: issue has no kind")
 	}
 
 	slug, persistedNow, err := m.slugFor(issue)
@@ -223,10 +209,8 @@ func (m *MarkdownExfiltrator) Remove(_ context.Context, issueID string, kind typ
 	if slug == "" {
 		return fmt.Errorf("exfiltrator: remove %s: empty slug", issueID)
 	}
-	if !IsBrainKind(kind) {
-		// Removing a non-brain kind from disk is a no-op — the
-		// file should never have existed in the first place.
-		return nil
+	if kind == "" {
+		return fmt.Errorf("exfiltrator: remove %s: empty kind", issueID)
 	}
 
 	path := m.pathFor(kind, slug)
@@ -294,13 +278,22 @@ func (m *MarkdownExfiltrator) slugFor(issue *types.Issue) (slug string, derivedN
 	}
 
 	slug = base
-	key := fmt.Sprintf("%s/%s", issue.IssueType, slug)
+	var key string
+	if m.flat {
+		key = slug
+	} else {
+		key = fmt.Sprintf("%s/%s", issue.IssueType, slug)
+	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if owner, ok := m.allocatedSlugs[key]; ok && owner != issue.ID {
 		slug = base + "-" + shortID(issue.ID)
-		key = fmt.Sprintf("%s/%s", issue.IssueType, slug)
+		if m.flat {
+			key = slug
+		} else {
+			key = fmt.Sprintf("%s/%s", issue.IssueType, slug)
+		}
 	}
 	m.allocatedSlugs[key] = issue.ID
 	return slug, true, nil
@@ -355,6 +348,9 @@ func shortID(id string) string {
 // ── Path layout ────────────────────────────────────────────────────
 
 func (m *MarkdownExfiltrator) pathFor(kind types.IssueType, slug string) string {
+	if m.flat {
+		return filepath.Join(m.root, "entries", slug+".md")
+	}
 	return filepath.Join(m.root, "entries", string(kind), slug+".md")
 }
 

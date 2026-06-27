@@ -250,7 +250,7 @@ func TestRender_BothWritesFile(t *testing.T) {
 	}
 }
 
-func TestRender_NonBrainKindIsPassthrough(t *testing.T) {
+func TestRender_NonBrainKindWritesFile(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	persister := &fakePersister{}
@@ -261,13 +261,13 @@ func TestRender_NonBrainKindIsPassthrough(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 
-	// No file should appear under entries/.
-	entries := filepath.Join(root, "entries")
-	if _, err := os.Stat(entries); err == nil {
-		t.Fatalf("entries dir created for non-brain kind")
+	// Every kind renders. Bug lands at entries/bug/a-bug.md.
+	want := filepath.Join(root, "entries", "bug", "a-bug.md")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected bug file at %s: %v", want, err)
 	}
-	if len(persister.snapshot()) != 0 {
-		t.Fatalf("persister called for non-brain kind: %+v", persister.snapshot())
+	if len(persister.snapshot()) != 1 {
+		t.Fatalf("persister should have been called once for new slug: %+v", persister.snapshot())
 	}
 }
 
@@ -401,16 +401,26 @@ func TestRemove_MissingIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRemove_NonBrainKindIsNoop(t *testing.T) {
+func TestRemove_NonBrainKindRemovesFile(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
-	// Should not even create the entries dir.
-	if err := exf.Remove(context.Background(), "B-bug", types.TypeBug, "slug"); err != nil {
-		t.Fatalf("Remove non-brain kind: %v", err)
+
+	// Write a bug file via Render, then remove it via Remove.
+	issue := mustBrainIssue(t, "B-bug", "removable bug", types.TypeBug)
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
-		t.Fatalf("Remove of non-brain kind created entries dir")
+	path := filepath.Join(root, "entries", "bug", "removable-bug.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected bug file before remove: %v", err)
+	}
+
+	if err := exf.Remove(context.Background(), "B-bug", types.TypeBug, "removable-bug"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected file gone, stat err = %v", err)
 	}
 }
 
@@ -422,7 +432,7 @@ func TestRemove_EmptySlugErrors(t *testing.T) {
 	}
 }
 
-// ── PathFor / Root / IsBrainKind ───────────────────────────────────
+// ── PathFor / Root ──────────────────────────────────────────────────
 
 func TestPathFor_Layout(t *testing.T) {
 	t.Parallel()
@@ -449,27 +459,6 @@ func TestRoot_ExpandsHome(t *testing.T) {
 	want := "/tmp/home-fake/data/knowledge"
 	if exf.Root() != want {
 		t.Fatalf("Root = %q, want %q", exf.Root(), want)
-	}
-}
-
-func TestIsBrainKind(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		kind types.IssueType
-		want bool
-	}{
-		{types.TypeTask, true},
-		{types.TypeKnowledge, true},
-		{types.TypeBoth, true},
-		{types.TypeBug, false},
-		{types.TypeFeature, false},
-		{types.TypeEpic, false},
-		{types.IssueType(""), false},
-	}
-	for _, c := range cases {
-		if got := exfiltrator.IsBrainKind(c.kind); got != c.want {
-			t.Errorf("IsBrainKind(%q) = %v, want %v", c.kind, got, c.want)
-		}
 	}
 }
 
