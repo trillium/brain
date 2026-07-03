@@ -3,7 +3,7 @@
 // markdown on disk.
 //
 // Direction: Dolt → markdown. Brain is the source of truth; the rendered file
-// at `<exfil-root>/isa/{slug}/ISA.md` is a derived view that downstream tools
+// at `<exfil-root>/{slug}/ISA.md` is a derived view that downstream tools
 // (PAI hooks, editors, grep) can read.
 //
 // This package is intentionally fully pure-Go and has zero Dolt / cgo
@@ -140,7 +140,7 @@ func ResolveExfilRoot() string {
 
 // ResolveTargetPath returns the canonical render target for an ISA:
 //
-//	<exfilRoot>/isa/<slug>/ISA.md
+//	<exfilRoot>/<slug>/ISA.md
 //
 // The slug must not contain path separators or `..` segments — a single,
 // flat directory name. F1d's slug regex (`^[a-z0-9-]+$`) already enforces
@@ -177,11 +177,11 @@ func ResolveTargetPath(exfilRoot, slug string) (string, error) {
 		return "", &PathTraversalError{
 			Slug:       slug,
 			ExfilRoot:  cleanRoot,
-			ResolvedTo: filepath.Join(cleanRoot, "isa", slug, "ISA.md"),
+			ResolvedTo: filepath.Join(cleanRoot, slug, "ISA.md"),
 		}
 	}
 
-	candidate := filepath.Join(cleanRoot, "isa", slug, "ISA.md")
+	candidate := filepath.Join(cleanRoot, slug, "ISA.md")
 	cleanCandidate := filepath.Clean(candidate)
 
 	// Layer 3: belt + suspenders. The Clean'd candidate must live strictly

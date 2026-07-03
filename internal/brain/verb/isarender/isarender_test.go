@@ -321,7 +321,7 @@ func TestResolveTargetPathHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveTargetPath: %v", err)
 	}
-	want := "/tmp/exfil/isa/my-slug/ISA.md"
+	want := "/tmp/exfil/my-slug/ISA.md"
 	if got != want {
 		t.Errorf("expected %q, got %q", want, got)
 	}
