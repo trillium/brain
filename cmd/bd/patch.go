@@ -211,10 +211,9 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 	// ISC-40, a render failure is NOT rolled back — the brain row is
 	// canonical, the markdown is a shadow. We log a warning to stderr and
 	// continue; `bd isa-render-pending` will list this row as stale.
-	if path, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
+	if _, rerr := renderISAByID(ctx, store, result.ResolvedID); rerr != nil {
 		fmt.Fprintf(os.Stderr,
 			"warning: brain write succeeded but markdown render failed: %v\n", rerr)
-		_ = path
 	}
 
 	emitSuccess(result.ResolvedID, field, value, kind)

@@ -361,6 +361,82 @@ func yamlQuote(s string) string {
 	return b.String()
 }
 
+// CheckWriteAllowed decides whether a render may write over targetPath. It
+// enforces the "disk-canonical" doctrine (PAI 2026-06-25): an ISA.md that a
+// human/agent authored directly on disk is the source of truth, and the
+// IsaLifter hook lifts it INTO brain — a render must never clobber it.
+//
+// The discriminator is the `brain_id: <id>` frontmatter line. Every rendered
+// file carries it (writeFrontmatter emits it unconditionally); agent-authored
+// disk files do not. So:
+//
+//   - target does not exist                      → allowed (nothing to clobber)
+//   - target exists, frontmatter brain_id == id  → allowed (refreshing a prior
+//     render of this same row)
+//   - target exists, no brain_id in frontmatter  → BLOCKED (hand-authored,
+//     disk-canonical)
+//   - target exists, brain_id != id              → BLOCKED (slug collision:
+//     another row already owns this path; do not clobber it)
+//
+// The brain_id must appear inside the leading `---`-delimited frontmatter
+// block; a `brain_id:` line elsewhere in the body does not count.
+//
+// A stat/read error other than not-exist is returned as err (fail closed — the
+// caller must not silently overwrite a file it could not inspect). When allowed
+// is false, reason is a human-readable divergence description and err is nil.
+func CheckWriteAllowed(targetPath, brainID string) (allowed bool, reason string, err error) {
+	data, readErr := os.ReadFile(targetPath)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return true, "", nil
+		}
+		return false, "", fmt.Errorf("inspecting existing render target %s: %w", targetPath, readErr)
+	}
+
+	existingID, ok := frontmatterBrainID(data)
+	if ok && existingID == brainID {
+		return true, "", nil
+	}
+	if !ok {
+		return false, fmt.Sprintf(
+			"disk-canonical file present at %s (no brain_id frontmatter — hand-authored, not overwriting)",
+			targetPath), nil
+	}
+	return false, fmt.Sprintf(
+		"disk-canonical file present at %s (brain_id %q belongs to a different row, not %q — slug collision, not overwriting)",
+		targetPath, existingID, brainID), nil
+}
+
+// frontmatterBrainID extracts the `brain_id` value from the leading
+// `---`-delimited YAML frontmatter block. Returns (value, true) when a
+// `brain_id:` line is found before the closing delimiter; ("", false) when the
+// file has no valid leading frontmatter block or no brain_id line within it.
+//
+// The match is deliberately strict: the file must open with a `---` line
+// (rendered files always do), and the key must be at the start of the line
+// (rendered files emit `brain_id: <id>` with no indentation). This avoids a
+// `brain_id:` reference in prose or an indented mapping being mistaken for the
+// frontmatter key. CRLF line endings are tolerated.
+func frontmatterBrainID(data []byte) (string, bool) {
+	const key = "brain_id:"
+	lines := strings.Split(string(data), "\n")
+	if len(lines) == 0 || strings.TrimRight(lines[0], "\r") != "---" {
+		return "", false
+	}
+	for _, raw := range lines[1:] {
+		line := strings.TrimRight(raw, "\r")
+		if line == "---" {
+			// Closing delimiter: end of frontmatter block, no brain_id found.
+			return "", false
+		}
+		if strings.HasPrefix(line, key) {
+			return strings.TrimSpace(line[len(key):]), true
+		}
+	}
+	// No closing delimiter — treat as no valid frontmatter (fail closed).
+	return "", false
+}
+
 // WriteAtomic writes content to targetPath using a temp-file + rename(2)
 // sequence so readers never observe a half-written file. The temp file lives
 // next to targetPath (same directory, same filesystem) so rename(2) is
