@@ -24,7 +24,7 @@ var isaRenderCmd = &cobra.Command{
 	GroupID: "issues",
 	Short:   "Render an ISA from the substrate to canonical IsaFormat v2.7 markdown on disk",
 	Long: `Render an ISA-kind issue to canonical markdown at
-<exfil-root>/isa/<slug>/ISA.md.
+<exfil-root>/<slug>/ISA.md.
 
 The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
 variable; it defaults to ${HOME}/.claude/PAI/MEMORY/WORK. The render is
