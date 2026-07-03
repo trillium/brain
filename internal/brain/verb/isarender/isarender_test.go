@@ -425,6 +425,136 @@ func TestWriteAtomicOverwritesExisting(t *testing.T) {
 	}
 }
 
+// TestCheckWriteAllowedMissingFile verifies the guard permits a render when
+// the target does not yet exist — nothing to clobber. The parent directory
+// need not exist either (WriteAtomic will MkdirAll).
+func TestCheckWriteAllowedMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "does-not-exist", "ISA.md")
+	allowed, reason, err := CheckWriteAllowed(target, "brain-isa-1")
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if !allowed {
+		t.Errorf("missing target must be allowed; got blocked with reason %q", reason)
+	}
+	if reason != "" {
+		t.Errorf("expected empty reason when allowed, got %q", reason)
+	}
+}
+
+// TestCheckWriteAllowedMatchingBrainID verifies the guard permits an overwrite
+// when the existing file's frontmatter brain_id matches the row being
+// rendered — this is a prior render being refreshed.
+func TestCheckWriteAllowedMatchingBrainID(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ISA.md")
+	content := "---\ntask: \"X\"\nslug: \"x\"\nprogress: \"1/2\"\nbrain_id: brain-isa-42\n---\n\n# X\n\n## Problem\nbody\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	allowed, reason, err := CheckWriteAllowed(target, "brain-isa-42")
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if !allowed {
+		t.Errorf("matching brain_id must be allowed; got blocked with reason %q", reason)
+	}
+}
+
+// TestCheckWriteAllowedNoBrainID verifies the guard blocks an overwrite when
+// the existing file lacks a brain_id frontmatter line — a hand-authored,
+// disk-canonical ISA the IsaLifter owns.
+func TestCheckWriteAllowedNoBrainID(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ISA.md")
+	content := "---\ntask: \"Hand authored\"\nslug: \"x\"\nphase: build\n---\n\n# Hand authored\n\n## Problem\nwritten by a human on disk\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	allowed, reason, err := CheckWriteAllowed(target, "brain-isa-42")
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if allowed {
+		t.Error("hand-authored file (no brain_id) must be blocked, got allowed")
+	}
+	if reason == "" {
+		t.Error("expected a non-empty divergence reason when blocked")
+	}
+}
+
+// TestCheckWriteAllowedDifferentBrainID verifies the guard blocks an overwrite
+// when the existing file's brain_id belongs to a DIFFERENT row. Two rows can
+// collide on a slug; the row that wrote the file first owns the path and must
+// not be clobbered by the second.
+func TestCheckWriteAllowedDifferentBrainID(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ISA.md")
+	content := "---\ntask: \"Owned by another row\"\nslug: \"shared-slug\"\nbrain_id: brain-isa-OTHER\n---\n\n# Owned by another row\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	allowed, reason, err := CheckWriteAllowed(target, "brain-isa-42")
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if allowed {
+		t.Error("mismatched brain_id (slug collision) must be blocked, got allowed")
+	}
+	if reason == "" {
+		t.Error("expected a non-empty divergence reason when blocked")
+	}
+}
+
+// TestCheckWriteAllowedBrainIDOnlyInBody verifies the "within the leading
+// frontmatter block" semantics: a brain_id line that appears in the body
+// (after the closing ---) does NOT count as a match, so the file is treated as
+// divergent and the write is blocked.
+func TestCheckWriteAllowedBrainIDOnlyInBody(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ISA.md")
+	content := "---\ntask: \"Hand authored\"\nslug: \"x\"\n---\n\n# Hand authored\n\nSome prose mentioning brain_id: brain-isa-42 in passing.\n"
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+	allowed, _, err := CheckWriteAllowed(target, "brain-isa-42")
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if allowed {
+		t.Error("brain_id in body (not frontmatter) must not count as a match; expected blocked")
+	}
+}
+
+// TestCheckWriteAllowedRoundTripRenderedFile verifies the guard accepts a file
+// produced by Render itself for the same id — the real refresh path. Render →
+// WriteAtomic → CheckWriteAllowed(sameID) must be allowed.
+func TestCheckWriteAllowedRoundTripRenderedFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "ISA.md")
+	in := &RenderInput{
+		ID:       "brain-isa-round",
+		Slug:     "round",
+		Title:    "Round trip",
+		Sections: map[string]string{"problem": "p"},
+	}
+	body, err := Render(in)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if err := WriteAtomic(target, body); err != nil {
+		t.Fatalf("WriteAtomic: %v", err)
+	}
+	allowed, reason, err := CheckWriteAllowed(target, in.ID)
+	if err != nil {
+		t.Fatalf("CheckWriteAllowed: %v", err)
+	}
+	if !allowed {
+		t.Errorf("a file we just rendered for this id must be allowed; got blocked: %q", reason)
+	}
+}
+
 // TestWriteAtomicEmptyTarget verifies the input guard.
 func TestWriteAtomicEmptyTarget(t *testing.T) {
 	if err := WriteAtomic("", "x"); err == nil {
