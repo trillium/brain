@@ -61,9 +61,15 @@ are re-rendered — useful for incremental refreshes.
 For each ISA, one tab-separated line is printed to stdout:
   <id>\t<path>\t<status>
 
-where status is "rendered" or "failed: <reason>". A per-ISA failure does not
-stop the run; the exit code is 0 only if every render succeeded. Otherwise
-exit 1 (and individual failure lines on stdout describe what went wrong).`,
+where status is "rendered", "skipped-divergent", or "failed: <reason>".
+
+"skipped-divergent" means the on-disk ISA.md is disk-canonical (it lacks this
+row's brain_id frontmatter — a hand-authored file the render must not clobber);
+that row is left untouched and is NOT counted as a failure.
+
+A per-ISA failure does not stop the run; the exit code is 0 only if every
+render either succeeded or was skipped as divergent. Otherwise exit 1 (and
+individual failure lines on stdout describe what went wrong).`,
 	Args: cobra.NoArgs,
 	Run:  runISARenderAll,
 }
@@ -102,7 +108,7 @@ func runISARender(cmd *cobra.Command, args []string) {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	path, err := renderISAByIDWithDB(ctx, db, id)
+	outcome, err := renderISAByIDWithDB(ctx, db, id)
 	if err != nil {
 		// Path-traversal and other input-shape errors → exit 2. errors.As
 		// traverses the helper's fmt.Errorf("%w") wrapping, so typed checks
@@ -118,7 +124,15 @@ func runISARender(cmd *cobra.Command, args []string) {
 		FatalErrorRespectJSON("%v", err)
 	}
 
-	emitRenderSuccess(id, path)
+	// The no-clobber divergence guard declined to overwrite a disk-canonical
+	// file. This is not an error — exit 0 with a clear message so the operator
+	// knows the on-disk file was preserved intentionally.
+	if outcome.Skipped {
+		emitRenderSkipped(id, outcome.Path, outcome.Reason)
+		return
+	}
+
+	emitRenderSuccess(id, outcome.Path)
 }
 
 // loadRenderRow reads the issues row + isa_sections rows for id. Mirrors
@@ -201,9 +215,27 @@ func loadRenderRow(ctx context.Context, db *sql.DB, id string) (*renderRow, erro
 	return row, nil
 }
 
-// renderRowToDisk runs the pure-Go pipeline: resolve target, render bytes,
-// atomic-write to disk. Returns the resolved target path on success.
-func renderRowToDisk(row *renderRow) (string, error) {
+// renderOutcome is the result of a single render attempt. Path is always the
+// resolved target. Skipped is true when the no-clobber divergence guard
+// declined to overwrite a disk-canonical file; Reason then describes why. A
+// skip is NOT a failure — the brain row is intact and the on-disk file is the
+// intended source of truth.
+type renderOutcome struct {
+	Path    string
+	Skipped bool
+	Reason  string
+}
+
+// renderRowToDisk runs the pure-Go pipeline: resolve target, check the
+// no-clobber divergence guard, render bytes, atomic-write to disk. This is the
+// single choke point every render entry point (the `bd isa-render` /
+// `bd isa-render-all` verbs and the auto-render hooks on patch / isa-section)
+// funnels through, so the guard here protects all of them.
+//
+// Returns a renderOutcome describing whether the write happened or was skipped
+// as divergent. An error is returned only for genuine failures (bad slug,
+// render error, write error, un-inspectable target).
+func renderRowToDisk(row *renderRow) (renderOutcome, error) {
 	in := &isarenderverb.RenderInput{
 		ID:        row.ID,
 		Slug:      row.Slug,
@@ -221,18 +253,28 @@ func renderRowToDisk(row *renderRow) (string, error) {
 	exfilRoot := isarenderverb.ResolveExfilRoot()
 	target, err := isarenderverb.ResolveTargetPath(exfilRoot, row.Slug)
 	if err != nil {
-		return "", err
+		return renderOutcome{}, err
+	}
+
+	// No-clobber divergence guard: never overwrite a disk-canonical ISA.md
+	// (one lacking this row's brain_id frontmatter). See CheckWriteAllowed.
+	allowed, reason, err := isarenderverb.CheckWriteAllowed(target, row.ID)
+	if err != nil {
+		return renderOutcome{}, err
+	}
+	if !allowed {
+		return renderOutcome{Path: target, Skipped: true, Reason: reason}, nil
 	}
 
 	body, err := isarenderverb.Render(in)
 	if err != nil {
-		return "", err
+		return renderOutcome{}, err
 	}
 
 	if err := isarenderverb.WriteAtomic(target, body); err != nil {
-		return "", err
+		return renderOutcome{}, err
 	}
-	return target, nil
+	return renderOutcome{Path: target}, nil
 }
 
 // emitRenderSuccess prints the path to stdout. JSON mode emits a structured
@@ -249,6 +291,27 @@ func emitRenderSuccess(id, path string) {
 		return
 	}
 	fmt.Println(path)
+}
+
+// emitRenderSkipped reports that the divergence guard declined the write.
+// This is a success path (exit 0): the on-disk file is the intended source of
+// truth. JSON mode emits a structured object with status=skipped-divergent so
+// scripts can distinguish it from a normal render.
+func emitRenderSkipped(id, path, reason string) {
+	if jsonOutput {
+		payload := map[string]interface{}{
+			"id":      id,
+			"path":    path,
+			"status":  "skipped-divergent",
+			"skipped": true,
+			"reason":  reason,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(payload)
+		return
+	}
+	fmt.Printf("skipped: disk-canonical file present, not overwriting (divergence): %s\n", reason)
 }
 
 // exitRenderValidation prints a validation error and exits 2. Matches the
@@ -295,13 +358,19 @@ func runISARenderAll(cmd *cobra.Command, args []string) {
 
 	anyFailed := false
 	for _, id := range ids {
-		path, err := renderISAByIDWithDB(ctx, db, id)
+		outcome, err := renderISAByIDWithDB(ctx, db, id)
 		if err != nil {
 			anyFailed = true
 			fmt.Printf("%s\t\tfailed: %v\n", id, err)
 			continue
 		}
-		fmt.Printf("%s\t%s\trendered\n", id, path)
+		// A divergence skip is not a failure — the disk file is canonical.
+		// It gets its own status and does NOT flip anyFailed / the exit code.
+		if outcome.Skipped {
+			fmt.Printf("%s\t%s\tskipped-divergent\n", id, outcome.Path)
+			continue
+		}
+		fmt.Printf("%s\t%s\trendered\n", id, outcome.Path)
 	}
 
 	if anyFailed {
