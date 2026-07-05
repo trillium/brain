@@ -1279,6 +1279,13 @@ var rootCmd = &cobra.Command{
 				}
 			}
 
+			// Change-event emission: append a JSONL line describing this write
+			// if change-events.enabled. Best-effort; only fires after a real
+			// write so read-only commands produce no events.
+			if commandDidWrite.Load() {
+				maybeEmitChangeEvent(cmd.Name())
+			}
+
 			// Auto-push: push to Dolt remote if enabled and due.
 			// Skip for read-only commands to avoid unnecessary network operations
 			// and metadata writes on commands like bd list/show/ready (GH#2191).
