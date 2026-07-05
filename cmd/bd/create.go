@@ -270,6 +270,16 @@ var createCmd = &cobra.Command{
 				}
 				fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), err)
 			}
+
+			// Per-store content-schema check: if this issue's type or any of
+			// its labels has a validation.schema.<selector> configured, require
+			// those keys in the description body. Same tristate as above.
+			if serr := validateBodySchema(issueType, labels, description); serr != nil {
+				if validateTemplate || validationMode == "error" {
+					return HandleError("%v", serr)
+				}
+				fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), serr)
+			}
 		}
 
 		dryRun, _ := cmd.Flags().GetBool("dry-run")

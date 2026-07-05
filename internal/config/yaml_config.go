@@ -56,6 +56,13 @@ var YamlOnlyKeys = map[string]bool{
 	"validation.on-close":  true,
 	"validation.on-sync":   true,
 
+	// Per-store content-schema validation (brain).
+	// validation.schema.<type|label> = comma-separated list of required
+	// top-level keys that the description body must declare. Enforced under
+	// the validation.on-create tristate at create and description-patch time.
+	// The dynamic <type|label> leaf is also covered by the "validation."
+	// prefix rule in IsYamlOnlyKey below; this comment documents the family.
+
 	// Hierarchy settings (GH#995)
 	"hierarchy.max-depth": true,
 
