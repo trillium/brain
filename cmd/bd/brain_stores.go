@@ -19,9 +19,36 @@ const storesYamlPath = ".config/pai/stores.yaml"
 // storesEnvPath is the shell-sourceable export of the registry.
 const storesEnvPath = ".config/pai/stores.env"
 
+// storeEntry is the registry value for a single federated store. The Path
+// points at the store's .beads directory; About is an optional human blurb
+// describing what the store is for (set via 'brain stores set-about').
+type storeEntry struct {
+	Path  string `yaml:"path"`
+	About string `yaml:"about,omitempty"`
+}
+
+// UnmarshalYAML accepts both the legacy scalar form (value is the bare path
+// string) and the current mapping form ({path, about}). This keeps existing
+// stores.yaml files — written before the About field existed — readable.
+func (s *storeEntry) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		s.Path = value.Value
+		s.About = ""
+		return nil
+	}
+	// Alias to avoid infinite recursion into this UnmarshalYAML.
+	type rawStoreEntry storeEntry
+	var raw rawStoreEntry
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	*s = storeEntry(raw)
+	return nil
+}
+
 // storesRegistry is the on-disk shape of ~/.config/pai/stores.yaml.
 type storesRegistry struct {
-	Stores map[string]string `yaml:"stores"`
+	Stores map[string]storeEntry `yaml:"stores"`
 }
 
 func storesYamlFile() string {
@@ -32,11 +59,11 @@ func storesYamlFile() string {
 	return filepath.Join(home, storesYamlPath)
 }
 
-func loadStoresRegistry() (map[string]string, error) {
+func loadStoresRegistry() (map[string]storeEntry, error) {
 	path := storesYamlFile()
 	data, err := os.ReadFile(path) //nolint:gosec
 	if os.IsNotExist(err) {
-		return make(map[string]string), nil
+		return make(map[string]storeEntry), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
@@ -46,12 +73,12 @@ func loadStoresRegistry() (map[string]string, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if reg.Stores == nil {
-		return make(map[string]string), nil
+		return make(map[string]storeEntry), nil
 	}
 	return reg.Stores, nil
 }
 
-func saveStoresRegistry(stores map[string]string) error {
+func saveStoresRegistry(stores map[string]storeEntry) error {
 	path := storesYamlFile()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
@@ -97,7 +124,9 @@ var brainStoresAddCmd = &cobra.Command{
 		if err != nil {
 			FatalError("loading registry: %v", err)
 		}
-		stores[name] = beadsDir
+		entry := stores[name] // preserve any existing about blurb on re-add
+		entry.Path = beadsDir
+		stores[name] = entry
 		if err := saveStoresRegistry(stores); err != nil {
 			FatalError("saving registry: %v", err)
 		}
@@ -132,6 +161,8 @@ var brainStoresRemoveCmd = &cobra.Command{
 	},
 }
 
+var storesListVerbose bool
+
 var brainStoresListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all registered stores",
@@ -150,13 +181,25 @@ var brainStoresListCmd = &cobra.Command{
 		if jsonOutput {
 			result := make([]map[string]string, 0, len(names))
 			for _, n := range names {
-				result = append(result, map[string]string{"name": n, "path": stores[n]})
+				result = append(result, map[string]string{
+					"name":  n,
+					"path":  stores[n].Path,
+					"about": stores[n].About,
+				})
 			}
 			outputJSON(result)
 			return
 		}
 		for _, n := range names {
-			fmt.Printf("  %-16s %s\n", n, stores[n])
+			if storesListVerbose {
+				about := stores[n].About
+				if about == "" {
+					about = "—"
+				}
+				fmt.Printf("  %-16s %-48s %s\n", n, stores[n].Path, about)
+			} else {
+				fmt.Printf("  %-16s %s\n", n, stores[n].Path)
+			}
 		}
 	},
 }
@@ -239,7 +282,9 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	if err != nil {
 		FatalError("loading registry: %v", err)
 	}
-	stores[name] = beadsDir
+	entry := stores[name] // preserve any existing about blurb on re-run
+	entry.Path = beadsDir
+	stores[name] = entry
 	if err := saveStoresRegistry(stores); err != nil {
 		FatalError("saving registry: %v", err)
 	}
@@ -337,7 +382,7 @@ exec env BEADS_DIR=%q BD_NAME=%q %s "$@"
 
 // regenerateStoresEnv writes ~/.config/pai/stores.env from the registry,
 // matching the format `brain stores env` emits. Returns the written path.
-func regenerateStoresEnv(stores map[string]string) (string, error) {
+func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", fmt.Errorf("resolving home dir: %w", err)
@@ -355,7 +400,7 @@ func regenerateStoresEnv(stores map[string]string) (string, error) {
 	sb.WriteString("# Regenerate: brain stores env\n\n")
 	for _, n := range names {
 		varName := "PAI_STORE_" + strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-		sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n]))
+		sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n].Path))
 	}
 	sb.WriteString(fmt.Sprintf("\nexport PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
 
@@ -430,7 +475,7 @@ func runBrainStoresRenderAll(_ *cobra.Command, _ []string) {
 	totalFailed := 0
 
 	for _, name := range names {
-		beadsDir := stores[name]
+		beadsDir := stores[name].Path
 		out := renderAllStoreOutcome{Name: name, Path: beadsDir}
 
 		// Subprocess: bd render-all --json with BEADS_DIR + BD_NAME pinned to
@@ -553,10 +598,11 @@ func runBrainStoresAlias(_ *cobra.Command, args []string) {
 	if err != nil {
 		FatalError("loading registry: %v", err)
 	}
-	beadsDir, ok := stores[existing]
+	existingEntry, ok := stores[existing]
 	if !ok {
 		FatalError("store %q is not registered (run 'brain stores list')", existing)
 	}
+	beadsDir := existingEntry.Path
 
 	wrapperPath := ""
 	if !aliasNoWrapper {
@@ -660,10 +706,11 @@ func runBrainStoresRename(_ *cobra.Command, args []string) {
 	if err != nil {
 		FatalError("loading registry: %v", err)
 	}
-	oldBeadsDir, ok := stores[oldName]
+	oldEntry, ok := stores[oldName]
 	if !ok {
 		FatalError("store %q is not registered (run 'brain stores list')", oldName)
 	}
+	oldBeadsDir := oldEntry.Path
 	if _, ok := stores[newName]; ok {
 		FatalError("store %q already exists in the registry; pick a different name", newName)
 	}
@@ -699,9 +746,10 @@ func runBrainStoresRename(_ *cobra.Command, args []string) {
 		}
 	}
 
-	// Step 3: update registry yaml.
+	// Step 3: update registry yaml. Carry the about blurb across the rename.
 	delete(stores, oldName)
-	stores[newName] = newBeadsDir
+	oldEntry.Path = newBeadsDir
+	stores[newName] = oldEntry
 	if err := saveStoresRegistry(stores); err != nil {
 		FatalError("saving registry: %v", err)
 	}
@@ -742,6 +790,49 @@ func pickRemovalMessage(oldName string, kept bool) string {
 	return filepath.Join("~", ".local", "bin", oldName)
 }
 
+var brainStoresSetAboutCmd = &cobra.Command{
+	Use:   "set-about <store> <blurb>",
+	Short: "Set the human-readable 'about' blurb for a registered store",
+	Long: `Attach a short description to a registered store, stored in the
+registry (~/.config/pai/stores.yaml) only. The wrapper script is left
+unchanged. View blurbs with 'brain stores list --verbose'.
+
+Pass an empty string to clear the blurb.
+
+Examples:
+  brain stores set-about robots "agent-detected tooling defects"
+  brain stores set-about ideas ""     # clear the blurb`,
+	Args: cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		name := strings.ToLower(strings.TrimSpace(args[0]))
+		about := strings.TrimSpace(args[1])
+
+		stores, err := loadStoresRegistry()
+		if err != nil {
+			FatalError("loading registry: %v", err)
+		}
+		entry, ok := stores[name]
+		if !ok {
+			FatalError("store %q is not registered (run 'brain stores list')", name)
+		}
+		entry.About = about
+		stores[name] = entry
+		if err := saveStoresRegistry(stores); err != nil {
+			FatalError("saving registry: %v", err)
+		}
+
+		if jsonOutput {
+			outputJSON(map[string]string{"name": name, "path": entry.Path, "about": about})
+			return
+		}
+		if about == "" {
+			fmt.Printf("%s Cleared about blurb for store %q\n", ui.RenderPass("✓"), name)
+		} else {
+			fmt.Printf("%s Set about for store %q → %s\n", ui.RenderPass("✓"), name, about)
+		}
+	},
+}
+
 var brainStoresEnvCmd = &cobra.Command{
 	Use:   "env",
 	Short: "Write ~/.config/pai/stores.env from the registry (for shell wrappers)",
@@ -768,7 +859,7 @@ var brainStoresEnvCmd = &cobra.Command{
 		sb.WriteString("# Regenerate: brain stores env\n\n")
 		for _, n := range names {
 			varName := "PAI_STORE_" + strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-			sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n]))
+			sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n].Path))
 		}
 		sb.WriteString(fmt.Sprintf("\nexport PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
 
@@ -817,12 +908,16 @@ func init() {
 	brainStoresRenameCmd.Flags().BoolVar(&renameKeepOldWrapper, "keep-old-wrapper", false,
 		"Leave ~/.local/bin/<old-name> in place pointing at the renamed path")
 
+	brainStoresListCmd.Flags().BoolVarP(&storesListVerbose, "verbose", "v", false,
+		"Include each store's about blurb as an extra column")
+
 	brainStoresCmd.AddCommand(brainStoresAddCmd)
 	brainStoresCmd.AddCommand(brainStoresRemoveCmd)
 	brainStoresCmd.AddCommand(brainStoresListCmd)
 	brainStoresCmd.AddCommand(brainStoresCreateCmd)
 	brainStoresCmd.AddCommand(brainStoresAliasCmd)
 	brainStoresCmd.AddCommand(brainStoresRenameCmd)
+	brainStoresCmd.AddCommand(brainStoresSetAboutCmd)
 	brainStoresCmd.AddCommand(brainStoresRenderAllCmd)
 	brainStoresCmd.AddCommand(brainStoresEnvCmd)
 	brainCmd.AddCommand(brainStoresCmd)

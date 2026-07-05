@@ -203,10 +203,11 @@ func collectSecondarySections(ctx context.Context, query string) []federatedSect
 	}
 
 	sections := make([]federatedSection, 0, len(registry))
-	for name, beadsDir := range registry {
+	for name, entry := range registry {
 		if strings.EqualFold(name, primaryStoreName) {
 			continue
 		}
+		beadsDir := entry.Path
 		dbName, err := resolveDoltDatabase(beadsDir)
 		if err != nil || dbName == "" {
 			continue // ISC-43: unreachable / missing metadata → skip silently
