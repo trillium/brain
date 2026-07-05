@@ -10,7 +10,9 @@ import (
 	"strings"
 
 	patchverb "github.com/steveyegge/beads/internal/brain/verb/patch"
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -267,6 +269,27 @@ func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 // trail, and exfiltration for free.
 func runPatchPassthrough(ctx context.Context, result *RoutedResult, field, value string) {
 	issueStore := result.Store
+
+	// Per-store content-schema check on description patches — mirrors the
+	// create-time gate. Validate the incoming body BEFORE writing, under the
+	// same validation.on-create tristate.
+	if field == "description" {
+		mode := config.GetString("validation.on-create")
+		if mode == "warn" || mode == "error" {
+			issueType := ""
+			if result.Issue != nil {
+				issueType = string(result.Issue.IssueType)
+			}
+			labels, _ := issueStore.GetLabels(ctx, result.ResolvedID)
+			if serr := validateBodySchema(issueType, labels, value); serr != nil {
+				if mode == "error" {
+					FatalErrorRespectJSON("%v", serr)
+				}
+				fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), serr)
+			}
+		}
+	}
+
 	updates := map[string]interface{}{field: value}
 	if err := issueStore.UpdateIssue(ctx, result.ResolvedID, updates, actor); err != nil {
 		FatalErrorRespectJSON("updating %s: %v", field, err)
