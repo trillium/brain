@@ -50,6 +50,10 @@ var YamlOnlyKeys = map[string]bool{
 	// Create command settings
 	"create.require-description": true,
 
+	// Change-event emission (brain). Startup-read at PersistentPostRun, so it
+	// lives in yaml rather than the DB (matches the export.* pattern).
+	"change-events.enabled": true,
+
 	// Validation settings (bd-t7jq)
 	// Values: "warn" | "error" | "none"
 	"validation.on-create": true,
@@ -101,7 +105,7 @@ func IsYamlOnlyKey(key string) bool {
 	}
 
 	// Check prefix matches for nested keys
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics."}
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics.", "change-events."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
