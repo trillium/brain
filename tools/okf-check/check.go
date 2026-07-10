@@ -59,6 +59,16 @@ func Check(paths []string) (*Report, error) {
 		return nil, err
 	}
 
+	// The bundle-root index.md — the `index.md` sitting at the root of a
+	// path being checked — is permitted to carry `okf_version` frontmatter
+	// (OKF progressive-disclosure root; isa-6zq ISC-9). rootIndexes is the
+	// set of such paths so checkFile can exempt them while still rejecting
+	// any NESTED index.md that carries frontmatter.
+	rootIndexes, err := collectRootIndexes(paths)
+	if err != nil {
+		return nil, err
+	}
+
 	for _, path := range files {
 		if seen[path] {
 			// A file reachable via two overlapping input paths (e.g. a
@@ -68,7 +78,7 @@ func Check(paths []string) (*Report, error) {
 		seen[path] = true
 
 		rep.Checked++
-		if v, ok := checkFile(path); !ok {
+		if v, ok := checkFile(path, rootIndexes[path]); !ok {
 			rep.Failed++
 			rep.Violations = append(rep.Violations, v)
 		} else {
@@ -135,17 +145,58 @@ func collectMarkdownFiles(paths []string) ([]string, error) {
 	return out, nil
 }
 
+// collectRootIndexes returns the set of `index.md` paths that count as a
+// bundle-root index — the one place OKF permits `okf_version` frontmatter
+// (isa-6zq ISC-9). Membership is keyed by absolute-cleaned path so it can be
+// looked up against the paths produced by collectMarkdownFiles.
+//
+// For each input path we treat as a candidate bundle root:
+//   - a single-file input that IS an index.md → that file;
+//   - a directory input → its own `index.md` AND its `entries/index.md`
+//     (brain's real OKF bundle root is the `entries/` subdir, but callers
+//     also point the checker directly at a store's `entries/` dir, whose
+//     own index.md is then the root).
+//
+// Any index.md NOT in this set is a nested index and remains subject to the
+// no-frontmatter rule (#3).
+func collectRootIndexes(paths []string) (map[string]bool, error) {
+	roots := make(map[string]bool)
+	add := func(p string) {
+		roots[filepath.Clean(p)] = true
+	}
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, fmt.Errorf("stat %s: %w", p, err)
+		}
+		if !info.IsDir() {
+			if strings.EqualFold(filepath.Base(p), "index.md") {
+				add(p)
+			}
+			continue
+		}
+		add(filepath.Join(p, "index.md"))
+		add(filepath.Join(p, "entries", "index.md"))
+	}
+	return roots, nil
+}
+
 // checkFile validates one `.md` file against the OKF v0.1 requirements this
 // checker covers. It returns a zero-value Violation and ok=true when the
 // file conforms, or a populated Violation and ok=false when it does not.
 //
+// isRootIndex is true only when path is a bundle-root index.md (see
+// collectRootIndexes) — the one place OKF permits frontmatter on an index.
+//
 // Rules:
-//   - index.md (reserved): must NOT carry a frontmatter block (#3). It is
-//     exempt from the type check.
+//   - bundle-root index.md: MAY carry frontmatter, provided it parses and
+//     contains only benign keys (at minimum `okf_version`) — isa-6zq ISC-9.
+//   - nested index.md (reserved): must NOT carry a frontmatter block (#3).
+//     It is exempt from the type check.
 //   - log.md (reserved): exempt from all checks (no frontmatter expected).
 //   - every other .md: must have a parseable YAML frontmatter block (#1)
 //     with a non-empty `type` (#2).
-func checkFile(path string) (Violation, bool) {
+func checkFile(path string, isRootIndex bool) (Violation, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Violation{File: path, Reason: fmt.Sprintf("unreadable: %v", err)}, false
@@ -154,13 +205,23 @@ func checkFile(path string) (Violation, bool) {
 	base := strings.ToLower(filepath.Base(path))
 	fmBytes, hasFrontmatter := extractFrontmatter(data)
 
-	// #3: a present index.md must NOT carry a frontmatter block.
+	// index.md handling. The bundle-root index.md is the ONE exception that
+	// may carry frontmatter (declaring okf_version); every nested index.md
+	// must remain frontmatter-free (#3).
 	if base == "index.md" {
-		if hasFrontmatter {
+		if !hasFrontmatter {
+			return Violation{}, true
+		}
+		if !isRootIndex {
 			return Violation{
 				File:   path,
-				Reason: "OKF #3: index.md is reserved and must not carry a frontmatter block",
+				Reason: "OKF #3: a nested index.md is reserved and must not carry a frontmatter block",
 			}, false
+		}
+		// Root index with frontmatter: it must parse and carry only benign
+		// keys (at minimum, it is permitted to carry okf_version).
+		if v, ok := checkRootIndexFrontmatter(path, fmBytes); !ok {
+			return v, false
 		}
 		return Violation{}, true
 	}
@@ -194,6 +255,42 @@ func checkFile(path string) (Violation, bool) {
 		}, false
 	}
 
+	return Violation{}, true
+}
+
+// rootIndexAllowedKeys are the frontmatter keys the bundle-root index.md may
+// carry. `okf_version` is the declared reason for the exemption (ISC-9); the
+// rest are benign OKF/Obsidian bundle-level metadata a producer might add.
+// Anything outside this set on the root index is rejected — the exemption is
+// deliberately narrow so it cannot become a backdoor for arbitrary
+// frontmatter on an index.
+var rootIndexAllowedKeys = map[string]bool{
+	"okf_version": true,
+	"title":       true,
+	"tags":        true,
+}
+
+// checkRootIndexFrontmatter validates the frontmatter of a bundle-root
+// index.md: it must parse as YAML and contain only keys in
+// rootIndexAllowedKeys. Returns ok=true when acceptable, otherwise a
+// populated Violation naming the first offending condition.
+func checkRootIndexFrontmatter(path string, fmBytes []byte) (Violation, bool) {
+	var fm map[string]any
+	if err := yaml.Unmarshal(fmBytes, &fm); err != nil {
+		return Violation{
+			File:   path,
+			Reason: fmt.Sprintf("OKF #3: root index.md frontmatter does not parse as YAML: %v", err),
+		}, false
+	}
+	for k := range fm {
+		if !rootIndexAllowedKeys[strings.ToLower(strings.TrimSpace(k))] {
+			return Violation{
+				File: path,
+				Reason: fmt.Sprintf(
+					"OKF #3: root index.md frontmatter may only carry bundle metadata (okf_version), found disallowed key %q", k),
+			}, false
+		}
+	}
 	return Violation{}, true
 }
 

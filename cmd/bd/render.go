@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -157,8 +158,32 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 		FatalErrorRespectJSON("iterating issues: %v", err)
 	}
 
-	total := ok + failed
 	root := renderRoot(exf)
+
+	// Vault scaffolding pass (isa-6zq ISC-8..9): after every entry is
+	// rendered, (re)generate a reserved index.md per directory and declare
+	// okf_version at the bundle root. A scaffolding failure is folded into
+	// the run's failure accounting (and surfaced) but does not discard the
+	// per-entry render results already reported above. Counted as its own
+	// unit so the `ok / total (failed)` invariant (total = ok + failed)
+	// still holds in the summary.
+	if root != "" {
+		if err := exfiltrator.WriteIndexes(root); err != nil {
+			failed++
+			results = append(results, renderAllResult{
+				ID:     "",
+				Path:   filepath.Join(root, "entries"),
+				Status: "failed",
+				Error:  fmt.Sprintf("index scaffolding: %v", err),
+			})
+			if !jsonOutput {
+				fmt.Printf("\t%s\tfailed: index scaffolding: %v\n",
+					filepath.Join(root, "entries"), err)
+			}
+		}
+	}
+
+	total := ok + failed
 
 	if jsonOutput {
 		payload := map[string]interface{}{
@@ -224,4 +249,3 @@ func emitRenderPath(id, path string) {
 	}
 	fmt.Println(path)
 }
-

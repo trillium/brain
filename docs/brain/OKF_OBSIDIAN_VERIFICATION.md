@@ -30,11 +30,21 @@ OKF v0.1 requires, and this checker enforces on every non-reserved `.md`:
 |---|-------------|------------------|
 | #1 | Parseable frontmatter | File must start with a `---` … `---` YAML block that parses as YAML. |
 | #2 | Non-empty `type` | That frontmatter must carry a non-empty string `type`. |
-| #3 | Reserved `index.md` | If an `index.md` is present, it must **not** carry a frontmatter block. |
+| #3 | Reserved `index.md` | A **nested** `index.md` must **not** carry a frontmatter block. The **bundle-root** `index.md` (`<store>/entries/index.md`) is the one exception — it MAY carry `okf_version` frontmatter (progressive-disclosure root; ISC-9), provided the block parses and holds only benign bundle-metadata keys (`okf_version`, and optionally `title`/`tags`). |
 
 **Reserved files** (`index.md`, `log.md`) are exempt from #1/#2 — they
 legitimately have no frontmatter. Dotfiles/dot-directories (`.git`,
 `.obsidian`, `.checkpoint.json`, …) are skipped.
+
+> **Root-index exception (ISC-9).** `render-all` scaffolds a reserved
+> `index.md` in every directory of the vault for OKF progressive disclosure.
+> All of them are frontmatter-free **except** the bundle-root
+> `<store>/entries/index.md`, which declares `okf_version: "0.1"`. The checker
+> treats the `index.md` at the root of the path being checked as the bundle
+> root and permits that one `okf_version` block; any **nested** `index.md`
+> carrying frontmatter is still flagged under #3. A root index whose
+> frontmatter carries a key outside the benign set (e.g. a stray `type` or
+> `status`) is also flagged — the exemption is deliberately narrow.
 
 The checker collects **all** violations (it does not stop at the first),
 prints a per-file report, and exits **non-zero** on any violation, **0**

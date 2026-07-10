@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -161,6 +162,94 @@ func TestHasNonEmptyType(t *testing.T) {
 				t.Errorf("hasNonEmptyType(%v) = %v, want %v", tc.fm, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestCheck_RootIndexWithOKFVersion asserts the bundle-root index.md may
+// carry `okf_version` frontmatter (isa-6zq ISC-9) while the nested
+// knowledge/index.md (frontmatter-free) and the typed entry both pass —
+// the whole bundle is conformant.
+func TestCheck_RootIndexWithOKFVersion(t *testing.T) {
+	rep, err := Check([]string{"testdata/rootindex"})
+	if err != nil {
+		t.Fatalf("Check returned error: %v", err)
+	}
+	if rep.Failed != 0 {
+		t.Fatalf("expected 0 failures for a root index carrying okf_version, got %d: %+v",
+			rep.Failed, rep.Violations)
+	}
+	// entries/index.md, knowledge/index.md, knowledge/alpha.md
+	if rep.Checked != 3 {
+		t.Errorf("expected 3 files checked, got %d", rep.Checked)
+	}
+}
+
+// TestCheck_NestedIndexWithFrontmatterFails asserts that a NESTED index.md
+// carrying frontmatter is still rejected (#3) even though the bundle-root
+// index.md is allowed to carry okf_version. The typed entry still passes.
+func TestCheck_NestedIndexWithFrontmatterFails(t *testing.T) {
+	rep, err := Check([]string{"testdata/nested-index-fm"})
+	if err != nil {
+		t.Fatalf("Check returned error: %v", err)
+	}
+	if rep.Failed != 1 {
+		t.Fatalf("expected exactly 1 failure (the nested index), got %d: %+v",
+			rep.Failed, rep.Violations)
+	}
+	v := rep.Violations[0]
+	if filepath.Base(filepath.Dir(v.File)) != "knowledge" {
+		t.Errorf("expected the nested knowledge/index.md to fail, got %q", v.File)
+	}
+	if filepath.Base(v.File) != "index.md" {
+		t.Errorf("expected the failing file to be an index.md, got %q", v.File)
+	}
+	if !strings.Contains(v.Reason, "OKF #3") || !strings.Contains(v.Reason, "nested") {
+		t.Errorf("nested index.md should fail OKF #3 as a nested index, got reason: %q", v.Reason)
+	}
+}
+
+// TestCheck_RootIndexDisallowedKey asserts the root-index exemption is narrow:
+// frontmatter with a disallowed key (e.g. a stray `type`) is rejected even at
+// the bundle root.
+func TestCheck_RootIndexDisallowedKey(t *testing.T) {
+	dir := t.TempDir()
+	entries := filepath.Join(dir, "entries")
+	if err := os.MkdirAll(entries, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Root index with a disallowed key alongside okf_version.
+	rootIdx := "---\nokf_version: \"0.1\"\nstatus: open\n---\n\n# Entries\n"
+	if err := os.WriteFile(filepath.Join(entries, "index.md"), []byte(rootIdx), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := Check([]string{dir})
+	if err != nil {
+		t.Fatalf("Check returned error: %v", err)
+	}
+	if rep.Failed != 1 {
+		t.Fatalf("expected 1 failure for a disallowed root-index key, got %d: %+v",
+			rep.Failed, rep.Violations)
+	}
+	if !strings.Contains(rep.Violations[0].Reason, "OKF #3") {
+		t.Errorf("expected an OKF #3 reason for the disallowed key, got %q", rep.Violations[0].Reason)
+	}
+}
+
+// TestCheck_MissingTypeStillFails is a regression guard: after adding the
+// root-index exemption, a non-reserved entry missing `type` must STILL fail.
+func TestCheck_MissingTypeStillFails(t *testing.T) {
+	rep, err := Check([]string{"testdata/nonconformant"})
+	if err != nil {
+		t.Fatalf("Check returned error: %v", err)
+	}
+	var sawMissingType bool
+	for _, v := range rep.Violations {
+		if filepath.Base(v.File) == "missing-type.md" && strings.Contains(v.Reason, "OKF #2") {
+			sawMissingType = true
+		}
+	}
+	if !sawMissingType {
+		t.Errorf("expected missing-type.md to still fail OKF #2 after the root-index exemption; violations: %+v", rep.Violations)
 	}
 }
 
