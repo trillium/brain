@@ -70,6 +70,19 @@ func (r *recordingExf) lastRender() *types.Issue {
 	return r.renders[len(r.renders)-1]
 }
 
+// lastRelatedLinks returns the RelatedLinks the decorator hydrated onto
+// the issue passed to the most recent Render call. Used to assert the
+// decorator resolves and passes edges through to the exfiltrator
+// (isa-6zq ISC-5).
+func (r *recordingExf) lastRelatedLinks() []types.RelatedLink {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.renders) == 0 {
+		return nil
+	}
+	return r.renders[len(r.renders)-1].RelatedLinks
+}
+
 // fakeBrainStore is a minimal DoltStorage stub backed by an in-memory
 // map. Lifted from the hook_decorator_internal_test.go fakeHookStore
 // pattern. Only the methods exercised by the decorator are implemented;
@@ -80,12 +93,31 @@ type fakeBrainStore struct {
 	DoltStorage
 	mu       sync.Mutex
 	issues   map[string]*types.Issue
-	failOn   string // method name to fail on, "" means never fail
+	deps     map[string][]*types.Dependency // issueID → outgoing edges
+	depErr   error                          // when set, GetDependencyRecords fails with it
+	failOn   string                         // method name to fail on, "" means never fail
 	failWith error
 }
 
 func newFakeBrainStore() *fakeBrainStore {
-	return &fakeBrainStore{issues: map[string]*types.Issue{}}
+	return &fakeBrainStore{
+		issues: map[string]*types.Issue{},
+		deps:   map[string][]*types.Dependency{},
+	}
+}
+
+// GetDependencyRecords returns the outgoing edges for issueID. Backs the
+// decorator's resolveRelatedLinks. Returns depErr when set so tests can
+// exercise the "dependency read fails → render still succeeds" path.
+func (s *fakeBrainStore) GetDependencyRecords(_ context.Context, issueID string) ([]*types.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.depErr != nil {
+		return nil, s.depErr
+	}
+	out := make([]*types.Dependency, len(s.deps[issueID]))
+	copy(out, s.deps[issueID])
+	return out, nil
 }
 
 func (s *fakeBrainStore) shouldFail(method string) error {
@@ -834,4 +866,173 @@ func osStatNotExist(t *testing.T, root, rel string) error {
 		return err
 	}
 	return nil
+}
+
+// ── Related-edge hydration + resolution (isa-6zq ISC-5..7) ──────────
+
+// TestBrainExfDecorator_HydratesResolvedRelatedLinks pins that the
+// decorator loads an issue's outgoing edges, resolves each target's
+// (title, kind, slug) via the MarkdownExfiltrator, and passes the
+// resolved RelatedLinks to Render. Uses a real MarkdownExfiltrator so
+// SlugFor resolution actually runs, then reads the on-disk file to prove
+// the `## Related` block landed with real markdown links.
+func TestBrainExfDecorator_HydratesResolvedRelatedLinks(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	// Source knowledge doc + a resolvable target task.
+	store.issues["B-src"] = brainIssue("B-src", "source doc", types.TypeKnowledge)
+	store.issues["B-tgt"] = brainIssue("B-tgt", "target doc", types.TypeTask)
+	store.deps["B-src"] = []*types.Dependency{
+		{IssueID: "B-src", DependsOnID: "B-tgt", Type: types.DepRelatesTo},
+	}
+
+	// A render of the source (triggered here via AddLabel, but any
+	// mutation funnels through renderByID) must materialize the edge.
+	if err := d.AddLabel(context.Background(), "B-src", "alpha", "tester"); err != nil {
+		t.Fatalf("AddLabel: %v", err)
+	}
+
+	data, err := os.ReadFile(root + "/entries/knowledge/source-doc.md")
+	if err != nil {
+		t.Fatalf("read source file: %v", err)
+	}
+	content := string(data)
+	want := "- [target doc](/entries/task/target-doc.md) — relates-to\n"
+	if !contains(content, "## Related") || !contains(content, want) {
+		t.Fatalf("resolved Related block missing:\nwant substring: %q\n%s", want, content)
+	}
+}
+
+// TestBrainExfDecorator_UnresolvedEdgeDoesNotFailRender pins ISC-6: an
+// edge whose target is absent from this store (cross-store / deleted)
+// still renders — as a best-effort unresolved link — and never turns the
+// render into a failure.
+func TestBrainExfDecorator_UnresolvedEdgeDoesNotFailRender(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	store.issues["B-src"] = brainIssue("B-src", "source doc", types.TypeKnowledge)
+	// Target NOT present in store.issues → unresolvable.
+	store.deps["B-src"] = []*types.Dependency{
+		{IssueID: "B-src", DependsOnID: "OTHER-99", Type: types.DepRelatesTo},
+	}
+
+	if err := d.AddLabel(context.Background(), "B-src", "alpha", "tester"); err != nil {
+		t.Fatalf("AddLabel (should never fail on unresolved edge): %v", err)
+	}
+
+	data, err := os.ReadFile(root + "/entries/knowledge/source-doc.md")
+	if err != nil {
+		t.Fatalf("read source file: %v", err)
+	}
+	content := string(data)
+	want := "- [OTHER-99](/entries/OTHER-99.md) — relates-to (unresolved)\n"
+	if !contains(content, want) {
+		t.Fatalf("best-effort unresolved link missing:\nwant substring: %q\n%s", want, content)
+	}
+}
+
+// TestBrainExfDecorator_DependencyReadErrorRendersWithoutRelated pins
+// ISC-6: if the dependency read itself fails, the render still succeeds —
+// just without a `## Related` block. A transient dep-read failure must
+// never surface as a write failure.
+func TestBrainExfDecorator_DependencyReadErrorRendersWithoutRelated(t *testing.T) {
+	store := newFakeBrainStore()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	d := &BrainExfiltrationDecorator{
+		DoltStorage: store,
+		inner:       store,
+		exf:         exf,
+	}
+
+	store.issues["B-src"] = brainIssue("B-src", "source doc", types.TypeKnowledge)
+	store.depErr = errors.New("dep table unavailable")
+
+	if err := d.AddLabel(context.Background(), "B-src", "alpha", "tester"); err != nil {
+		t.Fatalf("AddLabel: %v", err)
+	}
+
+	data, err := os.ReadFile(root + "/entries/knowledge/source-doc.md")
+	if err != nil {
+		t.Fatalf("read source file: %v", err)
+	}
+	if contains(string(data), "## Related") {
+		t.Fatalf("Related block present despite dependency read error:\n%s", string(data))
+	}
+}
+
+// TestBrainExfDecorator_NoEdgesNoRelatedLinks pins that an issue with no
+// outgoing edges is handed nil RelatedLinks (no `## Related` block).
+func TestBrainExfDecorator_NoEdgesNoRelatedLinks(t *testing.T) {
+	d, store, exf := newTestDecorator()
+	store.issues["B-plain"] = brainIssue("B-plain", "plain", types.TypeKnowledge)
+	// store.deps has no entry for B-plain.
+
+	if err := d.AddLabel(context.Background(), "B-plain", "alpha", "tester"); err != nil {
+		t.Fatalf("AddLabel: %v", err)
+	}
+	if links := exf.lastRelatedLinks(); links != nil {
+		t.Fatalf("expected nil RelatedLinks for edgeless issue, got %+v", links)
+	}
+}
+
+// TestBrainExfDecorator_PassesEdgeSetToRender pins that every outgoing
+// edge reaches Render (via the recording exfiltrator, which is not a
+// MarkdownExfiltrator, so links arrive unresolved but the edge set and
+// edge types are intact).
+func TestBrainExfDecorator_PassesEdgeSetToRender(t *testing.T) {
+	d, store, exf := newTestDecorator()
+	store.issues["B-e"] = brainIssue("B-e", "edged", types.TypeKnowledge)
+	store.deps["B-e"] = []*types.Dependency{
+		{IssueID: "B-e", DependsOnID: "B-x", Type: types.DepExtends},
+		{IssueID: "B-e", DependsOnID: "B-y", Type: types.DepRelatesTo},
+	}
+
+	if err := d.AddLabel(context.Background(), "B-e", "alpha", "tester"); err != nil {
+		t.Fatalf("AddLabel: %v", err)
+	}
+	links := exf.lastRelatedLinks()
+	if len(links) != 2 {
+		t.Fatalf("expected 2 related links passed to Render, got %d: %+v", len(links), links)
+	}
+	// recordingExf is not a *MarkdownExfiltrator, so slugs are unresolved.
+	byTarget := map[string]types.RelatedLink{}
+	for _, l := range links {
+		byTarget[l.TargetID] = l
+	}
+	if l, ok := byTarget["B-x"]; !ok || l.EdgeType != types.DepExtends || l.Resolved {
+		t.Fatalf("B-x edge wrong: %+v", l)
+	}
+	if l, ok := byTarget["B-y"]; !ok || l.EdgeType != types.DepRelatesTo || l.Resolved {
+		t.Fatalf("B-y edge wrong: %+v", l)
+	}
+}
+
+// contains is a tiny substring helper kept local to avoid importing
+// strings just for the related-edge assertions.
+func contains(haystack, needle string) bool {
+	return len(needle) == 0 || indexOf(haystack, needle) >= 0
+}
+
+func indexOf(haystack, needle string) int {
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
 }

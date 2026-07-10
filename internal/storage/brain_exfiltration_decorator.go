@@ -267,7 +267,77 @@ func (d *BrainExfiltrationDecorator) renderByID(ctx context.Context, id string) 
 	if err != nil {
 		return
 	}
+	// Hydrate the issue's outgoing edges into render-ready links so the
+	// pure-Go exfiltrator can emit a `## Related` section (isa-6zq
+	// ISC-5..7). types.Issue.Dependencies is not hydrated by default
+	// (perf, types.go IncludeDependencies), and the exfiltrator has no
+	// storage access — so resolution happens here, on the render path
+	// every mutation funnels through (direct + post-commit transaction).
+	//
+	// Resolution errors are swallowed, exactly as the GetIssue re-fetch
+	// above is: a transient dependency-read failure must never turn a
+	// successful storage mutation into a render error. Worst case the
+	// entry renders without its `## Related` block; the reconciler is the
+	// documented safety net.
+	issue.RelatedLinks = d.resolveRelatedLinks(ctx, id)
 	_ = d.exf.Render(ctx, issue)
+}
+
+// resolveRelatedLinks loads the outgoing dependency records for id and
+// resolves each edge's target into a render-ready types.RelatedLink.
+//
+// Design (isa-6zq WS2, resolved at BUILD):
+//   - Only OUTGOING edges are rendered — the issue's own dependency
+//     records. No reverse-edge query (ISC-6 graceful degradation).
+//   - Each Dependency.DependsOnID is resolved via d.inner.GetIssue →
+//     the target's slug (via MarkdownExfiltrator.SlugFor), kind, and
+//     title. A target that cannot be resolved (cross-store edge, deleted
+//     target, or GetIssue error) yields an UNRESOLVED best-effort link
+//     rather than failing the whole render (ISC-6 broken-link tolerance).
+//   - Slug resolution is NOT done inside the exfiltrator; it happens here
+//     where storage access lives, keeping the exfiltrator pure Go.
+//
+// Returns nil when there are no edges (the exfiltrator then emits no
+// `## Related` block — ISC-6, and byte-identical to the edgeless render).
+func (d *BrainExfiltrationDecorator) resolveRelatedLinks(ctx context.Context, id string) []types.RelatedLink {
+	// GetDependencyRecords returns the raw outgoing edges — including
+	// ones whose target is cross-store or deleted (unlike the hydrated
+	// GetDependenciesWithMetadata, which silently drops unresolvable
+	// targets). We want the full edge set so unresolvable targets still
+	// render a best-effort link.
+	deps, err := d.inner.GetDependencyRecords(ctx, id)
+	if err != nil || len(deps) == 0 {
+		return nil
+	}
+
+	mx, hasSlugResolver := d.exf.(*exfiltrator.MarkdownExfiltrator)
+
+	links := make([]types.RelatedLink, 0, len(deps))
+	for _, dep := range deps {
+		if dep == nil || dep.DependsOnID == "" {
+			continue
+		}
+		link := types.RelatedLink{
+			TargetID: dep.DependsOnID,
+			EdgeType: dep.Type,
+		}
+
+		// Resolve the target issue. Any failure → unresolved best-effort.
+		target, terr := d.inner.GetIssue(ctx, dep.DependsOnID)
+		if terr == nil && target != nil && target.IssueType != "" && hasSlugResolver {
+			if slug, _, serr := mx.SlugFor(target); serr == nil && slug != "" {
+				link.Title = target.Title
+				link.Kind = target.IssueType
+				link.Slug = slug
+				link.Resolved = true
+			}
+		}
+		links = append(links, link)
+	}
+	if len(links) == 0 {
+		return nil
+	}
+	return links
 }
 
 // snapshotKindAndSlug returns the current (kind, slug) for id from the

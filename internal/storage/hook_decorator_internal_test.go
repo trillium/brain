@@ -280,6 +280,7 @@ func TestCloneIssueForHookCoversReferenceFields(t *testing.T) {
 		"Comments":          {},
 		"BondedFrom":        {},
 		"Waiters":           {},
+		"RelatedLinks":      {},
 	}
 	issueType := reflect.TypeOf(types.Issue{})
 	for i := 0; i < issueType.NumField(); i++ {

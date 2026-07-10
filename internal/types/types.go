@@ -110,6 +110,46 @@ type Issue struct {
 	Actor     string `json:"actor,omitempty"`      // Entity URI who caused this event
 	Target    string `json:"target,omitempty"`     // Entity URI or bead ID affected
 	Payload   string `json:"payload,omitempty"`    // Event-specific JSON data
+
+	// ===== Render Hints (transient; not persisted, not synced) =====
+	// RelatedLinks carries the resolved outgoing-edge links the brain
+	// exfiltration decorator hydrates just before Render, so the pure-Go
+	// exfiltrator can emit a `## Related` section without querying storage
+	// itself (isa-6zq ISC-5..7). It is a render-only hint: json:"-" keeps
+	// it out of every serialization / sync / content-hash path, exactly
+	// like the SourceRepo/IDPrefix routing fields above.
+	RelatedLinks []RelatedLink `json:"-"`
+}
+
+// RelatedLink is a resolved outgoing brain-edge, ready to render as a
+// markdown link in an entry's `## Related` section (isa-6zq ISC-5).
+//
+// The exfiltration decorator builds these (it has storage access to
+// resolve each Dependency.DependsOnID → target slug/title/kind); the
+// pure-Go exfiltrator only reads them. Standard markdown links are used
+// (not [[wikilinks]]) so BOTH OKF (which recognizes only /absolute and
+// ./relative markdown links) and Obsidian (which also resolves markdown
+// links into its graph) light up. See divergence/0012 and the isa-6zq
+// WS2 decision.
+type RelatedLink struct {
+	// TargetID is the raw DependsOnID of the edge. Always set. Used for
+	// the best-effort unresolved-link form and for deterministic tie-breaks.
+	TargetID string
+	// Title is the target issue's title. Empty when the target could not
+	// be resolved (cross-store or deleted); the renderer falls back to
+	// TargetID for the link text in that case.
+	Title string
+	// Kind is the target issue's IssueType, used to build the
+	// `/entries/<kind>/<slug>.md` path. Empty when unresolved.
+	Kind IssueType
+	// Slug is the target's on-disk slug. Empty when unresolved.
+	Slug string
+	// EdgeType is the dependency/edge type (e.g. relates-to, extends).
+	EdgeType DependencyType
+	// Resolved is true when the target issue was found in this store and
+	// Title/Kind/Slug are populated. False for cross-store, deleted, or
+	// otherwise unresolvable targets — those render a best-effort link.
+	Resolved bool
 }
 
 // ComputeContentHash creates a deterministic hash of the issue's content.

@@ -414,6 +414,11 @@ func cloneIssueForHook(issue *types.Issue) *types.Issue {
 	}
 	clone.BondedFrom = append([]types.BondRef(nil), issue.BondedFrom...)
 	clone.Waiters = append([]string(nil), issue.Waiters...)
+	// RelatedLinks is a transient render hint (json:"-") the brain
+	// exfiltration decorator populates before Render. It carries no
+	// pointers, so a shallow element copy of the slice fully detaches the
+	// clone from the source (isa-6zq ISC-5).
+	clone.RelatedLinks = append([]types.RelatedLink(nil), issue.RelatedLinks...)
 	return &clone
 }
 

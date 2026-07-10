@@ -839,3 +839,205 @@ func TestRender_VeryLongTitleTruncatesSlug(t *testing.T) {
 		t.Fatalf("expected file at %s: %v", path, err)
 	}
 }
+
+// ── Related-edge rendering (isa-6zq ISC-5..7) ──────────────────────
+
+// relatedIssue builds a brain issue with a pinned slug (so both renders
+// target the same path) and the given resolved related-links.
+func relatedIssue(t *testing.T, id, slug string, links []types.RelatedLink) *types.Issue {
+	t.Helper()
+	issue := mustBrainIssue(t, id, "src "+id, types.TypeKnowledge)
+	issue.Metadata = json.RawMessage(`{"brain_slug":"` + slug + `"}`)
+	issue.RelatedLinks = links
+	return issue
+}
+
+// TestRender_NoEdgesNoRelatedBlock asserts ISC-6: an entry with no edges
+// renders no `## Related` block, and is byte-identical to the same issue
+// with RelatedLinks left nil (the WS1 edgeless render). This pins that
+// the new code path adds zero bytes when there are no edges.
+func TestRender_NoEdgesNoRelatedBlock(t *testing.T) {
+	t.Parallel()
+
+	// Empty slice and nil must both produce the edgeless render.
+	for _, name := range []string{"nil", "empty"} {
+		name := name
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var links []types.RelatedLink
+			if name == "empty" {
+				links = []types.RelatedLink{}
+			}
+			withLinks := relatedIssue(t, "B-noedge", "noedge-doc", links)
+			content := renderFile(t, withLinks)
+			if strings.Contains(content, "## Related") {
+				t.Fatalf("unexpected Related block for edgeless issue:\n%s", content)
+			}
+
+			// Byte-identical to a baseline issue that never set RelatedLinks.
+			baseline := relatedIssue(t, "B-noedge", "noedge-doc", nil)
+			baseline.RelatedLinks = nil
+			baselineContent := renderFile(t, baseline)
+			if content != baselineContent {
+				t.Fatalf("edgeless render drifted from baseline:\n--- with ---\n%s\n--- baseline ---\n%s", content, baselineContent)
+			}
+		})
+	}
+}
+
+// TestRender_SingleEdgeMarkdownLink asserts ISC-5: one resolved edge
+// renders as a standard markdown link under `## Related` pointing at the
+// OKF bundle-root-relative `/entries/<kind>/<slug>.md` path, annotated
+// with the edge type.
+func TestRender_SingleEdgeMarkdownLink(t *testing.T) {
+	t.Parallel()
+
+	links := []types.RelatedLink{{
+		TargetID: "B-target",
+		Title:    "Target Doc",
+		Kind:     types.TypeTask,
+		Slug:     "target-doc",
+		EdgeType: types.DepRelatesTo,
+		Resolved: true,
+	}}
+	content := renderFile(t, relatedIssue(t, "B-src1", "src-one", links))
+
+	if !strings.Contains(content, "\n## Related\n\n") {
+		t.Fatalf("missing Related heading:\n%s", content)
+	}
+	want := "- [Target Doc](/entries/task/target-doc.md) — relates-to\n"
+	if !strings.Contains(content, want) {
+		t.Fatalf("missing expected link %q:\n%s", want, content)
+	}
+	// The link is a standard markdown link, never a wikilink.
+	if strings.Contains(content, "[[") {
+		t.Fatalf("wikilink syntax leaked into render:\n%s", content)
+	}
+}
+
+// TestRender_MultipleEdgesDeterministicOrder asserts ISC-3 + ISC-5:
+// multiple edges render in a deterministic (edge-type, slug) order
+// regardless of the input slice order.
+func TestRender_MultipleEdgesDeterministicOrder(t *testing.T) {
+	t.Parallel()
+
+	// Intentionally unsorted input: mixed edge types and slugs.
+	links := []types.RelatedLink{
+		{TargetID: "B-z", Title: "Zeta", Kind: types.TypeKnowledge, Slug: "zeta", EdgeType: types.DepRelatesTo, Resolved: true},
+		{TargetID: "B-a", Title: "Alpha", Kind: types.TypeTask, Slug: "alpha", EdgeType: types.DepExtends, Resolved: true},
+		{TargetID: "B-m", Title: "Mid", Kind: types.TypeKnowledge, Slug: "mid", EdgeType: types.DepRelatesTo, Resolved: true},
+	}
+	content := renderFile(t, relatedIssue(t, "B-multi", "multi-src", links))
+
+	// Expected order: extends (alpha) < relates-to (mid) < relates-to (zeta).
+	// Primary sort by edge type, secondary by slug.
+	wantOrder := []string{
+		"- [Alpha](/entries/task/alpha.md) — extends\n",
+		"- [Mid](/entries/knowledge/mid.md) — relates-to\n",
+		"- [Zeta](/entries/knowledge/zeta.md) — relates-to\n",
+	}
+	lastIdx := -1
+	for _, w := range wantOrder {
+		idx := strings.Index(content, w)
+		if idx < 0 {
+			t.Fatalf("missing link %q:\n%s", w, content)
+		}
+		if idx <= lastIdx {
+			t.Fatalf("link %q out of deterministic order (idx %d <= %d):\n%s", w, idx, lastIdx, content)
+		}
+		lastIdx = idx
+	}
+}
+
+// TestRender_EdgesByteStableAcrossRenders asserts ISC-3: two renders of
+// the same issue WITH edges are byte-identical, even when the input slice
+// order differs between the two passes (determinism is enforced by the
+// renderer's sort, not by caller ordering).
+func TestRender_EdgesByteStableAcrossRenders(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+
+	base := []types.RelatedLink{
+		{TargetID: "B-a", Title: "Alpha", Kind: types.TypeTask, Slug: "alpha", EdgeType: types.DepExtends, Resolved: true},
+		{TargetID: "B-b", Title: "Beta", Kind: types.TypeKnowledge, Slug: "beta", EdgeType: types.DepRelatesTo, Resolved: true},
+		{TargetID: "B-c", Title: "Gamma", Kind: types.TypeKnowledge, Slug: "gamma", EdgeType: types.DepRelatesTo, Resolved: true},
+	}
+	issue := relatedIssue(t, "B-stableedge", "stable-edge", base)
+
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("first Render: %v", err)
+	}
+	path := exf.PathFor(types.TypeKnowledge, "stable-edge")
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("first ReadFile: %v", err)
+	}
+
+	// Second pass: same edges, reversed input order. Render must be identical.
+	reversed := make([]types.RelatedLink, len(base))
+	for i := range base {
+		reversed[len(base)-1-i] = base[i]
+	}
+	issue.RelatedLinks = reversed
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("second Render: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("second ReadFile: %v", err)
+	}
+
+	if !bytes.Equal(first, second) {
+		t.Fatalf("edge render not byte-stable across passes / input orderings:\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+}
+
+// TestRender_UnresolvedEdgeBestEffort asserts ISC-6: an unresolved
+// (cross-store / deleted) edge renders a best-effort link tagged
+// `(unresolved)` rather than failing the render or being silently dropped.
+func TestRender_UnresolvedEdgeBestEffort(t *testing.T) {
+	t.Parallel()
+
+	links := []types.RelatedLink{
+		{TargetID: "OTHER-42", EdgeType: types.DepRelatesTo, Resolved: false},
+		{TargetID: "B-ok", Title: "Resolved One", Kind: types.TypeTask, Slug: "resolved-one", EdgeType: types.DepExtends, Resolved: true},
+	}
+	content := renderFile(t, relatedIssue(t, "B-mixed", "mixed-src", links))
+
+	wantUnresolved := "- [OTHER-42](/entries/OTHER-42.md) — relates-to (unresolved)\n"
+	if !strings.Contains(content, wantUnresolved) {
+		t.Fatalf("missing best-effort unresolved link %q:\n%s", wantUnresolved, content)
+	}
+	wantResolved := "- [Resolved One](/entries/task/resolved-one.md) — extends\n"
+	if !strings.Contains(content, wantResolved) {
+		t.Fatalf("missing resolved link %q:\n%s", wantResolved, content)
+	}
+	// A best-effort render must still succeed and still carry the heading.
+	if !strings.Contains(content, "## Related") {
+		t.Fatalf("Related heading missing despite one resolvable edge:\n%s", content)
+	}
+}
+
+// TestRender_LinkTextEscapesBrackets asserts the link label escapes the
+// `]` character so a title containing brackets cannot break the markdown
+// link (which would make it unresolvable in OKF and Obsidian).
+func TestRender_LinkTextEscapesBrackets(t *testing.T) {
+	t.Parallel()
+
+	links := []types.RelatedLink{{
+		TargetID: "B-brk",
+		Title:    "Title [with] brackets",
+		Kind:     types.TypeKnowledge,
+		Slug:     "brk",
+		EdgeType: types.DepRelatesTo,
+		Resolved: true,
+	}}
+	content := renderFile(t, relatedIssue(t, "B-esc", "esc-src", links))
+
+	want := `- [Title [with\] brackets](/entries/knowledge/brk.md) — relates-to` + "\n"
+	if !strings.Contains(content, want) {
+		t.Fatalf("bracket in title not escaped in link label:\n%s\nwant substring: %q", content, want)
+	}
+}

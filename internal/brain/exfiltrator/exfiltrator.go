@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -451,7 +452,115 @@ func renderMarkdown(issue *types.Issue) string {
 			b.WriteByte('\n')
 		}
 	}
+
+	renderRelated(&b, issue.RelatedLinks)
+
 	return b.String()
+}
+
+// renderRelated appends a `## Related` section listing the issue's
+// resolved outgoing edges as markdown links (isa-6zq ISC-5..7).
+//
+// Contract:
+//   - Empty/nil links → nothing written (ISC-6: no edges = no block, and
+//     byte-identical to the WS1 edgeless render).
+//   - Deterministic order (ISC-3 byte-stability): links are sorted by
+//     (edge-type, slug-or-target-id, target-id) before rendering, so two
+//     renders of the same issue+edges are byte-identical regardless of
+//     the order storage returned the dependency rows.
+//   - Resolved link  → `- [Title](/entries/<kind>/<slug>.md) — <edge-type>`
+//     using OKF bundle-root-relative absolute paths (the leading `/`),
+//     which both OKF and Obsidian resolve.
+//   - Unresolved link (cross-store / deleted target) → best-effort
+//     `- [<targetID>](/entries/<targetID>.md) — <edge-type> (unresolved)`.
+//     Rendered, never dropped-as-error (ISC-6 broken-link tolerance).
+//
+// renderRelated is a pure function of the passed links — it performs no
+// storage access. Slug/title/kind resolution happens in the decorator.
+func renderRelated(b *strings.Builder, links []types.RelatedLink) {
+	if len(links) == 0 {
+		return
+	}
+
+	// Copy before sorting so we never mutate the caller's slice ordering
+	// (the issue snapshot may be reused; determinism must not be a
+	// side effect on shared state).
+	sorted := make([]types.RelatedLink, len(links))
+	copy(sorted, links)
+	sort.Slice(sorted, func(i, j int) bool {
+		return relatedLess(sorted[i], sorted[j])
+	})
+
+	b.WriteString("\n## Related\n\n")
+	for _, l := range sorted {
+		b.WriteString(relatedBullet(l))
+	}
+}
+
+// relatedLess is the total order used to make the `## Related` list
+// deterministic. Primary key: edge type. Secondary: the visible target
+// key (slug when resolved, else target ID). Tertiary: raw target ID as
+// a stable final tie-break so two edges of the same type to the same
+// slug (should not happen, but defensively) still order deterministically.
+func relatedLess(a, b types.RelatedLink) bool {
+	if a.EdgeType != b.EdgeType {
+		return a.EdgeType < b.EdgeType
+	}
+	ak, bk := relatedSortKey(a), relatedSortKey(b)
+	if ak != bk {
+		return ak < bk
+	}
+	return a.TargetID < b.TargetID
+}
+
+// relatedSortKey returns the visible target identifier used for ordering:
+// the slug for a resolved link, otherwise the raw target ID.
+func relatedSortKey(l types.RelatedLink) string {
+	if l.Resolved && l.Slug != "" {
+		return l.Slug
+	}
+	return l.TargetID
+}
+
+// relatedBullet renders one edge as a markdown list item with a trailing
+// newline. Resolved edges point at `/entries/<kind>/<slug>.md`; unresolved
+// edges fall back to a best-effort `/entries/<targetID>.md` link tagged
+// `(unresolved)` so a broken/cross-store edge is visible but never fails
+// the render.
+func relatedBullet(l types.RelatedLink) string {
+	edge := string(l.EdgeType)
+	if l.Resolved && l.Slug != "" && l.Kind != "" {
+		text := l.Title
+		if text == "" {
+			text = l.TargetID
+		}
+		return fmt.Sprintf("- [%s](/entries/%s/%s.md) — %s\n",
+			mdLinkText(text), l.Kind, l.Slug, edge)
+	}
+	// Best-effort unresolved form: link the raw target ID at a flat
+	// entries path. It may not resolve in a single-store vault; OKF and
+	// Obsidian both tolerate the broken link (ISC-6).
+	target := l.TargetID
+	suffix := " (unresolved)"
+	if edge == "" {
+		return fmt.Sprintf("- [%s](/entries/%s.md)%s\n",
+			mdLinkText(target), target, strings.TrimPrefix(suffix, " "))
+	}
+	return fmt.Sprintf("- [%s](/entries/%s.md) — %s%s\n",
+		mdLinkText(target), target, edge, suffix)
+}
+
+// mdLinkText escapes the two characters that would break a markdown link
+// label — `]` (which would terminate the label early) and `\` (the escape
+// char itself). Everything else is left verbatim; titles are single-line
+// by construction (issue titles do not contain newlines), so no further
+// sanitization is needed for a stable, resolvable link.
+func mdLinkText(s string) string {
+	if !strings.ContainsAny(s, "]\\") {
+		return s
+	}
+	r := strings.NewReplacer(`\`, `\\`, `]`, `\]`)
+	return r.Replace(s)
 }
 
 // yamlString quotes s for safe inclusion as a YAML scalar.
