@@ -453,9 +453,59 @@ func renderMarkdown(issue *types.Issue) string {
 		}
 	}
 
-	renderRelated(&b, issue.RelatedLinks)
+	// WS2 render-time `## Related` suppression (isa-6zq reconciliation).
+	//
+	// A one-shot backfill baked stored `## Related` [[wikilink]] blocks
+	// (terminated by the `brain:auto-related` marker) directly into ~529
+	// issue descriptions. Those stored blocks are canonical: when a
+	// description already carries a `## Related` section, the render-time
+	// WS2 block below would emit a SECOND `## Related` heading. Skip WS2's
+	// block entirely in that case so exactly one `## Related` survives.
+	//
+	// Byte-stability (ISC-3): this is a pure function of issue.Description.
+	// An entry with no stored block and no edges renders byte-identically
+	// to before — descriptionHasRelated returns false, RelatedLinks is
+	// empty, and renderRelated writes nothing.
+	if !descriptionHasRelated(issue.Description) {
+		renderRelated(&b, issue.RelatedLinks)
+	}
 
 	return b.String()
+}
+
+// autoRelatedMarker is the HTML-comment sentinel the one-shot backfill
+// appended to every stored `## Related` block it wrote. Presence of this
+// substring is the primary, robust signal that a description already owns
+// a canonical `## Related` section.
+const autoRelatedMarker = "brain:auto-related"
+
+// descriptionHasRelated reports whether the stored issue description
+// already contains a `## Related` section, in which case the render-time
+// WS2 block must be suppressed to avoid a duplicate heading.
+//
+// Detection is deliberately conservative:
+//  1. Primary: the `brain:auto-related` marker substring — set on every
+//     backfilled block, so this catches the ~529 backfilled descriptions
+//     regardless of any hand-editing of the wikilink body.
+//  2. Fallback: a line that is exactly `## Related` (after trimming a
+//     trailing carriage return, so CRLF descriptions match too) — catches
+//     any stored block lacking the marker.
+//
+// It is a pure function of desc; it performs no storage or filesystem
+// access and never mutates the description.
+func descriptionHasRelated(desc string) bool {
+	if desc == "" {
+		return false
+	}
+	if strings.Contains(desc, autoRelatedMarker) {
+		return true
+	}
+	for _, line := range strings.Split(desc, "\n") {
+		if strings.TrimRight(line, "\r") == "## Related" {
+			return true
+		}
+	}
+	return false
 }
 
 // renderRelated appends a `## Related` section listing the issue's

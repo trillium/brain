@@ -1041,3 +1041,127 @@ func TestRender_LinkTextEscapesBrackets(t *testing.T) {
 		t.Fatalf("bracket in title not escaped in link label:\n%s\nwant substring: %q", content, want)
 	}
 }
+
+// ── WS2 render-time `## Related` suppression (isa-6zq reconciliation) ──
+
+// storedRelatedIssue builds a brain issue whose Description already carries
+// a stored `## Related` block (as the one-shot backfill wrote), pinned to a
+// stable slug, with the given resolved related-links populated on top.
+func storedRelatedIssue(t *testing.T, id, slug, desc string, links []types.RelatedLink) *types.Issue {
+	t.Helper()
+	issue := mustBrainIssue(t, id, "src "+id, types.TypeKnowledge)
+	issue.Description = desc
+	issue.Metadata = json.RawMessage(`{"brain_slug":"` + slug + `"}`)
+	issue.RelatedLinks = links
+	return issue
+}
+
+// TestRender_StoredMarkedRelatedSuppressesWS2 asserts that when a
+// description already contains a stored `## Related` block terminated by the
+// `brain:auto-related` marker AND the issue has live edges, the render emits
+// EXACTLY ONE `## Related` heading — the stored one — and the WS2 render-time
+// block is suppressed.
+func TestRender_StoredMarkedRelatedSuppressesWS2(t *testing.T) {
+	t.Parallel()
+
+	desc := "Some body text.\n\n## Related\n\n- [[stored-target]]\n<!-- /brain:auto-related -->\n"
+	links := []types.RelatedLink{{
+		TargetID: "B-live",
+		Title:    "Live Edge",
+		Kind:     types.TypeTask,
+		Slug:     "live-edge",
+		EdgeType: types.DepRelatesTo,
+		Resolved: true,
+	}}
+	content := renderFile(t, storedRelatedIssue(t, "B-stored1", "stored-one", desc, links))
+
+	if n := strings.Count(content, "## Related"); n != 1 {
+		t.Fatalf("want exactly one `## Related` heading, got %d:\n%s", n, content)
+	}
+	// The surviving block is the stored wikilink block, not the WS2 markdown link.
+	if !strings.Contains(content, "[[stored-target]]") {
+		t.Fatalf("stored wikilink block did not survive:\n%s", content)
+	}
+	if strings.Contains(content, "/entries/task/live-edge.md") {
+		t.Fatalf("WS2 render-time block leaked despite stored block present:\n%s", content)
+	}
+}
+
+// TestRender_StoredBareRelatedSuppressesWS2 asserts the fallback detection:
+// a description with a bare `## Related` line (no `brain:auto-related` marker)
+// plus populated RelatedLinks still suppresses the WS2 block, leaving exactly
+// one `## Related` heading.
+func TestRender_StoredBareRelatedSuppressesWS2(t *testing.T) {
+	t.Parallel()
+
+	desc := "Intro paragraph.\n\n## Related\n\nSee also the other doc.\n"
+	links := []types.RelatedLink{{
+		TargetID: "B-live",
+		Title:    "Live Edge",
+		Kind:     types.TypeTask,
+		Slug:     "live-edge",
+		EdgeType: types.DepExtends,
+		Resolved: true,
+	}}
+	content := renderFile(t, storedRelatedIssue(t, "B-stored2", "stored-two", desc, links))
+
+	if n := strings.Count(content, "## Related"); n != 1 {
+		t.Fatalf("want exactly one `## Related` heading, got %d:\n%s", n, content)
+	}
+	if strings.Contains(content, "/entries/task/live-edge.md") {
+		t.Fatalf("WS2 render-time block leaked despite bare stored block present:\n%s", content)
+	}
+}
+
+// TestRender_NoStoredRelatedEmitsWS2 asserts unchanged behavior: a
+// description with NO `## Related` section plus populated RelatedLinks emits
+// the WS2 render-time block exactly as before this guard existed.
+func TestRender_NoStoredRelatedEmitsWS2(t *testing.T) {
+	t.Parallel()
+
+	desc := "Just a body paragraph with no related section.\n"
+	links := []types.RelatedLink{{
+		TargetID: "B-live",
+		Title:    "Live Edge",
+		Kind:     types.TypeTask,
+		Slug:     "live-edge",
+		EdgeType: types.DepRelatesTo,
+		Resolved: true,
+	}}
+	content := renderFile(t, storedRelatedIssue(t, "B-stored3", "stored-three", desc, links))
+
+	if n := strings.Count(content, "## Related"); n != 1 {
+		t.Fatalf("want exactly one WS2 `## Related` heading, got %d:\n%s", n, content)
+	}
+	want := "- [Live Edge](/entries/task/live-edge.md) — relates-to\n"
+	if !strings.Contains(content, want) {
+		t.Fatalf("WS2 render-time link missing when no stored block present:\n%s\nwant substring: %q", content, want)
+	}
+}
+
+// TestRender_NoStoredRelatedNoEdgesByteStable asserts ISC-3: a description
+// with NO `## Related` section and NO edges renders byte-identically to the
+// pre-guard no-Related baseline (an issue rendered with RelatedLinks nil and
+// no stored block). The suppression guard must add zero bytes on this path.
+func TestRender_NoStoredRelatedNoEdgesByteStable(t *testing.T) {
+	t.Parallel()
+
+	desc := "A plain body with no related section at all.\n"
+
+	withGuardPath := storedRelatedIssue(t, "B-stored4", "stored-four", desc, nil)
+	withGuardPath.RelatedLinks = nil
+	content := renderFile(t, withGuardPath)
+
+	if strings.Contains(content, "## Related") {
+		t.Fatalf("unexpected `## Related` block for edgeless, no-stored-block issue:\n%s", content)
+	}
+
+	// Baseline: identical issue, RelatedLinks nil, same empty stored state.
+	baseline := storedRelatedIssue(t, "B-stored4", "stored-four", desc, nil)
+	baseline.RelatedLinks = nil
+	baselineContent := renderFile(t, baseline)
+
+	if content != baselineContent {
+		t.Fatalf("guarded no-Related render drifted from baseline:\n--- with ---\n%s\n--- baseline ---\n%s", content, baselineContent)
+	}
+}
