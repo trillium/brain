@@ -1,6 +1,7 @@
 # Binaries
 /beads
 /bd
+/okf-check
 *.exe
 *.dll
 *.so

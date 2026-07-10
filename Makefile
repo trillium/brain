@@ -11,6 +11,7 @@ endif
 
 .PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
+.PHONY: okf-check
 
 # Default target
 all: build
@@ -123,6 +124,20 @@ ci-package-npm:
 
 ci-website:
 	@./scripts/ci/website.sh
+
+# Headless OKF v0.1 conformance check (brain fork only; not in cmd/bd).
+# Verifies every non-reserved .md in a rendered store carries parseable
+# frontmatter with a non-empty `type` — no Obsidian desktop app required.
+# See docs/brain/OKF_OBSIDIAN_VERIFICATION.md for the full runbook.
+#
+# Default target checks the checker's own testdata bundle (fast, hermetic,
+# always conformant) so `make okf-check` is a green smoke test with no
+# external dependency. Point it at a real store with OKF_CHECK_PATH:
+#   OKF_CHECK_PATH=$$HOME/data/brain/entries make okf-check
+OKF_CHECK_PATH ?= ./tools/okf-check/testdata/conformant
+okf-check:
+	@echo "Running OKF v0.1 conformance check against $(OKF_CHECK_PATH)..."
+	@go run ./tools/okf-check $(OKF_CHECK_PATH)
 
 # Run differential regression tests (baseline v0.49.6 vs current worktree).
 # Downloads baseline binary on first run; cached in ~/Library/Caches/beads-regression/.
