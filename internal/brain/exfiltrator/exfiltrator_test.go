@@ -1,6 +1,7 @@
 package exfiltrator_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -202,6 +203,7 @@ func TestRender_TaskWritesFile(t *testing.T) {
 		"id: B-task01",
 		`title: "first task"`,
 		"kind: task",
+		"type: task",
 		"priority: 2",
 		"created: 2026-05-31T12:00:00Z",
 		"updated: 2026-05-31T12:00:00Z",
@@ -609,11 +611,163 @@ func TestRender_EveryKnownKindWritesFile(t *testing.T) {
 			for _, mustContain := range []string{
 				"id: B-" + string(kind),
 				"kind: " + string(kind),
+				"type: " + string(kind),
 				"# hello " + string(kind),
 			} {
 				if !strings.Contains(gotBody, mustContain) {
 					t.Errorf("file body missing %q. Got:\n%s", mustContain, gotBody)
 				}
+			}
+		})
+	}
+}
+
+// ── OKF v0.1 + Obsidian frontmatter (ISC-1..4) ─────────────────────
+
+// renderFile renders issue through the public Render path and returns the
+// on-disk file contents. Used by the OKF frontmatter tests below since
+// renderMarkdown is unexported.
+func renderFile(t *testing.T, issue *types.Issue) string {
+	t.Helper()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	slug, _, err := exf.SlugFor(issue)
+	if err != nil {
+		t.Fatalf("SlugFor: %v", err)
+	}
+	path := exf.PathFor(issue.IssueType, slug)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// TestRender_TypeMirrorsKind asserts ISC-1: every entry carries a
+// non-empty `type` line whose value equals `kind` verbatim, for every
+// IssueType, while `kind` is retained (additive).
+func TestRender_TypeMirrorsKind(t *testing.T) {
+	t.Parallel()
+
+	kinds := []types.IssueType{
+		types.TypeTask,
+		types.TypeKnowledge,
+		types.TypeBoth,
+		types.TypeBug,
+		types.TypeISA,
+	}
+	for _, kind := range kinds {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			issue := mustBrainIssue(t, "B-"+string(kind), "mirror "+string(kind), kind)
+			content := renderFile(t, issue)
+
+			wantKind := "kind: " + string(kind) + "\n"
+			wantType := "type: " + string(kind) + "\n"
+			if !strings.Contains(content, wantKind) {
+				t.Errorf("missing %q (kind retained, additive):\n%s", wantKind, content)
+			}
+			if !strings.Contains(content, wantType) {
+				t.Errorf("missing %q (type mirrors kind):\n%s", wantType, content)
+			}
+			// `type` must sit immediately after `kind` — deterministic ordering.
+			if idxKind, idxType := strings.Index(content, wantKind), strings.Index(content, wantType); idxType != idxKind+len(wantKind) {
+				t.Errorf("type not directly after kind: kind@%d type@%d\n%s", idxKind, idxType, content)
+			}
+		})
+	}
+}
+
+// TestRender_TagsMirrorLabels asserts ISC-2: `tags` mirrors `labels`
+// element-for-element (same yamlString rendering), `labels` is retained,
+// and `tags` sits immediately after the `labels` block.
+func TestRender_TagsMirrorLabels(t *testing.T) {
+	t.Parallel()
+	issue := mustBrainIssue(t, "B-tags01", "tagged doc", types.TypeKnowledge)
+	// Include a label needing YAML quoting to prove tags uses the same encoding.
+	issue.Labels = []string{"cat-tech", "needs: review", "alpha"}
+
+	content := renderFile(t, issue)
+
+	wantLabels := `labels: ["cat-tech", "needs: review", "alpha"]` + "\n"
+	wantTags := `tags: ["cat-tech", "needs: review", "alpha"]` + "\n"
+	if !strings.Contains(content, wantLabels) {
+		t.Errorf("missing labels block %q:\n%s", wantLabels, content)
+	}
+	if !strings.Contains(content, wantTags) {
+		t.Errorf("missing tags block %q:\n%s", wantTags, content)
+	}
+	// tags must sit immediately after the labels block — deterministic ordering.
+	if idxLabels, idxTags := strings.Index(content, wantLabels), strings.Index(content, wantTags); idxTags != idxLabels+len(wantLabels) {
+		t.Errorf("tags not directly after labels: labels@%d tags@%d\n%s", idxLabels, idxTags, content)
+	}
+}
+
+// TestRender_TagsOmittedWhenNoLabels asserts ISC-2's conditional: an
+// entry with no labels emits neither a `labels:` nor a `tags:` line.
+func TestRender_TagsOmittedWhenNoLabels(t *testing.T) {
+	t.Parallel()
+	issue := mustBrainIssue(t, "B-notags01", "untagged doc", types.TypeKnowledge)
+	issue.Labels = nil
+
+	content := renderFile(t, issue)
+
+	if strings.Contains(content, "labels:") {
+		t.Errorf("labels line present for label-less issue:\n%s", content)
+	}
+	if strings.Contains(content, "tags:") {
+		t.Errorf("tags line present for label-less issue:\n%s", content)
+	}
+}
+
+// TestRender_ByteStableAcrossRenders asserts ISC-3: two consecutive
+// renders of the same issue snapshot produce byte-identical files. This
+// underpins the reconciler idempotence guarantee (ISC-123, divergence
+// 0012). Covers both the labelled (type+tags) and unlabelled paths.
+func TestRender_ByteStableAcrossRenders(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		labels []string
+	}{
+		{"with-labels", []string{"cat-tech", "alpha", "beta"}},
+		{"no-labels", nil},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+			issue := mustBrainIssue(t, "B-stable01", "stable doc", types.TypeKnowledge)
+			issue.Labels = tc.labels
+			// Pin the slug so both renders target the same path.
+			issue.Metadata = json.RawMessage(`{"brain_slug":"stable-doc"}`)
+
+			if err := exf.Render(context.Background(), issue); err != nil {
+				t.Fatalf("first Render: %v", err)
+			}
+			path := exf.PathFor(types.TypeKnowledge, "stable-doc")
+			first, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("first ReadFile: %v", err)
+			}
+
+			if err := exf.Render(context.Background(), issue); err != nil {
+				t.Fatalf("second Render: %v", err)
+			}
+			second, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("second ReadFile: %v", err)
+			}
+
+			if !bytes.Equal(first, second) {
+				t.Fatalf("render not byte-stable across two passes:\n--- first ---\n%s\n--- second ---\n%s", first, second)
 			}
 		})
 	}

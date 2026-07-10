@@ -390,6 +390,13 @@ func renderMarkdown(issue *types.Issue) string {
 	b.WriteString("kind: ")
 	b.WriteString(string(issue.IssueType))
 	b.WriteByte('\n')
+	// OKF v0.1 (ISC-1): every doc must carry a non-empty `type`. We
+	// mirror `kind` verbatim (decision in divergence/0018 — no descriptive
+	// remap). IssueType is validated non-empty at the top of Render, so
+	// this line is always populated. Additive: `kind` is retained above.
+	b.WriteString("type: ")
+	b.WriteString(string(issue.IssueType))
+	b.WriteByte('\n')
 	if issue.Status != "" {
 		b.WriteString("status: ")
 		b.WriteString(string(issue.Status))
@@ -410,6 +417,19 @@ func renderMarkdown(issue *types.Issue) string {
 	}
 	if len(issue.Labels) > 0 {
 		b.WriteString("labels: [")
+		for i, l := range issue.Labels {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(yamlString(l))
+		}
+		b.WriteString("]\n")
+		// OKF/Obsidian (ISC-2): `tags` mirrors `labels` element-for-element
+		// (same yamlString rendering). Obsidian treats `tags` as a special
+		// property and OKF recommends it. Additive: the `labels` block above
+		// is retained for back-compat. Same conditional as `labels` so an
+		// entry with no labels emits neither line.
+		b.WriteString("tags: [")
 		for i, l := range issue.Labels {
 			if i > 0 {
 				b.WriteString(", ")
