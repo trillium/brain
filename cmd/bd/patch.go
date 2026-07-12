@@ -9,18 +9,19 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	patchverb "github.com/steveyegge/beads/internal/brain/verb/patch"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/spf13/cobra"
 )
 
 // Flag values for `bd patch`. Kept package-scoped so cobra can bind them in
 // init() and the Run closure can read them.
 var (
-	patchField string
-	patchValue string
+	patchField         string
+	patchValue         string
+	patchOverwriteBody bool
 )
 
 var patchCmd = &cobra.Command{
@@ -54,6 +55,8 @@ Examples:
 func init() {
 	patchCmd.Flags().StringVar(&patchField, "field", "", "Field name to patch (required)")
 	patchCmd.Flags().StringVar(&patchValue, "value", "", "New value for the field (required)")
+	patchCmd.Flags().BoolVar(&patchOverwriteBody, "overwrite-body", false,
+		"Bypass the body-clobber guard when shrinking a large 'description' (the full body in brain v0.3)")
 	_ = patchCmd.MarkFlagRequired("field")
 	_ = patchCmd.MarkFlagRequired("value")
 	patchCmd.ValidArgsFunction = issueIDCompletion
@@ -269,6 +272,36 @@ func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 // trail, and exfiltration for free.
 func runPatchPassthrough(ctx context.Context, result *RoutedResult, field, value string) {
 	issueStore := result.Store
+
+	// Body-clobber guard on description patches. In brain v0.3 the
+	// `description` column IS the full body (see brain_new.go: --body maps to
+	// description). A `patch --field=description --value="short tagline"` after
+	// a large body was written via `update --stdin` silently overwrites the
+	// entire body with the tagline — the agent-bkm incident (2026-07-12).
+	//
+	// Heuristic: if the current body is substantial (>= 200 bytes) and the
+	// incoming value is a hard shrink (< 50% of the current length), treat it
+	// as a likely clobber and refuse. The thresholds are deliberately
+	// conservative — they never fire on small legitimate edits (e.g. a typo
+	// fix on a short entry) and always fire when a full body is replaced by a
+	// one-line tagline. --overwrite-body bypasses the guard for intentional
+	// rewrites.
+	if field == "description" && !patchOverwriteBody {
+		current := ""
+		if result.Issue != nil {
+			current = result.Issue.Description
+		}
+		curLen := len(current)
+		newLen := len(value)
+		if curLen >= 200 && newLen*2 < curLen {
+			FatalErrorRespectJSON(
+				"--field=description would replace %d bytes of existing body with %d bytes.\n"+
+					"'description' is the full body in brain v0.3 — use `brain update <id> --stdin` to\n"+
+					"rewrite body content intentionally.\n"+
+					"To proceed anyway: add --overwrite-body.",
+				curLen, newLen)
+		}
+	}
 
 	// Per-store content-schema check on description patches — mirrors the
 	// create-time gate. Validate the incoming body BEFORE writing, under the
