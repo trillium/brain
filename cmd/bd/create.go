@@ -259,16 +259,33 @@ var createCmd = &cobra.Command{
 		validateTemplate, _ := cmd.Flags().GetBool("validate")
 		validationMode := config.GetString("validation.on-create")
 		if validateTemplate || validationMode == "error" || validationMode == "warn" {
-			lintIssue := &types.Issue{
-				IssueType:          types.IssueType(issueType).Normalize(),
-				Description:        description,
-				AcceptanceCriteria: acceptance,
-			}
-			if err := validation.LintIssue(lintIssue); err != nil {
-				if validateTemplate || validationMode == "error" {
-					return HandleError("%v", err)
+			// When a validation.schema.<selector> matches this issue, the
+			// body schema is the authority on description structure and the
+			// generic section-template lint is skipped — schema'd stores hold
+			// structured bodies (YAML/JSON specs), not markdown sections.
+			schemaGoverned := len(requiredSchemaKeys(issueType, labels)) > 0
+			if !schemaGoverned {
+				lintIssue := &types.Issue{
+					IssueType:          types.IssueType(issueType).Normalize(),
+					Description:        description,
+					AcceptanceCriteria: acceptance,
 				}
-				fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), err)
+				if err := validation.LintIssue(lintIssue); err != nil {
+					if validateTemplate || validationMode == "error" {
+						return HandleError("%v", err)
+					}
+					fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), err)
+				}
+			}
+
+			// Per-store content-schema check: if this issue's type or any of
+			// its labels has a validation.schema.<selector> configured, require
+			// those keys in the description body. Same tristate as above.
+			if serr := validateBodySchema(issueType, labels, description); serr != nil {
+				if validateTemplate || validationMode == "error" {
+					return HandleError("%v", serr)
+				}
+				fmt.Fprintf(os.Stderr, "%s %v\n", ui.RenderWarn("⚠"), serr)
 			}
 		}
 
@@ -683,6 +700,8 @@ var createCmd = &cobra.Command{
 				return HandleError("failed to push to %s: %v\nThe issue was created locally but not synced to the remote.", repoPath, pushErr)
 			}
 		}
+
+		commandDidWrite.Store(true)
 
 		if jsonOutput {
 			if err := outputJSON(issue); err != nil {

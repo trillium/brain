@@ -65,10 +65,10 @@ func TestWriteStoreWrapper_UsesCustomBdBinary(t *testing.T) {
 func TestRegenerateStoresEnv_WritesShellExports(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	stores := map[string]string{
-		"recipes":     "/data/recipes/.beads",
-		"ideas":       "/data/ideas/.beads",
-		"side-quests": "/data/side-quests/.beads", // hyphen → underscore in env var
+	stores := map[string]storeEntry{
+		"recipes":     {Path: "/data/recipes/.beads"},
+		"ideas":       {Path: "/data/ideas/.beads"},
+		"side-quests": {Path: "/data/side-quests/.beads"}, // hyphen → underscore in env var
 	}
 	envPath, err := regenerateStoresEnv(stores)
 	if err != nil {

@@ -50,11 +50,22 @@ var YamlOnlyKeys = map[string]bool{
 	// Create command settings
 	"create.require-description": true,
 
+	// Change-event emission (brain). Startup-read at PersistentPostRun, so it
+	// lives in yaml rather than the DB (matches the export.* pattern).
+	"change-events.enabled": true,
+
 	// Validation settings (bd-t7jq)
 	// Values: "warn" | "error" | "none"
 	"validation.on-create": true,
 	"validation.on-close":  true,
 	"validation.on-sync":   true,
+
+	// Per-store content-schema validation (brain).
+	// validation.schema.<type|label> = comma-separated list of required
+	// top-level keys that the description body must declare. Enforced under
+	// the validation.on-create tristate at create and description-patch time.
+	// The dynamic <type|label> leaf is also covered by the "validation."
+	// prefix rule in IsYamlOnlyKey below; this comment documents the family.
 
 	// Hierarchy settings (GH#995)
 	"hierarchy.max-depth": true,
@@ -94,7 +105,7 @@ func IsYamlOnlyKey(key string) bool {
 	}
 
 	// Check prefix matches for nested keys
-	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics."}
+	prefixes := []string{"routing.", "sync.", "git.", "directory.", "repos.", "external_projects.", "validation.", "hierarchy.", "ai.", "backup.", "export.", "dolt.", "federation.", "metrics.", "change-events."}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(key, prefix) {
 			return true
