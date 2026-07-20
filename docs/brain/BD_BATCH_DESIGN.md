@@ -1,7 +1,38 @@
-# `bd batch` — one-process, many-ops primitive
+# `bd batch` — one-transaction, many-ops primitive
 
-Status: DESIGN (brain-dev, 2026-07-20). Motivating brain entry: brain-g6rho.
+Status: IMPLEMENTED-EXTENSION (brain-dev, 2026-07-20). Motivating brain entry: brain-g6rho.
 Branch: `feat/bd-batch` off `feat/isa-substrate-f1` (the live-binary source).
+
+## ⚠️ CORRECTION (2026-07-20)
+
+`bd batch` ALREADY EXISTED in the codebase (and on the LIVE binary) — a
+write-oriented runner that executes a line grammar in a SINGLE dolt transaction
+(one DOLT_COMMIT, all-or-nothing rollback). This is architecturally superior to
+the in-process cobra re-dispatch this doc originally proposed; that proposal is
+obsolete. The real gap was GRAMMAR COVERAGE: the existing grammar
+(close/update/create/dep) did not include the verbs a guard/obligation discharge
+needs.
+
+DONE on this branch: extended the existing `batch.go` grammar with
+`label add <id> <label>`, `label remove <id> <label>`, and a `description` key
+for `update`. A full discharge — rate (`label add … helpful`) + record
+(`update … description="## Decision…"`) + ack (`close …`) — now runs as ONE
+`guard batch` call in one transaction. Verified: build clean, existing batch
+tests green, live-shaped smoke committed all three ops and set label+description+
+closed on the target beads.
+
+DEFERRED: a `note <id> <text>` op — `AddComment` is a stub in the embedded-dolt
+Transaction backend (`embeddedTransaction: AddComment not implemented`), so it
+was dropped rather than shipped half-working. Add it once AddComment lands in the
+embedded backend (server-mode may already support it — untested).
+
+REMAINING: teach the ObligationGuard/BehaviorEnforcement Stop hook to emit a
+single pre-filled `guard batch` heredoc; add unit tests for the new label/update
+grammar. See task-xpay.
+
+---
+_Original design (obsolete re-dispatch approach) retained below for provenance._
+
 
 ## Problem
 
