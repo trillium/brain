@@ -103,13 +103,13 @@ func insertISASectionRow(t *testing.T, db *sql.DB, issueID, section, body string
 
 // TestISARender is the integration battery for `bd isa-render` and
 // `bd isa-render-all`. Covers:
-//   1. Happy path: ISA row + sections renders to disk with expected content.
-//   2. Missing id exits 1.
-//   3. Wrong-kind id (knowledge row) exits 1.
-//   4. Path-traversal slug exits 2 and writes no file.
-//   5. isa-render-all renders every ISA, exit 0.
-//   6. isa-render-all --since=<future> renders zero, exit 0.
-//   7. ISC-39: LEARN-phase ISA renders normally.
+//  1. Happy path: ISA row + sections renders to disk with expected content.
+//  2. Missing id exits 1.
+//  3. Wrong-kind id (knowledge row) exits 1.
+//  4. Path-traversal slug exits 2 and writes no file.
+//  5. isa-render-all renders every ISA, exit 0.
+//  6. isa-render-all --since=<future> renders zero, exit 0.
+//  7. ISC-39: LEARN-phase ISA renders normally.
 func TestISARender(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")
@@ -239,12 +239,12 @@ func TestISARender(t *testing.T) {
 		exfilAll := t.TempDir()
 
 		const (
-			idA    = "rend-all-001"
-			idB    = "rend-all-002"
-			idC    = "rend-all-003"
-			slugA  = "all-one"
-			slugB  = "all-two"
-			slugC  = "all-three"
+			idA   = "rend-all-001"
+			idB   = "rend-all-002"
+			idC   = "rend-all-003"
+			slugA = "all-one"
+			slugB = "all-two"
+			slugC = "all-three"
 		)
 
 		withTestDB(t, beadsDir, func(db *sql.DB) {

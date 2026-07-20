@@ -19,14 +19,14 @@ import (
 
 // Field name constants for the ISA substrate columns.
 const (
-	FieldISAPhase      = "isa_phase"
-	FieldISAProgressM  = "isa_progress_m"
-	FieldISAProgressN  = "isa_progress_n"
-	FieldISAEffort     = "isa_effort"
-	FieldISAMode       = "isa_mode"
-	FieldISAStartedAt  = "isa_started_at"
-	FieldISAUpdatedAt  = "isa_updated_at"
-	FieldSlug          = "slug"
+	FieldISAPhase     = "isa_phase"
+	FieldISAProgressM = "isa_progress_m"
+	FieldISAProgressN = "isa_progress_n"
+	FieldISAEffort    = "isa_effort"
+	FieldISAMode      = "isa_mode"
+	FieldISAStartedAt = "isa_started_at"
+	FieldISAUpdatedAt = "isa_updated_at"
+	FieldSlug         = "slug"
 )
 
 // ValidPhases enumerates the legal values for isa_phase. The Algorithm v6.3.0

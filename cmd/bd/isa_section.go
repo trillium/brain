@@ -9,9 +9,9 @@ import (
 	"io"
 	"os"
 
+	"github.com/spf13/cobra"
 	isasectionverb "github.com/steveyegge/beads/internal/brain/verb/isasection"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/spf13/cobra"
 )
 
 // Flag values for `bd isa-section`. Package-scoped so cobra can bind them in
@@ -66,8 +66,8 @@ func init() {
 //     reuse local/remote routing for free.
 //  4. Open a write DB handle and run the two SQL statements in a single
 //     transaction:
-//       - UPSERT into isa_sections
-//       - UPDATE issues SET isa_updated_at = NOW() WHERE id=? AND issue_type='isa'
+//     - UPSERT into isa_sections
+//     - UPDATE issues SET isa_updated_at = NOW() WHERE id=? AND issue_type='isa'
 //     If the UPDATE affects zero rows, we look up the row's issue_type to
 //     distinguish wrong-kind (exit 2) from not-found (exit 1), then roll back.
 func runISASection(cmd *cobra.Command, args []string) {

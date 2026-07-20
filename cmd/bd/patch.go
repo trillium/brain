@@ -9,11 +9,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/spf13/cobra"
 	patchverb "github.com/steveyegge/beads/internal/brain/verb/patch"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/ui"
-	"github.com/spf13/cobra"
 )
 
 // Flag values for `bd patch`. Kept package-scoped so cobra can bind them in

@@ -13,11 +13,11 @@ func TestRecordChangedID_DedupAndOrder(t *testing.T) {
 	t.Cleanup(resetChangedIDs)
 
 	recordChangedID("a-1")
-	recordChangedID("")     // ignored
+	recordChangedID("") // ignored
 	recordChangedID("a-2")
-	recordChangedID("a-1")  // dup ignored
+	recordChangedID("a-1") // dup ignored
 	recordChangedID("a-3")
-	recordChangedID("a-2")  // dup ignored
+	recordChangedID("a-2") // dup ignored
 
 	want := []string{"a-1", "a-2", "a-3"}
 	if !reflect.DeepEqual(commandChangedIDs, want) {

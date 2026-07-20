@@ -212,11 +212,11 @@ func (Verb) Name() string { return "new" }
 //  2. Invalid kind      → 'invalid kind "x", must be one of task|knowledge|both|isa'
 //  3. Empty title       → "title is required"
 //  4. Slug validation   → for kind=isa, resolve slug (from --slug or Auto(title));
-//                         for other kinds, validate --slug only when non-empty.
-//                         Slug-shape failures return *slug.ValidationError; an
-//                         empty-title-derived auto-slug for kind=isa returns
-//                         the helper's error directly so the wrapper can hint
-//                         "supply --slug".
+//     for other kinds, validate --slug only when non-empty.
+//     Slug-shape failures return *slug.ValidationError; an
+//     empty-title-derived auto-slug for kind=isa returns
+//     the helper's error directly so the wrapper can hint
+//     "supply --slug".
 //
 // On success, the brain doc is inserted via the storage layer with:
 //   - IssueType = args.Kind

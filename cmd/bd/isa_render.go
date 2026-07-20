@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
 	"github.com/spf13/cobra"
+	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
 )
 
 // Flag values for `bd isa-render-all`. The single-id `bd isa-render` verb

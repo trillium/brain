@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
 	isashowverb "github.com/steveyegge/beads/internal/brain/verb/isashow"
 	"github.com/steveyegge/beads/internal/storage"
-	"github.com/spf13/cobra"
 )
 
 // Flag values for `bd isa-show`. Package-scoped so cobra can bind them in
@@ -127,16 +127,16 @@ func (e *wrongKindError) Error() string {
 // shape locked to the ISC-16 fields.
 func loadISADoc(ctx context.Context, db *sql.DB, id string) (*isashowverb.ISADoc, error) {
 	var (
-		rowID         string
-		slug          sql.NullString
-		kind          string
-		isaPhase      sql.NullString
-		isaProgressM  sql.NullInt64
-		isaProgressN  sql.NullInt64
-		isaEffort     sql.NullString
-		isaMode       sql.NullString
-		isaStartedAt  sql.NullTime
-		isaUpdatedAt  sql.NullTime
+		rowID        string
+		slug         sql.NullString
+		kind         string
+		isaPhase     sql.NullString
+		isaProgressM sql.NullInt64
+		isaProgressN sql.NullInt64
+		isaEffort    sql.NullString
+		isaMode      sql.NullString
+		isaStartedAt sql.NullTime
+		isaUpdatedAt sql.NullTime
 	)
 	err := db.QueryRowContext(ctx, `
 		SELECT id, slug, issue_type, isa_phase, isa_progress_m, isa_progress_n,
@@ -198,10 +198,11 @@ func loadISADoc(ctx context.Context, db *sql.DB, id string) (*isashowverb.ISADoc
 }
 
 // emitISAShow writes the doc to stdout per the flag precedence:
-//   --json                → full JSON doc (--section is ignored, warning above)
-//   --section=<name>      → raw body of that section, exit 1 if section is
-//                           not stored on this ISA
-//   neither               → rendered markdown
+//
+//	--json                → full JSON doc (--section is ignored, warning above)
+//	--section=<name>      → raw body of that section, exit 1 if section is
+//	                        not stored on this ISA
+//	neither               → rendered markdown
 func emitISAShow(doc *isashowverb.ISADoc) {
 	if isaShowJSON {
 		out, err := doc.MarshalJSONIndent()

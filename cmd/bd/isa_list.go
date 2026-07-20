@@ -9,8 +9,8 @@ import (
 	"text/tabwriter"
 	"time"
 
-	isashowverb "github.com/steveyegge/beads/internal/brain/verb/isashow"
 	"github.com/spf13/cobra"
+	isashowverb "github.com/steveyegge/beads/internal/brain/verb/isashow"
 )
 
 // Flag values for `bd isa-list`. Package-scoped so cobra can bind them in
@@ -49,13 +49,13 @@ func init() {
 // Field order matches the struct definition — that's the JSON key order
 // (encoding/json preserves struct order).
 type isaListRow struct {
-	ID           string                 `json:"id"`
-	Slug         string                 `json:"slug"`
-	ISAPhase     string                 `json:"isa_phase"`
+	ID           string                  `json:"id"`
+	Slug         string                  `json:"slug"`
+	ISAPhase     string                  `json:"isa_phase"`
 	ISAProgress  isashowverb.ISAProgress `json:"isa_progress"`
-	ISAEffort    string                 `json:"isa_effort"`
-	ISAUpdatedAt *time.Time             `json:"isa_updated_at"`
-	Title        string                 `json:"title"`
+	ISAEffort    string                  `json:"isa_effort"`
+	ISAUpdatedAt *time.Time              `json:"isa_updated_at"`
+	Title        string                  `json:"title"`
 }
 
 func runISAList(cmd *cobra.Command, args []string) {

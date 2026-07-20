@@ -8,8 +8,8 @@ import (
 	"os"
 	"time"
 
-	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
 	"github.com/spf13/cobra"
+	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
 )
 
 // Flag values for `bd isa-render-pending`.
@@ -71,11 +71,11 @@ func init() {
 // JSON ("missing" reason ⇒ no file ⇒ null mtime); the text serializer omits
 // the file_mtime when it's not meaningful.
 type renderPendingEntry struct {
-	ID            string  `json:"id"`
-	Slug          string  `json:"slug"`
-	Reason        string  `json:"reason"`
-	FileMtime     *string `json:"file_mtime"`
-	ISAUpdatedAt  string  `json:"isa_updated_at"`
+	ID           string  `json:"id"`
+	Slug         string  `json:"slug"`
+	Reason       string  `json:"reason"`
+	FileMtime    *string `json:"file_mtime"`
+	ISAUpdatedAt string  `json:"isa_updated_at"`
 }
 
 func runISARenderPending(cmd *cobra.Command, args []string) {

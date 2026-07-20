@@ -407,7 +407,7 @@ func generateDestID(ctx context.Context, tx *sql.Tx, destDB, prefix, title, desc
 // insertDest writes the new row into <destDB>.issues. The column list
 // is the minimal viable subset to satisfy the table's NOT NULL +
 // DEFAULT constraints (see migration 0001_create_issues.up.sql).
-// Columns not named in the INSERT take their defaults — '' for the
+// Columns not named in the INSERT take their defaults — ” for the
 // many TEXT-with-default-empty-string columns, 0 for the TINYINT flags,
 // JSON_OBJECT() for metadata, etc.
 //
@@ -503,7 +503,7 @@ func closeSource(ctx context.Context, tx *sql.Tx, srcDB, srcID, destStore, newID
 //   - id   = depid.New(...)       — deterministic primary key, see
 //     internal/storage/depid for the rationale (#4259).
 //
-// thread_id is set to '' to satisfy the column's NOT NULL + default ''
+// thread_id is set to ” to satisfy the column's NOT NULL + default ”
 // shape on older schemas; metadata defaults to JSON_OBJECT().
 func recordSupersede(ctx context.Context, tx *sql.Tx, srcDB, srcID, destID, actor string, now time.Time) error {
 	rowID := depid.New(srcID, destID)

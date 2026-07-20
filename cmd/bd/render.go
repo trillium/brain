@@ -224,4 +224,3 @@ func emitRenderPath(id, path string) {
 	}
 	fmt.Println(path)
 }
-

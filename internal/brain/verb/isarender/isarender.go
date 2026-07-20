@@ -84,17 +84,17 @@ var sectionTitles = map[string]string{
 // NULL rules from the ISA spec require those keys to be omitted, not emitted
 // as `phase: null`.
 type RenderInput struct {
-	ID         string  // issues.id (required) — surfaces as brain_id
-	Slug       string  // issues.slug (required, non-empty) — keys the target dir
-	Title      string  // issues.title (required) — H1 header and `task:` frontmatter
-	Phase      *string // issues.isa_phase, lowercased on emit; nil → omit
-	Effort     *string // issues.isa_effort; nil → omit
-	Mode       *string // issues.isa_mode; nil → omit
-	ProgressM  int     // issues.isa_progress_m
-	ProgressN  int     // issues.isa_progress_n
-	StartedAt  *time.Time
-	UpdatedAt  *time.Time
-	Sections   map[string]string // section_name → body, verbatim
+	ID        string  // issues.id (required) — surfaces as brain_id
+	Slug      string  // issues.slug (required, non-empty) — keys the target dir
+	Title     string  // issues.title (required) — H1 header and `task:` frontmatter
+	Phase     *string // issues.isa_phase, lowercased on emit; nil → omit
+	Effort    *string // issues.isa_effort; nil → omit
+	Mode      *string // issues.isa_mode; nil → omit
+	ProgressM int     // issues.isa_progress_m
+	ProgressN int     // issues.isa_progress_n
+	StartedAt *time.Time
+	UpdatedAt *time.Time
+	Sections  map[string]string // section_name → body, verbatim
 }
 
 // PathTraversalError is the typed error Render-related path resolution
