@@ -116,6 +116,20 @@ func HandleErrorWithHintRespectJSON(message, hint string) error {
 	return &exitError{Code: 1}
 }
 
+// FatalErrorRespectJSON writes an error message and exits with code 1.
+// If --json is set, outputs structured JSON to stdout; otherwise plain text to
+// stderr. Fork helper (brain_* commands) preserved across the upstream rebase,
+// where upstream moved to the return-an-error HandleError* variants above.
+func FatalErrorRespectJSON(format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	if jsonOutput {
+		jsonStdoutError(msg, "")
+	} else {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
+	}
+	os.Exit(1)
+}
+
 func SilentExit() error {
 	return &exitError{Code: 1}
 }
