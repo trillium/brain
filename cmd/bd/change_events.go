@@ -1,8 +1,10 @@
 // Package main — change_events.go
 //
 // Optional change-event emission. When change-events.enabled is set, every
-// write command appends one JSON line to <beadsDir>/change-events.jsonl
-// describing the mutation. This is a lightweight, append-only audit/eventing
+// write command appends one JSON line per mutated issue to
+// <beadsDir>/change-events.jsonl describing the mutation, so multi-issue
+// commands (e.g. close with auto-claim) report each touched id rather than a
+// single last-touched id. This is a lightweight, append-only audit/eventing
 // hook other tools can tail. It is disabled by default and best-effort: a
 // failure to emit never fails the command.
 //
@@ -29,7 +31,7 @@ type changeEvent struct {
 	TS      string `json:"ts"`      // RFC3339 UTC timestamp of the write
 	Store   string `json:"store"`   // logical store name (BD_NAME / store dir)
 	Command string `json:"command"` // cobra command name that wrote (create, patch, ...)
-	ID      string `json:"id"`      // last-touched issue id, when known
+	ID      string `json:"id"`      // a mutated issue id (one event per id); last-touched when none recorded
 }
 
 // commandChangedIDs accumulates every issue id mutated by the current command,

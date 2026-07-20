@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-07-20 — session 8375b62f
+
+Files: cmd/bd/change_events.go, internal/config/config.go
 ## 2026-06-26 — session 55a0fc45
 
 Files: divergence/0014-isa-show-json-drops-progress.md, divergence/0015-create-missing-slug-flag.md, divergence/0016-isa-by-slug-json-returns-text.md, divergence/0017-dep-add-silent-orphan-cross-store.md
