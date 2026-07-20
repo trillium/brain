@@ -627,6 +627,9 @@ var rootCmd = &cobra.Command{
 
 		// Reset per-command write tracking (used by Dolt auto-commit).
 		commandDidWrite.Store(false)
+		// Reset the change-event changed-id accumulator so ids never leak across
+		// commands sharing a process (robots-bnn).
+		resetChangedIDs()
 		commandMayEmptyJSONLExport.Store(false)
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false

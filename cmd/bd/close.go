@@ -163,6 +163,12 @@ the flags appear in the command line.`,
 			}
 			audit.LogFieldChange(id, "status", oldStatus, "closed", actor, reason)
 
+			// Record the CLOSED id for change-event emission. close later calls
+			// SetLastTouchedID(nextIssue.ID) for the auto-claimed issue, which
+			// would otherwise be the only id emitted — so the closed id must be
+			// recorded explicitly here (robots-bnn).
+			recordChangedID(id)
+
 			closedCount++
 
 			// Auto-close parent molecule if all steps are now complete.

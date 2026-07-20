@@ -32,9 +32,41 @@ type changeEvent struct {
 	ID      string `json:"id"`      // last-touched issue id, when known
 }
 
-// maybeEmitChangeEvent appends a change-event line when change-events.enabled
-// is true. Best-effort: any error is warned on stderr and swallowed so it
-// cannot fail the command. Called from PersistentPostRunE after a write.
+// commandChangedIDs accumulates every issue id mutated by the current command,
+// in first-seen order and deduped. It is fed by SetLastTouchedID (which every
+// write path already calls) plus explicit recordChangedID calls from commands
+// that mutate more than one issue (e.g. close, which also auto-claims a next
+// issue). PersistentPreRunE resets it per command. maybeEmitChangeEvent emits
+// one change-event per id so multi-issue commands no longer under-report or
+// report the wrong id (robots-bnn).
+var commandChangedIDs []string
+
+// recordChangedID appends id to the per-command changed-id set (deduped).
+// Best-effort, no-op on empty. Safe to call from any write path.
+func recordChangedID(id string) {
+	if id == "" {
+		return
+	}
+	for _, existing := range commandChangedIDs {
+		if existing == id {
+			return
+		}
+	}
+	commandChangedIDs = append(commandChangedIDs, id)
+}
+
+// resetChangedIDs clears the accumulator. Called from PersistentPreRunE so ids
+// never leak across commands sharing a process.
+func resetChangedIDs() {
+	commandChangedIDs = nil
+}
+
+// maybeEmitChangeEvent appends one change-event line per mutated issue when
+// change-events.enabled is true. Best-effort: any error is warned on stderr and
+// swallowed so it cannot fail the command. Called from PersistentPostRunE after
+// a write. Emits one line per id in commandChangedIDs; if that set is empty
+// (a write path that never recorded an id), it falls back to the single
+// last-touched id, preserving prior behavior.
 func maybeEmitChangeEvent(commandName string) {
 	if !config.GetBool("change-events.enabled") {
 		return
@@ -44,12 +76,25 @@ func maybeEmitChangeEvent(commandName string) {
 		return
 	}
 
-	ev := changeEvent{
-		TS:      time.Now().UTC().Format(time.RFC3339),
-		Store:   changeEventStoreName(beadsDir),
-		Command: commandName,
-		ID:      GetLastTouchedID(),
+	ids := commandChangedIDs
+	if len(ids) == 0 {
+		ids = []string{GetLastTouchedID()}
 	}
+
+	ts := time.Now().UTC().Format(time.RFC3339)
+	store := changeEventStoreName(beadsDir)
+	for _, id := range ids {
+		emitOneChangeEvent(beadsDir, changeEvent{
+			TS:      ts,
+			Store:   store,
+			Command: commandName,
+			ID:      id,
+		})
+	}
+}
+
+// emitOneChangeEvent marshals and appends a single change-event line.
+func emitOneChangeEvent(beadsDir string, ev changeEvent) {
 	line, err := json.Marshal(ev)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: change-events: marshal failed: %v\n", err)
