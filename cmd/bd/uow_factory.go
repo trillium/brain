@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
@@ -17,35 +18,32 @@ func newProxiedServerUOWProvider(ctx context.Context, beadsDir string) (uow.Unit
 		return nil, fmt.Errorf("newProxiedServerUOWProvider: beadsDir must be set")
 	}
 
-	// Both loads return (nil, nil) when the file is simply absent; a non-nil
-	// error means the file EXISTS but cannot be read or parsed. Swallowing
-	// either silently falls back to a fresh managed local database — reads
-	// return zero issues and writes land in the wrong database (split-brain,
-	// bd-6dnrw.44 item 6) — so refuse to proceed instead.
-	persisted, err := configfile.Load(beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerUOWProvider: workspace config in %s is unreadable; fix or remove it rather than letting bd guess the database: %w", beadsDir, err)
-	}
+	persisted, _ := configfile.Load(beadsDir)
 	database := configfile.DefaultDoltDatabase
 	if persisted != nil {
 		database = persisted.GetDoltDatabase()
 	}
 
-	info, err := configfile.LoadProxiedServerClientInfo(beadsDir)
-	if err != nil {
-		return nil, fmt.Errorf("newProxiedServerUOWProvider: %s in %s is unreadable; refusing to fall back to a fresh managed database (fix or remove the file): %w", configfile.ProxiedServerClientInfoFileName, beadsDir, err)
+	info, _ := configfile.LoadProxiedServerClientInfo(beadsDir)
+	var proxyPort int
+	var proxyIdleTimeout time.Duration
+	if info != nil {
+		proxyPort = info.Port
+		proxyIdleTimeout = info.IdleTimeout
 	}
 	if info != nil && info.External != nil {
-		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External)
+		return newExternalProxiedServerUOWProvider(ctx, beadsDir, database, info.External, proxyPort, proxyIdleTimeout)
 	}
 
-	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database)
+	return newManagedProxiedServerUOWProvider(ctx, beadsDir, database, proxyPort, proxyIdleTimeout)
 }
 
 func newExternalProxiedServerUOWProvider(
 	ctx context.Context,
 	beadsDir, database string,
 	external *configfile.ExternalDoltConfig,
+	proxyPort int,
+	proxyIdleTimeout time.Duration,
 ) (uow.UnitOfWorkProvider, error) {
 	rootPath, err := resolveProxiedServerRootPath(beadsDir)
 	if err != nil {
@@ -77,12 +75,16 @@ func newExternalProxiedServerUOWProvider(
 		*external,
 		external.ResolvedUser(),
 		os.Getenv(configfile.ExternalDoltPasswordEnvVar),
+		proxyPort,
+		proxyIdleTimeout,
 	)
 }
 
 func newManagedProxiedServerUOWProvider(
 	ctx context.Context,
 	beadsDir, database string,
+	proxyPort int,
+	proxyIdleTimeout time.Duration,
 ) (uow.UnitOfWorkProvider, error) {
 	doltBin, err := exec.LookPath("dolt")
 	if err != nil {
@@ -122,5 +124,7 @@ func newManagedProxiedServerUOWProvider(
 		"root",
 		"", // proxy is loopback-only, no auth
 		doltBin,
+		proxyPort,
+		proxyIdleTimeout,
 	)
 }

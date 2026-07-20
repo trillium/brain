@@ -9,43 +9,21 @@ import (
 
 	"github.com/dolthub/dolt/go/libraries/doltcore/servercfg"
 	"github.com/dolthub/dolt/go/libraries/utils/filesys"
-	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dbproxy/proxy"
 )
 
 const (
-	proxiedServerRootName   = "proxieddb"
-	proxiedServerConfigName = "server_config.yaml"
+	proxiedServerConfigName = "config.yaml"
 	proxiedServerLogName    = "server.log"
 )
 
-// proxiedServerCommands lists the top-level commands that have a
-// proxied-server dispatch path (a usesProxiedServer() branch in their Run
-// func). Every other store-backed command reads the global store, which
-// stays nil in proxied-server mode — PersistentPreRun rejects them up front
-// so they fail with a clear error instead of a nil-pointer panic.
-// doctor and init also work in proxied-server mode, but they skip store
-// init entirely and never reach the guard.
-var proxiedServerCommands = map[string]bool{
-	"create": true,
-	"list":   true,
-}
-
-// commandSupportsProxiedServer reports whether cmd can run in proxied-server
-// mode. Subcommands (e.g. "dep add") are judged by their top-level ancestor.
-func commandSupportsProxiedServer(cmd *cobra.Command) bool {
-	for cmd.Parent() != nil && cmd.Parent().Parent() != nil {
-		cmd = cmd.Parent()
-	}
-	return proxiedServerCommands[cmd.Name()]
-}
-
 func proxiedServerRoot(beadsDir string) string {
-	return filepath.Join(beadsDir, proxiedServerRootName)
+	return doltserver.ResolveDoltDir(beadsDir)
 }
 
 func proxiedServerConfigPath(beadsDir string) string {
@@ -144,6 +122,9 @@ func ensureProxiedServerConfig(beadsDir string) (string, error) {
 
 	switch _, err := os.Stat(path); {
 	case err == nil:
+		if _, err := servercfg.YamlConfigFromFile(filesys.LocalFS, path); err != nil {
+			return "", fmt.Errorf("ensureProxiedServerConfig: existing config %s: parse: %w", path, err)
+		}
 		return path, nil
 	case !os.IsNotExist(err):
 		return "", fmt.Errorf("ensureProxiedServerConfig: stat %s: %w", path, err)

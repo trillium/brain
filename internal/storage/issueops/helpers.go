@@ -58,25 +58,42 @@ func TableRouting(issue *types.Issue) (issueTable, eventTable string) {
 // updated_at in every assignment, and ON DUPLICATE KEY UPDATE assignments are
 // evaluated in order, so the comparison column must not be reassigned until
 // all other columns have been decided.
+//
+// Leases are NOT issues columns (bd-lrgn1): they live in the ephemeral
+// leases table and are restored by RestoreLeaseOnImportInTx, which enforces
+// the never-clobber-a-live-local-lease rule (protocol L1.2: lease fields MUST
+// round-trip the JSONL interchange, wy-urlct). row_lock rides along because
+// any write that can change status/assignee must rewrite it to collide with a
+// concurrent reclaim/close on the same row (see freshRowLock in lease.go).
 var issueUpsertColumns = []string{
 	"content_hash", "title", "description", "design", "acceptance_criteria",
 	"notes", "status", "priority", "issue_type", "assignee",
 	"estimated_minutes", "started_at", "closed_at", "external_ref",
-	"source_repo", "close_reason", "metadata", "updated_at",
+	"source_repo", "close_reason", "metadata",
+	"row_lock", "updated_at",
 }
 
 // issueUpsertAssignments renders the ON DUPLICATE KEY UPDATE clause. With
 // rejectStaleUpdate, each assignment keeps the stored value unless the
-// incoming row is at least as new (VALUES(updated_at) >= updated_at) — the
-// transactional import stale guard (bd-pkim8). Strictly-older rows are
-// rejected; equal timestamps win so re-importing the same snapshot stays
-// idempotent, matching cmd/bd's filterStaleImportIssues.
-func issueUpsertAssignments(rejectStaleUpdate bool) string {
+// incoming row is strictly newer (VALUES(updated_at) > updated_at) — the
+// transactional import stale guard (bd-pkim8). Strictly-older AND
+// equal-timestamp rows keep every stored column: updated_at is DATETIME with
+// second granularity, so two distinct updates in the same second tie, and an
+// incoming tie row with an empty field (e.g. notes) must not wipe the
+// populated local value (bd-hj85c). Re-importing an identical snapshot stays
+// idempotent either way — the rewrite would have written identical values.
+// Tie rows are deliberately NOT short-circuited by the staleRejected
+// pre-check in InsertIssueIfNew, so their aux data (labels/comments/deps,
+// which never bump updated_at) still merges additively.
+func issueUpsertAssignments(table string, rejectStaleUpdate bool) string {
 	assignments := make([]string, 0, len(issueUpsertColumns))
 	for _, col := range issueUpsertColumns {
 		if rejectStaleUpdate {
+			// Qualify existing-row references with the table name so the target value
+			// remains unambiguous after the SQLite upsert translation. VALUES(...) is
+			// the incoming row in the canonical Dolt/MySQL-dialect statement.
 			assignments = append(assignments,
-				fmt.Sprintf("%s = IF(VALUES(updated_at) >= updated_at, VALUES(%s), %s)", col, col, col))
+				fmt.Sprintf("%s = IF(VALUES(updated_at) > %s.updated_at, VALUES(%s), %s.%s)", col, table, col, table, col))
 		} else {
 			assignments = append(assignments, fmt.Sprintf("%s = VALUES(%s)", col, col))
 		}
@@ -102,7 +119,8 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			mol_type, work_type, source_system, source_repo, close_reason,
 			event_kind, actor, target, payload,
 			await_type, await_id, timeout_ns, waiters,
-			due_at, defer_until, metadata
+			due_at, defer_until, metadata,
+			row_lock
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
@@ -112,11 +130,12 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?
+			?, ?, ?,
+			?
 		)
 		ON DUPLICATE KEY UPDATE
 			%s
-	`, table, issueUpsertAssignments(rejectStaleUpdate)),
+	`, table, issueUpsertAssignments(table, rejectStaleUpdate)),
 		issue.ID, issue.ContentHash, issue.Title, issue.Description, issue.Design, issue.AcceptanceCriteria, issue.Notes,
 		issue.Status, issue.Priority, issue.IssueType, NullString(issue.Assignee), NullInt(issue.EstimatedMinutes),
 		issue.CreatedAt, issue.CreatedBy, issue.Owner, issue.UpdatedAt, issue.StartedAt, issue.ClosedAt, NullStringPtr(issue.ExternalRef), issue.SpecID,
@@ -126,6 +145,7 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 		issue.EventKind, issue.Actor, issue.Target, issue.Payload,
 		issue.AwaitType, issue.AwaitID, issue.Timeout.Nanoseconds(), FormatJSONStringArray(issue.Waiters),
 		issue.DueAt, issue.DeferUntil, JSONMetadata(issue.Metadata),
+		freshRowLock(),
 	)
 	if err != nil {
 		return fmt.Errorf("insert issue into %s: %w", table, err)
@@ -136,7 +156,7 @@ func insertIssueIntoTable(ctx context.Context, tx *sql.Tx, table string, issue *
 // RecordEventInTable records an event in the specified events table.
 //
 //nolint:gosec // G201: table is a hardcoded constant ("events" or "wisp_events")
-func RecordEventInTable(ctx context.Context, tx *sql.Tx, table, issueID string, eventType types.EventType, actor, newValue string) error {
+func RecordEventInTable(ctx context.Context, tx DBTX, table, issueID string, eventType types.EventType, actor, newValue string) error {
 	_, err := tx.ExecContext(ctx, fmt.Sprintf(`
 		INSERT INTO %s (id, issue_id, event_type, actor, old_value, new_value)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -373,25 +393,11 @@ func ComputeAdaptiveLength(numIssues int, cfg AdaptiveIDConfig) int {
 
 // GetCustomStatusesTx reads custom statuses from config within a transaction.
 func GetCustomStatusesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "status.custom").Scan(&raw)
-	if err == sql.ErrNoRows || raw == "" {
-		return nil, nil
-	}
+	detailed, err := ResolveCustomStatusesDetailedInTx(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read status.custom config: %w", err)
+		return nil, err
 	}
-	var statuses []string
-	if err := json.Unmarshal([]byte(raw), &statuses); err != nil {
-		// Try comma-separated fallback
-		for _, s := range strings.Split(raw, ",") {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				statuses = append(statuses, s)
-			}
-		}
-	}
-	return statuses, nil
+	return types.CustomStatusNames(detailed), nil
 }
 
 // GetCustomTypesTx reads custom types from config within a transaction.

@@ -23,6 +23,17 @@ var ErrAlreadyClaimed = errors.New("issue already claimed")
 // same actor owning the claim.
 var ErrNotClaimable = errors.New("issue not claimable")
 
+// ErrNotOwner is returned when an actor tries to unclaim an issue that is claimed
+// by a different actor. Releasing another actor's claim requires the force
+// escape hatch (bd unclaim --force), reserved for admin/reaper use.
+var ErrNotOwner = errors.New("issue claimed by a different actor")
+
+// ErrAssigneeMismatch is returned by UnclaimIssueIfAssignee when the issue's
+// current assignee does not match the expected assignee (including when the
+// issue is no longer assigned at all). The caller's view of the claim was
+// stale; the issue is left untouched.
+var ErrAssigneeMismatch = errors.New("assignee mismatch")
+
 // ErrNotFound is returned when a requested entity does not exist in the database.
 var ErrNotFound = errors.New("not found")
 
@@ -32,6 +43,11 @@ var ErrNotInitialized = errors.New("database not initialized")
 
 // ErrPrefixMismatch is returned when an issue ID does not match the configured prefix.
 var ErrPrefixMismatch = errors.New("prefix mismatch")
+
+// ErrCloseBlocked is returned by CloseIssueChecked when an issue cannot be
+// closed because it is still blocked (is_blocked=1: an open blocking dependency
+// or an open blocking gate). Bypass with CloseIssueOptions.Force.
+var ErrCloseBlocked = errors.New("cannot close blocked issue")
 
 // Storage is the interface satisfied by *dolt.DoltStore.
 // Consumers depend on this interface rather than on the concrete type so that
@@ -45,11 +61,27 @@ type Storage interface {
 	GetIssuesByIDs(ctx context.Context, ids []string) ([]*types.Issue, error)
 	UpdateIssue(ctx context.Context, id string, updates map[string]interface{}, actor string) error
 	ReopenIssue(ctx context.Context, id string, reason string, actor string) error
+	UnclaimIssue(ctx context.Context, id string, actor string, force bool) error
+	// UnclaimIssueIfAssignee releases a claim only while the issue is still
+	// assigned to expectedAssignee (compare-and-swap, the inverse of
+	// ClaimIssue). Returns ErrAssigneeMismatch, leaving the issue untouched,
+	// when the current assignee differs.
+	UnclaimIssueIfAssignee(ctx context.Context, id string, actor string, expectedAssignee string) error
 	UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error
 	CloseIssue(ctx context.Context, id string, reason string, actor string, session string) error
+	// CloseIssueChecked closes an issue, but refuses with ErrCloseBlocked when
+	// the issue is still blocked (is_blocked=1) unless opts.Force is set. The
+	// blocked-check and the close run in ONE transaction, so the guard is atomic
+	// (no TOCTOU). Already-closed is an idempotent success with Unchanged=true; a
+	// missing issue returns ErrNotFound.
+	CloseIssueChecked(ctx context.Context, id string, actor string, opts CloseIssueOptions) (CloseIssueResult, error)
 	DeleteIssue(ctx context.Context, id string) error
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
 	SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error)
+	// SearchIssueIDs is a narrow-projection variant of SearchIssues that
+	// returns only matching issue IDs. Use when full row hydration is wasted
+	// (e.g., partial-ID resolution in internal/utils/id_parser.go).
+	SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error)
 
 	// Dependencies
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
@@ -169,6 +201,18 @@ type Storage interface {
 	Close() error
 }
 
+// CloseIssueOptions carries the optional inputs to CloseIssueChecked.
+type CloseIssueOptions struct {
+	Reason  string
+	Session string
+	Force   bool // bypass the is_blocked guard (mirrors `bd close --force`)
+}
+
+// CloseIssueResult reports the outcome of CloseIssueChecked.
+type CloseIssueResult struct {
+	Unchanged bool // true when the issue was ALREADY closed (idempotent no-op)
+}
+
 // MergeSlotStatus is returned by MergeSlotCheck and describes the current
 // state of the merge slot bead.
 type MergeSlotStatus struct {
@@ -238,6 +282,19 @@ type Flattener interface {
 	Flatten(ctx context.Context) error
 }
 
+// RemoteRefPruner manages the cached remote-tracking refs that anchor Dolt
+// history. After a squash (Flatten/Compact) those refs still point at the
+// pre-squash chain, making the follow-up GC a silent no-op on any workspace
+// that has ever pushed or fetched (bd-agctw) — callers must prune them before
+// GC. Pruning only touches the local cache; the next push/fetch re-creates
+// the refs at the new tip. Tags anchor history the same way but are
+// user-created, so they are listed for warning rather than deleted.
+type RemoteRefPruner interface {
+	ListRemoteRefs(ctx context.Context) ([]string, error)
+	PruneRemoteRefs(ctx context.Context) ([]string, error)
+	ListTags(ctx context.Context) ([]string, error)
+}
+
 type SchemaMigrator interface {
 	ApplySchemaMigrations(ctx context.Context) (applied int, err error)
 }
@@ -246,6 +303,29 @@ type SchemaMigrator interface {
 // Callers should type-assert to this interface for selective history compaction.
 type Compactor interface {
 	Compact(ctx context.Context, initialHash, boundaryHash string, oldCommits int, recentHashes []string) error
+}
+
+// BlockedRecomputer recomputes the denormalized is_blocked column for every
+// issue and wisp in one full pass and reports how many rows it corrected.
+// Callers should type-assert to this interface for the is_blocked repair
+// (bd-6dnrw.37): unlike the scoped post-pull recompute, it does not depend on a
+// merge advancing HEAD, so it can recover a column a skipped recompute (a
+// recompute that failed after its merge committed, or a hand-resolved
+// conflicted pull) left stale. It is idempotent — a consistent database
+// corrects nothing.
+type BlockedRecomputer interface {
+	RecomputeAllBlocked(ctx context.Context) (int, error)
+}
+
+// StateHasher returns a hash covering committed history plus the working set.
+// Unlike GetCurrentCommit (HEAD only), the hash moves on uncommitted writes.
+// Change detection against a SQL server must use this when available: server
+// mode runs with dolt auto-commit off, so writes sit in the working set and
+// HEAD does not advance.
+// Callers should type-assert to this interface and fall back to
+// GetCurrentCommit when the store does not implement it.
+type StateHasher interface {
+	GetStateHash(ctx context.Context) (string, error)
 }
 
 // LifecycleManager provides lifecycle inspection beyond Close().
@@ -272,6 +352,17 @@ type BackupStore interface {
 	// RestoreDatabase restores the database from a Dolt backup at dir.
 	// When force is true, the existing database is dropped before restoring.
 	RestoreDatabase(ctx context.Context, dir string, force bool) error
+}
+
+// ReadyWorkCounter sizes the total ready-work count for a filter without
+// materializing the counts mega-query. It is identical to
+// len(GetReadyWorkWithCounts(filter with Limit=0)) but computed with cheap
+// indexed COUNT(*)s over the ready predicate. `bd ready --json` type-asserts to
+// this (via UnwrapStore) to render the "Showing X of N" total when a page is
+// capped, and falls back to the unbounded GetReadyWorkWithCounts when a store
+// does not implement it.
+type ReadyWorkCounter interface {
+	CountReadyWork(ctx context.Context, filter types.WorkFilter) (int, error)
 }
 
 // Transaction provides atomic multi-operation support within a single database transaction.
@@ -314,18 +405,20 @@ type Transaction interface {
 	DeleteIssue(ctx context.Context, id string) error
 	GetIssue(ctx context.Context, id string) (*types.Issue, error)                                    // For read-your-writes within transaction
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) // For read-your-writes within transaction
+	SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error)     // Narrow projection: returns ids only
 
 	// Dependency operations
 	AddDependency(ctx context.Context, dep *types.Dependency, actor string) error
 	AddDependencyWithOptions(ctx context.Context, dep *types.Dependency, actor string, opts DependencyAddOptions) error
 	RemoveDependency(ctx context.Context, issueID, dependsOnID string, actor string) error
 	GetDependencyRecords(ctx context.Context, issueID string) ([]*types.Dependency, error)
-	// CycleThroughEdges reports a rendered blocking-dependency cycle that
-	// traverses one of the given new edges (issueID -> dependsOnID pairs), or
+	// CycleThroughEdges reports a rendered cycle in the static scheduling set
+	// (blocks, conditional-blocks, parent-child; not waits-for) that traverses
+	// one of the given new edges (issueID -> dependsOnID pairs), or
 	// "" when none does. It sees the transaction's own uncommitted dependency
 	// writes, which must already include the edges. Lets bulk paths that add
-	// edges with SkipCycleCheck run one whole-graph check before commit and
-	// roll back instead of committing cycles (bd-6dnrw.8); pre-existing
+	// edges run one merged whole-graph check before commit and roll back instead
+	// of committing cycles (bd-6dnrw.8); pre-existing
 	// cycles not using any of the new edges never block (bd-578h9.9).
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 
@@ -357,8 +450,8 @@ type Transaction interface {
 // DependencyAddOptions controls transaction-scoped dependency insertion.
 type DependencyAddOptions struct {
 	// SkipCycleCheck bypasses the recursive pre-insert cycle check. Callers
-	// that set it MUST run Transaction.DetectCycles before commit and fail
-	// the transaction on new cycles — skipping the per-edge check trades
+	// that set it MUST run Transaction.CycleThroughEdges before commit and fail
+	// on new blocks/conditional-blocks/parent-child cycles (waits-for is excluded) — skipping the per-edge check trades
 	// per-edge cost for one whole-graph check, never graph integrity
 	// (bd-6dnrw.8).
 	SkipCycleCheck bool

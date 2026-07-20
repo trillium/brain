@@ -5,6 +5,14 @@ package uow
 // would implicitly commit the orphaned writes. These tests pin the repair
 // sequence: rollback on commit failure, and poison the conn (pool discard,
 // observable via db.Stats) when even the rollback fails.
+//
+// The hardening (commit 794ff0790) was reverted to BASE in a59e75325's serverv2
+// triage, which left doltServerTx.Commit releasing the pinned session with its
+// transaction still open on a non-transient DOLT_COMMIT failure — the exact
+// late/double-apply hazard RunInTransaction now guards against.
+// go-sql-driver v1.9.3 ResetSession only does a liveness
+// check (no COM_RESET_CONNECTION), so an orphaned open tx on a pooled session is
+// implicitly committed by the next borrower's START TRANSACTION.
 
 import (
 	"context"

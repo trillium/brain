@@ -48,20 +48,30 @@ func NewHookFiringStore(store DoltStorage, runner *hooks.Runner) *HookFiringStor
 	}
 }
 
-// Inner returns the underlying store, useful for type assertions
-// (e.g., StoreLocator, RawDBAccessor).
-func (h *HookFiringStore) Inner() DoltStorage { return h.inner }
+// Unwrapper is implemented by storage decorators that wrap an inner
+// DoltStorage. UnwrapStore uses this to peel arbitrary chains of
+// decorators (e.g. HookFiringStore wrapping telemetry.InstrumentedStorage
+// wrapping the concrete dolt store) so type assertions to optional
+// interfaces (StoreLocator, BackupStore, etc.) reach the concrete store.
+type Unwrapper interface {
+	Unwrap() DoltStorage
+}
 
-// UnwrapStore returns the underlying concrete store if s is a
-// HookFiringStore decorator, otherwise returns s unchanged.
-// Use this before type assertions to optional interfaces
-// (StoreLocator, BackupStore, Flattener, etc.) so the assertion
-// reaches the concrete store rather than the decorator.
+// Unwrap returns the underlying store, satisfying Unwrapper.
+func (h *HookFiringStore) Unwrap() DoltStorage { return h.inner }
+
+// UnwrapStore peels back any chain of Unwrapper decorators and returns
+// the innermost store. Use this before type-asserting to optional
+// interfaces (StoreLocator, BackupStore, Flattener, RawDBAccessor, etc.)
+// so the assertion reaches the concrete store rather than a decorator.
 func UnwrapStore(s DoltStorage) DoltStorage {
-	if h, ok := s.(*HookFiringStore); ok {
-		return h.inner
+	for {
+		u, ok := s.(Unwrapper)
+		if !ok {
+			return s
+		}
+		s = u.Unwrap()
 	}
-	return s
 }
 
 // ── Issue mutations ─────────────────────────────────────────────────
@@ -131,6 +141,19 @@ func (h *HookFiringStore) CloseIssue(ctx context.Context, id string, reason stri
 	}
 	h.fireHookByID(ctx, hooks.EventClose, id)
 	return nil
+}
+
+// CloseIssueChecked closes an issue under the is_blocked guard and fires
+// on_close on success — mirroring CloseIssue, this includes the idempotent
+// no-op when the issue was already closed (res.Unchanged). A guard rejection
+// (ErrCloseBlocked) or any other error returns without firing.
+func (h *HookFiringStore) CloseIssueChecked(ctx context.Context, id string, actor string, opts CloseIssueOptions) (CloseIssueResult, error) {
+	res, err := h.inner.CloseIssueChecked(ctx, id, actor, opts)
+	if err != nil {
+		return res, err
+	}
+	h.fireHookByID(ctx, hooks.EventClose, id)
+	return res, nil
 }
 
 // ── Dependency mutations ────────────────────────────────────────────
@@ -378,6 +401,8 @@ func cloneIssueForHook(issue *types.Issue) *types.Issue {
 	clone.ClosedAt = clonePtr(issue.ClosedAt)
 	clone.DueAt = clonePtr(issue.DueAt)
 	clone.DeferUntil = clonePtr(issue.DeferUntil)
+	clone.LeaseExpiresAt = clonePtr(issue.LeaseExpiresAt)
+	clone.HeartbeatAt = clonePtr(issue.HeartbeatAt)
 	clone.ExternalRef = clonePtr(issue.ExternalRef)
 	clone.Labels = append([]string(nil), issue.Labels...)
 	clone.Metadata = append([]byte(nil), issue.Metadata...)

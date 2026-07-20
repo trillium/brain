@@ -442,6 +442,40 @@ func TestImportFromLocalJSONL(t *testing.T) {
 		}
 	})
 
+	t.Run("preserves dependency created_by from JSONL import", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		dbPath := filepath.Join(tmpDir, "dolt")
+		store := newTestStore(t, dbPath)
+
+		jsonlContent := `{"id":"test-dep-target","title":"Dependency target","status":"open","priority":2,"issue_type":"task","created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}
+{"id":"test-dep-source","title":"Dependency source","status":"open","priority":2,"issue_type":"task","dependencies":[{"depends_on_id":"test-dep-target","type":"blocks","created_by":"someone.else","created_at":"2025-01-01T00:00:00Z"}],"created_at":"2025-01-01T00:00:00Z","updated_at":"2025-01-01T00:00:00Z"}
+`
+		jsonlPath := filepath.Join(tmpDir, "issues.jsonl")
+		if err := os.WriteFile(jsonlPath, []byte(jsonlContent), 0644); err != nil {
+			t.Fatalf("Failed to write JSONL file: %v", err)
+		}
+
+		ctx := context.Background()
+		count, err := importFromLocalJSONL(ctx, store, jsonlPath)
+		if err != nil {
+			t.Fatalf("importFromLocalJSONL failed: %v", err)
+		}
+		if count != 2 {
+			t.Fatalf("imported count = %d, want 2", count)
+		}
+
+		deps, err := store.GetDependencyRecords(ctx, "test-dep-source")
+		if err != nil {
+			t.Fatalf("GetDependencyRecords(test-dep-source): %v", err)
+		}
+		if len(deps) != 1 {
+			t.Fatalf("deps = %#v, want one dependency", deps)
+		}
+		if deps[0].CreatedBy != "someone.else" {
+			t.Fatalf("dependency created_by = %q, want someone.else", deps[0].CreatedBy)
+		}
+	})
+
 	t.Run("skips tombstone entries during import", func(t *testing.T) {
 		tmpDir := t.TempDir()
 		dbPath := filepath.Join(tmpDir, "dolt")
@@ -553,13 +587,14 @@ func TestImportFromLocalJSONL(t *testing.T) {
 			t.Errorf("Expected 1 issue on re-import, got %d", count2)
 		}
 
-		// Verify comments were NOT duplicated
-		issue, err := store.GetIssue(ctx, "test-cmt1")
+		// Verify comments were NOT duplicated. GetIssue does not hydrate
+		// comments, so read them through the dedicated accessor.
+		comments, err := store.GetIssueComments(ctx, "test-cmt1")
 		if err != nil {
-			t.Fatalf("Failed to get issue: %v", err)
+			t.Fatalf("Failed to get comments: %v", err)
 		}
-		if len(issue.Comments) != 2 {
-			t.Errorf("Expected 2 comments after re-import, got %d (duplicates!)", len(issue.Comments))
+		if len(comments) != 2 {
+			t.Errorf("Expected 2 comments after re-import, got %d (duplicates!)", len(comments))
 		}
 	})
 
@@ -632,15 +667,16 @@ func TestImportFromLocalJSONL_LegacyFormats(t *testing.T) {
 			t.Errorf("Expected 1 issue imported, got %d", count)
 		}
 
-		issue, err := store.GetIssue(ctx, "test-numcmt")
+		// GetIssue does not hydrate comments; read them through the accessor.
+		comments, err := store.GetIssueComments(ctx, "test-numcmt")
 		if err != nil {
-			t.Fatalf("Failed to get issue: %v", err)
+			t.Fatalf("Failed to get comments: %v", err)
 		}
-		if len(issue.Comments) != 1 {
-			t.Fatalf("Expected 1 comment, got %d", len(issue.Comments))
+		if len(comments) != 1 {
+			t.Fatalf("Expected 1 comment, got %d", len(comments))
 		}
-		if issue.Comments[0].Text != "numeric id comment" {
-			t.Errorf("Comment text = %q, want %q", issue.Comments[0].Text, "numeric id comment")
+		if comments[0].Text != "numeric id comment" {
+			t.Errorf("Comment text = %q, want %q", comments[0].Text, "numeric id comment")
 		}
 	})
 
