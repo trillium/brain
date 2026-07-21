@@ -8,6 +8,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/brain/verb"
 	newverb "github.com/steveyegge/beads/internal/brain/verb/new"
+	"github.com/steveyegge/beads/internal/brain/verb/slug"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -19,11 +20,17 @@ import (
 // nextID is a counter — each CreateIssue call assigns "B-<n>" where <n>
 // starts at 1. createErr lets a test inject a storage failure to verify
 // the verb wraps it correctly.
+//
+// slugs records every (id, slug) pair the verb writes via SetSlug.
+// setSlugErr lets a test inject a SetSlug failure (e.g. to simulate a
+// Dolt uniqueness collision).
 type recorderStore struct {
-	created   []*types.Issue
-	actors    []string
-	nextID    int
-	createErr error
+	created    []*types.Issue
+	actors     []string
+	nextID     int
+	createErr  error
+	slugs      map[string]string
+	setSlugErr error
 }
 
 func (r *recorderStore) CreateIssue(_ context.Context, issue *types.Issue, actor string) error {
@@ -32,7 +39,13 @@ func (r *recorderStore) CreateIssue(_ context.Context, issue *types.Issue, actor
 	}
 	r.nextID++
 	if issue.ID == "" {
-		issue.ID = idFor(r.nextID)
+		// Honour the IDPrefix the verb sets for kind=isa so tests can
+		// assert on the "B-isa-..." shape without bringing up storage.
+		if issue.IDPrefix != "" {
+			issue.ID = "B-" + issue.IDPrefix + "-" + idSuffix(r.nextID)
+		} else {
+			issue.ID = idFor(r.nextID)
+		}
 	}
 	// Take a shallow copy so a later mutation by the caller can't change
 	// what the recorder remembers.
@@ -40,6 +53,28 @@ func (r *recorderStore) CreateIssue(_ context.Context, issue *types.Issue, actor
 	r.created = append(r.created, &clone)
 	r.actors = append(r.actors, actor)
 	return nil
+}
+
+func (r *recorderStore) SetSlug(_ context.Context, id, slug string) error {
+	if r.setSlugErr != nil {
+		return r.setSlugErr
+	}
+	if r.slugs == nil {
+		r.slugs = map[string]string{}
+	}
+	r.slugs[id] = slug
+	return nil
+}
+
+func idSuffix(n int) string {
+	const hex = "abcdef0123456789"
+	return string([]byte{
+		hex[n%16],
+		hex[(n>>4)%16],
+		hex[(n>>8)%16],
+		hex[(n>>12)%16],
+		hex[(n>>16)%16],
+	})
 }
 
 func idFor(n int) string {
@@ -350,7 +385,7 @@ func TestValidKindsContents(t *testing.T) {
 	t.Parallel()
 
 	got := newverb.ValidKinds()
-	want := []string{"task", "knowledge", "both"}
+	want := []string{"task", "knowledge", "both", "isa"}
 	if len(got) != len(want) {
 		t.Fatalf("ValidKinds() len = %d, want %d (got %v)", len(got), len(want), got)
 	}
@@ -358,6 +393,230 @@ func TestValidKindsContents(t *testing.T) {
 		if got[i] != w {
 			t.Errorf("ValidKinds()[%d] = %q, want %q", i, got[i], w)
 		}
+	}
+}
+
+// --- ISA kind + slug ---------------------------------------------------
+
+// TestRun_ISA_ExplicitSlug exercises ISC-1 + ISC-3: kind=isa with a
+// caller-supplied --slug. The verb must set IDPrefix=isa on the issue
+// (so storage allocates "<prefix>-isa-XXXXX") and call SetSlug with
+// the supplied slug.
+func TestRun_ISA_ExplicitSlug(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	got, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeISA),
+		Title: "Brain as ISA Substrate",
+		Slug:  "brain-as-isa-substrate",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got.Kind != string(types.TypeISA) {
+		t.Errorf("Result.Kind = %q, want %q", got.Kind, types.TypeISA)
+	}
+	if got.Slug != "brain-as-isa-substrate" {
+		t.Errorf("Result.Slug = %q, want %q", got.Slug, "brain-as-isa-substrate")
+	}
+	if len(rec.created) != 1 {
+		t.Fatalf("recorder saw %d issues, want 1", len(rec.created))
+	}
+	if rec.created[0].IDPrefix != "isa" {
+		t.Errorf("issue.IDPrefix = %q, want %q (kind=isa must set IDPrefix=isa for ISC-2)",
+			rec.created[0].IDPrefix, "isa")
+	}
+	if rec.created[0].IssueType != types.TypeISA {
+		t.Errorf("issue.IssueType = %q, want %q", rec.created[0].IssueType, types.TypeISA)
+	}
+	if rec.slugs[got.ID] != "brain-as-isa-substrate" {
+		t.Errorf("SetSlug recorded %q, want %q", rec.slugs[got.ID], "brain-as-isa-substrate")
+	}
+}
+
+// TestRun_ISA_AutoSlugFromTitle exercises ISC-5: kind=isa with no
+// --slug — the verb must auto-generate one via slug.Auto.
+func TestRun_ISA_AutoSlugFromTitle(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	got, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeISA),
+		Title: "Foo Bar Baz",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got.Slug != "foo-bar-baz" {
+		t.Errorf("Result.Slug = %q, want %q (auto-slug from title)", got.Slug, "foo-bar-baz")
+	}
+	if rec.slugs[got.ID] != "foo-bar-baz" {
+		t.Errorf("SetSlug recorded %q, want %q", rec.slugs[got.ID], "foo-bar-baz")
+	}
+}
+
+// TestRun_ISA_TitleWithNoAlphanumericsFailsWithHint exercises ISC-5
+// fallback: a title that yields no alphanumerics must fail with an
+// error pointing the user at --slug.
+func TestRun_ISA_TitleWithNoAlphanumericsFailsWithHint(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	_, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeISA),
+		Title: "!!!",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want an auto-slug failure")
+	}
+	if !strings.Contains(err.Error(), "--slug") {
+		t.Errorf("error %q must mention '--slug' so the user knows the recovery", err.Error())
+	}
+	if len(rec.created) != 0 {
+		t.Fatalf("recorder saw %d issues, want 0 (slug-failure must precede storage write)",
+			len(rec.created))
+	}
+}
+
+// TestRun_ISA_InvalidSlugFailsWithValidationError exercises ISC-3
+// validation: an invalid --slug must return *slug.ValidationError
+// (the wrapper checks for that type to exit with code 2).
+func TestRun_ISA_InvalidSlugFailsWithValidationError(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	_, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeISA),
+		Title: "Whatever",
+		Slug:  "BadSlug",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want a ValidationError")
+	}
+	var vErr *slug.ValidationError
+	if !errors.As(err, &vErr) {
+		t.Fatalf("err = %v (type %T), want *slug.ValidationError", err, err)
+	}
+	if !strings.Contains(err.Error(), "BadSlug") {
+		t.Errorf("error %q must include the offending slug", err.Error())
+	}
+	if len(rec.created) != 0 {
+		t.Fatalf("recorder saw %d issues, want 0", len(rec.created))
+	}
+}
+
+// TestRun_ISA_SlugCollisionReturnsTypedError exercises ISC-4: when
+// SetSlug returns a uniqueness-collision error from the storage
+// backend, the verb must wrap it as *SlugCollisionError so the wrapper
+// can exit 2 with a clear message.
+func TestRun_ISA_SlugCollisionReturnsTypedError(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{
+		setSlugErr: errors.New("Duplicate entry 'foo-bar' for key 'slug_unique'"),
+	}
+	v := newverb.New(rec, "tester")
+
+	_, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeISA),
+		Title: "Whatever",
+		Slug:  "foo-bar",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want a SlugCollisionError")
+	}
+	var cErr *newverb.SlugCollisionError
+	if !errors.As(err, &cErr) {
+		t.Fatalf("err = %v (type %T), want *SlugCollisionError", err, err)
+	}
+	if cErr.Slug != "foo-bar" {
+		t.Errorf("SlugCollisionError.Slug = %q, want %q", cErr.Slug, "foo-bar")
+	}
+	if !strings.Contains(err.Error(), "foo-bar") {
+		t.Errorf("error %q must include the conflicting slug", err.Error())
+	}
+}
+
+// TestRun_Task_WithSlug exercises symmetry: kind=task with --slug
+// should persist the slug too (slug is not isa-exclusive at the
+// storage layer per migration 0050).
+func TestRun_Task_WithSlug(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	got, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeTask),
+		Title: "ship the FTS5 indexer",
+		Slug:  "ship-fts5",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got.Slug != "ship-fts5" {
+		t.Errorf("Result.Slug = %q, want %q", got.Slug, "ship-fts5")
+	}
+	if rec.created[0].IDPrefix != "" {
+		t.Errorf("issue.IDPrefix = %q, want \"\" (non-isa kinds must not set isa IDPrefix)",
+			rec.created[0].IDPrefix)
+	}
+	if rec.slugs[got.ID] != "ship-fts5" {
+		t.Errorf("SetSlug recorded %q, want %q", rec.slugs[got.ID], "ship-fts5")
+	}
+}
+
+// TestRun_Task_NoSlug confirms backwards compatibility: kind=task with
+// no --slug must not call SetSlug at all and must leave Result.Slug
+// empty.
+func TestRun_Task_NoSlug(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	got, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeTask),
+		Title: "no slug here",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got.Slug != "" {
+		t.Errorf("Result.Slug = %q, want \"\" (no --slug means no slug write)", got.Slug)
+	}
+	if len(rec.slugs) != 0 {
+		t.Errorf("SetSlug was called for non-isa kind with empty --slug: %v", rec.slugs)
+	}
+}
+
+// TestRun_Knowledge_EmptySlug confirms that an explicitly-empty slug
+// for a non-isa kind is a no-op (no SetSlug call, no validation).
+func TestRun_Knowledge_EmptySlug(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "tester")
+
+	_, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeKnowledge),
+		Title: "no slug",
+		Slug:  "",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if len(rec.slugs) != 0 {
+		t.Errorf("SetSlug was called with empty slug for non-isa kind: %v", rec.slugs)
 	}
 }
 

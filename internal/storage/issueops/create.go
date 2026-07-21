@@ -524,11 +524,17 @@ func CheckOrphan(ctx context.Context, tx *sql.Tx, issue *types.Issue, issueTable
 // overwrite live rows — worst case is a no-op. Otherwise the INSERT … ON
 // DUPLICATE KEY UPDATE runs, so explicit `bd import` keeps UPSERT semantics;
 // with opts.RejectStaleUpserts the update half is conditional on the incoming
-// row being at least as new as the stored one (bd-pkim8). Staleness is
-// decided by an explicit in-transaction read (stored updated_at strictly
-// newer ⇒ rejected, mirroring the ODKU's VALUES(updated_at) >= updated_at
-// accept condition) so callers can skip aux persistence and count the row as
-// skipped instead of created (bd-578h9.8).
+// row being strictly newer than the stored one (bd-pkim8, bd-hj85c).
+// Staleness is decided by an explicit in-transaction read (stored updated_at
+// strictly newer ⇒ rejected) so callers can skip aux persistence and count
+// the row as skipped instead of created (bd-578h9.8). Equal-timestamp rows
+// are deliberately NOT rejected here, even though the ODKU's
+// VALUES(updated_at) > updated_at condition keeps every stored column for
+// them: updated_at has second granularity, so a tie may be two distinct
+// same-second updates — the local row must win the tie (an incoming row with
+// an empty notes field must not wipe local notes), but its aux data
+// (labels/comments/deps, which never bump updated_at) still merges
+// additively (bd-hj85c).
 //
 //nolint:gosec // G201: table is a hardcoded constant
 func InsertIssueIfNew(ctx context.Context, tx *sql.Tx, issueTable string, issue *types.Issue, opts storage.BatchCreateOptions) (isNew bool, staleRejected bool, err error) {
@@ -709,12 +715,13 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx *sql.Tx, issue
 			// Deterministic id from (issue_id, target) keeps bulk-imported edges
 			// merge-safe across clones — two clones importing the same JSONL get the
 			// same primary key, not two random UUIDs that collide on uk_dep_* (#4259).
+			createdBy := dependencyCreatedBy(dep, actor)
 			//nolint:gosec // G201: depTable is one of two hardcoded constants; target column from DepTargetKind.Column()
 			sqlResult, err := tx.ExecContext(ctx, fmt.Sprintf(`
 					INSERT INTO %s (id, issue_id, %s, type, created_by, created_at)
 					VALUES (?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE type = type
-				`, depTable, kind.Column()), depid.New(dep.IssueID, dep.DependsOnID), dep.IssueID, dep.DependsOnID, dep.Type, actor, createdAt)
+				`, depTable, kind.Column()), depid.New(dep.IssueID, dep.DependsOnID), dep.IssueID, dep.DependsOnID, dep.Type, createdBy, createdAt)
 			if err != nil {
 				return result, fmt.Errorf("failed to insert dependency %s -> %s: %w", dep.IssueID, dep.DependsOnID, err)
 			}
@@ -728,6 +735,16 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx *sql.Tx, issue
 		}
 	}
 	return result, nil
+}
+
+// dependencyCreatedBy returns the author stamped on a dependency edge.
+// Import/restore paths populate dep.CreatedBy from JSONL; interactive
+// creation leaves it empty and falls back to the current actor.
+func dependencyCreatedBy(dep *types.Dependency, actor string) string {
+	if dep != nil && dep.CreatedBy != "" {
+		return dep.CreatedBy
+	}
+	return actor
 }
 
 func recordSkippedDependency(opts storage.BatchCreateOptions, dep *types.Dependency, reason string) {

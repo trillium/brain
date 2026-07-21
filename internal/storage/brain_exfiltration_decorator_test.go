@@ -343,15 +343,14 @@ func TestBrainExfDecorator_CreateIssue_FiresRender(t *testing.T) {
 	}
 }
 
-func TestBrainExfDecorator_CreateIssue_NonBrainStillRendersButPassthrough(t *testing.T) {
+func TestBrainExfDecorator_CreateIssue_NonBrainFiresRender(t *testing.T) {
 	d, _, exf := newTestDecorator()
-	// Even bugs flow through Render — the exfiltrator decides whether
-	// to write. We assert Render was called exactly once.
+	// Every kind exfiltrates now — bugs render the same as tasks.
 	if err := d.CreateIssue(context.Background(), brainIssue("B-bug", "bug", types.TypeBug), "tester"); err != nil {
 		t.Fatalf("CreateIssue: %v", err)
 	}
 	if exf.renderCount() != 1 {
-		t.Fatalf("render count = %d, want 1 (Render is the routing point)", exf.renderCount())
+		t.Fatalf("render count = %d, want 1", exf.renderCount())
 	}
 }
 
@@ -468,7 +467,7 @@ func TestBrainExfDecorator_UpdateIssueType_BrainToBrainNoRemove(t *testing.T) {
 	}
 }
 
-func TestBrainExfDecorator_UpdateIssueType_BrainToNonBrainRemovesFile(t *testing.T) {
+func TestBrainExfDecorator_UpdateIssueType_BrainToNonBrainMovesFile(t *testing.T) {
 	store := newFakeBrainStore()
 	root := t.TempDir()
 	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
@@ -490,15 +489,15 @@ func TestBrainExfDecorator_UpdateIssueType_BrainToNonBrainRemovesFile(t *testing
 		t.Fatalf("UpdateIssueType: %v", err)
 	}
 	if err := osStatNotExist(t, root, "entries/knowledge/outbound.md"); err != nil {
-		t.Fatalf("old knowledge file should be gone after transition out of brain: %v", err)
+		t.Fatalf("old knowledge file should be gone after transition: %v", err)
 	}
-	// No bug file should appear (bug is not a brain kind).
-	if err := osStatNotExist(t, root, "entries/bug/outbound.md"); err != nil {
-		t.Fatalf("bug file should not be created: %v", err)
+	// Every kind exfiltrates now — bug file should appear at the new path.
+	if _, err := osStatRequire(t, root, "entries/bug/outbound.md"); err != nil {
+		t.Fatalf("expected bug file after transition: %v", err)
 	}
 }
 
-func TestBrainExfDecorator_UpdateIssueType_NonBrainToBrainWritesFile(t *testing.T) {
+func TestBrainExfDecorator_UpdateIssueType_NonBrainToBrainMovesFile(t *testing.T) {
 	store := newFakeBrainStore()
 	root := t.TempDir()
 	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
@@ -508,17 +507,23 @@ func TestBrainExfDecorator_UpdateIssueType_NonBrainToBrainWritesFile(t *testing.
 		exf:         exf,
 	}
 
-	// Start as a bug — no markdown.
+	// Bug now exfiltrates — markdown lands at entries/bug/inbound.md.
 	issue := brainIssue("B-in", "inbound", types.TypeBug)
 	if err := d.CreateIssue(context.Background(), issue, "tester"); err != nil {
 		t.Fatalf("CreateIssue: %v", err)
+	}
+	if _, err := osStatRequire(t, root, "entries/bug/inbound.md"); err != nil {
+		t.Fatalf("expected bug file on create: %v", err)
 	}
 
 	if err := d.UpdateIssueType(context.Background(), "B-in", string(types.TypeTask), "tester"); err != nil {
 		t.Fatalf("UpdateIssueType: %v", err)
 	}
 	if _, err := osStatRequire(t, root, "entries/task/inbound.md"); err != nil {
-		t.Fatalf("expected task file after transition into brain: %v", err)
+		t.Fatalf("expected task file after transition: %v", err)
+	}
+	if err := osStatNotExist(t, root, "entries/bug/inbound.md"); err != nil {
+		t.Fatalf("old bug file should be gone after transition: %v", err)
 	}
 }
 
@@ -562,7 +567,7 @@ func TestBrainExfDecorator_UpdateIssue_BrainToBrainRemovesOldFile(t *testing.T) 
 	}
 }
 
-func TestBrainExfDecorator_UpdateIssue_BrainToNonBrainRemovesFile(t *testing.T) {
+func TestBrainExfDecorator_UpdateIssue_BrainToNonBrainMovesFile(t *testing.T) {
 	store := newFakeBrainStore()
 	root := t.TempDir()
 	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
@@ -586,10 +591,10 @@ func TestBrainExfDecorator_UpdateIssue_BrainToNonBrainRemovesFile(t *testing.T) 
 	}
 
 	if err := osStatNotExist(t, root, "entries/knowledge/recast-out.md"); err != nil {
-		t.Fatalf("old knowledge file should be gone after transition out of brain: %v", err)
+		t.Fatalf("old knowledge file should be gone after transition: %v", err)
 	}
-	if err := osStatNotExist(t, root, "entries/bug/recast-out.md"); err != nil {
-		t.Fatalf("bug file should not be created: %v", err)
+	if _, err := osStatRequire(t, root, "entries/bug/recast-out.md"); err != nil {
+		t.Fatalf("expected bug file after transition: %v", err)
 	}
 }
 

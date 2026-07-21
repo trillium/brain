@@ -194,6 +194,9 @@ func Initialize() error {
 	// Sync configuration defaults (bd-4u8)
 	v.SetDefault("sync.require_confirmation_on_mass_delete", false)
 
+	v.SetDefault("metrics.disabled", false)
+	v.SetDefault("metrics.endpoint", "https://gastownhall-eventsapi.com/mp/collect")
+
 	// Federation configuration (optional Dolt remote)
 	v.SetDefault("federation.remote", "")                          // e.g., dolthub://org/beads, gs://bucket/beads, s3://bucket/beads, az://account.blob.core.windows.net/container/beads
 	v.SetDefault("federation.sovereignty", "")                     // T1 | T2 | T3 | T4 (empty = no restriction)
@@ -205,6 +208,11 @@ func Initialize() error {
 
 	// Create command defaults
 	v.SetDefault("create.require-description", false)
+
+	// Change-event emission (brain). When true, each write command appends one
+	// JSON line per mutated issue to <beadsDir>/change-events.jsonl. Off by
+	// default.
+	v.SetDefault("change-events.enabled", false)
 
 	// Validation configuration defaults (bd-t7jq)
 	// Values: "warn" | "error" | "none"

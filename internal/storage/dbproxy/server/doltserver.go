@@ -93,8 +93,9 @@ func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath string, keepAli
 	if keepAlivePeriod == 0 {
 		keepAlivePeriod = defaultKeepAlivePeriod
 	}
+	sum := sha256.Sum256([]byte(absRootDir))
 	return &DoltServer{
-		id:              LocalDoltServerID(absRootDir),
+		id:              hex.EncodeToString(sum[:]),
 		doltBinExec:     absDoltBinExec,
 		rootDir:         absRootDir,
 		configPath:      absConfigPath,
@@ -106,19 +107,6 @@ func NewDoltServer(doltBinExec, rootDir, configPath, logFilePath string, keepAli
 
 func (s *DoltServer) ID(_ context.Context) string {
 	return s.id
-}
-
-// LocalDoltServerID is the upstream ID a managed local DoltServer advertises
-// for rootDir. Discovery uses it to verify that a proxy found via pidfile
-// actually fronts this workspace's dolt and not some other instance behind a
-// recycled pid/port.
-func LocalDoltServerID(rootDir string) string {
-	abs, err := filepath.Abs(rootDir)
-	if err != nil {
-		abs = rootDir
-	}
-	sum := sha256.Sum256([]byte(abs))
-	return hex.EncodeToString(sum[:])
 }
 
 func (s *DoltServer) DSN(_ context.Context, database, user, password string) string {

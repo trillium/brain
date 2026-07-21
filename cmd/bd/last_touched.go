@@ -34,6 +34,11 @@ func SetLastTouchedID(issueID string) {
 		return
 	}
 
+	// Every write path calls SetLastTouchedID, so this is the single choke point
+	// that feeds the change-event accumulator (robots-bnn). Commands that touch
+	// more than one issue additionally call recordChangedID directly.
+	recordChangedID(issueID)
+
 	beadsDir := beads.FindBeadsDir()
 	if beadsDir == "" {
 		return

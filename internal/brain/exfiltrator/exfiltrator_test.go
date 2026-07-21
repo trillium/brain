@@ -250,7 +250,7 @@ func TestRender_BothWritesFile(t *testing.T) {
 	}
 }
 
-func TestRender_NonBrainKindIsPassthrough(t *testing.T) {
+func TestRender_NonBrainKindWritesFile(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	persister := &fakePersister{}
@@ -261,13 +261,13 @@ func TestRender_NonBrainKindIsPassthrough(t *testing.T) {
 		t.Fatalf("Render: %v", err)
 	}
 
-	// No file should appear under entries/.
-	entries := filepath.Join(root, "entries")
-	if _, err := os.Stat(entries); err == nil {
-		t.Fatalf("entries dir created for non-brain kind")
+	// Every kind renders. Bug lands at entries/bug/a-bug.md.
+	want := filepath.Join(root, "entries", "bug", "a-bug.md")
+	if _, err := os.Stat(want); err != nil {
+		t.Fatalf("expected bug file at %s: %v", want, err)
 	}
-	if len(persister.snapshot()) != 0 {
-		t.Fatalf("persister called for non-brain kind: %+v", persister.snapshot())
+	if len(persister.snapshot()) != 1 {
+		t.Fatalf("persister should have been called once for new slug: %+v", persister.snapshot())
 	}
 }
 
@@ -401,16 +401,26 @@ func TestRemove_MissingIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestRemove_NonBrainKindIsNoop(t *testing.T) {
+func TestRemove_NonBrainKindRemovesFile(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
 	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
-	// Should not even create the entries dir.
-	if err := exf.Remove(context.Background(), "B-bug", types.TypeBug, "slug"); err != nil {
-		t.Fatalf("Remove non-brain kind: %v", err)
+
+	// Write a bug file via Render, then remove it via Remove.
+	issue := mustBrainIssue(t, "B-bug", "removable bug", types.TypeBug)
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
-		t.Fatalf("Remove of non-brain kind created entries dir")
+	path := filepath.Join(root, "entries", "bug", "removable-bug.md")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected bug file before remove: %v", err)
+	}
+
+	if err := exf.Remove(context.Background(), "B-bug", types.TypeBug, "removable-bug"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("expected file gone, stat err = %v", err)
 	}
 }
 
@@ -422,7 +432,7 @@ func TestRemove_EmptySlugErrors(t *testing.T) {
 	}
 }
 
-// ── PathFor / Root / IsBrainKind ───────────────────────────────────
+// ── PathFor / Root ──────────────────────────────────────────────────
 
 func TestPathFor_Layout(t *testing.T) {
 	t.Parallel()
@@ -449,27 +459,6 @@ func TestRoot_ExpandsHome(t *testing.T) {
 	want := "/tmp/home-fake/data/knowledge"
 	if exf.Root() != want {
 		t.Fatalf("Root = %q, want %q", exf.Root(), want)
-	}
-}
-
-func TestIsBrainKind(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		kind types.IssueType
-		want bool
-	}{
-		{types.TypeTask, true},
-		{types.TypeKnowledge, true},
-		{types.TypeBoth, true},
-		{types.TypeBug, false},
-		{types.TypeFeature, false},
-		{types.TypeEpic, false},
-		{types.IssueType(""), false},
-	}
-	for _, c := range cases {
-		if got := exfiltrator.IsBrainKind(c.kind); got != c.want {
-			t.Errorf("IsBrainKind(%q) = %v, want %v", c.kind, got, c.want)
-		}
 	}
 }
 
@@ -571,5 +560,128 @@ func TestRenderThenRemoveSimulatesKindTransition(t *testing.T) {
 	}
 	if _, err := os.Stat(oldPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old file should be gone: err=%v", err)
+	}
+}
+
+// TestRender_EveryKnownKindWritesFile is the every-kind contract: removing
+// the brain-trio gate means Render writes a file at entries/<kind>/<slug>.md
+// for every IssueType the substrate recognizes. If a new kind is added to
+// types.IssueType, append it here so this regression test stays exhaustive.
+func TestRender_EveryKnownKindWritesFile(t *testing.T) {
+	t.Parallel()
+
+	kinds := []types.IssueType{
+		types.TypeTask,
+		types.TypeKnowledge,
+		types.TypeBoth,
+		types.TypeBug,
+		types.TypeFeature,
+		types.TypeEpic,
+		types.TypeChore,
+		types.TypeDecision,
+		types.TypeMessage,
+		types.TypeMolecule,
+		types.TypeGate,
+		types.TypeSpike,
+		types.TypeStory,
+		types.TypeMilestone,
+		types.TypeISA,
+	}
+
+	for _, kind := range kinds {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+			issue := mustBrainIssue(t, "B-"+string(kind), "hello "+string(kind), kind)
+
+			if err := exf.Render(context.Background(), issue); err != nil {
+				t.Fatalf("Render(%s): %v", kind, err)
+			}
+
+			want := filepath.Join(root, "entries", string(kind), "hello-"+string(kind)+".md")
+			body, err := os.ReadFile(want)
+			if err != nil {
+				t.Fatalf("expected file at %s: %v", want, err)
+			}
+			gotBody := string(body)
+			for _, mustContain := range []string{
+				"id: B-" + string(kind),
+				"kind: " + string(kind),
+				"# hello " + string(kind),
+			} {
+				if !strings.Contains(gotBody, mustContain) {
+					t.Errorf("file body missing %q. Got:\n%s", mustContain, gotBody)
+				}
+			}
+		})
+	}
+}
+
+// TestRender_EmptyKindErrors locks in the only gate left after the brain-trio
+// gate removal: an issue with no kind cannot be rendered (there is no
+// directory to write to).
+func TestRender_EmptyKindErrors(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+	issue := &types.Issue{
+		ID:        "B-empty-kind",
+		Title:     "no kind set",
+		IssueType: "",
+	}
+	if err := exf.Render(context.Background(), issue); err == nil {
+		t.Fatal("expected error for empty kind, got nil")
+	}
+	// No file should have been created.
+	if _, err := os.Stat(filepath.Join(root, "entries")); err == nil {
+		t.Fatal("entries dir created despite empty-kind error")
+	}
+}
+
+// TestRemove_EmptyKindErrors mirrors TestRender_EmptyKindErrors for the
+// Remove path.
+func TestRemove_EmptyKindErrors(t *testing.T) {
+	t.Parallel()
+	exf := exfiltrator.NewMarkdownExfiltrator(t.TempDir(), nil)
+	if err := exf.Remove(context.Background(), "B-bad", "", "slug"); err == nil {
+		t.Fatal("expected error for empty kind, got nil")
+	}
+}
+
+// TestRender_VeryLongTitleTruncatesSlug ensures the slug stays short enough
+// that the atomic-write tmp+rename dance never trips the filesystem's 255-byte
+// component cap. The two real-world failures that prompted this guard were
+// 290+-byte slugs in the brain store.
+func TestRender_VeryLongTitleTruncatesSlug(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+
+	// 400-byte title — longer than any single filesystem path component allows.
+	longTitle := strings.Repeat("really long question about something ", 12)
+	issue := mustBrainIssue(t, "B-long", longTitle, types.TypeKnowledge)
+
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render with long title: %v", err)
+	}
+
+	// The written file must exist and its basename (incl. ".md") must fit.
+	mx := exf
+	slug, _, err := mx.SlugFor(issue)
+	if err != nil {
+		t.Fatalf("SlugFor: %v", err)
+	}
+	if len(slug) > 200 {
+		t.Errorf("slug = %d bytes, want <= 200", len(slug))
+	}
+	path := mx.PathFor(types.TypeKnowledge, slug)
+	base := filepath.Base(path)
+	if len(base) > 255 {
+		t.Fatalf("file basename = %d bytes, exceeds POSIX 255 cap: %s", len(base), base)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("expected file at %s: %v", path, err)
 	}
 }
