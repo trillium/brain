@@ -124,13 +124,12 @@ func (d *BrainExfiltrationDecorator) ReopenIssue(ctx context.Context, id string,
 	return nil
 }
 
-// UpdateIssueType changes an issue's kind. If the transition crosses
-// the brain set boundary (e.g. knowledge → bug, or bug → task), the
-// stale file is removed and/or a new file is written so the on-disk
-// view matches the new kind.
+// UpdateIssueType changes an issue's kind. The stale file at the old
+// kind's directory is removed and a fresh file is written at the new
+// kind's directory so the on-disk view matches the new kind.
 func (d *BrainExfiltrationDecorator) UpdateIssueType(ctx context.Context, id string, issueType string, actor string) error {
 	// Snapshot the old kind + slug before the update so we can clean
-	// up if the transition crosses out of the brain set.
+	// up the stale file after the transition.
 	oldKind, oldSlug := d.snapshotKindAndSlug(ctx, id)
 
 	if err := d.inner.UpdateIssueType(ctx, id, issueType, actor); err != nil {
@@ -140,9 +139,7 @@ func (d *BrainExfiltrationDecorator) UpdateIssueType(ctx context.Context, id str
 	newKind := types.IssueType(issueType)
 	d.applyKindTransitionCleanup(ctx, id, oldKind, oldSlug, newKind)
 
-	if exfiltrator.IsBrainKind(newKind) {
-		d.renderByID(ctx, id)
-	}
+	d.renderByID(ctx, id)
 	return nil
 }
 
@@ -152,20 +149,19 @@ func (d *BrainExfiltrationDecorator) UpdateIssueType(ctx context.Context, id str
 // only consumes the snapshot.
 //
 // No-ops when:
-//   - oldKind is not a brain kind (no markdown was ever written),
 //   - oldKind == newKind (e.g. a status-only update that happened to
 //     pass through this path),
-//   - oldSlug is empty (the snapshot didn't resolve a slug), or
+//   - oldKind or oldSlug is empty (the snapshot didn't resolve), or
 //   - the exfiltrator is nil (passthrough mode).
 //
 // Remove failures are intentionally swallowed: the storage mutation
 // already succeeded and the reconciler is the documented safety net for
 // any orphan file (divergence/0012 § Decisions #5).
 func (d *BrainExfiltrationDecorator) applyKindTransitionCleanup(ctx context.Context, id string, oldKind types.IssueType, oldSlug string, newKind types.IssueType) {
-	if d.exf == nil || oldSlug == "" {
+	if d.exf == nil || oldSlug == "" || oldKind == "" {
 		return
 	}
-	if !exfiltrator.IsBrainKind(oldKind) || oldKind == newKind {
+	if oldKind == newKind {
 		return
 	}
 	_ = d.exf.Remove(ctx, id, oldKind, oldSlug)
@@ -285,7 +281,7 @@ func (d *BrainExfiltrationDecorator) snapshotKindAndSlug(ctx context.Context, id
 	if err != nil || issue == nil {
 		return "", ""
 	}
-	if mx, ok := d.exf.(*exfiltrator.MarkdownExfiltrator); ok && exfiltrator.IsBrainKind(issue.IssueType) {
+	if mx, ok := d.exf.(*exfiltrator.MarkdownExfiltrator); ok && issue.IssueType != "" {
 		slug, _, err := mx.SlugFor(issue)
 		if err != nil {
 			return issue.IssueType, ""

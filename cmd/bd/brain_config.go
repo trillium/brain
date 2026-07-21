@@ -38,24 +38,35 @@ func (p storeSlugPersister) SetSlug(ctx context.Context, issueID, slug string) e
 }
 
 // brainKnowledgeRoot returns the filesystem root where brain renders
-// markdown files. Resolution order:
+// markdown files. Each store's rendered markdown lives next to its
+// .beads/ directory under `<store>/entries/<kind>/<slug>.md`, so the
+// root is store-derived by default — not a hardcoded path.
 //
-//  1. BRAIN_KNOWLEDGE_ROOT environment variable (absolute path).
-//  2. ~/data/knowledge (default per WHAT_IS_BRAIN.md § 1).
+// Resolution order:
+//
+//  1. BRAIN_KNOWLEDGE_ROOT environment variable (explicit override).
+//  2. dirname($BEADS_DIR) — the store's own directory. e.g.
+//     BEADS_DIR=~/data/brain/.beads → root=~/data/brain.
+//  3. ~/data/brain (sensible default for the brain variant).
 //
 // Returns empty string only if the home directory cannot be resolved
-// and no override is set — caller should treat empty as "skip
+// and neither override is set — caller should treat empty as "skip
 // exfiltration entirely" (defensive; the decorator passes through
 // when constructed with a nil exfiltrator).
 func brainKnowledgeRoot() string {
 	if env := os.Getenv("BRAIN_KNOWLEDGE_ROOT"); env != "" {
 		return env
 	}
+	if beadsDir := os.Getenv("BEADS_DIR"); beadsDir != "" {
+		if parent := filepath.Dir(beadsDir); parent != "" && parent != "." && parent != "/" {
+			return parent
+		}
+	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, "data", "knowledge")
+	return filepath.Join(home, "data", "brain")
 }
 
 // newBrainExfiltrator constructs the default markdown exfiltrator for

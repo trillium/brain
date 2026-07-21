@@ -425,6 +425,7 @@ create, update, show, or close operation).`,
 					closeIfUnmutated(result)
 					continue
 				}
+				commandDidWrite.Store(true)
 				trackMutation(result)
 				// Audit log key field changes (survives Dolt GC flatten)
 				if s, ok := regularUpdates["status"].(string); ok {

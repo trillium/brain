@@ -15,8 +15,12 @@ import (
 )
 
 var (
-	// Version is the current version of bd (overridden by ldflags at build time)
+	// Version is the upstream beads version (overridden by ldflags at build time)
 	Version = "1.2.2"
+	// BrainVersion is the brain fork version, set via -ldflags at build time from
+	// the most recent brain/vX.Y.Z git tag. Falls back to the in-source default
+	// below for manual builds.
+	BrainVersion = "0.4.0"
 	// Build can be set via ldflags at compile time
 	Build = "dev"
 	// Commit and branch the git revision the binary was built from (optional ldflag)
@@ -56,11 +60,11 @@ var versionCmd = &cobra.Command{
 			}
 		} else {
 			if commit != "" && branch != "" {
-				fmt.Printf("bd version %s (%s: %s@%s)\n", Version, Build, branch, shortCommit(commit))
+				fmt.Printf("bd version %s (brain/%s, %s: %s@%s)\n", Version, BrainVersion, Build, branch, shortCommit(commit))
 			} else if commit != "" {
-				fmt.Printf("bd version %s (%s: %s)\n", Version, Build, shortCommit(commit))
+				fmt.Printf("bd version %s (brain/%s, %s: %s)\n", Version, BrainVersion, Build, shortCommit(commit))
 			} else {
-				fmt.Printf("bd version %s (%s)\n", Version, Build)
+				fmt.Printf("bd version %s (brain/%s, %s)\n", Version, BrainVersion, Build)
 			}
 		}
 
