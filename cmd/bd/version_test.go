@@ -77,6 +77,14 @@ func TestVersionCommand(t *testing.T) {
 		if result["build"] == "" {
 			t.Error("Expected build field to be non-empty")
 		}
+		// Combined token and brain half are surfaced as their own fields; the
+		// beads-core "version" field stays semver-sortable (no build metadata).
+		if result["brain"] != BrainVersion {
+			t.Errorf("Expected brain %s, got %s", BrainVersion, result["brain"])
+		}
+		if result["combined"] != combinedVersion() {
+			t.Errorf("Expected combined %s, got %s", combinedVersion(), result["combined"])
+		}
 		// cgo field removed — server-only operation, no CGO bifurcation
 		if _, ok := result["cgo"]; ok {
 			t.Error("cgo field should no longer be present in version output")
@@ -85,6 +93,61 @@ func TestVersionCommand(t *testing.T) {
 
 	// Restore default
 	jsonOutput = false
+}
+
+func TestCombinedVersion(t *testing.T) {
+	origVersion := Version
+	origBrain := BrainVersion
+	defer func() {
+		Version = origVersion
+		BrainVersion = origBrain
+	}()
+
+	Version = "1.1.0-rc.1"
+	BrainVersion = "0.4.0"
+
+	got := combinedVersion()
+	want := "1.1.0-rc.1+brain.0.4.0"
+	if got != want {
+		t.Errorf("combinedVersion() = %q, want %q", got, want)
+	}
+
+	// The combined token must be single-sourced from the two vars: build
+	// metadata sits after "+", so the beads core remains the semver-comparable
+	// prefix.
+	if !strings.HasPrefix(got, Version+"+brain.") {
+		t.Errorf("combined token %q must lead with beads core %q and a +brain. build-metadata segment", got, Version)
+	}
+}
+
+func TestVersionCombinedFlag(t *testing.T) {
+	oldStdout := os.Stdout
+	origCombined := versionCombinedOnly
+	defer func() {
+		os.Stdout = oldStdout
+		versionCombinedOnly = origCombined
+	}()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("Failed to create pipe: %v", err)
+	}
+	os.Stdout = w
+	jsonOutput = false
+	versionCombinedOnly = true
+
+	if err := versionCmd.RunE(versionCmd, []string{}); err != nil {
+		t.Fatalf("versionCmd.RunE: %v", err)
+	}
+
+	w.Close()
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := strings.TrimSpace(buf.String())
+
+	if output != combinedVersion() {
+		t.Errorf("Expected --combined output %q, got %q", combinedVersion(), output)
+	}
 }
 
 func TestResolveCommitHash(t *testing.T) {
