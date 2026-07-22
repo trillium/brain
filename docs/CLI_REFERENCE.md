@@ -6874,5 +6874,11 @@ bd undefer [id...]
 Print version information
 
 ```
-bd version
+bd version [flags]
+```
+
+**Flags:**
+
+```
+      --combined   print only the canonical combined version token (<beadsVersion>+brain.<brainVersion>)
 ```

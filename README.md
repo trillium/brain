@@ -69,11 +69,13 @@ Argv[0] dispatch via `BD_NAME` controls display name and brain-mode behavior.
 Double semver: upstream beads version + brain fork version.
 
 ```
-bd version 1.1.0-rc.1 (brain/0.4.0, abc1234: feat/isa-substrate-f1@abc1234)
+bd version 1.1.0-rc.1+brain.0.4.0 (abc1234: feat/isa-substrate-f1@abc1234)
 ```
 
 - **`1.1.0-rc.1`** — upstream beads base the fork is rebased on
-- **`brain/0.4.0`** — brain fork version, derived from the most recent `brain/vX.Y.Z` git tag
+- **`+brain.0.4.0`** — brain fork version, derived from the most recent `brain/vX.Y.Z` git tag, appended as SemVer build metadata so the beads core stays version-sortable
+
+The combined token `<beadsVersion>+brain.<brainVersion>` is canonical. Print it alone with `bd version --combined`, or read the `brain` and `combined` fields from `bd version --json`.
 
 To cut a release:
 
