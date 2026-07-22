@@ -258,6 +258,55 @@ malicious due to heuristic detection. See `docs/ANTIVIRUS.md` for details.
 
 ---
 
+## check-beads-upstream.sh (advisory pre-push)
+
+Warns when upstream `gastownhall/beads` has published a newer **tagged** release
+than the beads version this repo is currently based on (the `Version` constant in
+`cmd/bd/version.go`), and files a sync task bead so brain's superset can be
+restored on top of it.
+
+### Usage
+
+```bash
+# Run the check manually
+./scripts/check-beads-upstream.sh
+
+# Preview the bead it would file, without creating one
+DRY_RUN=1 ./scripts/check-beads-upstream.sh
+```
+
+### Behavior
+
+- **Advisory only** — always exits `0` and never blocks a push. Offline or
+  missing-tool failures degrade to a warning and still exit `0`.
+- Requires an `upstream` remote pointing at `gastownhall/beads`; without it the
+  check prints the `git remote add` command and exits.
+- Resolves the latest upstream release read-only via `git ls-remote --tags`
+  (no mutating fetch) and compares versions with proper semver ordering, where a
+  prerelease sorts *below* its final release (`sort -V` gets this backwards, so
+  the rc-vs-release decision is made by hand).
+- **Idempotent** — skips filing when an open sync bead already targets that tag.
+
+### Install as a git hook
+
+The `scripts/hooks/pre-push` wrapper runs this check on every `git push`.
+Install it (along with the other repo hooks) with:
+
+```bash
+./scripts/install-hooks.sh
+```
+
+In a git worktree (where `.git` is a file), `install-hooks.sh` targets the wrong
+directory; wire the hook into the shared git dir instead:
+
+```bash
+printf '#!/bin/bash\nexec "$(git rev-parse --show-toplevel)/scripts/check-beads-upstream.sh" "$@"\n' \
+  > "$(git rev-parse --git-common-dir)/hooks/pre-push"
+chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-push"
+```
+
+---
+
 ## Future Scripts
 
 Additional maintenance scripts may be added here as needed.
