@@ -1,0 +1,5 @@
+#!/bin/bash
+# Pre-push hook: advisory check for a newer upstream beads TAGGED release.
+# Thin wrapper — all logic lives in scripts/check-beads-upstream.sh, which is
+# advisory-only and always exits 0, so this hook never blocks a push.
+exec "$(git rev-parse --show-toplevel)/scripts/check-beads-upstream.sh" "$@"
