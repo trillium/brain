@@ -81,11 +81,11 @@ var versionCmd = &cobra.Command{
 			}
 		} else {
 			if commit != "" && branch != "" {
-				fmt.Printf("bd version %s (brain/%s, %s: %s@%s)\n", combinedVersion(), BrainVersion, Build, branch, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s@%s)\n", combinedVersion(), Build, branch, shortCommit(commit))
 			} else if commit != "" {
-				fmt.Printf("bd version %s (brain/%s, %s: %s)\n", combinedVersion(), BrainVersion, Build, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s)\n", combinedVersion(), Build, shortCommit(commit))
 			} else {
-				fmt.Printf("bd version %s (brain/%s, %s)\n", combinedVersion(), BrainVersion, Build)
+				fmt.Printf("bd version %s (%s)\n", combinedVersion(), Build)
 			}
 		}
 
