@@ -10,6 +10,10 @@
 # This check is ADVISORY ONLY. It ALWAYS exits 0 and never blocks a push.
 # Any failure (offline, missing tools) degrades to a warning and exits 0.
 #
+# Prerequisite: an `upstream` remote pointing at gastownhall/beads must exist.
+#   git remote add upstream https://github.com/gastownhall/beads.git
+# Without it the check emits a one-line advisory naming this command and exits 0.
+#
 # Env:
 #   DRY_RUN=1   Print what would be filed without calling `task create`.
 #
@@ -18,7 +22,9 @@
 #   printf '#!/bin/bash\nexec "$(git rev-parse --show-toplevel)/scripts/check-beads-upstream.sh" "$@"\n' \
 #     > "$(git rev-parse --git-common-dir)/hooks/pre-push"
 #   chmod +x "$(git rev-parse --git-common-dir)/hooks/pre-push"
-# Or, to install all tracked hooks at once: ./scripts/install-hooks.sh
+# Or, from a normal clone: ./scripts/install-hooks.sh — note that script targets
+# .git/hooks and errors out in a git worktree (where .git is a file); use the
+# git-common-dir manual method above for worktree setups.
 
 set -euo pipefail
 
@@ -48,6 +54,13 @@ if [ -z "$CURRENT_BASE" ]; then
 fi
 
 # --- Latest upstream beads TAGGED release -------------------------------------
+# Prerequisite: an `upstream` remote must be configured. Distinguish a missing
+# remote (config gap) from a genuine network failure so the advisory is accurate.
+if ! git remote get-url upstream >/dev/null 2>&1; then
+    warn "no 'upstream' remote configured; run: git remote add upstream https://github.com/gastownhall/beads.git (advisory)."
+    exit 0
+fi
+
 # Read-only ls-remote (no mutating fetch). The trailing $ anchor keeps this to
 # final releases only (vX.Y.Z), excluding prerelease tags like vX.Y.Z-rc.1.
 LATEST_TAG=$(git ls-remote --tags upstream 2>/dev/null \
@@ -122,9 +135,11 @@ echo -e "${YELLOW}⚠ upstream beads ${LATEST_TAG} is newer than brain's current
 TITLE="Sync brain onto beads ${LATEST_TAG} (currently on ${CURRENT_BASE})"
 
 # Idempotency: skip if an OPEN task bead already targets this exact upstream tag.
+# Escape dots so v1.2.0 matches literally and cannot false-positive on v1X2X0.
+LATEST_TAG_RE=$(printf '%s' "$LATEST_TAG" | sed 's/\./\\./g')
 if command -v task >/dev/null 2>&1; then
     EXISTING=$(task list --status open --json 2>/dev/null \
-        | grep -oE "beads ${LATEST_TAG}[^\"]*" | head -1 || true)
+        | grep -oE "beads ${LATEST_TAG_RE}[^\"]*" | head -1 || true)
     if [ -n "$EXISTING" ]; then
         echo -e "${GREEN}✓ sync bead for beads ${LATEST_TAG} already open; nothing to file.${NC}" >&2
         exit 0
