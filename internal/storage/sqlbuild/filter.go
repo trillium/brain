@@ -23,9 +23,31 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 			whereClauses = append(whereClauses, "(id = ? OR id LIKE ? OR LOWER(title) LIKE ? OR LOWER(external_ref) LIKE ?)")
 			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%", "%"+lowerQuery+"%")
 		} else {
-			whereClauses = append(whereClauses, "(LOWER(title) LIKE ? OR id LIKE ?)")
-			pattern := "%" + lowerQuery + "%"
-			args = append(args, pattern, pattern)
+			// Tokenized free-text search: split the query into whitespace tokens
+			// and match EACH token against title OR description, plus a
+			// whole-query id fallback. This is a strict superset of the prior
+			// title-only, whole-phrase LIKE — every row the old clause matched is
+			// still matched (a row containing the exact phrase contains every
+			// token), so it can never return fewer rows (task-4ja). It also
+			// reverses the hq-319 title-only optimization to include descriptions.
+			tokens := SearchTokens(query)
+			orParts := make([]string, 0, len(tokens)*2+1)
+			if len(tokens) == 0 {
+				// Whitespace-only query: preserve prior whole-string matching.
+				pattern := "%" + lowerQuery + "%"
+				orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
+				args = append(args, pattern, pattern)
+			} else {
+				for _, tok := range tokens {
+					pattern := "%" + tok + "%"
+					orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
+					args = append(args, pattern, pattern)
+				}
+			}
+			// Whole-query id fallback (unchanged from prior behavior).
+			orParts = append(orParts, "id LIKE ?")
+			args = append(args, "%"+lowerQuery+"%")
+			whereClauses = append(whereClauses, "("+strings.Join(orParts, " OR ")+")")
 		}
 	}
 
@@ -262,6 +284,27 @@ func AppendMetadataClauses(where []string, args []any, hasKey string, fields map
 		}
 	}
 	return where, args, nil
+}
+
+// SearchTokens splits a free-text search query into lowercased, de-duplicated,
+// non-empty whitespace-delimited tokens. It is the single tokenization source
+// shared by the SQL WHERE-clause builder (BuildIssueFilterClauses) and the
+// Go-side relevance scorer so both agree on token boundaries (task-4ja).
+func SearchTokens(query string) []string {
+	fields := strings.Fields(strings.ToLower(query))
+	if len(fields) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(fields))
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		if _, ok := seen[f]; ok {
+			continue
+		}
+		seen[f] = struct{}{}
+		out = append(out, f)
+	}
+	return out
 }
 
 // LooksLikeIssueID returns true if the query string looks like a beads issue ID.
