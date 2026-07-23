@@ -1683,9 +1683,9 @@ func TestSearchIssues_ByTitle(t *testing.T) {
 	}
 }
 
-// TestSearchIssues_ByDescription verifies that DescriptionContains filter finds
-// issues by description text. Free-text search no longer scans descriptions
-// (hq-319 optimization) — use DescriptionContains for explicit description search.
+// TestSearchIssues_ByDescription verifies that free-text search now matches
+// description content (task-4ja reverses the hq-319 title-only optimization),
+// and that the explicit DescriptionContains filter still works.
 func TestSearchIssues_ByDescription(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1705,13 +1705,16 @@ func TestSearchIssues_ByDescription(t *testing.T) {
 		t.Fatalf("failed to create issue: %v", err)
 	}
 
-	// Free-text query should NOT match description-only content (hq-319).
+	// Free-text query now matches description-only content (task-4ja).
 	results, err := store.SearchIssues(ctx, "Special unique description", types.IssueFilter{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(results) != 0 {
-		t.Fatalf("free-text search should not scan descriptions (hq-319), got %d results", len(results))
+	if len(results) != 1 {
+		t.Fatalf("free-text search should now match descriptions (task-4ja), got %d results", len(results))
+	}
+	if results[0].ID != issue.ID {
+		t.Errorf("expected issue %s from description match, got %s", issue.ID, results[0].ID)
 	}
 
 	// DescriptionContains filter should still find it.

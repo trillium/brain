@@ -87,9 +87,86 @@ func TestBuildIssueFilterClauses_QueryAsText(t *testing.T) {
 	if len(clauses) != 1 {
 		t.Fatalf("expected 1 clause, got %d", len(clauses))
 	}
-	// Text query produces 2 args: title LIKE, id LIKE
-	if len(args) != 2 {
-		t.Errorf("expected 2 args for text query, got %d: %v", len(args), args)
+	// Tokenized text query (task-4ja): 3 tokens × (title LIKE + description LIKE)
+	// + 1 whole-query id LIKE = 7 args.
+	if len(args) != 7 {
+		t.Errorf("expected 7 args for 3-token text query, got %d: %v", len(args), args)
+	}
+	// The clause must now search descriptions, not just titles.
+	if !strings.Contains(clauses[0], "LOWER(description) LIKE ?") {
+		t.Errorf("expected description search in clause, got %q", clauses[0])
+	}
+	if !strings.Contains(clauses[0], "LOWER(title) LIKE ?") {
+		t.Errorf("expected title search in clause, got %q", clauses[0])
+	}
+	if !strings.Contains(clauses[0], "id LIKE ?") {
+		t.Errorf("expected id fallback in clause, got %q", clauses[0])
+	}
+}
+
+// TestBuildIssueFilterClauses_MultiTokenSuperset verifies that a multi-word
+// query is tokenized (each token matched independently against title and
+// description) rather than treated as one literal substring — the task-4ja bug
+// where `search "agentic agent"` returned 0 despite each token matching.
+func TestBuildIssueFilterClauses_MultiTokenSuperset(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("agentic agent", types.IssueFilter{}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(clauses) != 1 {
+		t.Fatalf("expected 1 clause, got %d", len(clauses))
+	}
+	// 2 tokens × (title + description) + 1 id fallback = 5 args.
+	if len(args) != 5 {
+		t.Fatalf("expected 5 args for 2-token query, got %d: %v", len(args), args)
+	}
+	// Each token contributes its own %token% patterns (not one %agentic agent%).
+	strArgs := make([]string, 0, len(args))
+	for _, a := range args {
+		if s, ok := a.(string); ok {
+			strArgs = append(strArgs, s)
+		}
+	}
+	joined := strings.Join(strArgs, "|")
+	if !strings.Contains(joined, "%agentic%") || !strings.Contains(joined, "%agent%") {
+		t.Errorf("expected per-token patterns %%agentic%% and %%agent%%, got %v", strArgs)
+	}
+	// The whole-query id fallback still carries the full phrase.
+	if !strings.Contains(joined, "%agentic agent%") {
+		t.Errorf("expected whole-query id fallback %%agentic agent%%, got %v", strArgs)
+	}
+}
+
+// TestSearchTokens verifies whitespace splitting, lowercasing, de-duplication,
+// and empty handling — the single tokenization source shared by the SQL builder
+// and the Go relevance scorer.
+func TestSearchTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{name: "single token", query: "agent", want: []string{"agent"}},
+		{name: "multi token", query: "agentic agent", want: []string{"agentic", "agent"}},
+		{name: "lowercases", query: "Agentic AGENT", want: []string{"agentic", "agent"}},
+		{name: "dedupes preserving order", query: "agent agentic agent", want: []string{"agent", "agentic"}},
+		{name: "collapses whitespace", query: "  agentic   agent  ", want: []string{"agentic", "agent"}},
+		{name: "empty", query: "", want: nil},
+		{name: "whitespace only", query: "   ", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := sqlbuild.SearchTokens(tt.query)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("SearchTokens(%q) = %v, want %v", tt.query, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -453,8 +530,9 @@ func TestBuildIssueFilterClauses_CombinedFilters(t *testing.T) {
 	if len(clauses) != 6 {
 		t.Errorf("expected 6 clauses for combined filter, got %d: %v", len(clauses), clauses)
 	}
-	// query text(2) + status(1) + priority(1) + label(1) + created_after(1) = 6
-	if len(args) != 6 {
-		t.Errorf("expected 6 args, got %d", len(args))
+	// query text: 2 tokens × (title+desc) + 1 id fallback = 5 (task-4ja tokenized);
+	// + status(1) + priority(1) + label(1) + created_after(1) = 9
+	if len(args) != 9 {
+		t.Errorf("expected 9 args, got %d", len(args))
 	}
 }
