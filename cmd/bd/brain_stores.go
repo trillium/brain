@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
+	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/ui"
 	"gopkg.in/yaml.v3"
 )
@@ -217,10 +222,16 @@ var brainStoresCreateCmd = &cobra.Command{
 	Short: "Provision a new connected store (dolt init + entries dir + wrapper + registry)",
 	Long: `Provision a new connected store end-to-end. Does, in order:
 
-  1. Create <path>/.beads/ and run 'dolt init' inside it.
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in <path>/.beads/.
   2. Create <path>/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/<name> that pins BEADS_DIR
-     and BD_NAME, then exec's bd.
+  3. Write a CLI wrapper at ~/.local/bin/<name>. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
   4. Register the store in ~/.config/pai/stores.yaml.
   5. Regenerate ~/.config/pai/stores.env.
 
@@ -257,9 +268,20 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	beadsDir := filepath.Join(path, ".beads")
 	entriesDir := filepath.Join(path, "entries")
 
-	// Step 1: dolt init the .beads dir.
-	if err := initDoltStore(beadsDir); err != nil {
-		FatalError("dolt init at %s: %v", beadsDir, err)
+	// Step 1: provision the Dolt store. In shared-server mode (the PAI
+	// federation default — the brain wrapper exports BEADS_DOLT_SERVER_MODE=1
+	// and the server pins at create time) the store is a database in the running
+	// shared dolt sql-server, NOT an embedded .beads/.dolt repo. Only when those
+	// pins are absent do we fall back to an embedded 'dolt init'.
+	host, port, shared := resolveSharedServerCreate()
+	if shared {
+		if err := provisionServerStore(context.Background(), name, beadsDir, host, port); err != nil {
+			FatalError("provisioning server store at %s: %v", beadsDir, err)
+		}
+	} else {
+		if err := initDoltStore(beadsDir); err != nil {
+			FatalError("dolt init at %s: %v", beadsDir, err)
+		}
 	}
 
 	// Step 2: entries/ sibling for exfiltration.
@@ -267,10 +289,20 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 		FatalError("creating %s: %v", entriesDir, err)
 	}
 
-	// Step 3: wrapper at ~/.local/bin/<name>.
+	// Step 3: wrapper at ~/.local/bin/<name>. Shared-server stores get the four
+	// server pins so bd resolves in server mode; embedded stores get the minimal
+	// BEADS_DIR/BD_NAME wrapper.
 	wrapperPath := ""
 	if !createStoreNoWrap {
-		wp, err := writeStoreWrapper(name, beadsDir, createStoreBinary)
+		var (
+			wp  string
+			err error
+		)
+		if shared {
+			wp, err = writeServerStoreWrapper(name, beadsDir, createStoreBinary, host, port)
+		} else {
+			wp, err = writeStoreWrapper(name, beadsDir, createStoreBinary)
+		}
 		if err != nil {
 			FatalError("writing wrapper: %v", err)
 		}
@@ -349,6 +381,160 @@ func initDoltStore(beadsDir string) error {
 		return fmt.Errorf("dolt init: %w", err)
 	}
 	return nil
+}
+
+// resolveSharedServerCreate detects whether 'brain stores create' is running in
+// PAI shared-server mode. The brain wrapper exports BEADS_DOLT_SERVER_MODE=1 (or
+// BEADS_DOLT_SHARED_SERVER=1) plus the server host/port at create time; when
+// present, a new store must be provisioned as a database in the running shared
+// dolt sql-server rather than as an embedded .beads/.dolt repo. Returns the
+// resolved host, port, and whether shared-server mode is active.
+func resolveSharedServerCreate() (host string, port int, shared bool) {
+	if os.Getenv("BEADS_DOLT_SERVER_MODE") != "1" && os.Getenv("BEADS_DOLT_SHARED_SERVER") != "1" {
+		return "", 0, false
+	}
+	host = os.Getenv("BEADS_DOLT_SERVER_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port = dolt.DefaultSQLPort
+	if v := os.Getenv("BEADS_DOLT_SERVER_PORT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			port = n
+		}
+	}
+	return host, port, true
+}
+
+// buildServerStoreConfig constructs the metadata.json contents for a new
+// server-mode store: dolt_mode=server pinned to the shared sql-server, the SQL
+// database name equal to the store name, and a caller-supplied project identity.
+// Pure (no I/O) so it can be unit-tested without a live server.
+func buildServerStoreConfig(name, host string, port int, projectID string) *configfile.Config {
+	cfg := configfile.DefaultConfig()
+	cfg.Database = "dolt"
+	cfg.Backend = configfile.BackendDolt
+	cfg.DoltMode = configfile.DoltModeServer
+	cfg.DoltServerHost = host
+	cfg.DoltServerPort = port
+	cfg.DoltDatabase = name
+	cfg.GlobalDoltDatabase = doltserver.GlobalDatabaseName
+	cfg.GlobalProjectID = doltserver.GlobalProjectID
+	cfg.ProjectID = projectID
+	return cfg
+}
+
+// provisionServerStore creates a connected store as a database in the running
+// shared Dolt sql-server. Order is load-bearing:
+//
+//  1. Write metadata.json (server mode) + config.yaml FIRST, so the store open
+//     below resolves THIS store's own .beads dir. Without a metadata.json here,
+//     bd walks up and mis-resolves a parent .beads (e.g. ~/data/.beads) — the
+//     ancestor-discovery bug that left every 'brain stores create' store DOA.
+//  2. Open the store with CreateIfMissing, so bd runs CREATE DATABASE on the
+//     shared server and initializes the beads schema. This reuses bd's own
+//     verified provisioning path instead of hand-rolling SQL/DDL.
+//  3. Persist issue_prefix and _project_id into the database, so create/list
+//     work and cross-project verification matches metadata.json.
+//
+// Idempotent: on re-run it preserves the existing project identity (minting a
+// new one would break the metadata.json↔database identity check on later opens).
+func provisionServerStore(ctx context.Context, name, beadsDir, host string, port int) error {
+	if err := os.MkdirAll(beadsDir, 0o700); err != nil {
+		return fmt.Errorf("mkdir %s: %w", beadsDir, err)
+	}
+
+	// Preserve an existing project identity across idempotent re-runs.
+	projectID := ""
+	if existing, err := configfile.Load(beadsDir); err == nil && existing != nil {
+		projectID = existing.ProjectID
+	}
+	if projectID == "" {
+		projectID = configfile.GenerateProjectID()
+	}
+
+	cfg := buildServerStoreConfig(name, host, port, projectID)
+	if err := cfg.Save(beadsDir); err != nil {
+		return fmt.Errorf("writing metadata.json: %w", err)
+	}
+	if err := writeStoreConfigYaml(beadsDir, name); err != nil {
+		return fmt.Errorf("writing config.yaml: %w", err)
+	}
+
+	store, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})
+	if err != nil {
+		return fmt.Errorf("opening store (create database on shared server): %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SetConfig(ctx, "issue_prefix", name); err != nil {
+		return fmt.Errorf("setting issue_prefix in database: %w", err)
+	}
+	if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
+		return fmt.Errorf("writing project identity to database: %w", err)
+	}
+	return nil
+}
+
+// writeStoreConfigYaml writes the minimal config.yaml every connected store
+// carries: issue-prefix and BD_NAME, both equal to the store name (matching the
+// shape of existing stores like review/tasks). Idempotent — an existing file is
+// left untouched so a re-run never clobbers hand edits.
+func writeStoreConfigYaml(beadsDir, name string) error {
+	path := filepath.Join(beadsDir, "config.yaml")
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+	body := fmt.Sprintf(`# Beads configuration — connected store %q on the shared Dolt sql-server.
+# Managed by 'brain stores create'; the wrapper pins server-mode env.
+issue-prefix: %q
+BD_NAME: %q
+`, name, name, name)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	return nil
+}
+
+// writeServerStoreWrapper writes a CLI wrapper at ~/.local/bin/<name> for a
+// shared-server store. Unlike writeStoreWrapper, it exports the four shared-server
+// pins (mirroring the review/brain wrappers) so bd resolves in server mode and
+// never falls back to embedded mode or mis-discovers a sibling database. It also
+// exports BRAIN_KNOWLEDGE_ROOT/BRAIN_EXFIL_FLAT to match the federation canon.
+// Returns the wrapper path.
+func writeServerStoreWrapper(name, beadsDir, bdBinary, host string, port int) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", fmt.Errorf("resolving home dir: %w", err)
+	}
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir %s: %w", binDir, err)
+	}
+	if bdBinary == "" {
+		bdBinary = "bd"
+	}
+	knowledgeRoot := filepath.Dir(beadsDir)
+	wrapperPath := filepath.Join(binDir, name)
+	body := fmt.Sprintf(`#!/bin/sh
+# Auto-generated by 'brain stores create %s'.
+# Server-mode store on the shared Dolt sql-server (%s:%d); dolt_database=%s.
+# The explicit shared-server pins mirror the review/brain wrappers so bd never
+# falls back to embedded mode or mis-discovers a sibling database.
+export BEADS_DIR=%q
+export BD_NAME=%q
+export BRAIN_KNOWLEDGE_ROOT=%q
+export BRAIN_EXFIL_FLAT=1
+export BEADS_DOLT_SERVER_MODE=1
+export BEADS_DOLT_SERVER_HOST=%s
+export BEADS_DOLT_SERVER_PORT=%d
+export BEADS_DOLT_SHARED_SERVER=1
+exec %s "$@"
+`, name, host, port, name, beadsDir, name, knowledgeRoot, host, port, bdBinary)
+	if err := os.WriteFile(wrapperPath, []byte(body), 0o755); err != nil { //nolint:gosec
+		return "", fmt.Errorf("writing %s: %w", wrapperPath, err)
+	}
+	return wrapperPath, nil
 }
 
 // writeStoreWrapper writes a shell wrapper at ~/.local/bin/<name> that pins
