@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-pai help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -198,6 +198,18 @@ ifeq ($(OS),Windows_NT)
 	@cp $(BUILD_DIR)/bd.exe $(INSTALL_DIR)/bd.exe
 	@echo "Installed bd.exe to $(INSTALL_DIR)/bd.exe"
 else
+	@# Guard: refuse to clobber the PAI federation wrapper (robots-bpig).
+	@# On the PAI host ~/.local/bin/bd is a shell wrapper (federation discovery)
+	@# and ~/.local/bin/beads is the real binary — inverted vs this target's
+	@# stock layout. The rm/ln below would delete the wrapper and break every
+	@# store's resolution. Detect it (shell shebang + wrapper marker) and stop.
+	@if [ -f "$(INSTALL_DIR)/bd" ] && [ "$$(head -c 2 "$(INSTALL_DIR)/bd" 2>/dev/null)" = '#!' ] && grep -q 'beads federation' "$(INSTALL_DIR)/bd" 2>/dev/null; then \
+		echo "ERROR: $(INSTALL_DIR)/bd is the beads federation wrapper (PAI inverted layout)."; \
+		echo "Stock 'make install' would DELETE it and break federated store resolution."; \
+		echo "Use 'make install-pai' instead — it installs the binary to 'beads' and leaves 'bd' intact."; \
+		echo "(To override intentionally, remove $(INSTALL_DIR)/bd first.)"; \
+		exit 1; \
+	fi
 	@rm -f $(INSTALL_DIR)/bd
 	@cp $(BUILD_DIR)/bd $(INSTALL_DIR)/bd
 	@echo "Installed bd to $(INSTALL_DIR)/bd"
@@ -208,6 +220,14 @@ endif
 	@git config core.hooksPath .githooks 2>/dev/null && echo "Configured git hooks (.githooks/)" || true
 
 install: check-up-to-date
+
+# PAI-safe install for the inverted beads/bd layout (see robots-bpig).
+# Installs the freshly built binary to ~/.local/bin/beads, re-signs it on macOS,
+# and NEVER touches the ~/.local/bin/bd federation wrapper. Use this on the PAI
+# host instead of 'make install'.
+install-pai: build
+	@INSTALL_DIR="$(INSTALL_DIR)" BUILD_DIR="$(BUILD_DIR)" ./scripts/install-pai.sh
+	@git config core.hooksPath .githooks 2>/dev/null && echo "Configured git hooks (.githooks/)" || true
 
 # Format all Go files
 fmt:
@@ -275,6 +295,7 @@ help:
 	@echo "  make bench-quick  - Run quick benchmarks (shorter benchtime)"
 	@echo "  make install      - Install bd to ~/.local/bin (with codesign on macOS, includes 'beads' alias)"
 	@echo "  make install-force - Install bd, skipping the origin/main update check"
+	@echo "  make install-pai  - PAI-safe install: binary -> ~/.local/bin/beads, preserves the bd federation wrapper"
 	@echo "  make fmt          - Format all Go files with gofmt"
 	@echo "  make fmt-check    - Check Go formatting (for CI)"
 	@echo "  make check-docs   - Validate docs against CLI flags"

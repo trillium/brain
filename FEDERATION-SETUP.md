@@ -4,6 +4,32 @@ Federation enables peer-to-peer synchronization of beads databases between
 multiple workspaces using Dolt remotes. Each workspace maintains its own database
 while sharing work items with configured peers.
 
+## Installing on a PAI host (inverted `bd`/`beads` layout)
+
+Some hosts (the PAI federation host) run an **inverted** binary layout relative
+to stock:
+
+- `~/.local/bin/beads` — the real compiled binary
+- `~/.local/bin/bd` — a **federation-discovery shell wrapper** that resolves the
+  active store (via each store's `BEADS_DIR`/`BD_NAME` wrapper), prints the
+  federation menu when run with no store context, and delegates to `beads`
+
+Stock `make install` makes `bd` the binary and `beads` a symlink to it, which
+**deletes the federation wrapper** and breaks every store's resolution.
+
+On such a host use:
+
+```sh
+make install-pai
+```
+
+`install-pai` builds, installs the fresh binary to `~/.local/bin/beads`,
+re-signs it ad-hoc on macOS (the copy invalidates the code signature — the
+kernel otherwise SIGKILLs the binary with exit 137), and **never touches**
+`~/.local/bin/bd`. As a safety net, `make install` now refuses to run when it
+detects the federation wrapper at `~/.local/bin/bd`, directing you to
+`install-pai` instead. See `scripts/install-pai.sh` and robots-bpig.
+
 ## Overview
 
 Federation uses Dolt's distributed version control capabilities to sync issue
