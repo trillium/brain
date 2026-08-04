@@ -137,8 +137,9 @@ func resolveViaAutoRouting(ctx context.Context, localStore storage.DoltStorage, 
 
 // prefixRoute represents a prefix-to-path routing rule from routes.jsonl.
 type prefixRoute struct {
-	Prefix string `json:"prefix"` // Issue ID prefix (e.g., "hr-")
-	Path   string `json:"path"`   // Relative path to rig directory from town root
+	Prefix  string   `json:"prefix"`            // Canonical issue ID prefix (e.g., "hr-")
+	Path    string   `json:"path"`              // Relative path to rig directory from town root
+	Aliases []string `json:"aliases,omitempty"` // Extra prefixes that resolve to this route; the ID is rewritten to Prefix before lookup (e.g. "ideas-" → "idea-")
 }
 
 // resolveViaPrefixRouting attempts to find an issue by looking up its prefix
@@ -178,17 +179,13 @@ func resolveViaPrefixRoutingWithAccess(ctx context.Context, id string, writable 
 		return nil, fmt.Errorf("no routes available")
 	}
 
-	// Find matching route for this prefix
-	var matchedRoute *prefixRoute
-	for i, r := range routes {
-		if r.Prefix == prefix {
-			matchedRoute = &routes[i]
-			break
-		}
-	}
+	// Find the matching route and (if matched via an alias) the canonically
+	// rewritten ID. See matchRouteForPrefix for the alias semantics.
+	matchedRoute, canonicalID := matchRouteForPrefix(routes, prefix, id)
 	if matchedRoute == nil {
 		return nil, fmt.Errorf("no route for prefix %q", prefix)
 	}
+	id = canonicalID
 
 	// Skip if the route points to current directory (town-level, already checked)
 	if matchedRoute.Path == "." {
@@ -257,6 +254,30 @@ func extractBeadPrefix(beadID string) string {
 		return ""
 	}
 	return beadID[:idx+1]
+}
+
+// matchRouteForPrefix finds the route serving the given prefix and returns it
+// along with the ID to look up in the target store.
+//
+// A route matches either on its canonical Prefix or on any of its Aliases. An
+// alias lets a second prefix (e.g. the plural "ideas-") resolve to the same
+// store as the canonical prefix ("idea-"). Because the target store only holds
+// canonically-prefixed IDs, an alias match rewrites the ID's prefix to the
+// route's canonical Prefix; a canonical match returns the ID unchanged. When no
+// route matches, it returns (nil, id).
+func matchRouteForPrefix(routes []prefixRoute, prefix, id string) (*prefixRoute, string) {
+	for i := range routes {
+		r := &routes[i]
+		if r.Prefix == prefix {
+			return r, id
+		}
+		for _, a := range r.Aliases {
+			if a == prefix {
+				return r, r.Prefix + id[len(prefix):]
+			}
+		}
+	}
+	return nil, id
 }
 
 // loadPrefixRoutes loads prefix-to-path routes from routes.jsonl in the beads directory.
