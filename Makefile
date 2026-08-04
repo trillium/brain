@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-emit-wrappers help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -207,7 +207,15 @@ else
 endif
 	@git config core.hooksPath .githooks 2>/dev/null && echo "Configured git hooks (.githooks/)" || true
 
-install: check-up-to-date
+install: check-up-to-date install-emit-wrappers
+
+# Install brain-emit wrapper and create store-specific symlinks
+# E.g., ~/.local/bin/brain, ~/.local/bin/task, etc. point to brain-emit.ts
+install-emit-wrappers:
+	@mkdir -p $(INSTALL_DIR)
+	@chmod +x scripts/brain-emit.ts
+	@cp scripts/brain-emit.ts $(INSTALL_DIR)/brain-emit
+	@echo "Installed brain-emit wrapper to $(INSTALL_DIR)/brain-emit"
 
 # Format all Go files
 fmt:
