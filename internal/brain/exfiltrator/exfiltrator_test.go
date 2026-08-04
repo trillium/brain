@@ -685,3 +685,90 @@ func TestRender_VeryLongTitleTruncatesSlug(t *testing.T) {
 		t.Fatalf("expected file at %s: %v", path, err)
 	}
 }
+
+// TestRender_OKFConformance verifies that rendered markdown conforms to
+// Open Knowledge Format (OKF) v0.1 spec (task-rxyc).
+// Required OKF fields per §1.1: type (required), title, description, resource, tags, timestamp.
+func TestRender_OKFConformance(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	exf := exfiltrator.NewMarkdownExfiltrator(root, nil)
+
+	issue := &types.Issue{
+		ID:          "brain-k00042",
+		Title:       "Test Knowledge Entry",
+		Description: "First line summary.\n\nDetailed explanation goes here.",
+		Status:      types.StatusOpen,
+		Priority:    1,
+		IssueType:   types.TypeKnowledge,
+		Labels:      []string{"cat-tech", "cat-home"},
+		CreatedAt:   time.Date(2026, 7, 15, 10, 30, 0, 0, time.UTC),
+		UpdatedAt:   time.Date(2026, 7, 15, 11, 0, 0, 0, time.UTC),
+	}
+
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	path := filepath.Join(root, "entries", "knowledge", "test-knowledge-entry.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", path, err)
+	}
+
+	content := string(data)
+
+	// Verify OKF v0.1 required fields
+	okfFields := []string{
+		"type: domain-concept",               // OKF §1.1 required field
+		`title: "Test Knowledge Entry"`,      // OKF §1.1 standard field
+		`description: "First line summary."`, // OKF §1.1 standard field
+		`resource: "brain-k00042"`,           // OKF §1.1 standard field
+		`tags: ["cat-tech", "cat-home"]`,     // OKF §1.1 standard field
+		"timestamp: 2026-07-15T11:00:00Z",    // OKF §1.4 ISO-8601 UTC
+	}
+
+	for _, want := range okfFields {
+		if !strings.Contains(content, want) {
+			t.Errorf("OKF conformance: missing %q\n--- got ---\n%s", want, content)
+		}
+	}
+
+	// Verify backward compatibility: legacy brain fields still present
+	legacyFields := []string{
+		"id: brain-k00042",
+		"kind: knowledge",
+		"priority: 1",
+		"created: 2026-07-15T10:30:00Z",
+		"updated: 2026-07-15T11:00:00Z",
+		`labels: ["cat-tech", "cat-home"]`,
+	}
+
+	for _, want := range legacyFields {
+		if !strings.Contains(content, want) {
+			t.Errorf("backward compatibility: missing %q\n--- got ---\n%s", want, content)
+		}
+	}
+
+	// Verify markdown body structure (unchanged)
+	bodyChecks := []string{
+		"# Test Knowledge Entry",
+		"First line summary.",
+		"Detailed explanation goes here.",
+	}
+
+	for _, want := range bodyChecks {
+		if !strings.Contains(content, want) {
+			t.Errorf("body structure: missing %q\n--- got ---\n%s", want, content)
+		}
+	}
+
+	// Verify frontmatter structure: starts with ---, has type as first field
+	lines := strings.Split(content, "\n")
+	if len(lines) < 3 || lines[0] != "---" {
+		t.Errorf("frontmatter should start with ---; got first line: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "type: ") {
+		t.Errorf("type should be first field in frontmatter; got: %q", lines[1])
+	}
+}
