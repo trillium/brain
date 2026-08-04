@@ -899,7 +899,9 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 	for _, d := range deps {
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			continue
+			// External dependency (e.g., from depends_on_external column).
+			// Create a minimal Issue with just the ID so the edge is displayed.
+			issue = &types.Issue{ID: d.depID}
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{
 			Issue:          *issue,
@@ -962,7 +964,9 @@ func GetDependentsWithMetadataInTx(ctx context.Context, tx DBTX, issueID string)
 	for _, d := range deps {
 		issue, ok := issueMap[d.depID]
 		if !ok {
-			continue
+			// External dependent (e.g., when depends_on_external points to this issue from another store).
+			// Create a minimal Issue with just the ID so the edge is displayed.
+			issue = &types.Issue{ID: d.depID}
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{
 			Issue:          *issue,
