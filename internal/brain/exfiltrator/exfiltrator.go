@@ -372,6 +372,12 @@ func (m *MarkdownExfiltrator) pathFor(kind types.IssueType, slug string) string 
 // renderMarkdown returns the full file body: YAML frontmatter +
 // "# {title}\n\n{body}".
 //
+// Conforms to Open Knowledge Format (OKF) v0.1 per task-rxyc:
+//   - Required `type` field (OKF §1.1)
+//   - Standard optional fields: title, description, resource, tags, timestamp (OKF §1.1)
+//   - Preserves legacy fields (id, kind, status, priority, created, updated, labels)
+//     for backward compatibility with existing brain tooling
+//
 // Shape documented in divergence/0012 § Decisions. Any change to this
 // shape ripples into the reconciler's idempotence guarantee (ISC-123),
 // so future edits must keep the byte-for-byte rendering stable for a
@@ -380,12 +386,54 @@ func renderMarkdown(issue *types.Issue) string {
 	var b strings.Builder
 	b.Grow(len(issue.Description) + 256)
 
+	// OKF v0.1 frontmatter block
 	b.WriteString("---\n")
-	b.WriteString("id: ")
-	b.WriteString(issue.ID)
-	b.WriteByte('\n')
+
+	// OKF required field: type (OKF §3 - all brain entries are domain-concept)
+	b.WriteString("type: domain-concept\n")
+
+	// OKF standard fields
 	b.WriteString("title: ")
 	b.WriteString(yamlString(issue.Title))
+	b.WriteByte('\n')
+
+	// description: first line of body for OKF summary
+	if issue.Description != "" {
+		firstLine := strings.Split(issue.Description, "\n")[0]
+		if firstLine != "" {
+			b.WriteString("description: ")
+			b.WriteString(yamlString(firstLine))
+			b.WriteByte('\n')
+		}
+	}
+
+	// resource: canonical identifier (OKF §1.1)
+	b.WriteString("resource: ")
+	b.WriteString(yamlString(issue.ID))
+	b.WriteByte('\n')
+
+	// tags: from labels (OKF §1.1)
+	if len(issue.Labels) > 0 {
+		b.WriteString("tags: [")
+		for i, l := range issue.Labels {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(yamlString(l))
+		}
+		b.WriteString("]\n")
+	}
+
+	// timestamp: ISO-8601 UTC from updated (OKF §1.4)
+	if !issue.UpdatedAt.IsZero() {
+		b.WriteString("timestamp: ")
+		b.WriteString(issue.UpdatedAt.UTC().Format(time.RFC3339))
+		b.WriteByte('\n')
+	}
+
+	// Legacy brain fields preserved for backward compatibility
+	b.WriteString("id: ")
+	b.WriteString(issue.ID)
 	b.WriteByte('\n')
 	b.WriteString("kind: ")
 	b.WriteString(string(issue.IssueType))
