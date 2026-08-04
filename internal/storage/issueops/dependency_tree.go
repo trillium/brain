@@ -49,6 +49,19 @@ func buildDependencyTreeInTx(ctx context.Context, tx DBTX, issueID string, depth
 		if !isDependencyTreeEdge(rel.DependencyType) {
 			continue
 		}
+		// Don't recurse into cross-store dependencies; show them as leaf nodes.
+		// Cross-store IDs have different prefixes (e.g., issue has prefix "bd-", dep has "resume_bullets-").
+		if types.ExtractPrefix(issueID) != "" && types.ExtractPrefix(rel.ID) != "" &&
+			types.ExtractPrefix(issueID) != types.ExtractPrefix(rel.ID) {
+			// It's a cross-store dependency; include it as-is without recursing.
+			nodes = append(nodes, &types.TreeNode{
+				Issue:          rel.Issue,
+				Depth:          depth + 1,
+				ParentID:       issueID,
+				EdgeFromParent: rel.DependencyType,
+			})
+			continue
+		}
 		children, err := buildDependencyTreeInTx(ctx, tx, rel.ID, depth+1, maxDepth, reverse, visited, issueID, rel.DependencyType)
 		if err != nil {
 			return nil, err
