@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/validation"
@@ -17,10 +18,11 @@ var searchCmd = &cobra.Command{
 	Use:     "search [query]",
 	GroupID: "issues",
 	Short:   "Search issues by text query",
-	Long: `Search issues across title and ID (excludes closed issues by default).
+	Long: `Search issues across title, description, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
-Text queries search titles. Use --desc-contains for description search.
+Text queries are tokenized on whitespace and each token is matched against
+title and description; results are ranked by relevance unless --sort is given.
 Use --status all to include closed issues.
 
 Examples:
@@ -245,13 +247,32 @@ Examples:
 
 		ctx := rootCtx
 
+		// Relevance ranking (task-4ja): for free-text queries (not ID lookups)
+		// with no explicit --sort, rank results by match quality. SQL applies
+		// LIMIT before Go scoring can run, so fetch the full match set
+		// (Limit=0) and truncate after ranking; otherwise the LIMIT could drop
+		// the best-scoring rows before they are ever scored. ID-like queries and
+		// explicitly-sorted queries keep the fast, LIMIT-pushed path unchanged.
+		rankResults := !sqlbuild.LooksLikeIssueID(query) && !cmd.Flags().Changed("sort")
+		displayLimit := limit
+		if rankResults {
+			filter.Limit = 0
+		}
+
 		issues, err := store.SearchIssues(ctx, query, filter)
 		if err != nil {
 			return HandleError("%v", err)
 		}
 
-		// Apply sorting
-		sortIssues(issues, sortBy, reverse)
+		if rankResults {
+			rankSearchResults(issues, query)
+			if displayLimit > 0 && len(issues) > displayLimit {
+				issues = issues[:displayLimit]
+			}
+		} else {
+			// Explicit --sort or ID-like query: preserve prior sort behavior.
+			sortIssues(issues, sortBy, reverse)
+		}
 
 		if jsonOutput {
 			// Get labels and dependency counts
