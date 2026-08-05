@@ -44,6 +44,16 @@ func slugify(s string) string {
 	return slug
 }
 
+// memoryToolName returns the command name the user actually typed, so hint
+// text reads "brain memories ..." under the brain wrapper rather than always
+// claiming "bd". main() points rootCmd.Use at $BD_NAME for exactly this.
+func memoryToolName() string {
+	if n := rootCmd.Name(); n != "" {
+		return n
+	}
+	return "bd"
+}
+
 // rememberCmd stores a memory.
 var rememberCmd = &cobra.Command{
 	Use:   `remember "<insight>"`,
@@ -103,14 +113,35 @@ Examples:
 		}
 		commandDidWrite.Store(true)
 
+		// Read the memory back before reporting success. SetConfig returning nil
+		// is not by itself proof the row landed, and a success line plus a
+		// returned key is exactly what makes an agent move on and lose the
+		// insight. If the readback path itself errors we stay quiet rather than
+		// failing a write that did succeed; only a clean read that disagrees
+		// with what we just wrote is treated as a lost write.
+		if readback, rbErr := store.GetConfig(ctx, storageKey); rbErr == nil && readback != insight {
+			return HandleErrorRespectJSON(
+				"memory %q did not persist: wrote %d bytes, read back %d. Nothing was stored -- "+
+					"capture this with 'bd create' instead", key, len(insight), len(readback))
+		}
+
 		if jsonOutput {
 			return outputJSON(map[string]string{
 				"key":    key,
 				"value":  insight,
 				"action": strings.ToLower(verb),
+				// kind/read disambiguate the slug-shaped key from an issue ID.
+				"kind": "memory",
+				"read": fmt.Sprintf("%s memories %s", memoryToolName(), key),
 			})
 		}
-		fmt.Printf("%s [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+		// Say "memory" explicitly and name the read command. The old line was
+		// "Remembered [some-slug]: ...", which reads like a created issue whose
+		// ID is the slug -- so agents fed the slug to show/tag/comment, got
+		// "no issue found", and concluded the write was silently dropped.
+		tool := memoryToolName()
+		fmt.Printf("%s memory [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+		fmt.Printf("  Not an issue ID -- read it with '%s memories %s'; it is injected by '%s prime'.\n", tool, key, tool)
 		return nil
 	},
 }
