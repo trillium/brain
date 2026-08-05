@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --docs-root`.
 
-This reference covers all 108 live top-level `bd` commands. Regenerate it with:
+This reference covers all 121 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -25,6 +25,7 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd batch`](./batch.md)
 - [`bd blocked`](./blocked.md)
 - [`bd bootstrap`](./bootstrap.md)
+- [`bd brain`](./brain.md)
 - [`bd branch`](./branch.md)
 - [`bd children`](./children.md)
 - [`bd close`](./close.md)
@@ -66,6 +67,13 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd info`](./info.md)
 - [`bd init`](./init.md)
 - [`bd init-safety`](./init-safety.md)
+- [`bd isa-by-slug`](./isa-by-slug.md)
+- [`bd isa-list`](./isa-list.md)
+- [`bd isa-render`](./isa-render.md)
+- [`bd isa-render-all`](./isa-render-all.md)
+- [`bd isa-render-pending`](./isa-render-pending.md)
+- [`bd isa-section`](./isa-section.md)
+- [`bd isa-show`](./isa-show.md)
 - [`bd jira`](./jira.md)
 - [`bd kv`](./kv.md)
 - [`bd label`](./label.md)
@@ -83,6 +91,7 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd notion`](./notion.md)
 - [`bd onboard`](./onboard.md)
 - [`bd orphans`](./orphans.md)
+- [`bd patch`](./patch.md)
 - [`bd ping`](./ping.md)
 - [`bd preflight`](./preflight.md)
 - [`bd prime`](./prime.md)
@@ -99,6 +108,8 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd remember`](./remember.md)
 - [`bd rename`](./rename.md)
 - [`bd rename-prefix`](./rename-prefix.md)
+- [`bd render`](./render.md)
+- [`bd render-all`](./render-all.md)
 - [`bd reopen`](./reopen.md)
 - [`bd repo`](./repo.md)
 - [`bd restore`](./restore.md)
@@ -113,10 +124,12 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd state`](./state.md)
 - [`bd status`](./status.md)
 - [`bd statuses`](./statuses.md)
+- [`bd stores`](./stores.md)
 - [`bd supersede`](./supersede.md)
 - [`bd swarm`](./swarm.md)
 - [`bd tag`](./tag.md)
 - [`bd todo`](./todo.md)
+- [`bd transfer`](./transfer.md)
 - [`bd types`](./types.md)
 - [`bd undefer`](./undefer.md)
 - [`bd update`](./update.md)

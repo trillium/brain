@@ -46,6 +46,7 @@ bd search [query] [flags]
       --desc-contains string         Filter by description substring (case-insensitive)
       --empty-description            Filter issues with empty or missing description
       --external-contains string     Filter by external ref substring (case-insensitive)
+      --federated                    Search across all registered PAI stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
       --has-metadata-key string      Filter issues that have this metadata key set
   -l, --label strings                Filter by labels (AND: must have ALL)
       --label-any strings            Filter by labels (OR: must have AT LEAST ONE)

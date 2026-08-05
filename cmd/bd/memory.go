@@ -102,7 +102,11 @@ func memoryBeadTitle(insight string) string {
 func syncMemoryBead(ctx context.Context, key, insight string) (string, error) {
 	idxKey := memoryBeadConfigKey(key)
 
-	if linkedID, err := store.GetConfig(ctx, idxKey); err == nil && linkedID != "" {
+	linkedID, err := store.GetConfig(ctx, idxKey)
+	if err != nil {
+		return "", fmt.Errorf("reading memory link state: %w", err)
+	}
+	if linkedID != "" {
 		// Only update through an index entry that still points at a live
 		// issue. A stale pointer (bead deleted, or the index row synced into a
 		// store that never had the issue) falls through to a fresh mint --
@@ -248,6 +252,15 @@ Examples:
 		var beadErr error
 		if !memoryNoBeadFlag {
 			beadID, beadErr = syncMemoryBead(ctx, key, insight)
+		} else if existing != "" {
+			// --no-bead skips syncMemoryBead, but if a link already exists,
+			// warn that the stale issue now holds old text.
+			if linkedID, gerr := store.GetConfig(ctx, memoryBeadConfigKey(key)); gerr == nil && linkedID != "" {
+				fmt.Fprintf(os.Stderr,
+					"  Warning: memory %q now holds new text, but issue %s still holds the old version.\n"+
+						"  Refresh the link with: %s remember %q --key %s\n",
+					key, linkedID, memoryToolName(), insight, key)
+			}
 		}
 
 		if jsonOutput {
@@ -356,7 +369,21 @@ Examples:
 		}
 
 		if jsonOutput {
-			return outputJSON(memories)
+			memArr := make([]map[string]interface{}, 0, len(memories))
+			for k, v := range memories {
+				entry := map[string]interface{}{
+					"key":   k,
+					"value": v,
+				}
+				if beadID := beads[k]; beadID != "" {
+					entry["bead"] = beadID
+				}
+				memArr = append(memArr, entry)
+			}
+			sort.Slice(memArr, func(i, j int) bool {
+				return memArr[i]["key"].(string) < memArr[j]["key"].(string)
+			})
+			return outputJSON(memArr)
 		}
 
 		if len(memories) == 0 {

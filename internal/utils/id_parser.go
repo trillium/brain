@@ -171,7 +171,14 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 		return issues[0].ID, nil
 	}
 
-	// If exact match failed, try substring search.
+	// Try memory-key alias before fuzzy substring matching, so an exact
+	// intentional key like "jwt" beats a coincidental hash substring.
+	// Keep the existing verification that the linked issue is live.
+	if aliasID := memoryBeadAlias(ctx, store, input); aliasID != "" {
+		return aliasID, nil
+	}
+
+	// If exact match and alias failed, try substring search.
 	// Use the hash part as a search query to leverage SQL-level filtering
 	// (id LIKE %hash%) instead of loading ALL issues into memory.
 	// On large databases (23k+ issues over MySQL wire protocol), loading all
@@ -179,9 +186,6 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	hashPart := strings.TrimPrefix(normalizedID, prefixWithHyphen)
 	searchPart, ok := partialIDSearchPart(hashPart)
 	if !ok {
-		if aliasID := memoryBeadAlias(ctx, store, input); aliasID != "" {
-			return aliasID, nil
-		}
 		return "", notFoundErr(ctx, store, input)
 	}
 
@@ -260,9 +264,6 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	}
 
 	if len(matches) == 0 {
-		if aliasID := memoryBeadAlias(ctx, store, input); aliasID != "" {
-			return aliasID, nil
-		}
 		return "", notFoundErr(ctx, store, input)
 	}
 
