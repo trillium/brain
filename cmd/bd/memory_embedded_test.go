@@ -204,6 +204,59 @@ func TestEmbeddedMemory(t *testing.T) {
 	t.Run("forget_no_args", func(t *testing.T) {
 		bdForgetFail(t, bd, dir)
 	})
+
+	// ===== robots-eq8z: remember must not read like a created issue =====
+
+	// The old success line was "Remembered [some-slug]: ...", which agents read
+	// as "issue created, ID = some-slug". They then fed the slug to show/tag,
+	// got "no issue found", and reported silent data loss on a memory that had
+	// in fact persisted. The output has to say memory and name the read command.
+	t.Run("remember_output_disambiguates_from_issue_id", func(t *testing.T) {
+		out := bdRemember(t, bd, dir, "slug shape must not look like an issue id", "--key", "eq8z-shape")
+		for _, want := range []string{"memory [eq8z-shape]", "Not an issue ID", "memories eq8z-shape"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("remember output missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	// A memory key pasted into an issue verb must point back at the memory
+	// rather than dead-ending on "no issue found".
+	t.Run("issue_verb_on_memory_key_points_at_memory", func(t *testing.T) {
+		bdRemember(t, bd, dir, "keys resolve nowhere in the issue table", "--key", "eq8z-resolve")
+		cmd := exec.Command(bd, "show", "eq8z-resolve")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Fatalf("expected 'bd show <memory-key>' to fail:\n%s", out)
+		}
+		for _, want := range []string{"stored memory key", "memories eq8z-resolve"} {
+			if !strings.Contains(string(out), want) {
+				t.Errorf("show output missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	// `search` is where the reporter looked for the lost insight; a bare
+	// "No issues found" there is what made the memory look gone.
+	t.Run("search_miss_surfaces_matching_memory", func(t *testing.T) {
+		bdRemember(t, bd, dir, "zqxjv distinctive body text", "--key", "eq8z-search")
+		out := bdSearch(t, bd, dir, "zqxjv")
+		for _, want := range []string{"stored memory", "eq8z-search"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("search output missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	// The hint is scoped to real matches: an unrelated miss stays quiet.
+	t.Run("search_miss_without_memory_match_stays_quiet", func(t *testing.T) {
+		out := bdSearch(t, bd, dir, "qqqnosuchtermanywhere")
+		if strings.Contains(out, "stored memory") {
+			t.Errorf("unmatched search should not mention memories:\n%s", out)
+		}
+	})
 }
 
 // TestEmbeddedMemoryConcurrent exercises memory operations concurrently.
