@@ -44,6 +44,16 @@ func slugify(s string) string {
 	return slug
 }
 
+// memoryToolName returns the command name the user actually typed, so hint
+// text reads "brain memories ..." under the brain wrapper rather than always
+// claiming "bd". main() points rootCmd.Use at $BD_NAME for exactly this.
+func memoryToolName() string {
+	if n := rootCmd.Name(); n != "" {
+		return n
+	}
+	return "bd"
+}
+
 // rememberCmd stores a memory.
 var rememberCmd = &cobra.Command{
 	Use:   `remember "<insight>"`,
@@ -141,14 +151,46 @@ Examples:
 		}
 		commandDidWrite.Store(true)
 
+		// Read the memory back before reporting success. SetConfig returning nil
+		// is not by itself proof the row landed, and an unbacked success line
+		// plus a returned key is exactly what makes an agent move on and lose
+		// the insight -- the failure this whole command is being hardened
+		// against. So an unverifiable write is reported as a failure too: a
+		// readback we could not run is not evidence of anything, and claiming
+		// success on it would reintroduce the bug in a quieter form. The two
+		// cases get different wording because they mean different things -- a
+		// failed read leaves the row's fate unknown, a clean read that
+		// disagrees means the write is genuinely gone.
+		readback, rbErr := store.GetConfig(ctx, storageKey)
+		if rbErr != nil {
+			return HandleErrorRespectJSON(
+				"memory %q could not be verified: reading it back failed: %v. The write may or may "+
+					"not have landed -- check with '%s memories %s' before assuming it is stored",
+				key, rbErr, memoryToolName(), key)
+		}
+		if readback != insight {
+			return HandleErrorRespectJSON(
+				"memory %q did not persist: wrote %d bytes, read back %d. Nothing was stored -- "+
+					"capture this with '%s create' instead", key, len(insight), len(readback), memoryToolName())
+		}
+
 		if jsonOutput {
 			return outputJSON(map[string]string{
 				"key":    key,
 				"value":  insight,
 				"action": strings.ToLower(verb),
+				// kind/read disambiguate the slug-shaped key from an issue ID.
+				"kind": "memory",
+				"read": fmt.Sprintf("%s memories %s", memoryToolName(), key),
 			})
 		}
-		fmt.Printf("%s [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+		// Say "memory" explicitly and name the read command. The old line was
+		// "Remembered [some-slug]: ...", which reads like a created issue whose
+		// ID is the slug -- so agents fed the slug to show/tag/comment, got
+		// "no issue found", and concluded the write was silently dropped.
+		tool := memoryToolName()
+		fmt.Printf("%s memory [%s]: %s\n", verb, key, truncateMemory(insight, 80))
+		fmt.Printf("  Not an issue ID -- read it with '%s memories %s'; it is injected by '%s prime'.\n", tool, key, tool)
 		return nil
 	},
 }

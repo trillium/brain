@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
@@ -329,8 +332,44 @@ Examples:
 		}
 
 		outputSearchResults(issues, query, longFormat)
+		// `bd remember` writes to the config table, so its content is invisible
+		// to issue search. A bare "No issues found" for text the user knows they
+		// stored reads as data loss; point at the memory that actually holds it.
+		if len(issues) == 0 {
+			printMemoryMatchHint(ctx, query)
+		}
 		return nil
 	},
+}
+
+// printMemoryMatchHint reports memories whose key or body matches query. Best
+// effort: a failed config read prints nothing rather than muddying the miss.
+func printMemoryMatchHint(ctx context.Context, query string) {
+	allConfig, err := store.GetAllConfig(ctx)
+	if err != nil {
+		return
+	}
+	needle := strings.ToLower(query)
+	var keys []string
+	for k, v := range allConfig {
+		if !strings.HasPrefix(k, kvkeys.MemoryConfigKeyPrefix) {
+			continue
+		}
+		userKey := strings.TrimPrefix(k, kvkeys.MemoryConfigKeyPrefix)
+		if strings.Contains(strings.ToLower(userKey), needle) || strings.Contains(strings.ToLower(v), needle) {
+			keys = append(keys, userKey)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	tool := memoryToolName()
+	fmt.Printf("\nBut %d stored memory/memories match (memories are not issues and are not searched by '%s search'):\n", len(keys), tool)
+	for _, k := range keys {
+		fmt.Printf("  %s\n", k)
+	}
+	fmt.Printf("Read them with '%s memories %s'.\n", tool, query)
 }
 
 // outputSearchResults formats and displays search results

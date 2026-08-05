@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 	"github.com/steveyegge/beads/internal/testutil"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -998,5 +999,49 @@ func TestLooksLikePrefixedID(t *testing.T) {
 				t.Errorf("looksLikePrefixedID(%q) = %v; want %v", tt.input, result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestResolvePartialID_MemoryKeyHint covers robots-eq8z: `bd remember` returns a
+// slug-shaped key, and feeding that key to an issue verb used to fail with a
+// bare "no issue found matching". That looked exactly like a silently dropped
+// write, so agents abandoned the (actually persisted) memory. Resolution must
+// name the memory and the command that reads it.
+func TestResolvePartialID_MemoryKeyHint(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	const key = "cursorless-macos-ci-flake-tutorialimpl"
+	if err := store.SetConfig(ctx, kvkeys.MemoryConfigKeyPrefix+key, "the insight body"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	_, err := ResolvePartialID(ctx, store, key)
+	if err == nil {
+		t.Fatal("ResolvePartialID on a memory key should error, got nil")
+	}
+	// cmd/bd's isNotFoundErr matches this phrase to drive routing fallback.
+	if !contains(err.Error(), "no issue found matching") {
+		t.Errorf("error %q lost the 'no issue found matching' phrase routing depends on", err.Error())
+	}
+	for _, want := range []string{"stored memory key", "memories " + key} {
+		if !contains(err.Error(), want) {
+			t.Errorf("error = %q; want it to contain %q", err.Error(), want)
+		}
+	}
+}
+
+// TestResolvePartialID_NoMemoryHintForPlainMiss keeps the hint targeted: an
+// ordinary bad ID must not gain memory chatter.
+func TestResolvePartialID_NoMemoryHintForPlainMiss(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	_, err := ResolvePartialID(ctx, store, "zzzznotanid")
+	if err == nil {
+		t.Fatal("expected error for unknown ID")
+	}
+	if contains(err.Error(), "stored memory key") {
+		t.Errorf("plain miss should not mention memories: %q", err.Error())
 	}
 }
