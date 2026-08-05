@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -213,7 +214,10 @@ func TestEmbeddedMemory(t *testing.T) {
 	// in fact persisted. The output has to say memory and name the read command.
 	t.Run("remember_output_disambiguates_from_issue_id", func(t *testing.T) {
 		out := bdRemember(t, bd, dir, "slug shape must not look like an issue id", "--key", "eq8z-shape")
-		for _, want := range []string{"memory [eq8z-shape]", "Not an issue ID", "memories eq8z-shape"} {
+		// The key is labelled a memory and paired with the read command;
+		// the issue ID is named separately as the one comment/tag/show take.
+		// Both identifiers appear so neither can be mistaken for the other.
+		for _, want := range []string{"memory [eq8z-shape]", "memories eq8z-shape", "use this ID for"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("remember output missing %q:\n%s", want, out)
 			}
@@ -222,8 +226,10 @@ func TestEmbeddedMemory(t *testing.T) {
 
 	// A memory key pasted into an issue verb must point back at the memory
 	// rather than dead-ending on "no issue found".
+	// --no-bead is the case that still has nothing in the issue table, and the
+	// case every memory written before minting existed is in.
 	t.Run("issue_verb_on_memory_key_points_at_memory", func(t *testing.T) {
-		bdRemember(t, bd, dir, "keys resolve nowhere in the issue table", "--key", "eq8z-resolve")
+		bdRemember(t, bd, dir, "keys resolve nowhere in the issue table", "--key", "eq8z-resolve", "--no-bead")
 		cmd := exec.Command(bd, "show", "eq8z-resolve")
 		cmd.Dir = dir
 		cmd.Env = bdEnv(dir)
@@ -239,14 +245,27 @@ func TestEmbeddedMemory(t *testing.T) {
 	})
 
 	// `search` is where the reporter looked for the lost insight; a bare
-	// "No issues found" there is what made the memory look gone.
+	// "No issues found" there is what made the memory look gone. A memory with
+	// a companion issue is now found by the ordinary search path, so the hint
+	// is exercised where it is still the only thing standing between the
+	// reader and a false "No issues found": a --no-bead memory.
 	t.Run("search_miss_surfaces_matching_memory", func(t *testing.T) {
-		bdRemember(t, bd, dir, "zqxjv distinctive body text", "--key", "eq8z-search")
+		bdRemember(t, bd, dir, "zqxjv distinctive body text", "--key", "eq8z-search", "--no-bead")
 		out := bdSearch(t, bd, dir, "zqxjv")
 		for _, want := range []string{"stored memory", "eq8z-search"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("search output missing %q:\n%s", want, out)
 			}
+		}
+	})
+
+	// With a companion issue, the insight is a first-class search hit -- no
+	// hint needed, because the text is in the issues table.
+	t.Run("search_finds_remembered_insight_directly", func(t *testing.T) {
+		bdRemember(t, bd, dir, "wqbtz distinctive body text", "--key", "b1ic-search")
+		out := bdSearch(t, bd, dir, "wqbtz")
+		if !strings.Contains(out, "wqbtz distinctive body text") {
+			t.Errorf("search did not find the remembered insight:\n%s", out)
 		}
 	})
 
@@ -257,6 +276,99 @@ func TestEmbeddedMemory(t *testing.T) {
 			t.Errorf("unmatched search should not mention memories:\n%s", out)
 		}
 	})
+
+	// ===== robots-b1ic: a remembered insight must be taggable =====
+
+	// The whole point of the fix: the documented flag-for-review recipe --
+	// remember the finding, then tag it 'human' -- has to run end to end using
+	// only what remember printed. Before this, step two dead-ended and the
+	// finding never reached 'human list'.
+	t.Run("remembered_insight_reaches_human_queue", func(t *testing.T) {
+		bdRemember(t, bd, dir, "b1ic finding worth a human's eyes", "--key", "b1ic-flag")
+		// Tag by the memory key -- the identifier remember hands back.
+		bdLabel(t, bd, dir, "add", "b1ic-flag", "human")
+		out := bdCommand(t, bd, dir, "human", "list")
+		if !strings.Contains(out, "b1ic finding worth a human") {
+			t.Errorf("tagged memory did not reach the human queue:\n%s", out)
+		}
+	})
+
+	// comment and show take the memory key too, via the same alias.
+	t.Run("comment_and_show_accept_memory_key", func(t *testing.T) {
+		bdRemember(t, bd, dir, "b1ic evidence needs a comment", "--key", "b1ic-comment")
+		bdCommand(t, bd, dir, "comment", "b1ic-comment", "the supporting evidence")
+		out := bdShowRaw(t, bd, dir, "b1ic-comment")
+		for _, want := range []string{"b1ic evidence needs a comment", "the supporting evidence"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("show on memory key missing %q:\n%s", want, out)
+			}
+		}
+	})
+
+	// Re-remembering a key must update the one issue, not accumulate a new one
+	// per write -- otherwise comments and labels scatter across duplicates.
+	t.Run("remember_update_reuses_the_same_issue", func(t *testing.T) {
+		first := rememberBeadID(t, bd, dir, "b1ic first text", "--key", "b1ic-update")
+		second := rememberBeadID(t, bd, dir, "b1ic second text", "--key", "b1ic-update")
+		if first == "" {
+			t.Fatalf("remember reported no issue ID")
+		}
+		if first != second {
+			t.Fatalf("remember minted a second issue on update: %s then %s", first, second)
+		}
+		out := bdShowRaw(t, bd, dir, first)
+		if !strings.Contains(out, "b1ic second text") {
+			t.Errorf("issue was not updated to the new text:\n%s", out)
+		}
+	})
+
+	t.Run("no_bead_skips_the_issue", func(t *testing.T) {
+		id := rememberBeadID(t, bd, dir, "b1ic memory without an issue", "--key", "b1ic-nobead", "--no-bead")
+		if id != "" {
+			t.Fatalf("--no-bead still minted issue %s", id)
+		}
+		out := bdRecall(t, bd, dir, "b1ic-nobead")
+		if !strings.Contains(out, "without an issue") {
+			t.Errorf("--no-bead dropped the memory itself:\n%s", out)
+		}
+	})
+
+	// forget drops the memory and the link; the issue survives, because it may
+	// carry comments and labels that removing a config row must not destroy.
+	t.Run("forget_keeps_the_issue", func(t *testing.T) {
+		id := rememberBeadID(t, bd, dir, "b1ic memory to forget", "--key", "b1ic-forget")
+		if id == "" {
+			t.Fatalf("remember reported no issue ID")
+		}
+		out := bdForget(t, bd, dir, "b1ic-forget")
+		if !strings.Contains(out, id) {
+			t.Errorf("forget output did not name the surviving issue %s:\n%s", id, out)
+		}
+		shown := bdShowRaw(t, bd, dir, id)
+		if !strings.Contains(shown, "b1ic memory to forget") {
+			t.Errorf("forget destroyed issue %s:\n%s", id, shown)
+		}
+		// The key no longer resolves: its memory and its link are both gone.
+		bdShowFail(t, bd, dir, "b1ic-forget")
+	})
+}
+
+// rememberBeadID runs "bd remember --json" and returns the ID of the issue it
+// minted ("" when --no-bead was passed).
+func rememberBeadID(t *testing.T, bd, dir string, args ...string) string {
+	t.Helper()
+	out := bdRemember(t, bd, dir, append(args, "--json")...)
+	// map[string]any, not map[string]string: the envelope carries a numeric
+	// schema_version alongside the string fields.
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("remember --json returned unparseable output: %v\n%s", err, out)
+	}
+	if msg, _ := payload["bead_error"].(string); msg != "" {
+		t.Fatalf("remember could not mint an issue: %s", msg)
+	}
+	id, _ := payload["bead"].(string)
+	return id
 }
 
 // TestEmbeddedMemoryConcurrent exercises memory operations concurrently.

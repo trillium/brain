@@ -37,6 +37,35 @@ func notFoundErr(ctx context.Context, store storage.Storage, input string) error
 	return base
 }
 
+// memoryBeadAlias returns the issue ID a `bd remember` memory key is linked to,
+// or "" when the key names no memory, the memory predates bead minting, or the
+// bead it points at is gone.
+//
+// `remember` mints a knowledge issue alongside the config row and records the
+// pairing under kvkeys.MemoryBeadConfigKeyPrefix. Resolving through that index
+// is what makes the documented flag-for-review recipe run end to end: the key
+// `remember` prints is the identifier an agent has in hand, so `tag <key>
+// human` has to land on the issue rather than dead-end.
+//
+// The linked ID is verified against the issues table before being returned. A
+// dangling index row (issue deleted, or the config row synced into a store that
+// never had the issue) falls through to the normal not-found path, so a stale
+// pointer can never resolve to an ID that does not exist.
+func memoryBeadAlias(ctx context.Context, store storage.Storage, input string) string {
+	if store == nil || input == "" {
+		return ""
+	}
+	linkedID, err := store.GetConfig(ctx, kvkeys.MemoryBeadConfigKeyPrefix+input)
+	if err != nil || linkedID == "" {
+		return ""
+	}
+	filter := types.IssueFilter{IDs: []string{linkedID}}
+	if issues, sErr := store.SearchIssues(ctx, "", filter); sErr == nil && len(issues) > 0 {
+		return issues[0].ID
+	}
+	return ""
+}
+
 // toolName returns the command the user actually typed. Store wrappers (brain,
 // task, robots, ...) set BD_NAME and exec beads, and main() points rootCmd.Use
 // at it; hint text has to follow or it tells a brain user to run "bd".
@@ -150,6 +179,9 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	hashPart := strings.TrimPrefix(normalizedID, prefixWithHyphen)
 	searchPart, ok := partialIDSearchPart(hashPart)
 	if !ok {
+		if aliasID := memoryBeadAlias(ctx, store, input); aliasID != "" {
+			return aliasID, nil
+		}
 		return "", notFoundErr(ctx, store, input)
 	}
 
@@ -228,6 +260,9 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	}
 
 	if len(matches) == 0 {
+		if aliasID := memoryBeadAlias(ctx, store, input); aliasID != "" {
+			return aliasID, nil
+		}
 		return "", notFoundErr(ctx, store, input)
 	}
 
