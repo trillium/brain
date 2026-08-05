@@ -114,15 +114,26 @@ Examples:
 		commandDidWrite.Store(true)
 
 		// Read the memory back before reporting success. SetConfig returning nil
-		// is not by itself proof the row landed, and a success line plus a
-		// returned key is exactly what makes an agent move on and lose the
-		// insight. If the readback path itself errors we stay quiet rather than
-		// failing a write that did succeed; only a clean read that disagrees
-		// with what we just wrote is treated as a lost write.
-		if readback, rbErr := store.GetConfig(ctx, storageKey); rbErr == nil && readback != insight {
+		// is not by itself proof the row landed, and an unbacked success line
+		// plus a returned key is exactly what makes an agent move on and lose
+		// the insight -- the failure this whole command is being hardened
+		// against. So an unverifiable write is reported as a failure too: a
+		// readback we could not run is not evidence of anything, and claiming
+		// success on it would reintroduce the bug in a quieter form. The two
+		// cases get different wording because they mean different things -- a
+		// failed read leaves the row's fate unknown, a clean read that
+		// disagrees means the write is genuinely gone.
+		readback, rbErr := store.GetConfig(ctx, storageKey)
+		if rbErr != nil {
+			return HandleErrorRespectJSON(
+				"memory %q could not be verified: reading it back failed: %v. The write may or may "+
+					"not have landed -- check with '%s memories %s' before assuming it is stored",
+				key, rbErr, memoryToolName(), key)
+		}
+		if readback != insight {
 			return HandleErrorRespectJSON(
 				"memory %q did not persist: wrote %d bytes, read back %d. Nothing was stored -- "+
-					"capture this with 'bd create' instead", key, len(insight), len(readback))
+					"capture this with '%s create' instead", key, len(insight), len(readback), memoryToolName())
 		}
 
 		if jsonOutput {
