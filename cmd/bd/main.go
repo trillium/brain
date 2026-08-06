@@ -382,6 +382,18 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 	}
 }
 
+// storesCommandCanRunWithoutStore reports whether a 'brain stores' subcommand
+// operates purely on the federation registry and therefore must run even when
+// the caller's own working directory has no beads database. 'stores doctor' is
+// the health probe for the whole federation: requiring a healthy store to run it
+// would make it useless in exactly the situation it exists to detect.
+func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+		return false
+	}
+	return cmd.Name() == "doctor"
+}
+
 func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 	if beadsDir == "" {
 		return
@@ -915,6 +927,11 @@ var rootCmd = &cobra.Command{
 				// - setup: creates editor integration files (no DB needed)
 				// - config subcommands that operate on config.yaml, git config,
 				//   or best-effort diagnostics only (GH#536, bd-934, bd-omc, bd-3rw)
+				// - stores doctor: a federation health probe must not require a
+				//   healthy store of its own to run (robots-nka3)
+				if storesCommandCanRunWithoutStore(cmd) {
+					return nil
+				}
 				if configCommandCanRunWithoutStore(cmd, args) {
 					// When --db is provided, resolve BEADS_DIR so yaml-only
 					// config writes target the correct directory (GH#3348).
