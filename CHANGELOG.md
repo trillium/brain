@@ -34,8 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An append-per-tool-call ledger reached 3.3 GB of event payload backing 5 MB of
   real notes, unreclaimable by `dolt gc` because all of it is reachable. String
   values in event payloads are now capped at `BEADS_EVENT_FIELD_LIMIT` bytes
-  (default 1024), and an appended-to field collapses its unchanged prefix to a
-  marker, so an append costs bytes proportional to the appended text. Measured
+  (default 1024) — a strict cap, with the elision markers counted against it —
+  and an appended-to field collapses its unchanged prefix to a marker, so an
+  append costs bytes proportional to the appended text. Measured
   end to end: 80,504 bytes → 415 bytes for one append to a 40 KB notes field.
   Set `BEADS_EVENT_FIELD_LIMIT=0` to restore the previous full-copy behaviour.
 

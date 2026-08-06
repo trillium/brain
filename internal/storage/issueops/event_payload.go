@@ -75,9 +75,15 @@ func MarshalEventPayloads(oldIssue any, updates map[string]interface{}) (string,
 	newStrings := stringFields(newRaw)
 
 	// New side: when the field was appended to, keep only the appended tail.
+	// The prefix marker counts against the limit, so the appended text gets
+	// whatever room is left over.
 	outNew := elideStringFields(newRaw, func(key, val string) string {
 		if prev, ok := oldStrings[key]; ok && len(prev) > limit && strings.HasPrefix(val, prev) {
-			return fmt.Sprintf(elidedPrefixFmt, len(prev)) + elide(val[len(prev):], limit)
+			marker := fmt.Sprintf(elidedPrefixFmt, len(prev))
+			if len(marker) >= limit {
+				return capBytes(marker, limit)
+			}
+			return marker + elide(val[len(prev):], limit-len(marker))
 		}
 		return elide(val, limit)
 	})
@@ -86,7 +92,7 @@ func MarshalEventPayloads(oldIssue any, updates map[string]interface{}) (string,
 	// so record only its size rather than a second copy of it.
 	outOld := elideStringFields(oldRaw, func(key, val string) string {
 		if next, ok := newStrings[key]; ok && len(val) > limit && strings.HasPrefix(next, val) {
-			return fmt.Sprintf(elidedPrefixFmt, len(val))
+			return capBytes(fmt.Sprintf(elidedPrefixFmt, len(val)), limit)
 		}
 		return elide(val, limit)
 	})
@@ -146,15 +152,48 @@ func elideStringFields(raw []byte, transform func(key, val string) string) []byt
 	return out
 }
 
-// elide shortens s to roughly limit bytes, keeping both the head and the tail
-// so the start of the field and any freshly appended text stay readable.
+// elide shortens s to at most limit bytes, keeping both the head and the tail
+// so the start of the field and any freshly appended text stay readable. The
+// elision marker counts against limit, so the result never exceeds it.
 func elide(s string, limit int) string {
 	if limit <= 0 || len(s) <= limit {
 		return s
 	}
-	head := s[:runeStartAtOrBefore(s, limit/2)]
-	tail := s[runeStartAtOrAfter(s, len(s)-(limit-len(head))):]
+	// len(s) is an upper bound on the elided byte count, so formatting the
+	// marker with it gives an upper bound on the marker's width. Reserving that
+	// much keeps the result within limit whatever the real count turns out to be.
+	reserved := len(fmt.Sprintf(elidedMiddleFmt, len(s)))
+	if reserved >= limit {
+		// No room for a marker plus content. Keep the tail, which is where
+		// appended text lands.
+		return tailBytes(s, limit)
+	}
+	keep := limit - reserved
+	head := s[:runeStartAtOrBefore(s, keep/2)]
+	tail := s[runeStartAtOrAfter(s, len(s)-(keep-len(head))):]
 	return head + fmt.Sprintf(elidedMiddleFmt, len(s)-len(head)-len(tail)) + tail
+}
+
+// capBytes keeps at most the first limit bytes of s, cutting on a rune boundary.
+func capBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	return s[:runeStartAtOrBefore(s, limit)]
+}
+
+// tailBytes keeps at most the last limit bytes of s, cutting on a rune boundary.
+func tailBytes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(s) <= limit {
+		return s
+	}
+	return s[runeStartAtOrAfter(s, len(s)-limit):]
 }
 
 // runeStartAtOrBefore backs n up to the nearest UTF-8 rune boundary so elision

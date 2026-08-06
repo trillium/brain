@@ -81,6 +81,10 @@ row costs bytes proportional to the appended text. The event still records which
 fields changed, who changed them, and what text was added; the full field value
 lives in the `issues` table (and in that table's own Dolt history).
 
+The cap is strict: the elision markers count against it, so no recorded value
+ever exceeds the configured limit. At limits too small to hold a marker at all,
+the value is simply truncated on a rune boundary — output is always valid UTF-8.
+
 Set `BEADS_EVENT_FIELD_LIMIT=0` to disable elision and record full before/after
 copies. Only do that on stores with small text fields — on an append-heavy store
 it reintroduces multi-gigabyte growth.

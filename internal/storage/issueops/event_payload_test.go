@@ -2,6 +2,7 @@ package issueops
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -154,6 +155,66 @@ func TestMarshalEventPayloadsLimitZeroDisablesElision(t *testing.T) {
 	}
 	if got := decodeField(t, newJSON, "notes"); got != notes+"tail" {
 		t.Errorf("elision applied despite limit 0 (new notes %d bytes)", len(got))
+	}
+}
+
+// TestMarshalEventPayloadsNeverExceedsLimit is the strict-cap contract: the
+// elision markers count against the limit, including at limits too small to
+// hold a marker at all.
+func TestMarshalEventPayloadsNeverExceedsLimit(t *testing.T) {
+	existing := strings.Repeat("timeline line\n", 2000)
+	cases := []struct {
+		name  string
+		old   string
+		new   string
+		field string
+	}{
+		{name: "append", old: existing, new: existing + "14:02 Edit src/main.go", field: "notes"},
+		{name: "rewrite", old: existing, new: strings.Repeat("different\n", 3000), field: "notes"},
+		{name: "unicode append", old: strings.Repeat("日本語テキスト", 500), new: strings.Repeat("日本語テキスト", 500) + "追記", field: "notes"},
+	}
+
+	for _, limit := range []int{1, 2, 7, 40, 63, 256, 1024} {
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				t.Setenv(EventFieldLimitEnv, strconv.Itoa(limit))
+				old := &types.Issue{ID: "ls-1", Notes: tc.old}
+				updates := map[string]interface{}{"notes": tc.new}
+
+				oldJSON, newJSON := MarshalEventPayloads(old, updates)
+
+				gotOld := decodeField(t, oldJSON, tc.field)
+				if len(gotOld) > limit {
+					t.Errorf("limit=%d %s: old %s is %d bytes, want <= %d", limit, tc.name, tc.field, len(gotOld), limit)
+				}
+				gotNew := decodeField(t, newJSON, tc.field)
+				if len(gotNew) > limit {
+					t.Errorf("limit=%d %s: new %s is %d bytes, want <= %d", limit, tc.name, tc.field, len(gotNew), limit)
+				}
+				if !utf8.ValidString(gotOld) || !utf8.ValidString(gotNew) {
+					t.Errorf("limit=%d %s: produced invalid UTF-8", limit, tc.name)
+				}
+			})
+		}
+	}
+}
+
+func TestElideNeverExceedsLimit(t *testing.T) {
+	inputs := []string{
+		strings.Repeat("x", 100000),
+		strings.Repeat("日本語テキスト", 500),
+		"short",
+	}
+	for _, s := range inputs {
+		for _, limit := range []int{1, 2, 3, 7, 33, 34, 35, 36, 64, 1024} {
+			got := elide(s, limit)
+			if len(s) > limit && len(got) > limit {
+				t.Errorf("elide(len=%d, limit=%d) returned %d bytes, want <= %d", len(s), limit, len(got), limit)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("elide(len=%d, limit=%d) produced invalid UTF-8", len(s), limit)
+			}
+		}
 	}
 }
 
