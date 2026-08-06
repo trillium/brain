@@ -25,6 +25,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Audit events no longer store a full before+after copy of every text field.**
+  Each update wrote an `events` row containing the whole pre-change issue plus
+  the whole applied update, which made the table quadratic in appends: one
+  `bd note` line added to a bead with 320 KB of notes wrote a ~640 KB event row.
+  An append-per-tool-call ledger reached 3.3 GB of event payload backing 5 MB of
+  real notes, unreclaimable by `dolt gc` because all of it is reachable. String
+  values in event payloads are now capped at `BEADS_EVENT_FIELD_LIMIT` bytes
+  (default 1024), and an appended-to field collapses its unchanged prefix to a
+  marker, so an append costs bytes proportional to the appended text. Measured
+  end to end: 80,504 bytes → 415 bytes for one append to a 40 KB notes field.
+  Set `BEADS_EVENT_FIELD_LIMIT=0` to restore the previous full-copy behaviour.
+
 ## [1.1.0-rc.1] - 2026-06-23
 
 ### Upgrade Notes

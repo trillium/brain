@@ -60,8 +60,30 @@ Common tool-level settings you can configure:
 | `dolt.shared-server` | `--shared-server` | `BEADS_DOLT_SHARED_SERVER` | `false` | Share a single Dolt server across all projects at `~/.beads/shared-server/` |
 | `db` | `--db` | `BD_DB` | (auto-discover) | Database path |
 | `actor` | `--actor` | `BEADS_ACTOR` | `git config user.name` | Actor name for audit trail (see below) |
+| - | - | `BEADS_EVENT_FIELD_LIMIT` | `1024` | Per-field byte cap on audit-event payloads (see below); `0` records full before/after copies |
 
 **Backend note:** Dolt is the only storage backend. By default, Dolt runs in embedded mode (in-process, no server). Use `bd init --server` or `BEADS_DOLT_SERVER_MODE=1` for server mode. See [DOLT.md](DOLT.md) for details.
+
+### Audit Event Payload Size (`BEADS_EVENT_FIELD_LIMIT`)
+
+Every update writes an `events` row holding a JSON copy of the issue before the
+change plus a JSON copy of the applied updates. Without a cap that is quadratic
+for append-heavy fields: `bd note` rewrites the whole `notes` field, so appending
+one line to a bead whose notes are already 320 KB writes a ~640 KB event row.
+One auto-documenting ledger reached **3.3 GB of event payload backing 5 MB of
+actual notes** — and `dolt gc` cannot shrink it, because all of it is reachable.
+
+So string values in event payloads are capped at `BEADS_EVENT_FIELD_LIMIT` bytes
+(default 1024). Oversize values keep their head and tail with an
+`…[bd: elided N bytes]…` marker in between, and when a field was *appended* to
+rather than rewritten, the unchanged leading bytes collapse to a marker so the
+row costs bytes proportional to the appended text. The event still records which
+fields changed, who changed them, and what text was added; the full field value
+lives in the `issues` table (and in that table's own Dolt history).
+
+Set `BEADS_EVENT_FIELD_LIMIT=0` to disable elision and record full before/after
+copies. Only do that on stores with small text fields — on an append-heavy store
+it reintroduces multi-gigabyte growth.
 
 ### Dolt Auto-Commit (SQL commit vs Dolt commit)
 
