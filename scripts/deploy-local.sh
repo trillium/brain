@@ -42,29 +42,48 @@ esac
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-# Fetch first: the whole point is to compare against what actually landed, not
-# against a stale remote-tracking ref.
-git fetch origin main --quiet 2>/dev/null || {
-    echo "deploy-local.sh: WARNING: could not fetch origin/main; comparing against the local remote-tracking ref" >&2
-}
+# Fetch first, and treat a failed fetch as fatal (exit 2 = cannot determine).
+# Falling back to the cached remote-tracking ref would let this script report
+# "up to date" while origin/main has moved — which is precisely the silent
+# staleness robots-k2r4 is about. Better to say "I don't know" than to say
+# "you're current" and be wrong.
+if ! git fetch origin main --quiet 2>/dev/null; then
+    echo "deploy-local.sh: ERROR: could not fetch origin/main — refusing to compare against a possibly stale remote-tracking ref" >&2
+    exit 2
+fi
 
 if ! target_sha="$(git rev-parse --verify -q "$DEPLOY_REF^{commit}")"; then
     echo "deploy-local.sh: ERROR: ref '$DEPLOY_REF' does not exist" >&2
     exit 2
 fi
+
+# Refuse to deploy anything that has not landed. Without this, an override like
+# DEPLOY_REF=some-open-branch would install an unlanded binary and only notice
+# in the post-install check — after the previous binary was already replaced.
+# Installing unreviewed code as the system default is the defect, not a warning.
+# (`--is-ancestor X X` is true, so the default origin/main passes.)
+if ! git merge-base --is-ancestor "$target_sha" origin/main 2>/dev/null; then
+    echo "deploy-local.sh: ERROR: ref '$DEPLOY_REF' ($(git rev-parse --short "$target_sha")) has not landed on origin/main — refusing to deploy it" >&2
+    exit 2
+fi
 target_short="$(git rev-parse --short "$target_sha")"
 
-# What SHA is the currently-installed binary built from? `bd version` bakes it
-# in as the Build ldflag and prints it in parentheses, e.g.
+# build_sha_of prints the Build SHA baked into a beads binary. `make build` sets
+# Build to `git rev-parse --short HEAD`, and `bd version` prints it inside the
+# parentheses on line 1:
 #   bd version 1.1.0-rc.1+brain.0.4.0 (ab6ca60eb)
-# The version string itself carries no 7+ character hex run, so the first such
-# run is the build SHA. Parse the text form rather than --json: the whole point
-# is that the live binary may be old enough to predate newer flags.
-# An absent or unparseable binary counts as "not deployed".
-live_sha=""
-if [ -x "$BEADS_BIN" ]; then
-    live_sha="$("$BEADS_BIN" version 2>/dev/null | head -1 | grep -oE '[0-9a-f]{7,40}' | head -1 || true)"
-fi
+# The version string itself contains no 7+ character hex run, so the first such
+# run on that line is the Build SHA. The text form is parsed rather than --json
+# on purpose: the whole point is that the live binary may be old enough to
+# predate newer flags. Prints nothing if the binary is missing or unparseable.
+build_sha_of() {
+    [ -x "$1" ] || return 0
+    "$1" version 2>/dev/null | head -1 | grep -oE '[0-9a-f]{7,40}' | head -1 || true
+}
+
+# What SHA is the currently-installed binary built from? An absent or
+# unparseable binary counts as "not deployed".
+live_sha="$(build_sha_of "$BEADS_BIN")"
 
 report_drift() {
     echo "  live:   ${live_sha:-<none>}"
@@ -136,13 +155,16 @@ echo "deploy-local.sh: installed $target_short -> $BEADS_BIN"
 # so confirm the binary we just wrote actually reports the target SHA.
 installed_version="$("$BEADS_BIN" version 2>&1 || true)"
 echo "deploy-local.sh: $installed_version"
-case "$installed_version" in
-    *"$target_short"*) ;;
-    *)
-        echo "deploy-local.sh: ERROR: installed binary does not report $target_short" >&2
-        exit 1
-        ;;
-esac
+
+# Compare the embedded Build SHA exactly, not as a substring of the whole line.
+# `bd version` can also print the checkout's commit/branch, so a substring match
+# would pass whenever *any* displayed SHA happened to contain target_short even
+# though the binary was built from something else.
+installed_sha="$(build_sha_of "$BEADS_BIN")"
+if [ "$installed_sha" != "$target_short" ]; then
+    echo "deploy-local.sh: ERROR: installed binary reports build ${installed_sha:-<none>}, expected $target_short" >&2
+    exit 1
+fi
 case "$installed_version" in
     *UNLANDED*)
         echo "deploy-local.sh: ERROR: installed binary reports UNLANDED after deploying $DEPLOY_REF" >&2

@@ -24,14 +24,31 @@ repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
 # Only meaningful where this repo's binary is actually the installed one.
 [ -x "${BEADS_BIN:-$HOME/.local/bin/beads}" ] || exit 0
 
-if ! out="$("$repo_root/scripts/deploy-local.sh" --check 2>&1)"; then
-    echo ""
-    echo "$out"
-    echo ""
-    echo "  The beads binary agents run is not what is on origin/main."
-    echo "  Deploy it with:  make -C \"$repo_root\" deploy"
-    echo ""
-fi
+# deploy-local.sh --check: 0 = current, 1 = drift, 2 = could not determine
+# (offline, bad ref). Reporting "your binary is stale" for a status-2 failure
+# would be a claim the script never made.
+out="$("$repo_root/scripts/deploy-local.sh" --check 2>&1)"
+status=$?
+
+case "$status" in
+    0) ;;
+    1)
+        echo ""
+        echo "$out"
+        echo ""
+        echo "  The beads binary agents run is not what is on origin/main."
+        echo "  Deploy it with:  make -C \"$repo_root\" deploy"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo "$out"
+        echo ""
+        echo "  Could not determine whether the beads binary matches origin/main."
+        echo "  Re-check when resolved:  make -C \"$repo_root\" deploy-check"
+        echo ""
+        ;;
+esac
 
 # Never fail the merge over this — it is a notice, not a gate.
 exit 0
