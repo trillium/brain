@@ -43,6 +43,8 @@ brain stores doctor                      # assert every registered store answers
 
 `brain stores doctor` probes each store the way an agent reaches it — through its `~/.local/bin/<name>` wrapper — and exits 1 naming the stores that failed. Run it from a scheduler: a store that is registered but never initialized answers `no beads database found` on every call, and for queue-shaped stores (`staleness`, `review`, `inbox`) that is indistinguishable from an empty queue, so nothing surfaces it on its own.
 
+A store with no wrapper (registered with `--no-wrapper`, or one that was lost) is probed directly with `BEADS_DIR` pinned and reported as a *warning*, as is a store that answers but whose registry path no longer exists. Warnings do not change the exit code — pass `--strict` when a scheduler check should fail on them too.
+
 ## What brain adds to beads
 
 - **Multi-store federation.** `brain stores add/create/list/env`, `brain search` across all stores, `brain transfer` between stores.
@@ -117,6 +119,7 @@ brain stores create idea                 # one-shot provisioning
 brain stores add idea ~/data/ideas/.beads  # register an existing path
 brain stores env
 brain stores doctor                      # health probe; exit 1 names the unreadable stores
+brain stores doctor --strict             # warnings (missing wrapper, stale path) also exit 1
 brain stores doctor --json               # structured: {stores[], ok, warnings, failed, failing[]}
 
 # Render markdown (after corruption, deletion, or layout change)

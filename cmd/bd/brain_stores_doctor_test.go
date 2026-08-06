@@ -132,6 +132,20 @@ func TestProbeStore_ListOutputMentioningErrorsStaysHealthy(t *testing.T) {
 	}
 }
 
+func TestProbeStore_LongerMessageSharingThePrefixStaysHealthy(t *testing.T) {
+	isolatedHome(t)
+	dir := t.TempDir()
+	// The match is the whole error line, not its prefix: a message that merely
+	// starts the same way must not fail a store that answered the read.
+	stub := fakeBd(t, `echo "Error: no beads database maintenance completed"; exit 0`)
+
+	h := probeStore(stub, "chores", storeEntry{Path: dir}, 10*time.Second)
+
+	if h.Status == "fail" {
+		t.Fatalf("prefix-only match must not fail a healthy store (reason=%q)", h.Reason)
+	}
+}
+
 func TestProbeStore_UsesWrapperWhenPresent(t *testing.T) {
 	home := isolatedHome(t)
 	dir := t.TempDir()

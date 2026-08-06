@@ -35,9 +35,9 @@ var (
 // pointed at is missing or half-provisioned. Exit status is the primary signal;
 // this is the belt-and-braces check for modes that report the error and still
 // exit 0. It is deliberately anchored to the whole error line rather than a
-// loose "Error:" match, so a bead title echoed by 'list' cannot fail a store
-// that is in fact healthy.
-var storeUnreadableRe = regexp.MustCompile(`(?mi)^Error: no beads database`)
+// loose "Error:" match, so neither a bead title echoed by 'list' nor a longer
+// message sharing the prefix can fail a store that is in fact healthy.
+var storeUnreadableRe = regexp.MustCompile(`(?mi)^Error: no beads database found\r?$`)
 
 // storeHealth is the per-store result of a doctor probe.
 type storeHealth struct {

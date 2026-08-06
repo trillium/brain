@@ -842,6 +842,15 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// 'stores doctor' is the federation health probe. Classify it as
+		// store-free here rather than at database discovery: a caller store that
+		// exists but cannot open would otherwise abort PersistentPreRunE before
+		// the probe ever runs — in exactly the situation it exists to detect
+		// (robots-nka3).
+		if storesCommandCanRunWithoutStore(cmd) {
+			skipsStoreInit = true
+		}
+
 		// Skip for root command with no subcommand (just shows help)
 		if cmd.Parent() == nil && cmdName == cmd.Use {
 			skipsStoreInit = true
@@ -927,11 +936,6 @@ var rootCmd = &cobra.Command{
 				// - setup: creates editor integration files (no DB needed)
 				// - config subcommands that operate on config.yaml, git config,
 				//   or best-effort diagnostics only (GH#536, bd-934, bd-omc, bd-3rw)
-				// - stores doctor: a federation health probe must not require a
-				//   healthy store of its own to run (robots-nka3)
-				if storesCommandCanRunWithoutStore(cmd) {
-					return nil
-				}
 				if configCommandCanRunWithoutStore(cmd, args) {
 					// When --db is provided, resolve BEADS_DIR so yaml-only
 					// config writes target the correct directory (GH#3348).
