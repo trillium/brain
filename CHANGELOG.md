@@ -25,6 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`bd create --edit` (`-E`) composes the title and body in `$EDITOR`.** The
+  first line of the buffer is the title, everything after the first blank line
+  is the body; instructions sit below a `>8` scissors line so markdown headings
+  in the body survive. Running `bd create` with no title at a terminal composes
+  the same way — non-interactive callers keep the existing `title required`
+  error. An over-long title re-opens the buffer with the text intact instead of
+  discarding it, and the draft file is kept until the bead actually exists.
+- **`bd edit <id> --append`** opens an empty buffer and appends what you write
+  to the field (description by default; also `--notes`, `--design`,
+  `--acceptance`), separated by a blank line.
+
+### Changed
+
+- A title over the 500-character limit now reports the actual length and points
+  at `--edit` (or `--description`) instead of failing with a bare validation
+  error. See `divergence/0019-create-edit-compose.md`.
+
 ## [1.1.0-rc.1] - 2026-06-23
 
 ### Upgrade Notes
