@@ -104,5 +104,5 @@ type adapter[A any, R any] struct {
 	run  func(context.Context, A) (R, error)
 }
 
-func (a adapter[A, R]) Name() string                            { return a.name }
+func (a adapter[A, R]) Name() string                               { return a.name }
 func (a adapter[A, R]) Run(ctx context.Context, args A) (R, error) { return a.run(ctx, args) }
