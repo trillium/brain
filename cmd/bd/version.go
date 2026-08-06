@@ -26,7 +26,25 @@ var (
 	// Commit and branch the git revision the binary was built from (optional ldflag)
 	Commit = ""
 	Branch = ""
+	// Landed records whether the build's commit was an ancestor of origin/main
+	// at build time: "yes", "no", or "unknown". Set via ldflags by `make build`.
+	// A binary built from an open PR branch reports "no" and is flagged
+	// UNLANDED, so drift between what merged and what agents actually run is
+	// visible from `bd version` instead of requiring a manual SHA hunt
+	// (robots-k2r4).
+	// The default is "unknown" so plain `go build`/`go install` — which cannot
+	// know about origin/main — says nothing rather than crying wolf.
+	Landed = "unknown"
 )
+
+// landedSuffix returns the marker appended to human-readable version output for
+// a build that is known not to have landed on origin/main. Empty otherwise.
+func landedSuffix() string {
+	if Landed == "no" {
+		return " [UNLANDED — built from a commit not on origin/main]"
+	}
+	return ""
+}
 
 // versionCombinedOnly, when set via `bd version --combined`, prints only the
 // canonical combined version token and nothing else.
@@ -76,16 +94,21 @@ var versionCmd = &cobra.Command{
 			if branch != "" {
 				result["branch"] = branch
 			}
+			// Only report landedness when the build actually determined it;
+			// "unknown" stays absent rather than asserting a guess.
+			if Landed == "yes" || Landed == "no" {
+				result["landed"] = Landed == "yes"
+			}
 			if err := outputJSON(result); err != nil {
 				return err
 			}
 		} else {
 			if commit != "" && branch != "" {
-				fmt.Printf("bd version %s (%s: %s@%s)\n", combinedVersion(), Build, branch, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s@%s)%s\n", combinedVersion(), Build, branch, shortCommit(commit), landedSuffix())
 			} else if commit != "" {
-				fmt.Printf("bd version %s (%s: %s)\n", combinedVersion(), Build, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s)%s\n", combinedVersion(), Build, shortCommit(commit), landedSuffix())
 			} else {
-				fmt.Printf("bd version %s (%s)\n", combinedVersion(), Build)
+				fmt.Printf("bd version %s (%s)%s\n", combinedVersion(), Build, landedSuffix())
 			}
 		}
 
