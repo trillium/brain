@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -279,25 +280,35 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 	// Derive related table names from the main table
 	depTable := "dependencies"
 	labelTable := "labels"
+	commentTable := "comments"
 	if table == "wisps" {
 		depTable = "wisp_dependencies"
 		labelTable = "wisp_labels"
+		commentTable = "wisp_comments"
 	}
+	commentTables := sqlbuild.FilterTables{Main: table, Comments: commentTable}
 
 	whereClauses := []string{}
 	args := []interface{}{}
 
 	// Text search — optimized to avoid full-table scans (hq-319).
+	// Comment bodies join the match set when the caller opts in (robots-4m0m).
 	if query != "" {
 		lowerQuery := strings.ToLower(query)
+		pattern := "%" + lowerQuery + "%"
+		var orParts []string
 		if looksLikeIssueID(query) {
-			whereClauses = append(whereClauses, "(id = ? OR id LIKE ? OR LOWER(title) LIKE ?)")
-			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%")
+			orParts = []string{"id = ?", "id LIKE ?", "LOWER(title) LIKE ?"}
+			args = append(args, lowerQuery, lowerQuery+"%", pattern)
 		} else {
-			whereClauses = append(whereClauses, "(LOWER(title) LIKE ? OR id LIKE ?)")
-			pattern := "%" + lowerQuery + "%"
+			orParts = []string{"LOWER(title) LIKE ?", "id LIKE ?"}
 			args = append(args, pattern, pattern)
 		}
+		if clause, ok := sqlbuild.CommentMatchClause(filter.SearchComments, commentTables); ok {
+			orParts = append(orParts, clause)
+			args = append(args, pattern)
+		}
+		whereClauses = append(whereClauses, "("+strings.Join(orParts, " OR ")+")")
 	}
 
 	if filter.TitleSearch != "" {
@@ -315,6 +326,12 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 	if filter.NotesContains != "" {
 		whereClauses = append(whereClauses, "LOWER(notes) LIKE ?")
 		args = append(args, "%"+strings.ToLower(filter.NotesContains)+"%")
+	}
+	if filter.CommentsContains != "" {
+		if clause, ok := sqlbuild.CommentMatchClause(true, commentTables); ok {
+			whereClauses = append(whereClauses, clause)
+			args = append(args, "%"+strings.ToLower(filter.CommentsContains)+"%")
+		}
 	}
 	if filter.ExternalRefContains != "" {
 		whereClauses = append(whereClauses, "LOWER(external_ref) LIKE ?")

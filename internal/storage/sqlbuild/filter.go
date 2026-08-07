@@ -19,9 +19,19 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 
 	if query != "" {
 		lowerQuery := strings.ToLower(query)
+		// Comment bodies carry most of the durable content in a long-lived
+		// store, so a title/description-only match reports false misses
+		// (robots-4m0m). When enabled, each pattern the free-text clause
+		// already tests is also tested against comment text.
+		commentClause, searchComments := CommentMatchClause(filter.SearchComments, tables)
 		if LooksLikeIssueID(query) {
-			whereClauses = append(whereClauses, "(id = ? OR id LIKE ? OR LOWER(title) LIKE ? OR LOWER(external_ref) LIKE ?)")
+			orParts := []string{"id = ?", "id LIKE ?", "LOWER(title) LIKE ?", "LOWER(external_ref) LIKE ?"}
 			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%", "%"+lowerQuery+"%")
+			if searchComments {
+				orParts = append(orParts, commentClause)
+				args = append(args, "%"+lowerQuery+"%")
+			}
+			whereClauses = append(whereClauses, "("+strings.Join(orParts, " OR ")+")")
 		} else {
 			// Tokenized free-text search: split the query into whitespace tokens
 			// and match EACH token against title OR description, plus a
@@ -31,17 +41,25 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 			// token), so it can never return fewer rows (task-4ja). It also
 			// reverses the hq-319 title-only optimization to include descriptions.
 			tokens := SearchTokens(query)
-			orParts := make([]string, 0, len(tokens)*2+1)
+			orParts := make([]string, 0, len(tokens)*3+1)
 			if len(tokens) == 0 {
 				// Whitespace-only query: preserve prior whole-string matching.
 				pattern := "%" + lowerQuery + "%"
 				orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
 				args = append(args, pattern, pattern)
+				if searchComments {
+					orParts = append(orParts, commentClause)
+					args = append(args, pattern)
+				}
 			} else {
 				for _, tok := range tokens {
 					pattern := "%" + tok + "%"
 					orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
 					args = append(args, pattern, pattern)
+					if searchComments {
+						orParts = append(orParts, commentClause)
+						args = append(args, pattern)
+					}
 				}
 			}
 			// Whole-query id fallback (unchanged from prior behavior).
@@ -66,6 +84,13 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 	if filter.NotesContains != "" {
 		whereClauses = append(whereClauses, "LOWER(notes) LIKE ?")
 		args = append(args, "%"+strings.ToLower(filter.NotesContains)+"%")
+	}
+	if filter.CommentsContains != "" {
+		// Always honored regardless of SearchComments — asking for it is the opt-in.
+		if clause, ok := CommentMatchClause(true, tables); ok {
+			whereClauses = append(whereClauses, clause)
+			args = append(args, "%"+strings.ToLower(filter.CommentsContains)+"%")
+		}
 	}
 	if filter.ExternalRefContains != "" {
 		whereClauses = append(whereClauses, "LOWER(external_ref) LIKE ?")

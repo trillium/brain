@@ -1255,6 +1255,13 @@ type IssueFilter struct {
 	DescriptionContains string
 	NotesContains       string
 	ExternalRefContains string
+	CommentsContains    string // Substring match against comment bodies (AND filter)
+
+	// SearchComments widens the free-text `query` match so it also hits comment
+	// bodies, not just title/ID. Most durable content in a long-lived store
+	// accumulates in comments, so a title-only search reports false misses
+	// (robots-4m0m). Opt-in: it adds a correlated EXISTS over the comments table.
+	SearchComments bool
 
 	// Date ranges
 	CreatedAfter  *time.Time

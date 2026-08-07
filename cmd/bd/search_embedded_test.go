@@ -408,6 +408,61 @@ func TestEmbeddedSearch(t *testing.T) {
 		}
 	})
 
+	// ===== Comment-body search (robots-4m0m) =====
+	//
+	// Reported repro: a bead whose only occurrence of the keyword lives in a
+	// comment returned 0 hits, so search silently missed the majority of a
+	// long-lived store's content (most of which accumulates in comments).
+	commentOnly := bdCreate(t, bd, dir, "Fork sync helper", "--type", "task", "--description", "keeps clones current")
+	bdComment(t, bd, dir, commentOnly.ID, "repro lives in bin/fm-fork-origin-check.sh")
+
+	t.Run("search_matches_comment_body", func(t *testing.T) {
+		results := bdSearchJSON(t, bd, dir, "fm-fork-origin-check")
+		found := false
+		for _, r := range results {
+			if r["id"] == commentOnly.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected %s (keyword only in its comment) in results, got %d hits", commentOnly.ID, len(results))
+		}
+	})
+
+	t.Run("search_no_comments_flag_opts_out", func(t *testing.T) {
+		results := bdSearchJSON(t, bd, dir, "fm-fork-origin-check", "--no-comments")
+		for _, r := range results {
+			if r["id"] == commentOnly.ID {
+				t.Errorf("--no-comments must not match comment bodies, but returned %s", commentOnly.ID)
+			}
+		}
+	})
+
+	t.Run("search_comments_contains_filter", func(t *testing.T) {
+		results := bdSearchJSON(t, bd, dir, "Fork sync", "--comments-contains", "fm-fork-origin-check.sh")
+		if len(results) != 1 || results[0]["id"] != commentOnly.ID {
+			t.Errorf("expected only %s from --comments-contains, got %d results", commentOnly.ID, len(results))
+		}
+	})
+
+	t.Run("search_comment_match_not_duplicated", func(t *testing.T) {
+		// Two comments carrying the same token must still yield one row: the
+		// predicate is a correlated EXISTS, not a JOIN.
+		multi := bdCreate(t, bd, dir, "Multi comment carrier", "--type", "task")
+		bdComment(t, bd, dir, multi.ID, "zonkerific first mention")
+		bdComment(t, bd, dir, multi.ID, "zonkerific second mention")
+		results := bdSearchJSON(t, bd, dir, "zonkerific")
+		count := 0
+		for _, r := range results {
+			if r["id"] == multi.ID {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("expected %s exactly once, got %d", multi.ID, count)
+		}
+	})
+
 	_ = taskB
 	_ = taskC
 	_ = taskD

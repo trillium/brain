@@ -27,6 +27,22 @@ var (
 	WispsFilterTables  = FilterTables{Main: "wisps", Labels: "wisp_labels", Dependencies: "wisp_dependencies", Comments: "wisp_comments"}
 )
 
+// CommentMatchClause returns a correlated EXISTS predicate that matches rows
+// whose comment bodies contain a (lowercased) LIKE pattern. The clause carries
+// exactly one `?` placeholder, which the caller must supply. ok is false when
+// comment matching is disabled or the table family has no comments table, in
+// which case callers must append neither clause nor arg.
+//
+// EXISTS rather than a JOIN so multiple matching comments cannot duplicate the
+// issue row — no DISTINCT dependency (robots-4m0m).
+func CommentMatchClause(enabled bool, tables FilterTables) (string, bool) {
+	if !enabled || tables.Comments == "" || tables.Main == "" {
+		return "", false
+	}
+	return "EXISTS (SELECT 1 FROM " + tables.Comments + " bd_cmt WHERE bd_cmt.issue_id = " +
+		tables.Main + ".id AND LOWER(bd_cmt.text) LIKE ?)", true
+}
+
 // DepTargetExpr resolves a dependency row's target across the three
 // mutually-exclusive target columns.
 const DepTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"
