@@ -445,6 +445,23 @@ func TestEmbeddedSearch(t *testing.T) {
 		}
 	})
 
+	t.Run("search_comment_match_non_contiguous_tokens", func(t *testing.T) {
+		// Comment probes are tokenized like title/description, so a comment
+		// holding the query's tokens apart still matches the multi-word query.
+		split := bdCreate(t, bd, dir, "Scheduler notes", "--type", "task")
+		bdComment(t, bd, dir, split.ID, "quorbly scheduling with a zilbert worker")
+		results := bdSearchJSON(t, bd, dir, "quorbly zilbert")
+		found := false
+		for _, r := range results {
+			if r["id"] == split.ID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected %s (tokens non-contiguous in its comment) in results, got %d hits", split.ID, len(results))
+		}
+	})
+
 	t.Run("search_comment_match_not_duplicated", func(t *testing.T) {
 		// Two comments carrying the same token must still yield one row: the
 		// predicate is a correlated EXISTS, not a JOIN.

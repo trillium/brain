@@ -43,6 +43,34 @@ func CommentMatchClause(enabled bool, tables FilterTables) (string, bool) {
 		tables.Main + ".id AND LOWER(bd_cmt.text) LIKE ?)", true
 }
 
+// CommentMatchProbes returns one comment-match predicate per free-text token,
+// paired with its LIKE pattern arg. Tokenization uses SearchTokens, the same
+// contract the title/description predicates follow, so every search path agrees
+// on what a multi-word query means: a comment reading "agentic scheduling with
+// agent" matches the query "agentic agent" even though the phrase never appears
+// contiguously. A whitespace-only query falls back to whole-string matching.
+//
+// Returns (nil, nil) when comment matching is disabled — callers append neither.
+// The returned slices are always the same length and are ordered so that
+// appending clauses and args in step keeps placeholders aligned with args.
+func CommentMatchProbes(enabled bool, tables FilterTables, query string) ([]string, []any) {
+	clause, ok := CommentMatchClause(enabled, tables)
+	if !ok {
+		return nil, nil
+	}
+	tokens := SearchTokens(query)
+	if len(tokens) == 0 {
+		tokens = []string{strings.ToLower(query)}
+	}
+	clauses := make([]string, 0, len(tokens))
+	args := make([]any, 0, len(tokens))
+	for _, tok := range tokens {
+		clauses = append(clauses, clause)
+		args = append(args, "%"+tok+"%")
+	}
+	return clauses, args
+}
+
 // DepTargetExpr resolves a dependency row's target across the three
 // mutually-exclusive target columns.
 const DepTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends_on_external)"

@@ -266,3 +266,69 @@ func TestCommentsContainsIsAndFilter(t *testing.T) {
 		t.Errorf("expected lowercased substring pattern, got %v", args)
 	}
 }
+
+// TestCommentMatchProbesTokenized pins the shared contract every search path
+// uses for comment probes: one predicate per SearchTokens token, so a comment
+// holding the tokens non-contiguously still matches a multi-word query.
+func TestCommentMatchProbesTokenized(t *testing.T) {
+	t.Parallel()
+
+	clauses, args := CommentMatchProbes(true, IssuesFilterTables, "Agentic  AGENT")
+	if len(clauses) != 2 || len(args) != 2 {
+		t.Fatalf("expected one probe per token, got %d clauses / %d args", len(clauses), len(args))
+	}
+	// Lowercased and deduped by SearchTokens; order follows the query.
+	if args[0] != "%agentic%" || args[1] != "%agent%" {
+		t.Errorf("unexpected patterns: %v", args)
+	}
+	for _, c := range clauses {
+		if strings.Count(c, "?") != 1 {
+			t.Errorf("each probe carries exactly one placeholder, got %q", c)
+		}
+	}
+
+	// Whitespace-only query keeps whole-string matching rather than vanishing.
+	clauses, args = CommentMatchProbes(true, IssuesFilterTables, "   ")
+	if len(clauses) != 1 || len(args) != 1 || args[0] != "%   %" {
+		t.Errorf("whitespace-only query must fall back to the whole string, got %v / %v", clauses, args)
+	}
+
+	if c, a := CommentMatchProbes(false, IssuesFilterTables, "agent"); c != nil || a != nil {
+		t.Errorf("disabled probes must be nil, got %v / %v", c, a)
+	}
+	if c, a := CommentMatchProbes(true, FilterTables{Main: "issues"}, "agent"); c != nil || a != nil {
+		t.Errorf("no comments table must yield nil probes, got %v / %v", c, a)
+	}
+}
+
+// TestFreeTextCommentProbesPerTokenNonContiguous is the regression for the
+// multi-word case: "agentic agent" must probe comments for each token, so a
+// comment reading "agentic scheduling with agent" is reachable.
+func TestFreeTextCommentProbesPerTokenNonContiguous(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("agentic agent", types.IssueFilter{SearchComments: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	joined := strings.Join(clauses, " ")
+	if got := strings.Count(joined, "LOWER(bd_cmt.text) LIKE ?"); got != 2 {
+		t.Errorf("expected 2 comment probes (one per token), got %d in %q", got, joined)
+	}
+	if strings.Count(joined, "?") != len(args) {
+		t.Fatalf("placeholder/arg mismatch: %d placeholders, %d args", strings.Count(joined, "?"), len(args))
+	}
+	// Both token patterns must reach the comment probes, not just the phrase.
+	var sawAgentic, sawAgent bool
+	for _, a := range args {
+		switch a {
+		case "%agentic%":
+			sawAgentic = true
+		case "%agent%":
+			sawAgent = true
+		}
+	}
+	if !sawAgentic || !sawAgent {
+		t.Errorf("expected both token patterns in args, got %v", args)
+	}
+}

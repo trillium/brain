@@ -292,7 +292,9 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 	args := []interface{}{}
 
 	// Text search — optimized to avoid full-table scans (hq-319).
-	// Comment bodies join the match set when the caller opts in (robots-4m0m).
+	// Comment bodies join the match set when the caller opts in, probed once per
+	// token via the shared SearchTokens contract so this path agrees with
+	// BuildIssueFilterClauses on what a multi-word query means (robots-4m0m).
 	if query != "" {
 		lowerQuery := strings.ToLower(query)
 		pattern := "%" + lowerQuery + "%"
@@ -304,10 +306,9 @@ func (t *doltTransaction) SearchIssues(ctx context.Context, query string, filter
 			orParts = []string{"LOWER(title) LIKE ?", "id LIKE ?"}
 			args = append(args, pattern, pattern)
 		}
-		if clause, ok := sqlbuild.CommentMatchClause(filter.SearchComments, commentTables); ok {
-			orParts = append(orParts, clause)
-			args = append(args, pattern)
-		}
+		commentClauses, commentArgs := sqlbuild.CommentMatchProbes(filter.SearchComments, commentTables, query)
+		orParts = append(orParts, commentClauses...)
+		args = append(args, commentArgs...)
 		whereClauses = append(whereClauses, "("+strings.Join(orParts, " OR ")+")")
 	}
 

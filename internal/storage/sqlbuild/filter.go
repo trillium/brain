@@ -21,16 +21,14 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 		lowerQuery := strings.ToLower(query)
 		// Comment bodies carry most of the durable content in a long-lived
 		// store, so a title/description-only match reports false misses
-		// (robots-4m0m). When enabled, each pattern the free-text clause
-		// already tests is also tested against comment text.
-		commentClause, searchComments := CommentMatchClause(filter.SearchComments, tables)
+		// (robots-4m0m). When enabled, comment text is probed once per token,
+		// on the same SearchTokens contract as title/description.
+		commentClauses, commentArgs := CommentMatchProbes(filter.SearchComments, tables, query)
 		if LooksLikeIssueID(query) {
 			orParts := []string{"id = ?", "id LIKE ?", "LOWER(title) LIKE ?", "LOWER(external_ref) LIKE ?"}
 			args = append(args, lowerQuery, lowerQuery+"%", "%"+lowerQuery+"%", "%"+lowerQuery+"%")
-			if searchComments {
-				orParts = append(orParts, commentClause)
-				args = append(args, "%"+lowerQuery+"%")
-			}
+			orParts = append(orParts, commentClauses...)
+			args = append(args, commentArgs...)
 			whereClauses = append(whereClauses, "("+strings.Join(orParts, " OR ")+")")
 		} else {
 			// Tokenized free-text search: split the query into whitespace tokens
@@ -41,27 +39,21 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 			// token), so it can never return fewer rows (task-4ja). It also
 			// reverses the hq-319 title-only optimization to include descriptions.
 			tokens := SearchTokens(query)
-			orParts := make([]string, 0, len(tokens)*3+1)
+			orParts := make([]string, 0, len(tokens)*2+len(commentClauses)+1)
 			if len(tokens) == 0 {
 				// Whitespace-only query: preserve prior whole-string matching.
 				pattern := "%" + lowerQuery + "%"
 				orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
 				args = append(args, pattern, pattern)
-				if searchComments {
-					orParts = append(orParts, commentClause)
-					args = append(args, pattern)
-				}
 			} else {
 				for _, tok := range tokens {
 					pattern := "%" + tok + "%"
 					orParts = append(orParts, "LOWER(title) LIKE ?", "LOWER(description) LIKE ?")
 					args = append(args, pattern, pattern)
-					if searchComments {
-						orParts = append(orParts, commentClause)
-						args = append(args, pattern)
-					}
 				}
 			}
+			orParts = append(orParts, commentClauses...)
+			args = append(args, commentArgs...)
 			// Whole-query id fallback (unchanged from prior behavior).
 			orParts = append(orParts, "id LIKE ?")
 			args = append(args, "%"+lowerQuery+"%")
