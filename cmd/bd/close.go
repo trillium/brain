@@ -153,6 +153,7 @@ the flags appear in the command line.`,
 				fmt.Fprintf(os.Stderr, "Error closing %s: %v\n", id, err)
 				continue
 			}
+			commandDidWrite.Store(true)
 			mutatedStores[activeStore] = append(mutatedStores[activeStore], id)
 
 			// Audit log the close (survives Dolt GC flatten)
@@ -161,6 +162,12 @@ the flags appear in the command line.`,
 				oldStatus = string(issue.Status)
 			}
 			audit.LogFieldChange(id, "status", oldStatus, "closed", actor, reason)
+
+			// Record the CLOSED id for change-event emission. close later calls
+			// SetLastTouchedID(nextIssue.ID) for the auto-claimed issue, which
+			// would otherwise be the only id emitted — so the closed id must be
+			// recorded explicitly here (robots-bnn).
+			recordChangedID(id)
 
 			closedCount++
 

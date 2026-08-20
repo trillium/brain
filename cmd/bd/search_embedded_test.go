@@ -67,6 +67,17 @@ func TestEmbeddedSearch(t *testing.T) {
 	closedTask := bdCreate(t, bd, dir, "Closed epsilon", "--type", "task")
 	bdClose(t, bd, dir, closedTask.ID)
 
+	// Multi-token ranking fixtures (task-4ja). "agentic agent" is the canonical
+	// regression: before tokenization it matched nothing because no single field
+	// contained the literal phrase.
+	//   agenticTask: both tokens (and the phrase) in the title    → ranks first
+	//   splitTask:   "agent" in title, "agentic" in description    → matched only
+	//                because search now tokenizes AND scans descriptions
+	//   agentTask:   only the single token "agent"                 → ranks lowest
+	agenticTask := bdCreate(t, bd, dir, "Agentic agent framework", "--type", "feature", "--description", "agentic agent design")
+	splitTask := bdCreate(t, bd, dir, "Agent runtime", "--type", "task", "--description", "with agentic scheduling")
+	agentTask := bdCreate(t, bd, dir, "Agent login flow", "--type", "task", "--description", "user auth session")
+
 	// ===== Basic Search =====
 
 	t.Run("search_positional_query", func(t *testing.T) {
@@ -99,6 +110,31 @@ func TestEmbeddedSearch(t *testing.T) {
 		results := bdSearchJSON(t, bd, dir, "nonexistentxyz123")
 		if len(results) != 0 {
 			t.Errorf("expected 0 results, got %d", len(results))
+		}
+	})
+
+	t.Run("search_multi_token_ranked", func(t *testing.T) {
+		results := bdSearchJSON(t, bd, dir, "agentic agent")
+		// Regression: a multi-word query must return matches (was 0 pre-fix).
+		if len(results) == 0 {
+			t.Fatal("expected matches for multi-word query 'agentic agent', got 0")
+		}
+		pos := map[string]int{}
+		for i, r := range results {
+			pos[r["id"].(string)] = i
+		}
+		// All three token-matching entries are found, including the split-field
+		// one that only matches via description tokenization.
+		for _, id := range []string{agenticTask.ID, splitTask.ID, agentTask.ID} {
+			if _, ok := pos[id]; !ok {
+				t.Errorf("expected %s in results for 'agentic agent'", id)
+			}
+		}
+		// The agentic-titled entry (matches both tokens + phrase) ranks above the
+		// single-"agent" entry.
+		if pos[agenticTask.ID] > pos[agentTask.ID] {
+			t.Errorf("expected agentic entry (pos %d) ranked above agent-only entry (pos %d)",
+				pos[agenticTask.ID], pos[agentTask.ID])
 		}
 	})
 

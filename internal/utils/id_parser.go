@@ -4,11 +4,48 @@ package utils
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
 	"github.com/steveyegge/beads/internal/types"
 )
+
+// notFoundErr builds the "no issue found matching" error, upgraded with a
+// memory hint when the input is actually a `bd remember` memory key.
+//
+// `bd remember` returns a slug-shaped key ("my-insight-about-x"), not an issue
+// ID, and memories live in the config table rather than the issues table. An
+// agent that pastes that key into `bd tag` / `bd show` / `bd comment` gets a
+// bare "no issue found matching" and reasonably concludes the remember silently
+// dropped the data. Naming the memory here turns that dead end into a pointer.
+//
+// The "no issue found matching" phrase must stay in the message: cmd/bd's
+// isNotFoundErr matches on it to drive prefix routing fallback.
+func notFoundErr(ctx context.Context, store storage.Storage, input string) error {
+	base := fmt.Errorf("no issue found matching %q", input)
+	if store == nil || input == "" {
+		return base
+	}
+	if v, err := store.GetConfig(ctx, kvkeys.MemoryConfigKeyPrefix+input); err == nil && v != "" {
+		tool := toolName()
+		return fmt.Errorf("no issue found matching %q -- but %q is a stored memory key, not an issue ID. "+
+			"Memories live outside the issue table; read it with '%s memories %s'. "+
+			"To make it an issue instead, use '%s create'", input, input, tool, input, tool)
+	}
+	return base
+}
+
+// toolName returns the command the user actually typed. Store wrappers (brain,
+// task, robots, ...) set BD_NAME and exec beads, and main() points rootCmd.Use
+// at it; hint text has to follow or it tells a brain user to run "bd".
+func toolName() string {
+	if n := os.Getenv("BD_NAME"); n != "" {
+		return n
+	}
+	return "bd"
+}
 
 // parseIssueID ensures an issue ID has the configured prefix.
 // If the input already has the prefix (e.g., "bd-a3f8e9"), returns it as-is.
@@ -113,7 +150,7 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	hashPart := strings.TrimPrefix(normalizedID, prefixWithHyphen)
 	searchPart, ok := partialIDSearchPart(hashPart)
 	if !ok {
-		return "", fmt.Errorf("no issue found matching %q", input)
+		return "", notFoundErr(ctx, store, input)
 	}
 
 	filter := types.IssueFilter{}
@@ -191,7 +228,7 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	}
 
 	if len(matches) == 0 {
-		return "", fmt.Errorf("no issue found matching %q", input)
+		return "", notFoundErr(ctx, store, input)
 	}
 
 	if len(matches) > 1 {

@@ -541,6 +541,30 @@ const (
 // ValidateWithCustom and treated as built-in for hydration trust (GH#1356).
 const TypeEvent IssueType = "event"
 
+// brain v0.3 adds three kind values that ride on this same TEXT column.
+// `task` already exists upstream as TypeTask. `knowledge` and `both` are
+// the brain-only additions registered through the BrainVerb seam
+// (Decision #5, divergence/0003; brain new verb, divergence/0007).
+//
+// They are accepted by IsValid/IsValidWithCustom so that the existing
+// Issue.ValidateWithCustom path in internal/storage/issueops/create.go:412
+// does not reject `brain new knowledge ...` / `brain new both ...` writes.
+//
+// Upstream rebase note: on bd → brain sync that touches types.go, the
+// knowledge/both branches in IsValid() must survive — they are the
+// load-bearing relaxation that lets brain's verbs write through bd's
+// storage interface without a migration.
+const (
+	TypeKnowledge IssueType = "knowledge"
+	TypeBoth      IssueType = "both"
+	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — see PAI/DOCUMENTATION/IsaFormat.md).
+	// Rides on the same issue_type TEXT column as task/knowledge/both/etc.
+	// Tracked sections live in the isa_sections table (migration 0051);
+	// ISA-specific columns (isa_phase, isa_progress_m/n, etc.) live on
+	// the issues row itself (migration 0050).
+	TypeISA IssueType = "isa"
+)
+
 // Note: Most orchestrator types (convoy, merge-request, slot, agent, role, rig)
 // were removed from beads core. They are now purely custom types with no built-in constants.
 // Use string literals like types.IssueType("convoy") if needed, and configure types.custom.
@@ -556,7 +580,12 @@ const TypeEvent IssueType = "event"
 func (t IssueType) IsValid() bool {
 	switch t {
 	case TypeBug, TypeFeature, TypeTask, TypeEpic, TypeChore, TypeDecision, TypeMessage, TypeMolecule,
-		TypeGate, TypeSpike, TypeStory, TypeMilestone:
+		TypeGate, TypeSpike, TypeStory, TypeMilestone,
+		// brain v0.3 kind values (divergence/0007). These ride on the same
+		// TEXT column as bd's existing IssueType values; the kind discriminator
+		// is just a tag, not a separate column.
+		// TypeISA (brain v0.3 F1d) joins the same lineage — see TypeISA const.
+		TypeKnowledge, TypeBoth, TypeISA:
 		return true
 	}
 	return false
@@ -809,6 +838,17 @@ const (
 
 	// Delegation types (work delegation chains)
 	DepDelegatedFrom DependencyType = "delegated-from" // Work delegated from parent; completion cascades up
+
+	// Knowledge-graph types (brain v0.3 ISC-101)
+	// These edges relate knowledge/idea nodes; they do not affect ready-work calculation.
+	// `extends` was added (rather than reused) because brain v0.3 needs an explicit
+	// "this idea extends that idea" edge separate from supersedes/relates-to.
+	// `learned-from` was added (rather than remapped onto DepDiscoveredFrom) because
+	// brain v0.3's knowledge-derivation semantics ("I learned X by reading Y") are
+	// distinct from bd's audit-trail discovered-from ("I created this issue while
+	// working on that one"). Keeping them separate avoids overloading either label.
+	DepExtends     DependencyType = "extends"
+	DepLearnedFrom DependencyType = "learned-from"
 )
 
 // IsValid checks if the dependency type value is valid.
@@ -826,6 +866,7 @@ func WellKnownDependencyTypes() []DependencyType {
 		DepRepliesTo, DepRelatesTo, DepDuplicates, DepSupersedes,
 		DepAuthoredBy, DepAssignedTo, DepApprovedBy, DepAttests, DepTracks,
 		DepUntil, DepCausedBy, DepValidates, DepDelegatedFrom,
+		DepExtends, DepLearnedFrom,
 	}
 }
 

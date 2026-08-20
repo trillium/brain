@@ -646,6 +646,9 @@ var rootCmd = &cobra.Command{
 
 		// Reset per-command write tracking (used by Dolt auto-commit).
 		commandDidWrite.Store(false)
+		// Reset the change-event changed-id accumulator so ids never leak across
+		// commands sharing a process (robots-bnn).
+		resetChangedIDs()
 		commandMayEmptyJSONLExport.Store(false)
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false
@@ -1208,6 +1211,18 @@ var rootCmd = &cobra.Command{
 			store = storage.NewHookFiringStore(store, hookRunner)
 		}
 
+		// Wrap store with brain markdown exfiltration decorator so
+		// brain-kind mutations (kind ∈ {task, knowledge, both}) write
+		// entries/{kind}/{slug}.md under the configured knowledge root.
+		// Non-brain-kind mutations passthrough — bd's own behavior is
+		// unchanged. Set BRAIN_NO_EXFIL=1 to disable rendering (useful
+		// for bulk imports, migrations, or non-brain workflows).
+		if store != nil && os.Getenv("BRAIN_NO_EXFIL") == "" {
+			if exf := newBrainExfiltrator(store); exf != nil {
+				store = storage.NewBrainExfiltrationDecorator(store, exf)
+			}
+		}
+
 		// Warn if multiple databases detected in directory hierarchy
 		warnMultipleDatabases(dbPath)
 
@@ -1285,6 +1300,13 @@ var rootCmd = &cobra.Command{
 				if err := maybeAutoExport(rootCtx, commandAllowsEmptyAutoExport(cmd)); err != nil {
 					return HandleError("%v", err)
 				}
+			}
+
+			// Change-event emission: append a JSONL line describing this write
+			// if change-events.enabled. Best-effort; only fires after a real
+			// write so read-only commands produce no events.
+			if commandDidWrite.Load() {
+				maybeEmitChangeEvent(cmd.Name())
 			}
 
 			// Auto-push: push to Dolt remote if enabled and due.

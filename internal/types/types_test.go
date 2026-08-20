@@ -526,6 +526,12 @@ func TestIssueTypeIsValid(t *testing.T) {
 		{TypeEvent, false},
 		{IssueType("slot"), false},
 		{IssueType("rig"), false},
+		// brain v0.3 kinds — knowledge/both/isa ride on the same TEXT column
+		// and are accepted by IsValid so brain new ... writes pass
+		// Issue.ValidateWithCustom in storage/issueops/create.go.
+		{TypeKnowledge, true},
+		{TypeBoth, true},
+		{TypeISA, true},
 		// Invalid types
 		{IssueType("invalid"), false},
 		{IssueType(""), false},
@@ -537,6 +543,19 @@ func TestIssueTypeIsValid(t *testing.T) {
 				t.Errorf("IssueType(%q).IsValid() = %v, want %v", tt.issueType, got, tt.valid)
 			}
 		})
+	}
+}
+
+// TestTypeISAStringValue locks in the on-the-wire string value of TypeISA.
+// PAI hooks (and the F1d-2 brain new --kind=isa wiring) compare the kind
+// string against "isa" — drifting this constant would silently break the
+// ISA-substrate contract.
+func TestTypeISAStringValue(t *testing.T) {
+	if string(TypeISA) != "isa" {
+		t.Fatalf("TypeISA string value = %q, want %q", string(TypeISA), "isa")
+	}
+	if !TypeISA.IsValid() {
+		t.Fatal("TypeISA.IsValid() = false, want true")
 	}
 }
 
@@ -694,6 +713,9 @@ func TestDependencyTypeIsValid(t *testing.T) {
 		{DepAuthoredBy, true},
 		{DepAssignedTo, true},
 		{DepApprovedBy, true},
+		// brain v0.3 ISC-101 edge types
+		{DepExtends, true},
+		{DepLearnedFrom, true},
 		{DependencyType("custom-type"), true}, // Custom types are now valid
 		{DependencyType("any-string"), true},  // Any non-empty string is valid
 		{DependencyType(""), false},           // Empty is still invalid
@@ -730,6 +752,10 @@ func TestDependencyTypeIsWellKnown(t *testing.T) {
 		{DepUntil, true},
 		{DepCausedBy, true},
 		{DepValidates, true},
+		// brain v0.3 ISC-101 edge types — must be well-known so the brain
+		// CLI surfaces them in completions, validation, and renderers.
+		{DepExtends, true},
+		{DepLearnedFrom, true},
 		{DependencyType("custom-type"), false},
 		{DependencyType("unknown"), false},
 	}
@@ -766,6 +792,9 @@ func TestDependencyTypeAffectsReadyWork(t *testing.T) {
 		{DepUntil, false},
 		{DepCausedBy, false},
 		{DepValidates, false},
+		// brain v0.3 edge types — knowledge-graph edges, not workflow blockers.
+		{DepExtends, false},
+		{DepLearnedFrom, false},
 		{DependencyType("custom-type"), false},
 	}
 

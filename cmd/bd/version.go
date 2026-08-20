@@ -15,14 +15,32 @@ import (
 )
 
 var (
-	// Version is the current version of bd (overridden by ldflags at build time)
+	// Version is the upstream beads version (overridden by ldflags at build time)
 	Version = "1.2.2"
+	// BrainVersion is the brain fork version, set via -ldflags at build time from
+	// the most recent brain/vX.Y.Z git tag. Falls back to the in-source default
+	// below for manual builds.
+	BrainVersion = "0.4.0"
 	// Build can be set via ldflags at compile time
 	Build = "dev"
 	// Commit and branch the git revision the binary was built from (optional ldflag)
 	Commit = ""
 	Branch = ""
 )
+
+// versionCombinedOnly, when set via `bd version --combined`, prints only the
+// canonical combined version token and nothing else.
+var versionCombinedOnly bool
+
+// combinedVersion composes the canonical combined version token in SemVer
+// build-metadata form: <beadsVersion>+brain.<brainVersion>, e.g.
+// "1.1.0-rc.1+brain.0.4.0". It is the single source of truth for the combined
+// string, derived from the two existing ldflags-set vars. The beads core stays
+// semver-sortable because "+brain.x" is build metadata after "+", which tooling
+// ignores when comparing precedence.
+func combinedVersion() string {
+	return fmt.Sprintf("%s+brain.%s", Version, BrainVersion)
+}
 
 var versionCmd = &cobra.Command{
 	Use:           "version",
@@ -37,13 +55,20 @@ var versionCmd = &cobra.Command{
 			}
 		}()
 
+		if versionCombinedOnly {
+			fmt.Println(combinedVersion())
+			return nil
+		}
+
 		commit := resolveCommitHash()
 		branch := resolveBranch()
 
 		if jsonOutput {
 			result := map[string]interface{}{
-				"version": Version,
-				"build":   Build,
+				"version":  Version,
+				"brain":    BrainVersion,
+				"combined": combinedVersion(),
+				"build":    Build,
 			}
 			if commit != "" {
 				result["commit"] = commit
@@ -56,11 +81,11 @@ var versionCmd = &cobra.Command{
 			}
 		} else {
 			if commit != "" && branch != "" {
-				fmt.Printf("bd version %s (%s: %s@%s)\n", Version, Build, branch, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s@%s)\n", combinedVersion(), Build, branch, shortCommit(commit))
 			} else if commit != "" {
-				fmt.Printf("bd version %s (%s: %s)\n", Version, Build, shortCommit(commit))
+				fmt.Printf("bd version %s (%s: %s)\n", combinedVersion(), Build, shortCommit(commit))
 			} else {
-				fmt.Printf("bd version %s (%s)\n", Version, Build)
+				fmt.Printf("bd version %s (%s)\n", combinedVersion(), Build)
 			}
 		}
 
@@ -77,6 +102,7 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
+	versionCmd.Flags().BoolVar(&versionCombinedOnly, "combined", false, "print only the canonical combined version token (<beadsVersion>+brain.<brainVersion>)")
 	rootCmd.AddCommand(versionCmd)
 }
 

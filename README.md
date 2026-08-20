@@ -1,219 +1,133 @@
-# bd - Beads
+# brain
 
-**Distributed graph issue tracker for AI agents, powered by [Dolt](https://github.com/dolthub/dolt).**
+Personal agent infrastructure. A multi-scope memory and task system that AI agents can depend on, with markdown exfiltration so the same content is also human-readable and grep-friendly.
 
-**Platforms:** macOS, Linux, Windows, FreeBSD
+brain is a Go fork of [beads](https://github.com/gastownhall/beads). It keeps beads' versioned Dolt substrate and graph-shaped issue model, then layers a federation model on top: one binary, many named stores, unified search.
 
-[![License](https://img.shields.io/github/license/gastownhall/beads)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/steveyegge/beads)](https://goreportcard.com/report/github.com/steveyegge/beads)
-[![Release](https://img.shields.io/github/v/release/gastownhall/beads)](https://github.com/gastownhall/beads/releases)
-[![npm version](https://img.shields.io/npm/v/@beads/bd)](https://www.npmjs.com/package/@beads/bd)
-[![PyPI](https://img.shields.io/pypi/v/beads-mcp)](https://pypi.org/project/beads-mcp/)
+## The model
 
-**Docs:** https://gastownhall.github.io/beads/
+brain is not one store — it is a family of stores, each with a focused purpose and its own CLI wrapper. Every store is a beads `.beads/` Dolt database. Every wrapper is a thin shell script that sets `BEADS_DIR` and `BD_NAME` before dispatching to the brain binary.
 
-Beads provides a persistent, structured memory for coding agents. It replaces messy markdown plans with a dependency-aware graph, allowing agents to handle long-horizon tasks without losing context.
+| CLI         | Store path                       | Prefix      | Purpose                                      |
+|-------------|----------------------------------|-------------|----------------------------------------------|
+| `brain`     | `~/data/knowledge/.beads/`       | `brain-`    | Facts, learnings, concepts — the default hub |
+| `task`      | `~/data/tasks/.beads/`           | `task-`     | Actionable work items (global, cross-project)|
+| `project`   | `~/data/projects/.beads/`        | `project-`  | Active initiatives; links tasks + decisions  |
+| `inbox`     | `~/data/inbox/.beads/`           | `inbox-`    | Frictionless capture — classify later        |
+| `decide`    | `~/data/decisions/.beads/`       | `decide-`   | Decisions with rationale, dated              |
+| `idea`      | `~/data/ideas/.beads/`           | `idea-`     | Greenfield, exploratory, not yet actionable  |
+| `question`  | `~/data/questions/.beads/`       | `question-` | Open questions pending research or answer    |
+| `assert`    | `~/data/assertions/.beads/`      | `assert-`   | AI assertion claims + verdicts               |
+| `life`      | `~/data/life/.beads/`            | `life-`     | Personal context (health, habits, goals)     |
 
-## ⚡ Quick Start
+**brain is the search hub.** `brain search X` finds entries across all registered stores. Writes always go to the specific store via its wrapper — brain is never the write target for task/project/idea etc.
 
-```bash
-# Install beads CLI (system-wide - don't clone this repo into your project)
-curl -fsSL https://raw.githubusercontent.com/gastownhall/beads/main/scripts/install.sh | bash
+**Capture first, classify later.** Drop anything into `inbox` with zero classification overhead. Promote it to the right store when you have 30 seconds: `brain transfer inbox-abc task`.
 
-# Initialize in YOUR project
-cd your-project
-bd init
+**Per-project task tracking stays in the repo.** Each code repo has its own local `bd` store (`.beads/` in the repo). The `task` store is for global, cross-project work items that don't belong to a single codebase.
 
-# Optional: refresh or install richer instructions for your agent
-bd setup codex    # Codex CLI - installs skill, AGENTS.md guidance, and hooks
-bd setup claude   # Claude Code - installs hooks/settings
-bd setup factory  # Factory.ai Droid - creates/updates AGENTS.md
+## Store registry
+
+Stores are registered in `~/.config/pai/stores.yaml`. The registry drives both the binary (for `brain search` federation and `brain transfer`) and shell wrappers (via `~/.config/pai/stores.env`, generated with `brain stores env`).
+
+```sh
+brain stores create recipes              # provision new store end-to-end (dolt init, entries/, wrapper, registry, env)
+brain stores add task ~/data/tasks/.beads  # register an existing dolt repo without creating files
+brain stores list
+brain stores env                         # regenerate ~/.config/pai/stores.env
+brain stores remove recipes              # unregister (does NOT delete files)
 ```
 
-**Note:** Beads is a CLI tool you install once and use everywhere. You don't need to clone this repository into your project.
+`brain stores create` is idempotent — re-running with the same arguments resumes safely if a prior run was interrupted.
 
-`bd init` creates or updates `AGENTS.md` by default so agents can discover the beads workflow, and also installs project Claude/Codex integrations unless you pass `--skip-agents` or `--stealth`. Use `bd setup --list` to see supported integrations, including `bd setup codex`, `bd setup factory`, `bd setup claude`, `bd setup mux`, `bd setup cursor`, and more. See [Agent and IDE setup](docs/SETUP.md).
+## What brain adds to beads
 
-Manual copy-paste is only for unsupported agents, existing projects where you cannot rerun `bd init`/`bd setup`, or custom instruction files. In those cases, run `bd onboard` and paste the printed snippet into the file your agent reads.
+- **Multi-store federation.** `brain stores add/create/list/env`, `brain search` across all stores, `brain transfer` between stores.
+- **One-shot store provisioning.** `brain stores create <name>` does dolt init + entries dir + CLI wrapper + registry write + env regen in a single idempotent command — no manual steps.
+- **Kind discriminator.** One bag of docs — `kind: task | knowledge | both | isa` — so tasks and knowledge live in the same substrate with the same query layer.
+- **Markdown exfiltration on every mutation, every kind.** Every write renders a markdown file to `<store>/entries/<kind>/<slug>.md` — not just the brain trio (task/knowledge/both) but every IssueType bd recognizes (bug, feature, epic, decision, message, etc.). Dolt is canonical; markdown is the human view.
+- **Store-derived exfil root.** Resolution is `BRAIN_KNOWLEDGE_ROOT` → `dirname($BEADS_DIR)/entries` → `~/data/brain/entries` — so each store's markdown lands next to its own `.beads/` directory automatically.
+- **On-demand re-render.** `bd render <id>` and `bd render-all` re-emit markdown from the substrate when the on-disk copy is missing, corrupted, or out of date. `render-all` prints a confirmation summary (`Exfiltrated N / M beads to <root>/entries/ (K failed)`) and supports `--json` for scripting.
+- **ISA primitives.** First-class support for [PAI](https://github.com/danielmiessler/PAI) Algorithm v6.4+ ISAs — `brain new isa`, `brain isa-section`, `brain isa-render`, per-section UPSERT semantics.
+- **Auto-file feature requests.** Unknown flag on a `brain` command? It files a feature request automatically and prints the ID.
 
-If your agent is not covered by `bd setup`, add this minimal `AGENTS.md` section:
+## How it ships
 
-```markdown
-This project uses bd (beads) for issue tracking.
+One Go binary (`~/.local/bin/bd`), many install names. Each wrapper is a shell script:
 
-- Run `bd prime` for workflow context and command guidance.
-- Use `bd ready`, `bd show <id>`, `bd update <id> --claim`, and `bd close <id>`.
-- Use `bd remember "insight"` for persistent project memory; do not create MEMORY.md files.
-- Do not use markdown TODO lists for task tracking.
+```sh
+#!/bin/sh
+export BEADS_DIR="$HOME/data/tasks/.beads"
+export BD_NAME="task"
+exec "$HOME/.local/bin/bd" "$@"
 ```
 
-## 🛠 Features
+Argv[0] dispatch via `BD_NAME` controls display name and brain-mode behavior.
 
-* **[Dolt](https://github.com/dolthub/dolt)-Powered:** Version-controlled SQL database with cell-level merge, native branching, and built-in sync via Dolt remotes.
-* **Agent-Optimized:** JSON output, dependency tracking, and auto-ready task detection.
-* **Zero Conflict:** Hash-based IDs (`bd-a1b2`) prevent merge collisions in multi-agent/multi-branch workflows.
-* **Compaction:** Semantic "memory decay" summarizes old closed tasks to save context window.
-* **Messaging:** Message issue type with threading (`--thread`), ephemeral lifecycle, and mail delegation.
-* **Graph Links:** `relates_to`, `duplicates`, `supersedes`, and `replies_to` for knowledge graphs.
+## Versioning
 
-## 📖 Essential Commands
+Double semver: upstream beads version + brain fork version.
 
-| Command | Action |
-| --- | --- |
-| `bd ready` | List tasks with no open blockers. |
-| `bd create "Title" -p 0` | Create a P0 task. |
-| `bd update <id> --claim` | Atomically claim a task (sets assignee + in_progress). |
-| `bd dep add <child> <parent>` | Link tasks (blocks, related, parent-child). |
-| `bd show <id>` | View task details and audit trail. |
-| `bd prime` | Print agent workflow context and persistent memories. |
-| `bd remember "insight"` | Store project memory that `bd prime` injects later. |
-
-## 🔗 Hierarchy & Workflow
-
-Beads supports hierarchical IDs for epics:
-
-* `bd-a3f8` (Epic)
-* `bd-a3f8.1` (Task)
-* `bd-a3f8.1.1` (Sub-task)
-
-**Stealth Mode:** Run `bd init --stealth` to use Beads locally without committing files to the main repo. Perfect for personal use on shared projects. See [Git-Free Usage](#-git-free-usage) below.
-
-**Contributor vs Maintainer:** When working on open-source projects:
-
-* **Contributors** (forked repos): Run `bd init --contributor` to route planning issues to a separate repo (e.g., `~/.beads-planning`). Keeps experimental work out of PRs.
-* **Maintainers** (write access): Beads auto-detects maintainer role via SSH URLs or HTTPS with credentials. Only need `git config beads.role maintainer` if using GitHub HTTPS without credentials but you have write access.
-
-## 📦 Installation
-
-```bash
-brew install beads           # macOS / Linux (recommended)
-npm install -g @beads/bd     # Node.js users
+```
+bd version 1.1.0-rc.1+brain.0.4.0 (abc1234: feat/isa-substrate-f1@abc1234)
 ```
 
-**Other methods:** [install script](docs/INSTALLING.md#quick-install-script-all-platforms) | [go install](docs/INSTALLING.md#a-note-on-go-install-capability) | [from source](docs/INSTALLING.md#build-dependencies-contributors-only) | [Windows](docs/INSTALLING.md#windows-11) | [Arch AUR](docs/INSTALLING.md#linux)
+- **`1.1.0-rc.1`** — upstream beads base the fork is rebased on
+- **`+brain.0.4.0`** — brain fork version, derived from the most recent `brain/vX.Y.Z` git tag, appended as SemVer build metadata so the beads core stays version-sortable
 
-**Requirements:** macOS, Linux, Windows, or FreeBSD. See [docs/INSTALLING.md](docs/INSTALLING.md) for complete installation guide.
+The combined token `<beadsVersion>+brain.<brainVersion>` is canonical. Print it alone with `bd version --combined`, or read the `brain` and `combined` fields from `bd version --json`.
 
-**Upgrading?** Replacing the binary is not always the whole story: releases can
-carry schema migrations, and a database that syncs to a Dolt remote must be
-migrated by exactly one designated clone. Back up first (`bd export --all`),
-then follow the [upgrade guide](https://gastownhall.github.io/beads/docs/getting-started/upgrading)
-(also summarized in [docs/INSTALLING.md](docs/INSTALLING.md#updating-bd)).
+To cut a release:
 
-### Security And Verification
-
-Before trusting any downloaded binary, verify its checksum against the release `checksums.txt`.
-
-The install scripts verify release checksums before install. For manual installs, do this verification yourself before first run.
-
-On macOS, `scripts/install.sh` preserves the downloaded signature by default. Local ad-hoc re-signing is explicit opt-in via `BEADS_INSTALL_RESIGN_MACOS=1`.
-
-See [docs/ANTIVIRUS.md](docs/ANTIVIRUS.md) for Windows AV false-positive guidance and verification workflow.
-
-## 💾 Storage Modes
-
-Beads uses [Dolt](https://github.com/dolthub/dolt) as its database. Two modes
-are available:
-
-### Embedded Mode (default)
-
-```bash
-bd init
+```sh
+make brain-release BUMP=patch   # tags brain/vX.Y.Z locally
+make build && cp bd ~/.local/bin/bd
+git push origin brain/v0.4.1    # push when online
 ```
 
-Dolt runs in-process — no external server needed. Data lives in
-`.beads/embeddeddolt/`. Single-writer only (file locking enforced).
-This is the recommended mode for most users.
+## Key verbs
 
-When the git repo has an `origin` remote, `bd init` configures a Dolt remote
-named `origin` automatically. Cross-machine sync uses `bd dolt push` and
-`bd dolt pull` against `refs/dolt/data`; `.beads/issues.jsonl` is an export
-for viewers and interchange, not the source of truth or a full database
-backup.
+```sh
+# Capture
+brain create --type=knowledge "title" [-d "description"]
+task create --title="..." --type=task
+inbox create --title="..."           # classify later
 
-### Server Mode
+# Promote
+brain transfer inbox-abc task        # creates task, closes inbox entry
 
-```bash
-bd init --server
+# Search (federated)
+brain search "dolt migration"        # searches all registered stores
+
+# Graph
+brain link brain-abc task-xyz --type=informs
+brain related brain-abc
+
+# ISA (Ideal State Artifacts)
+brain new isa "title" --slug=my-slug
+brain isa-section brain-abc criteria --value-stdin
+brain isa-render brain-abc
+
+# Stores
+brain stores list
+brain stores create idea                 # one-shot provisioning
+brain stores add idea ~/data/ideas/.beads  # register an existing path
+brain stores env
+
+# Render markdown (after corruption, deletion, or layout change)
+bd render <id>                           # one bead
+bd render-all                            # every bead; prints summary on stderr
+bd render-all --json                     # structured: {rendered, failed, total, root, results[]}
 ```
 
-Connects to an external `dolt sql-server`. Data lives in `.beads/dolt/`.
-Supports multiple concurrent writers. Configure the connection with flags
-or environment variables:
+## Status
 
-| Flag | Env Var | Default |
-|------|---------|---------|
-| `--server-host` | `BEADS_DOLT_SERVER_HOST` | `127.0.0.1` |
-| `--server-port` | `BEADS_DOLT_SERVER_PORT` | `3307` |
-| `--server-socket` | `BEADS_DOLT_SERVER_SOCKET` | (none; uses TCP) |
-| `--server-user` | `BEADS_DOLT_SERVER_USER` | `root` |
-| | `BEADS_DOLT_PASSWORD` | (none) |
+Active personal infrastructure. APIs may break without notice. No external contributions accepted — this repo exists so agents I run can depend on it.
 
-**Unix domain sockets:** Use `--server-socket` to connect via a Unix socket
-instead of TCP. This avoids port conflicts between concurrent projects and
-is useful in sandboxed environments (e.g., Claude Code) where file-level
-access control is simpler than network allowlists. The Dolt server must be
-started with `dolt sql-server --socket <path>`. Auto-start is not supported
-in socket mode.
+## Upstream
 
-### Backup & Migration
+Forked from [gastownhall/beads](https://github.com/gastownhall/beads). Periodic rebases bring beads fixes forward. Brain-specific code lives under `cmd/bd/brain_*.go`, `internal/brain/`, and `divergence/`.
 
-Back up your database and migrate between modes using `bd backup`:
+## License
 
-```bash
-# Set up a backup destination and push
-bd backup init /path/to/backup
-bd backup sync
-
-# Restore into a new project (any mode)
-bd init           # or bd init --server
-bd backup restore --force /path/to/backup
-```
-
-See [docs/DOLT.md](docs/DOLT.md#migrating-between-backends) for full
-migration instructions.
-
-`bd export` and `.beads/issues.jsonl` are issue-table exports. They are useful
-for review, migration, and interoperability, but they do not capture Dolt
-branches, commit history, working-set state, or non-issue tables. Use
-`bd backup` or a manual Dolt backup when you need a restorable database backup.
-
-## 🌐 Community Tools
-
-See [docs/COMMUNITY_TOOLS.md](docs/COMMUNITY_TOOLS.md) for a curated list of community-built UIs, extensions, and integrations—including terminal interfaces, web UIs, editor extensions, and native apps.
-
-## 🚀 Git-Free Usage
-
-Beads works without git. The Dolt database is the storage backend — git
-integration (hooks, repo discovery, identity) is optional.
-
-```bash
-# Initialize without git
-export BEADS_DIR=/path/to/your/project/.beads
-bd init --quiet --stealth
-
-# All core commands work with zero git calls
-bd create "Fix auth bug" -p 1 -t bug
-bd ready --json
-bd update bd-a1b2 --claim
-bd prime
-bd close bd-a1b2 "Fixed"
-```
-
-`BEADS_DIR` tells bd where to put the `.beads/` database directory,
-bypassing git repo discovery. `--stealth` sets `no-git-ops: true` in
-config, disabling all git hook installation and git operations.
-
-This is useful for:
-- **Non-git VCS** (Sapling, Jujutsu, Piper) — no `.git/` directory needed
-- **Monorepos** — point `BEADS_DIR` at a specific subdirectory
-- **CI/CD** — isolated task tracking without repo-level side effects
-- **Evaluation/testing** — ephemeral databases in `/tmp`
-
-For daemon mode without git, use `bd daemon start --local`
-(see [PR #433](https://github.com/gastownhall/beads/pull/433)).
-
-## 📝 Documentation
-
-* [Documentation site](https://gastownhall.github.io/beads/) (versioned) | [Installing](docs/INSTALLING.md) | [Sync Concepts](docs/SYNC_CONCEPTS.md) | [Agent Workflow](AGENT_INSTRUCTIONS.md) | [Copilot CLI Setup](docs/COPILOT_CLI_INTEGRATION.md) | [Copilot VS Code MCP](docs/COPILOT_INTEGRATION.md) | [Articles](ARTICLES.md) | [Sync Branch Mode](docs/PROTECTED_BRANCHES.md) | [Troubleshooting](docs/TROUBLESHOOTING.md) | [FAQ](docs/FAQ.md)
-* [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/gastownhall/beads)
+Inherits the upstream beads license. See `LICENSE`.

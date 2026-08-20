@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/kvkeys"
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/internal/validation"
@@ -17,10 +21,11 @@ var searchCmd = &cobra.Command{
 	Use:     "search [query]",
 	GroupID: "issues",
 	Short:   "Search issues by text query",
-	Long: `Search issues across title and ID (excludes closed issues by default).
+	Long: `Search issues across title, description, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
-Text queries search titles. Use --desc-contains for description search.
+Text queries are tokenized on whitespace and each token is matched against
+title and description; results are ranked by relevance unless --sort is given.
 Use --status all to include closed issues.
 
 Examples:
@@ -59,6 +64,15 @@ Examples:
 				fmt.Fprintf(os.Stderr, "Error displaying help: %v\n", err)
 			}
 			return HandleError("search query is required")
+		}
+
+		// Federated mode: search the primary store, then any registered
+		// secondary stores on the same Dolt server. Emits sectioned output
+		// (text) or per-store arrays (JSON). Delegates entirely; the rest
+		// of the standard search path does not run.
+		if federated, _ := cmd.Flags().GetBool("federated"); federated {
+			runFederatedSearch(cmd, query)
+			return nil
 		}
 
 		// Get filter flags
@@ -236,13 +250,32 @@ Examples:
 
 		ctx := rootCtx
 
+		// Relevance ranking (task-4ja): for free-text queries (not ID lookups)
+		// with no explicit --sort, rank results by match quality. SQL applies
+		// LIMIT before Go scoring can run, so fetch the full match set
+		// (Limit=0) and truncate after ranking; otherwise the LIMIT could drop
+		// the best-scoring rows before they are ever scored. ID-like queries and
+		// explicitly-sorted queries keep the fast, LIMIT-pushed path unchanged.
+		rankResults := !sqlbuild.LooksLikeIssueID(query) && !cmd.Flags().Changed("sort")
+		displayLimit := limit
+		if rankResults {
+			filter.Limit = 0
+		}
+
 		issues, err := store.SearchIssues(ctx, query, filter)
 		if err != nil {
 			return HandleError("%v", err)
 		}
 
-		// Apply sorting
-		sortIssues(issues, sortBy, reverse)
+		if rankResults {
+			rankSearchResults(issues, query)
+			if displayLimit > 0 && len(issues) > displayLimit {
+				issues = issues[:displayLimit]
+			}
+		} else {
+			// Explicit --sort or ID-like query: preserve prior sort behavior.
+			sortIssues(issues, sortBy, reverse)
+		}
 
 		if jsonOutput {
 			// Get labels and dependency counts
@@ -299,8 +332,44 @@ Examples:
 		}
 
 		outputSearchResults(issues, query, longFormat)
+		// `bd remember` writes to the config table, so its content is invisible
+		// to issue search. A bare "No issues found" for text the user knows they
+		// stored reads as data loss; point at the memory that actually holds it.
+		if len(issues) == 0 {
+			printMemoryMatchHint(ctx, query)
+		}
 		return nil
 	},
+}
+
+// printMemoryMatchHint reports memories whose key or body matches query. Best
+// effort: a failed config read prints nothing rather than muddying the miss.
+func printMemoryMatchHint(ctx context.Context, query string) {
+	allConfig, err := store.GetAllConfig(ctx)
+	if err != nil {
+		return
+	}
+	needle := strings.ToLower(query)
+	var keys []string
+	for k, v := range allConfig {
+		if !strings.HasPrefix(k, kvkeys.MemoryConfigKeyPrefix) {
+			continue
+		}
+		userKey := strings.TrimPrefix(k, kvkeys.MemoryConfigKeyPrefix)
+		if strings.Contains(strings.ToLower(userKey), needle) || strings.Contains(strings.ToLower(v), needle) {
+			keys = append(keys, userKey)
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	sort.Strings(keys)
+	tool := memoryToolName()
+	fmt.Printf("\nBut %d stored memory/memories match (memories are not issues and are not searched by '%s search'):\n", len(keys), tool)
+	for _, k := range keys {
+		fmt.Printf("  %s\n", k)
+	}
+	fmt.Printf("Read them with '%s memories %s'.\n", tool, query)
 }
 
 // outputSearchResults formats and displays search results

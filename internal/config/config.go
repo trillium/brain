@@ -209,6 +209,11 @@ func Initialize() error {
 	// Create command defaults
 	v.SetDefault("create.require-description", false)
 
+	// Change-event emission (brain). When true, each write command appends one
+	// JSON line per mutated issue to <beadsDir>/change-events.jsonl. Off by
+	// default.
+	v.SetDefault("change-events.enabled", false)
+
 	// Validation configuration defaults (bd-t7jq)
 	// Values: "warn" | "error" | "none"
 	// - "none": no validation (default, backwards compatible)
