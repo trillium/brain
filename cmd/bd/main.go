@@ -382,6 +382,18 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 	}
 }
 
+// storesCommandCanRunWithoutStore reports whether a 'brain stores' subcommand
+// operates purely on the federation registry and therefore must run even when
+// the caller's own working directory has no beads database. 'stores doctor' is
+// the health probe for the whole federation: requiring a healthy store to run it
+// would make it useless in exactly the situation it exists to detect.
+func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+		return false
+	}
+	return cmd.Name() == "doctor"
+}
+
 func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 	if beadsDir == "" {
 		return
@@ -827,6 +839,15 @@ var rootCmd = &cobra.Command{
 		// Only skip for top-level commands in noDbCommands, not subcommands
 		// that happen to share names (e.g., "bd backup init" vs "bd init").
 		if slices.Contains(noDbCommands, cmdName) && !isSubcommand {
+			skipsStoreInit = true
+		}
+
+		// 'stores doctor' is the federation health probe. Classify it as
+		// store-free here rather than at database discovery: a caller store that
+		// exists but cannot open would otherwise abort PersistentPreRunE before
+		// the probe ever runs — in exactly the situation it exists to detect
+		// (robots-nka3).
+		if storesCommandCanRunWithoutStore(cmd) {
 			skipsStoreInit = true
 		}
 
