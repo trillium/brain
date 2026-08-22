@@ -146,3 +146,189 @@ func TestSearchCountsSQLShape(t *testing.T) {
 		t.Error("counts SQL must project NULL labels_json when skipLabels is set")
 	}
 }
+
+// TestCommentMatchClause pins the correlated-EXISTS shape and the disabled
+// cases, so callers can rely on "ok == false means append nothing" (robots-4m0m).
+func TestCommentMatchClause(t *testing.T) {
+	t.Parallel()
+
+	clause, ok := CommentMatchClause(true, IssuesFilterTables)
+	if !ok {
+		t.Fatal("CommentMatchClause(true, issues) must be enabled")
+	}
+	want := "EXISTS (SELECT 1 FROM comments bd_cmt WHERE bd_cmt.issue_id = issues.id AND LOWER(bd_cmt.text) LIKE ?)"
+	if clause != want {
+		t.Errorf("clause = %q, want %q", clause, want)
+	}
+	if got := strings.Count(clause, "?"); got != 1 {
+		t.Errorf("clause must carry exactly one placeholder, got %d", got)
+	}
+
+	wispClause, ok := CommentMatchClause(true, WispsFilterTables)
+	if !ok {
+		t.Fatal("CommentMatchClause(true, wisps) must be enabled")
+	}
+	if !strings.Contains(wispClause, "FROM wisp_comments") || !strings.Contains(wispClause, "wisps.id") {
+		t.Errorf("wisp clause must target the wisp table family, got %q", wispClause)
+	}
+
+	if _, ok := CommentMatchClause(false, IssuesFilterTables); ok {
+		t.Error("CommentMatchClause(false, ...) must report disabled")
+	}
+	if _, ok := CommentMatchClause(true, FilterTables{Main: "issues"}); ok {
+		t.Error("a table family with no comments table must report disabled")
+	}
+}
+
+// TestFreeTextSearchIncludesComments covers the reported defect: a free-text
+// query must be able to match comment bodies, and must not when opted out.
+func TestFreeTextSearchIncludesComments(t *testing.T) {
+	t.Parallel()
+
+	base, baseArgs, err := BuildIssueFilterClauses("fork-origin", types.IssueFilter{}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build (comments off): %v", err)
+	}
+	if strings.Contains(strings.Join(base, " "), "bd_cmt") {
+		t.Errorf("comment search is opt-in; got %v", base)
+	}
+
+	withComments, withArgs, err := BuildIssueFilterClauses("fork-origin", types.IssueFilter{SearchComments: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build (comments on): %v", err)
+	}
+	joined := strings.Join(withComments, " ")
+	if !strings.Contains(joined, "LOWER(bd_cmt.text) LIKE ?") {
+		t.Fatalf("expected a comment predicate in %v", withComments)
+	}
+	// The comment predicate must be OR'd into the free-text group, not AND'd as
+	// a separate clause — otherwise it narrows results instead of widening them.
+	if len(withComments) != len(base) {
+		t.Errorf("comment search must not add a top-level AND clause: %v vs %v", withComments, base)
+	}
+	if len(withArgs) != len(baseArgs)+1 {
+		t.Errorf("expected exactly one extra arg per token, got %d vs %d", len(withArgs), len(baseArgs))
+	}
+	if strings.Count(joined, "?") != len(withArgs) {
+		t.Errorf("placeholder/arg mismatch: %d placeholders, %d args", strings.Count(joined, "?"), len(withArgs))
+	}
+}
+
+// TestFreeTextSearchCommentsPerToken pins that every whitespace token gets its
+// own comment probe, matching the per-token title/description handling.
+func TestFreeTextSearchCommentsPerToken(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("agentic agent", types.IssueFilter{SearchComments: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	joined := strings.Join(clauses, " ")
+	if got := strings.Count(joined, "LOWER(bd_cmt.text) LIKE ?"); got != 2 {
+		t.Errorf("expected one comment probe per token (2), got %d in %q", got, joined)
+	}
+	if strings.Count(joined, "?") != len(args) {
+		t.Errorf("placeholder/arg mismatch: %d placeholders, %d args", strings.Count(joined, "?"), len(args))
+	}
+}
+
+// TestIDLikeSearchIncludesComments covers the ID-shaped query branch, which
+// takes a different path through the builder.
+func TestIDLikeSearchIncludesComments(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("robots-4m0m", types.IssueFilter{SearchComments: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	joined := strings.Join(clauses, " ")
+	if !strings.Contains(joined, "LOWER(bd_cmt.text) LIKE ?") {
+		t.Fatalf("ID-like query must also probe comments, got %v", clauses)
+	}
+	if strings.Count(joined, "?") != len(args) {
+		t.Errorf("placeholder/arg mismatch: %d placeholders, %d args", strings.Count(joined, "?"), len(args))
+	}
+}
+
+// TestCommentsContainsIsAndFilter pins that --comments-contains narrows results
+// (AND) regardless of SearchComments, mirroring DescriptionContains.
+func TestCommentsContainsIsAndFilter(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("", types.IssueFilter{CommentsContains: "RollBack"}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if len(clauses) != 1 || !strings.Contains(clauses[0], "LOWER(bd_cmt.text) LIKE ?") {
+		t.Fatalf("expected a single comment clause, got %v", clauses)
+	}
+	if len(args) != 1 || args[0] != "%rollback%" {
+		t.Errorf("expected lowercased substring pattern, got %v", args)
+	}
+}
+
+// TestCommentMatchProbesTokenized pins the shared contract every search path
+// uses for comment probes: one predicate per SearchTokens token, so a comment
+// holding the tokens non-contiguously still matches a multi-word query.
+func TestCommentMatchProbesTokenized(t *testing.T) {
+	t.Parallel()
+
+	clauses, args := CommentMatchProbes(true, IssuesFilterTables, "Agentic  AGENT")
+	if len(clauses) != 2 || len(args) != 2 {
+		t.Fatalf("expected one probe per token, got %d clauses / %d args", len(clauses), len(args))
+	}
+	// Lowercased and deduped by SearchTokens; order follows the query.
+	if args[0] != "%agentic%" || args[1] != "%agent%" {
+		t.Errorf("unexpected patterns: %v", args)
+	}
+	for _, c := range clauses {
+		if strings.Count(c, "?") != 1 {
+			t.Errorf("each probe carries exactly one placeholder, got %q", c)
+		}
+	}
+
+	// Whitespace-only query keeps whole-string matching rather than vanishing.
+	clauses, args = CommentMatchProbes(true, IssuesFilterTables, "   ")
+	if len(clauses) != 1 || len(args) != 1 || args[0] != "%   %" {
+		t.Errorf("whitespace-only query must fall back to the whole string, got %v / %v", clauses, args)
+	}
+
+	if c, a := CommentMatchProbes(false, IssuesFilterTables, "agent"); c != nil || a != nil {
+		t.Errorf("disabled probes must be nil, got %v / %v", c, a)
+	}
+	if c, a := CommentMatchProbes(true, FilterTables{Main: "issues"}, "agent"); c != nil || a != nil {
+		t.Errorf("no comments table must yield nil probes, got %v / %v", c, a)
+	}
+}
+
+// TestFreeTextCommentProbesPerTokenNonContiguous is the regression for the
+// multi-word case: "agentic agent" must probe comments for each token, so a
+// comment reading "agentic scheduling with agent" is reachable.
+func TestFreeTextCommentProbesPerTokenNonContiguous(t *testing.T) {
+	t.Parallel()
+
+	clauses, args, err := BuildIssueFilterClauses("agentic agent", types.IssueFilter{SearchComments: true}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	joined := strings.Join(clauses, " ")
+	if got := strings.Count(joined, "LOWER(bd_cmt.text) LIKE ?"); got != 2 {
+		t.Errorf("expected 2 comment probes (one per token), got %d in %q", got, joined)
+	}
+	if strings.Count(joined, "?") != len(args) {
+		t.Fatalf("placeholder/arg mismatch: %d placeholders, %d args", strings.Count(joined, "?"), len(args))
+	}
+	// Both token patterns must reach the comment probes, not just the phrase.
+	var sawAgentic, sawAgent bool
+	for _, a := range args {
+		switch a {
+		case "%agentic%":
+			sawAgentic = true
+		case "%agent%":
+			sawAgent = true
+		}
+	}
+	if !sawAgentic || !sawAgent {
+		t.Errorf("expected both token patterns in args, got %v", args)
+	}
+}

@@ -21,12 +21,13 @@ var searchCmd = &cobra.Command{
 	Use:     "search [query]",
 	GroupID: "issues",
 	Short:   "Search issues by text query",
-	Long: `Search issues across title, description, and ID (excludes closed issues by default).
+	Long: `Search issues across title, description, comments, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
 Text queries are tokenized on whitespace and each token is matched against
-title and description; results are ranked by relevance unless --sort is given.
-Use --status all to include closed issues.
+title, description, and comment bodies; results are ranked by relevance unless
+--sort is given (comment-only matches rank below title/description matches).
+Use --no-comments to skip comment bodies, and --status all to include closed issues.
 
 Examples:
   bd search "authentication bug"
@@ -40,6 +41,8 @@ Examples:
   bd search "bug" --sort priority
   bd search "task" --sort created --reverse
   bd search "api" --desc-contains "endpoint"
+  bd search "release" --comments-contains "rollback"
+  bd search "fork-origin" --no-comments  # title/description/ID only
   bd search "cleanup" --no-assignee --no-labels`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -102,6 +105,8 @@ Examples:
 		descContains, _ := cmd.Flags().GetString("desc-contains")
 		notesContains, _ := cmd.Flags().GetString("notes-contains")
 		externalContains, _ := cmd.Flags().GetString("external-contains")
+		commentsContains, _ := cmd.Flags().GetString("comments-contains")
+		noComments, _ := cmd.Flags().GetBool("no-comments")
 
 		// Empty/null check flags
 		emptyDesc, _ := cmd.Flags().GetBool("empty-description")
@@ -155,6 +160,13 @@ Examples:
 		if externalContains != "" {
 			filter.ExternalRefContains = externalContains
 		}
+		if commentsContains != "" {
+			filter.CommentsContains = commentsContains
+		}
+		// Comment bodies hold most of the durable content in a long-lived store,
+		// so free-text search reads them by default; --no-comments restores the
+		// cheaper title/description-only scan (robots-4m0m).
+		filter.SearchComments = !noComments
 
 		// Empty/null checks
 		if emptyDesc {
@@ -451,6 +463,8 @@ func init() {
 	searchCmd.Flags().String("desc-contains", "", "Filter by description substring (case-insensitive)")
 	searchCmd.Flags().String("notes-contains", "", "Filter by notes substring (case-insensitive)")
 	searchCmd.Flags().String("external-contains", "", "Filter by external ref substring (case-insensitive)")
+	searchCmd.Flags().String("comments-contains", "", "Filter by comment-body substring (case-insensitive)")
+	searchCmd.Flags().Bool("no-comments", false, "Do not match the query against comment bodies (faster)")
 
 	// Empty/null check flags
 	searchCmd.Flags().Bool("empty-description", false, "Filter issues with empty or missing description")
