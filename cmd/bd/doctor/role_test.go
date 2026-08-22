@@ -5,9 +5,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 func TestCheckBeadsRole_NotConfigured(t *testing.T) {
+	// CheckBeadsRole shells out to `git config --get beads.role`, which walks
+	// up to the developer's global config unless we cut it off. On a machine
+	// that has beads.role set globally this case reports "ok" instead of the
+	// warning it is here to assert.
+	testutil.IsolateGitConfig(t)
+
 	// Create a temp directory with git init but no beads.role config
 	tmpDir := newGitRepo(t)
 
@@ -26,6 +34,7 @@ func TestCheckBeadsRole_NotConfigured(t *testing.T) {
 }
 
 func TestCheckBeadsRole_Maintainer(t *testing.T) {
+	testutil.IsolateGitConfig(t)
 	tmpDir := newGitRepo(t)
 
 	// Set beads.role to maintainer
@@ -46,6 +55,7 @@ func TestCheckBeadsRole_Maintainer(t *testing.T) {
 }
 
 func TestCheckBeadsRole_Contributor(t *testing.T) {
+	testutil.IsolateGitConfig(t)
 	tmpDir := newGitRepo(t)
 
 	// Set beads.role to contributor
@@ -66,6 +76,7 @@ func TestCheckBeadsRole_Contributor(t *testing.T) {
 }
 
 func TestCheckBeadsRole_InvalidValue(t *testing.T) {
+	testutil.IsolateGitConfig(t)
 	tmpDir := newGitRepo(t)
 
 	// Set beads.role to an invalid value
@@ -86,6 +97,11 @@ func TestCheckBeadsRole_InvalidValue(t *testing.T) {
 }
 
 func TestCheckBeadsRole_NotGitRepo(t *testing.T) {
+	// Same leak as _NotConfigured: without isolation the global config answers
+	// `git config --get beads.role` before we ever reach the is-this-a-repo
+	// branch, so the check reports "Configured as <role>" for a plain dir.
+	testutil.IsolateGitConfig(t)
+
 	tmpDir, err := os.MkdirTemp("", "beads-role-test")
 	if err != nil {
 		t.Fatal(err)
@@ -106,6 +122,8 @@ func TestCheckBeadsRole_NotGitRepo(t *testing.T) {
 }
 
 func TestCheckBeadsRole_NonexistentPath(t *testing.T) {
+	testutil.IsolateGitConfig(t)
+
 	// Test with a path that doesn't exist — git will report "not a git repository"
 	check := CheckBeadsRole(filepath.Join(os.TempDir(), "nonexistent-beads-test-dir"))
 

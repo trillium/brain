@@ -118,7 +118,11 @@ func TestResolveSource(t *testing.T) {
 		{"task-xyz", "tasks", "task"},
 		{"inbox-asdf", "inbox", "inbox"},
 		{"decision-fye", "decisions", "decision"},
-		{"agent-001", "agents", "agent"},
+		// ResolveSource answers with the *canonical* store name. "agents" was
+		// renamed to "robots" in brain v0.4.0; the DB and ID prefix stayed
+		// "agent" so existing agent-XXXXX beads keep resolving. The old name
+		// survives only as a dest alias (see TestLoad_Aliases).
+		{"agent-001", "robots", "agent"},
 		{"project-007", "projects", "project"},
 		{"idea-aaa", "ideas", "idea"},
 		{"life-bbb", "life", "life"},
