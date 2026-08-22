@@ -153,6 +153,8 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		FatalError("%v", err)
 	}
 
+	discardComposeDraft()
+
 	switch {
 	case in.jsonOutput:
 		if err := outputJSON(result.Issue); err != nil {

@@ -27,10 +27,22 @@ import (
 )
 
 var createCmd = &cobra.Command{
-	Use:           "create [title]",
-	GroupID:       "issues",
-	Aliases:       []string{"new"},
-	Short:         "Create a new issue (or batch from markdown/graph JSON)",
+	Use:     "create [title]",
+	GroupID: "issues",
+	Aliases: []string{"new"},
+	Short:   "Create a new issue (or batch from markdown/graph JSON)",
+	Long: `Create a new issue (or batch from markdown/graph JSON).
+
+Compose in your editor when the body is more than a one-liner: the first line
+of the buffer is the title, everything after the first blank line is the body.
+
+Examples:
+  bd create "Short title"                      # title only
+  bd create "Short title" -d "Body text"       # title + body inline
+  bd create --edit                             # compose title + body in $EDITOR
+  bd create "Short title" --edit               # prefill the title, write the body
+  bd create                                    # same as --edit when run at a terminal
+  bd edit bd-42 --append                       # append more body later, in $EDITOR`,
 	Args:          cobra.MinimumNArgs(0),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -43,6 +55,13 @@ var createCmd = &cobra.Command{
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		composedArgs, composeErr := maybeComposeCreate(cmd, args)
+		if composeErr != nil {
+			return composeErr
+		}
+		args = composedArgs
+		defer reportComposeDraft()
 
 		if usesProxiedServer() {
 			in, err := gatherCreateInput(cmd, args)
@@ -102,7 +121,11 @@ var createCmd = &cobra.Command{
 		} else if titleFlag != "" {
 			title = titleFlag
 		} else {
-			return HandleError("title required (or use --file to create from markdown)")
+			return HandleError("title required (or use --edit to compose one, or --file to create from markdown)")
+		}
+
+		if err := titleLengthError(title); err != nil {
+			return err
 		}
 
 		// Get silent flag
@@ -702,6 +725,7 @@ var createCmd = &cobra.Command{
 		}
 
 		commandDidWrite.Store(true)
+		discardComposeDraft()
 
 		if jsonOutput {
 			if err := outputJSON(issue); err != nil {
@@ -871,6 +895,7 @@ func init() {
 	createCmd.Flags().StringP("file", "f", "", "Create multiple issues from markdown file")
 	createCmd.Flags().String("graph", "", "Create a graph of issues with dependencies from JSON plan file")
 	createCmd.Flags().String("title", "", "Issue title (alternative to positional argument)")
+	createCmd.Flags().BoolP("edit", "E", false, "Compose the title and body in $EDITOR (implied when no title is given at a terminal)")
 	createCmd.Flags().Bool("silent", false, "Output only the issue ID (for scripting)")
 	createCmd.Flags().Bool("dry-run", false, "Preview what would be created without actually creating")
 	registerPriorityFlag(createCmd, "2")
