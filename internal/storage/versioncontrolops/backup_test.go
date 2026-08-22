@@ -45,3 +45,69 @@ func TestExtractAddressConflictName(t *testing.T) {
 		})
 	}
 }
+
+func TestIsMemoryOrMembeadKey(t *testing.T) {
+	tests := []struct {
+		name string
+		key  string
+		want bool
+	}{
+		{
+			name: "memory key accepted",
+			key:  "kv.memory.auth-jwt",
+			want: true,
+		},
+		{
+			name: "memory key with simple slug",
+			key:  "kv.memory.race-flag",
+			want: true,
+		},
+		{
+			name: "membead key accepted",
+			key:  "kv.membead.auth-jwt",
+			want: true,
+		},
+		{
+			name: "membead key with issue ID",
+			key:  "kv.membead.some-key",
+			want: true,
+		},
+		{
+			name: "generic kv key rejected",
+			key:  "kv.mykey",
+			want: false,
+		},
+		{
+			name: "issue_prefix rejected",
+			key:  "issue_prefix",
+			want: false,
+		},
+		{
+			name: "sync key rejected",
+			key:  "sync.something",
+			want: false,
+		},
+		{
+			name: "empty string rejected",
+			key:  "",
+			want: false,
+		},
+		{
+			name: "partial memory prefix not accepted",
+			key:  "kv.mem",
+			want: false,
+		},
+		{
+			name: "partial membead prefix not accepted",
+			key:  "kv.memb",
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isMemoryOrMembeadKey(tt.key); got != tt.want {
+				t.Errorf("isMemoryOrMembeadKey(%q) = %v, want %v", tt.key, got, tt.want)
+			}
+		})
+	}
+}

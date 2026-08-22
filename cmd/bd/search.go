@@ -351,7 +351,14 @@ func printMemoryMatchHint(ctx context.Context, query string) {
 	}
 	needle := strings.ToLower(query)
 	var keys []string
+	// kv.membead.* rows pair a memory key with the issue `remember` minted for
+	// it. Collected alongside so the hint can name an ID the reader can act on.
+	beads := make(map[string]string)
 	for k, v := range allConfig {
+		if strings.HasPrefix(k, kvkeys.MemoryBeadConfigKeyPrefix) {
+			beads[strings.TrimPrefix(k, kvkeys.MemoryBeadConfigKeyPrefix)] = v
+			continue
+		}
 		if !strings.HasPrefix(k, kvkeys.MemoryConfigKeyPrefix) {
 			continue
 		}
@@ -367,6 +374,10 @@ func printMemoryMatchHint(ctx context.Context, query string) {
 	tool := memoryToolName()
 	fmt.Printf("\nBut %d stored memory/memories match (memories are not issues and are not searched by '%s search'):\n", len(keys), tool)
 	for _, k := range keys {
+		if beadID := beads[k]; beadID != "" {
+			fmt.Printf("  %s  (issue %s)\n", k, beadID)
+			continue
+		}
 		fmt.Printf("  %s\n", k)
 	}
 	fmt.Printf("Read them with '%s memories %s'.\n", tool, query)
