@@ -377,6 +377,11 @@ func TestIsPathInSafeBoundary(t *testing.T) {
 		{"user home directory", filepath.Join(homeDir, "projects/.beads"), true},
 		{"temp directory", os.TempDir(), true},
 
+		// /tmp is a temp root even when $TMPDIR points elsewhere: the Go
+		// toolchain lands t.TempDir() there when GOTMPDIR does, and rejecting
+		// it made GetRepoContext fail with "unsafe location" (robots-vx92).
+		{"platform temp root", "/tmp/beads-boundary-check/.beads", true},
+
 		// Another user's home directory - should be rejected regardless of $HOME
 		{"other user home /home", "/home/some-other-nonexistent-user/.beads", false},
 		{"other user home /Users", "/Users/some-other-nonexistent-user/.beads", false},
@@ -392,6 +397,18 @@ func TestIsPathInSafeBoundary(t *testing.T) {
 			result := isPathInSafeBoundary(tt.path)
 			if result != tt.expected {
 				t.Errorf("isPathInSafeBoundary(%q) = %v, want %v", tt.path, result, tt.expected)
+			}
+		})
+	}
+
+	if runtime.GOOS == "darwin" {
+		// FindBeadsDir hands the boundary check the *resolved* spelling of a temp
+		// path (/tmp is a symlink to /private/tmp), so the /private blocklist entry
+		// must not swallow it (robots-vx92).
+		t.Run("macOS resolved temp root", func(t *testing.T) {
+			const resolvedTemp = "/private/tmp/beads-boundary-check/.beads"
+			if !isPathInSafeBoundary(resolvedTemp) {
+				t.Errorf("isPathInSafeBoundary(%q) = false, want true", resolvedTemp)
 			}
 		})
 	}

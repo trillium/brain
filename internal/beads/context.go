@@ -309,17 +309,29 @@ func isPathInSafeBoundary(path string) bool {
 		return false
 	}
 
-	// Allow OS-designated temp directories (e.g., /var/folders on macOS)
-	// On macOS, TempDir() returns paths under /var/folders which symlinks to /private/var/folders
-	tempDir := os.TempDir()
-	resolvedTemp, _ := filepath.EvalSymlinks(tempDir)
-	resolvedPath, _ := filepath.EvalSymlinks(absPath)
-	if resolvedTemp != "" && strings.HasPrefix(resolvedPath, resolvedTemp) {
-		return true
-	}
-	// Also check unresolved paths (in case symlink resolution fails)
-	if strings.HasPrefix(absPath, tempDir) {
-		return true
+	// Allow OS-designated temp directories (e.g., /var/folders on macOS).
+	// Two roots are admitted: $TMPDIR (os.TempDir) and the platform default
+	// /tmp. /tmp is already os.TempDir() on Linux when $TMPDIR is unset, and on
+	// macOS the Go toolchain lands t.TempDir() under /tmp whenever GOTMPDIR
+	// points there — so a temp path stays a temp path no matter which root
+	// produced it, and callers do not silently lose their repo context because
+	// the two roots disagree (robots-vx92).
+	//
+	// Compare via resolvedPathWithinRoot rather than a raw string prefix: the
+	// path under test arrives canonicalized (FindBeadsDir resolves symlinks),
+	// while both /tmp and /var/folders live under the symlinked /private on
+	// macOS — which the blocklist below rejects wholesale, so the unresolved
+	// and resolved spellings of the same temp dir must be matched to each
+	// other. Resolving also keeps the carve-out symlink-safe: a link planted in
+	// the world-writable /tmp whose target escapes to a system directory
+	// resolves outside the root, falls through, and is rejected (SEC-003).
+	for _, tempRoot := range []string{os.TempDir(), "/tmp"} {
+		if tempRoot == "" {
+			continue
+		}
+		if resolvedPathWithinRoot(absPath, tempRoot) {
+			return true
+		}
 	}
 
 	// Allow /var/home as a valid user home directory (Fedora Silverblue, Bluefin, etc.)
