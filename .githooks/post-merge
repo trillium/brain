@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Post-merge hook: after a merge or pull brings new commits into this clone,
+# say whether the live beads binary still matches origin/main.
+#
+# WHY (robots-k2r4): PRs merge on GitHub, where nothing local runs. The first
+# moment this box learns that main moved is when someone pulls — so that is the
+# moment to point out that ~/.local/bin/beads is now behind. Without it the
+# drift is silent, and agents keep running a build off an unmerged branch.
+#
+# This only *reports*. It does not build: a CGO beads build takes minutes, and
+# a `git pull` that silently blocks for minutes is its own defect. Run the
+# printed command when you want the deploy.
+#
+# Installed via: git config core.hooksPath .githooks
+# Bypass: git merge --no-verify, or BRAIN_SKIP_DEPLOY_CHECK=1
+
+set -uo pipefail
+
+[ -n "${BRAIN_SKIP_DEPLOY_CHECK:-}" ] && exit 0
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+[ -x "$repo_root/scripts/deploy-local.sh" ] || exit 0
+
+# Only meaningful where this repo's binary is actually the installed one.
+[ -x "${BEADS_BIN:-$HOME/.local/bin/beads}" ] || exit 0
+
+# deploy-local.sh --check: 0 = current, 1 = drift, 2 = could not determine
+# (offline, bad ref). Reporting "your binary is stale" for a status-2 failure
+# would be a claim the script never made.
+out="$("$repo_root/scripts/deploy-local.sh" --check 2>&1)"
+status=$?
+
+case "$status" in
+    0) ;;
+    1)
+        echo ""
+        echo "$out"
+        echo ""
+        echo "  The beads binary agents run is not what is on origin/main."
+        echo "  Deploy it with:  make -C \"$repo_root\" deploy"
+        echo ""
+        ;;
+    *)
+        echo ""
+        echo "$out"
+        echo ""
+        echo "  Could not determine whether the beads binary matches origin/main."
+        echo "  Re-check when resolved:  make -C \"$repo_root\" deploy-check"
+        echo ""
+        ;;
+esac
+
+# Never fail the merge over this — it is a notice, not a gate.
+exit 0
