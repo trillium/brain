@@ -124,7 +124,19 @@ func checkMigrationContentSkew(ctx context.Context, db *sql.DB, remote string) D
 		}
 		return cannot("read local schema_migrations", err)
 	}
-	if len(local) == 0 {
+	// Skip when nothing is verifiable: pre-content_hash databases record
+	// rows with NULL hashes, which ReadMigrationContentHashes preserves as
+	// "" entries for the smart gate's completeness check. The doctor
+	// comparison itself can only use definite hashes, so an all-empty map
+	// still means "nothing to compare".
+	hasVerified := false
+	for _, h := range local {
+		if h != "" {
+			hasVerified = true
+			break
+		}
+	}
+	if !hasVerified {
 		return ok("No local migration content hashes recorded yet")
 	}
 

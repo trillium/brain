@@ -104,6 +104,17 @@ func routeSmartGate(ctx context.Context, db DBConn, current int, remoteName stri
 	if remoteName == "" {
 		remoteName = smartGateDefaultRemote
 	}
+	// R4: the caller passes a remote NAME that defaults to "origin" — the
+	// CLI path never resolves it from the configured sync remote. Comparing
+	// a stale or foreign "origin" ref while the real sync remote lives
+	// under another name can license migration against the wrong history.
+	// Resolve the effective remote against the actually-configured names:
+	// an unknown name falls back to the sole configured remote (rename
+	// drift), and anything still ambiguous falls back to the blunt gate.
+	remoteName, ok := resolveGateRemoteName(ctx, db, remoteName)
+	if !ok {
+		return smartUndetermined, nil
+	}
 	branch := smartGateActiveBranch(ctx, db)
 	ref := "remotes/" + remoteName + "/" + branch
 	remote, err := ReadMigrationContentHashes(ctx, db, ref)
@@ -118,6 +129,15 @@ func routeSmartGate(ctx context.Context, db DBConn, current int, remoteName stri
 
 	if skew := ContentHashSkew(local, remote); len(skew) > 0 {
 		return smartForkSkew, skew
+	}
+
+	// R3: a clean intersection is not enough. Versions with missing or NULL
+	// hashes on either side are unverifiable — a divergent earlier migration
+	// the hashes cannot see must not reach smartAutoMigrate. Fall back to
+	// the blunt gate unless every locally-recorded version is verifiably
+	// identical on both sides.
+	if !hashesCompleteForHistory(local, remote, current) {
+		return smartUndetermined, nil
 	}
 
 	remoteMax := maxVersion(remote)
@@ -146,6 +166,64 @@ func smartGateActiveBranch(ctx context.Context, db DBConn) string {
 		return active
 	}
 	return "main"
+}
+
+// hashesCompleteForHistory reports whether every locally-recorded migration
+// version up to current carries a non-empty, mutually-present hash on both
+// sides. Anything less is unverified history (pre-content_hash databases,
+// never-pushed refs) and must not auto-migrate.
+func hashesCompleteForHistory(local, remote map[int]string, current int) bool {
+	for version, localHash := range local {
+		if version > current {
+			continue
+		}
+		if localHash == "" {
+			return false
+		}
+		if remote[version] == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveGateRemoteName validates the requested remote name against the
+// remotes actually configured in dolt_remotes. It returns the name to use
+// and whether routing may proceed: an unknown name resolves to the sole
+// configured remote (the common rename-drift shape), while zero or several
+// configured remotes with an unknown requested name are ambiguous — the
+// caller must fall back to the blunt gate. Query errors also fail closed.
+func resolveGateRemoteName(ctx context.Context, db DBConn, remoteName string) (string, bool) {
+	names, err := listDoltRemoteNames(ctx, db)
+	if err != nil {
+		return "", false
+	}
+	for _, name := range names {
+		if name == remoteName {
+			return remoteName, true
+		}
+	}
+	if len(names) == 1 {
+		return names[0], true
+	}
+	return "", false
+}
+
+func listDoltRemoteNames(ctx context.Context, db DBConn) ([]string, error) {
+	rows, err := db.QueryContext(ctx, "SELECT name FROM dolt_remotes ORDER BY name")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
 }
 
 func maxVersion(hashes map[int]string) int {

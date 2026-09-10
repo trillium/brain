@@ -30,8 +30,12 @@ func validateMigrationRef(ref string) error {
 }
 
 // ReadMigrationContentHashes reads version -> content_hash from schema_migrations,
+// including versions whose hash is NULL or empty (mapped to ""). Callers that
+// only care about definite mismatches (ContentHashSkew) skip empty entries;
+// callers that need verifiability (the smart gate's completeness check) treat
+// an empty entry as unverified history rather than absent history.
 // either at HEAD (ref == "") or AS OF ref (e.g. "remotes/origin/main"). NULL/empty
-// hashes are dropped. It returns an error when the table, column, or ref is
+// hashes are preserved as "" entries. It returns an error when the table, column, or ref is
 // unavailable; the caller classifies it with RemoteRefUnavailableErr /
 // MissingMigrationObjectErr.
 //
@@ -65,6 +69,7 @@ func ReadMigrationContentHashes(ctx context.Context, db DBConn, ref string) (map
 		if err := rows.Scan(&version, &hash); err != nil {
 			return nil, err
 		}
+		out[version] = ""
 		if hash.Valid && hash.String != "" {
 			out[version] = hash.String
 		}

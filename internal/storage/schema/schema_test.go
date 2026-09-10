@@ -2,15 +2,20 @@ package schema
 
 import (
 	"context"
+	"database/sql"
 	"encoding/csv"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	mysql "github.com/go-sql-driver/mysql"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/steveyegge/beads/internal/storage/depid"
@@ -353,13 +358,16 @@ func TestEnsureWispDependenciesSplitTargetsAddsMissingAndBackfills(t *testing.T)
 	}
 }
 
-func TestFailed0053DirtyTablesAreRecoverable(t *testing.T) {
+func TestFailed0053DirtyTablesRejectsPristinePreUpgrade(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("sqlmock.New: %v", err)
 	}
 	defer db.Close()
 
+	// R2: all split columns missing at v52 is the normal pre-upgrade state,
+	// not evidence of an interrupted 0053 pass — the guard must stand even
+	// when the dirty tables are all in the allowed set.
 	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
 		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(52))
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
@@ -367,6 +375,64 @@ func TestFailed0053DirtyTablesAreRecoverable(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
 		WithArgs("wisp_dependencies", "depends_on_issue_id").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
+		WithArgs("wisp_dependencies").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	for _, col := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+			WithArgs("wisp_dependencies", col).
+			WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	}
+
+	recoverable, err := failed0053DirtyTablesAreRecoverable(context.Background(), db, map[string]dirtyTableState{
+		"comments":     {},
+		"dependencies": {},
+		"events":       {},
+		"issues":       {},
+	})
+	if err != nil {
+		t.Fatalf("failed0053DirtyTablesAreRecoverable: %v", err)
+	}
+	if recoverable {
+		t.Fatal("recoverable = true, want false")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestFailed0053DirtyTablesAreRecoverableWhenRepairPartial(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	// One split column present, two missing: the repair started but did not
+	// finish — evidence of an interrupted 0053 pass, so recovery is licensed.
+	mock.ExpectQuery(`SELECT COALESCE\(MAX\(version\), 0\) FROM schema_migrations`).
+		WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(52))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
+		WithArgs("wisp_dependencies").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+		WithArgs("wisp_dependencies", "depends_on_issue_id").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+		WithArgs("wisp_dependencies", "depends_on_wisp_id").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
+		WithArgs("wisp_dependencies").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+		WithArgs("wisp_dependencies", "depends_on_issue_id").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+		WithArgs("wisp_dependencies", "depends_on_wisp_id").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+		WithArgs("wisp_dependencies", "depends_on_external").
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
 
 	recoverable, err := failed0053DirtyTablesAreRecoverable(context.Background(), db, map[string]dirtyTableState{
@@ -401,10 +467,20 @@ func TestFailed0053DirtyTablesAreRecoverableWithDirtySnapshotAuxTables(t *testin
 	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
 		WithArgs("wisp_dependencies", "depends_on_issue_id").
 		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.TABLES.*TABLE_NAME = \?`).
+		WithArgs("wisp_dependencies").
+		WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(1))
+	for _, col := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		mock.ExpectQuery(`(?s)SELECT COUNT\(\*\) FROM INFORMATION_SCHEMA\.COLUMNS.*TABLE_NAME = \? AND COLUMN_NAME = \?`).
+			WithArgs("wisp_dependencies", col).
+			WillReturnRows(sqlmock.NewRows([]string{"c"}).AddRow(0))
+	}
 
 	// 0051's DROP DEFAULT on the legacy UUID() default leaves these aux
 	// snapshot tables dirty too when a v49->v53 batch trips over 0053
-	// (#4555); the gate must still recover.
+	// (#4555). R2: with all split columns missing there is still no
+	// evidence of an interrupted pass, so the gate must NOT recover even
+	// with aux debris present.
 	recoverable, err := failed0053DirtyTablesAreRecoverable(context.Background(), db, map[string]dirtyTableState{
 		"comments":             {},
 		"dependencies":         {},
@@ -416,8 +492,8 @@ func TestFailed0053DirtyTablesAreRecoverableWithDirtySnapshotAuxTables(t *testin
 	if err != nil {
 		t.Fatalf("failed0053DirtyTablesAreRecoverable: %v", err)
 	}
-	if !recoverable {
-		t.Fatal("recoverable = false, want true")
+	if recoverable {
+		t.Fatal("recoverable = true, want false")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
@@ -522,27 +598,268 @@ func TestPreMigrationRepairScopedToMain0053(t *testing.T) {
 	}
 }
 
-func TestIgnoredMigration0011CleansOrphanedChildCountersShape(t *testing.T) {
-	sql, err := os.ReadFile("migrations/ignored/0011_cleanup_orphaned_child_counters.up.sql")
+func TestIgnoredMigration0011CleansOrphanedChildCounters(t *testing.T) {
+	// R6: execute the real migration against a throwaway server (the
+	// production path) instead of asserting source substrings. Seed covers
+	// every branch: a live-wisp counter that must upgrade the preserved max,
+	// an issue-orphan that must be deleted, and a live-issue row that must
+	// survive. Substring checks prove nothing — matching text can be dead;
+	// only resulting database state proves the migration.
+	ctx := context.Background()
+	db := startThrowawayServer(t, ctx)
+
+	seed := `
+CREATE TABLE wisps (id VARCHAR(255) PRIMARY KEY);
+CREATE TABLE issues (id VARCHAR(255) PRIMARY KEY);
+CREATE TABLE child_counters (parent_id VARCHAR(255) PRIMARY KEY, last_child INT NOT NULL DEFAULT 0);
+CREATE TABLE wisp_child_counters (parent_id VARCHAR(255) PRIMARY KEY, last_child INT NOT NULL DEFAULT 0);
+INSERT INTO wisps VALUES ('w-live');
+INSERT INTO issues VALUES ('i-live');
+INSERT INTO wisp_child_counters VALUES ('w-live', 7);
+INSERT INTO child_counters VALUES ('w-live', 9), ('gone-parent', 4), ('i-live', 2);
+`
+	if _, err := db.ExecContext(ctx, seed); err != nil {
+		t.Fatalf("seed counters: %v", err)
+	}
+
+	// Execute the real migration file as one multi-statement Exec, exactly
+	// like migrationSource.migrate does in production.
+	migrationSQL, err := os.ReadFile("migrations/ignored/0011_cleanup_orphaned_child_counters.up.sql")
 	if err != nil {
 		t.Fatalf("read ignored 0011 up migration: %v", err)
 	}
+	if _, err := db.ExecContext(ctx, string(migrationSQL)); err != nil {
+		t.Fatalf("run ignored 0011 migration: %v", err)
+	}
 
-	// #4534: counter rows orphaned while fk_counter_parent was dropped brick
-	// all inserts once the FK returns; the cleanup must preserve live-wisp
-	// counters and delete only rows dangling from issues.
-	body := string(sql)
-	for _, want := range []string{
-		"@has_child_counters",
-		"INSERT IGNORE INTO wisp_child_counters",
-		"GREATEST(wcc.last_child, cc.last_child)",
-		"DELETE cc FROM child_counters cc INNER JOIN wisps w ON w.id = cc.parent_id",
-		"DELETE cc FROM child_counters cc LEFT JOIN issues i ON i.id = cc.parent_id WHERE i.id IS NULL",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("ignored 0011 migration missing cleanup marker %q", want)
+	queryOne := func(query string) string {
+		t.Helper()
+		var got string
+		if err := db.QueryRowContext(ctx, query).Scan(&got); err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		return got
+	}
+
+	// Live-wisp counter moved and maxed: max(7 preserved, 9 orphaned) = 9.
+	if got := queryOne(`SELECT last_child FROM wisp_child_counters WHERE parent_id = 'w-live'`); got != "9" {
+		t.Fatalf("wisp_child_counters w-live = %s, want 9", got)
+	}
+	// Moved live-wisp row leaves child_counters; issue-orphan is deleted.
+	if got := queryOne(`SELECT COUNT(*) FROM child_counters`); got != "1" {
+		t.Fatalf("child_counters has %s rows, want 1", got)
+	}
+	if got := queryOne(`SELECT parent_id FROM child_counters`); got != "i-live" {
+		t.Fatalf("remaining child_counters row = %s, want i-live", got)
+	}
+}
+
+func TestIgnoredMigration0003CompletesPartialSplit(t *testing.T) {
+	testutil.RequireDoltBinary(t)
+
+	// Reproduce the R1 partial state: the 0053 pre-repair has already added
+	// the split-target columns (so @needs_migrate is false) while the legacy
+	// key/indexes/constraints are still in place (so @needs_legacy_cleanup
+	// is true). The file's own backfills do the data split.
+	//
+	// This test runs against a throwaway `dolt sql-server` over the MySQL
+	// protocol — the production migration path — because the `dolt sql` CLI
+	// silently drops prepared-statement DML and some prepared DDL in script
+	// mode, so the CLI harness cannot execute this file faithfully.
+	ctx := context.Background()
+	db := startThrowawayServer(t, ctx)
+
+	seed := `
+CREATE TABLE wisps (id VARCHAR(255) PRIMARY KEY);
+CREATE TABLE issues (id VARCHAR(255) PRIMARY KEY);
+INSERT INTO wisps VALUES ('w-1'), ('i-1');
+INSERT INTO issues VALUES ('i-1');
+CREATE TABLE wisp_dependencies (
+    issue_id VARCHAR(255) NOT NULL,
+    depends_on_id VARCHAR(255) NOT NULL,
+    type VARCHAR(32) NOT NULL DEFAULT 'blocks',
+    PRIMARY KEY (issue_id, depends_on_id),
+    INDEX idx_wisp_dep_depends (depends_on_id),
+    INDEX idx_wisp_dep_type_depends (type, depends_on_id)
+);
+INSERT INTO wisp_dependencies (issue_id, depends_on_id) VALUES ('i-1','w-1'),('i-1','external:foo');
+ALTER TABLE wisp_dependencies ADD COLUMN depends_on_issue_id VARCHAR(255) NULL;
+ALTER TABLE wisp_dependencies ADD COLUMN depends_on_wisp_id VARCHAR(255) NULL;
+ALTER TABLE wisp_dependencies ADD COLUMN depends_on_external VARCHAR(255) NULL;
+`
+	if _, err := db.ExecContext(ctx, seed); err != nil {
+		t.Fatalf("seed partial split state: %v", err)
+	}
+
+	// Execute the real migration file as one multi-statement Exec, exactly
+	// like migrationSource.migrate does in production.
+	migrationSQL, err := os.ReadFile("migrations/ignored/0003_split_wisp_dependencies_target.up.sql")
+	if err != nil {
+		t.Fatalf("read ignored 0003 up migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, string(migrationSQL)); err != nil {
+		t.Fatalf("run ignored 0003 migration: %v", err)
+	}
+
+	queryCount := func(query string) string {
+		t.Helper()
+		var c string
+		if err := db.QueryRowContext(ctx, query).Scan(&c); err != nil {
+			t.Fatalf("query %q: %v", query, err)
+		}
+		return c
+	}
+	statsWhere := "FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wisp_dependencies'"
+
+	// Legacy artifacts must be gone.
+	if got := queryCount(`SELECT COUNT(*) ` + statsWhere + ` AND INDEX_NAME IN ('idx_wisp_dep_depends','idx_wisp_dep_type_depends')`); got != "0" {
+		t.Fatalf("legacy indexes remaining: %s", got)
+	}
+	// Dolt does not populate INFORMATION_SCHEMA EXTRA/GENERATION_EXPRESSION
+	// for generated columns, so detect the rebuilt generated key through
+	// SHOW CREATE TABLE instead.
+	var createTable string
+	if err := db.QueryRowContext(ctx, `SHOW CREATE TABLE wisp_dependencies`).Scan(new(string), &createTable); err != nil {
+		t.Fatalf("show create table: %v", err)
+	}
+	lowered := strings.ToLower(createTable)
+	if !strings.Contains(createTable, "GENERATED") || !strings.Contains(lowered, "coalesce(`depends_on_issue_id`") {
+		t.Fatalf("depends_on_id not rebuilt as generated column:\n%s", createTable)
+	}
+
+	// New objects must exist: rebuilt PK, target indexes, FKs, CHECK.
+	if got := queryCount(`SELECT COUNT(*) ` + statsWhere + ` AND INDEX_NAME = 'PRIMARY' AND COLUMN_NAME = 'depends_on_id'`); got != "1" {
+		t.Fatalf("rebuilt PK missing: %s", got)
+	}
+	for _, idx := range []string{"idx_wisp_dep_wisp_target", "idx_wisp_dep_issue_target", "idx_wisp_dep_external_target", "idx_wisp_dep_type_target"} {
+		// Presence, not exact count: multi-column indexes contribute one
+		// STATISTICS row per covered column.
+		if got := queryCount(`SELECT COUNT(*) ` + statsWhere + ` AND INDEX_NAME = '` + idx + `'`); got == "0" {
+			t.Fatalf("index %s missing", idx)
 		}
 	}
+	for _, fk := range []string{"fk_wisp_dep_wisp_target", "fk_wisp_dep_issue_target", "fk_wisp_dep_issue"} {
+		if got := queryCount(`SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wisp_dependencies' AND CONSTRAINT_NAME = '` + fk + `'`); got != "1" {
+			t.Fatalf("constraint %s missing: %s", fk, got)
+		}
+	}
+
+	// Data split by the file's own backfills, generated key resolving.
+	rows, err := db.QueryContext(ctx, `SELECT issue_id, depends_on_wisp_id, depends_on_external, depends_on_id FROM wisp_dependencies ORDER BY depends_on_id`)
+	if err != nil {
+		t.Fatalf("read wisp_dependencies: %v", err)
+	}
+	defer rows.Close()
+	type depRow struct{ issue, wisp, ext, gen string }
+	var got []depRow
+	for rows.Next() {
+		var r depRow
+		var wisp, ext sql.NullString
+		if err := rows.Scan(&r.issue, &wisp, &ext, &r.gen); err != nil {
+			t.Fatalf("scan row: %v", err)
+		}
+		r.wisp, r.ext = wisp.String, ext.String
+		got = append(got, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows error: %v", err)
+	}
+	want := []depRow{
+		{issue: "i-1", ext: "external:foo", gen: "external:foo"},
+		{issue: "i-1", wisp: "w-1", gen: "w-1"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("wisp_dependencies has %d rows, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("row %d = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// startThrowawayServer launches a `dolt sql-server` on a TempDir data dir
+// with an empty test database and returns a *sql.DB connected to it over
+// the MySQL protocol with multi-statement support — the same shape as the
+// production migration path. The server is killed on test cleanup.
+func startThrowawayServer(t *testing.T, ctx context.Context) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+
+	initCmd := exec.Command("dolt", "init", "--name", "test", "--email", "test@example.com")
+	initCmd.Dir = dir
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("dolt init throwaway dir: %v\n%s", err, out)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pick free port: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	cmd := exec.Command("dolt", "sql-server", "--host", "127.0.0.1", "--port", strconv.Itoa(port), "--data-dir", dir)
+	serverLogPath := filepath.Join(t.TempDir(), "dolt-server.log")
+	serverLog, err := os.Create(serverLogPath)
+	if err != nil {
+		t.Fatalf("create server log: %v", err)
+	}
+	t.Cleanup(func() { _ = serverLog.Close() })
+	cmd.Stdout = serverLog
+	cmd.Stderr = serverLog
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start dolt sql-server: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	baseCfg := mysql.Config{
+		User:                 "root",
+		Net:                  "tcp",
+		Addr:                 "127.0.0.1:" + strconv.Itoa(port),
+		ParseTime:            true,
+		MultiStatements:      true,
+		Timeout:              10 * time.Second,
+		AllowNativePasswords: true,
+		TLSConfig:            "false",
+	}
+	// Ping without a database selected: r1t does not exist yet, and the
+	// driver requests it at connect time when DBName is set.
+	var probe *sql.DB
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		probe, err = sql.Open("mysql", baseCfg.FormatDSN())
+		if err != nil {
+			t.Fatalf("sql.Open: %v", err)
+		}
+		pingCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		err = probe.PingContext(pingCtx)
+		cancel()
+		if err == nil {
+			break
+		}
+		_ = probe.Close()
+		if time.Now().After(deadline) {
+			logTail, _ := os.ReadFile(serverLogPath)
+			if len(logTail) > 2000 {
+				logTail = logTail[len(logTail)-2000:]
+			}
+			t.Fatalf("throwaway server not ready: %v\nserver log tail:\n%s", err, logTail)
+		}
+	}
+	if _, err := probe.ExecContext(ctx, "CREATE DATABASE r1t"); err != nil {
+		_ = probe.Close()
+		t.Fatalf("create test database: %v", err)
+	}
+	_ = probe.Close()
+	dbCfg := baseCfg
+	dbCfg.DBName = "r1t"
+	db, err := sql.Open("mysql", dbCfg.FormatDSN())
+	if err != nil {
+		t.Fatalf("sql.Open test db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
 }
 
 func TestMigration0053NoopsWithoutWispTablesThroughDoltCLI(t *testing.T) {

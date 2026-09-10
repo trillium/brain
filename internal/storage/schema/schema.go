@@ -490,7 +490,43 @@ func failed0053DirtyTablesAreRecoverable(ctx context.Context, db DBConn, dirtyBe
 	if err != nil {
 		return false, err
 	}
-	return needsRepair, nil
+	if !needsRepair {
+		return false, nil
+	}
+	// R2: missing split columns at v52 are also the normal pre-upgrade
+	// state, so they alone cannot license bypassing the dirty-table guard
+	// (which would stage unrelated user edits in allowed tables together
+	// with migrations). Require evidence of a previously interrupted 0053
+	// pass: the repair adds the three columns in sequence, so a crash
+	// between them leaves a PARTIAL set. All-missing means untouched — the
+	// guard stands and the operator resolves explicitly.
+	return wispDependenciesRepairPartiallyApplied(ctx, db)
+}
+
+// wispDependenciesRepairPartiallyApplied reports whether the 0053 split-target
+// repair demonstrably started but did not finish: at least one of the three
+// columns present and at least one missing. Fail-closed on errors and on the
+// fully-present state (a completed-but-uncommitted repair re-runs cleanly;
+// standing the guard there only forces explicit operator action).
+func wispDependenciesRepairPartiallyApplied(ctx context.Context, db DBConn) (bool, error) {
+	table, err := schemaTableExists(ctx, db, "wisp_dependencies")
+	if err != nil {
+		return false, err
+	}
+	if !table {
+		return false, nil
+	}
+	present := 0
+	for _, column := range []string{"depends_on_issue_id", "depends_on_wisp_id", "depends_on_external"} {
+		ok, err := schemaColumnExists(ctx, db, "wisp_dependencies", column)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			present++
+		}
+	}
+	return present > 0 && present < 3, nil
 }
 
 func wispDependenciesNeed0053Repair(ctx context.Context, db DBConn) (bool, error) {

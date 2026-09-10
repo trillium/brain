@@ -30,14 +30,25 @@ func hashRows(hashes map[int]string) *sqlmock.Rows {
 	return rows
 }
 
-// expectSmartRemoteRead mocks the three reads the smart router issues: local
-// content hashes (HEAD), active_branch(), and remote content hashes (AS OF).
-func expectSmartRemoteReadForRemote(mock sqlmock.Sqlmock, remoteName string, local, remote map[int]string) {
+// expectSmartRemoteReadForRemote mocks the reads the smart router issues: local
+// content hashes (HEAD), the dolt_remotes name list for R4 name resolution,
+// active_branch(), and remote content hashes (AS OF). configured lists the
+// remotes present in dolt_remotes; it defaults to just the requested name.
+func expectSmartRemoteReadForRemote(mock sqlmock.Sqlmock, remoteName string, local, remote map[int]string, configured ...string) {
 	if remoteName == "" {
 		remoteName = smartGateDefaultRemote
 	}
+	if len(configured) == 0 {
+		configured = []string{remoteName}
+	}
 	mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
 		WillReturnRows(hashRows(local))
+	nameRows := sqlmock.NewRows([]string{"name"})
+	for _, name := range configured {
+		nameRows.AddRow(name)
+	}
+	mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+		WillReturnRows(nameRows)
 	mock.ExpectQuery(`SELECT active_branch\(\)`).
 		WillReturnRows(sqlmock.NewRows([]string{"active_branch()"}).AddRow("main"))
 	mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations AS OF 'remotes/` + remoteName + `/main'`).
@@ -207,6 +218,8 @@ func TestSmartGateRouting(t *testing.T) {
 		expectSmartFiringGate(mock, floor)
 		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
 			WillReturnRows(hashRows(map[int]string{floor: "h"}))
+		mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("origin"))
 		mock.ExpectQuery(`SELECT active_branch\(\)`).
 			WillReturnRows(sqlmock.NewRows([]string{"active_branch()"}).AddRow("main"))
 		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations AS OF 'remotes/origin/main'`).
@@ -298,6 +311,123 @@ func TestSmartGateRouting(t *testing.T) {
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("unmet expectations (smart reads must run by default): %v", err)
+		}
+	})
+
+	t.Run("incomplete: NULL local hash → blunt block", func(t *testing.T) {
+		t.Setenv(SmartGateEnv, "1")
+		t.Setenv(AllowRemoteMigrateEnv, "0")
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		expectSmartFiringGate(mock, floor)
+		// R3: version floor-1 is recorded locally but its hash predates
+		// content hashing (NULL). The intersection is clean, yet history
+		// is unverifiable — must fall back to the blunt block, not
+		// auto-migrate.
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
+			WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash"}).
+				AddRow(floor-1, nil).AddRow(floor, "h2"))
+		mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("origin"))
+		mock.ExpectQuery(`SELECT active_branch\(\)`).
+			WillReturnRows(sqlmock.NewRows([]string{"active_branch()"}).AddRow("main"))
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations AS OF 'remotes/origin/main'`).
+			WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash"}).
+				AddRow(floor-1, "h1").AddRow(floor, "h2"))
+
+		err := CheckRemoteMigrateGate(context.Background(), db)
+		var gateErr *RemoteMigrateGateError
+		if !errors.As(err, &gateErr) {
+			t.Fatalf("expected gate error, got %v", err)
+		}
+		if gateErr.Decision != "" {
+			t.Errorf("NULL local hash should fall back to the blunt block (Decision \"\"), got %q", gateErr.Decision)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("incomplete: NULL remote hash → blunt block", func(t *testing.T) {
+		t.Setenv(SmartGateEnv, "1")
+		t.Setenv(AllowRemoteMigrateEnv, "0")
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		expectSmartFiringGate(mock, floor)
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
+			WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash"}).
+				AddRow(floor-1, "h1").AddRow(floor, "h2"))
+		mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("origin"))
+		mock.ExpectQuery(`SELECT active_branch\(\)`).
+			WillReturnRows(sqlmock.NewRows([]string{"active_branch()"}).AddRow("main"))
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations AS OF 'remotes/origin/main'`).
+			WillReturnRows(sqlmock.NewRows([]string{"version", "content_hash"}).
+				AddRow(floor-1, nil).AddRow(floor, "h2"))
+
+		err := CheckRemoteMigrateGate(context.Background(), db)
+		var gateErr *RemoteMigrateGateError
+		if !errors.As(err, &gateErr) {
+			t.Fatalf("expected gate error, got %v", err)
+		}
+		if gateErr.Decision != "" {
+			t.Errorf("NULL remote hash should fall back to the blunt block (Decision \"\"), got %q", gateErr.Decision)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("unknown default name with sole configured remote resolves to it", func(t *testing.T) {
+		t.Setenv(SmartGateEnv, "1")
+		t.Setenv(AllowRemoteMigrateEnv, "0")
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		expectSmartFiringGate(mock, floor)
+		// R4: the caller defaulted to "origin" but only "hub" is
+		// configured — rename drift. The gate must compare hub, not fail
+		// closed (which would strand first-movers) nor read a ghost ref.
+		hashes := map[int]string{floor - 1: "h1", floor: "h2"}
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
+			WillReturnRows(hashRows(hashes))
+		mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("hub"))
+		mock.ExpectQuery(`SELECT active_branch\(\)`).
+			WillReturnRows(sqlmock.NewRows([]string{"active_branch()"}).AddRow("main"))
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations AS OF 'remotes/hub/main'`).
+			WillReturnRows(hashRows(hashes))
+
+		if err := CheckRemoteMigrateGate(context.Background(), db); err != nil {
+			t.Fatalf("sole-remote resolution should allow the safe first-mover, got %v", err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
+		}
+	})
+
+	t.Run("unknown name with several configured remotes → blunt block", func(t *testing.T) {
+		t.Setenv(SmartGateEnv, "1")
+		t.Setenv(AllowRemoteMigrateEnv, "0")
+		db, mock, _ := sqlmock.New()
+		defer db.Close()
+		expectSmartFiringGate(mock, floor)
+		// R4: "origin" is not configured and two remotes exist —
+		// ambiguous, so the gate must not guess.
+		mock.ExpectQuery(`SELECT version, content_hash FROM schema_migrations$`).
+			WillReturnRows(hashRows(map[int]string{floor: "h"}))
+		mock.ExpectQuery(`SELECT name FROM dolt_remotes`).
+			WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("hub").AddRow("mirror"))
+
+		err := CheckRemoteMigrateGate(context.Background(), db)
+		var gateErr *RemoteMigrateGateError
+		if !errors.As(err, &gateErr) {
+			t.Fatalf("expected gate error, got %v", err)
+		}
+		if gateErr.Decision != "" {
+			t.Errorf("ambiguous remote should fall back to the blunt block (Decision \"\"), got %q", gateErr.Decision)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unmet expectations: %v", err)
 		}
 	})
 
