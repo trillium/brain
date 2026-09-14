@@ -234,3 +234,37 @@ func TestFirstLineAndHeadLines(t *testing.T) {
 		t.Error("headLines of nil must be empty")
 	}
 }
+
+func TestDoctorExitCode(t *testing.T) {
+	oldStrict := storesDoctorStrict
+	defer func() { storesDoctorStrict = oldStrict }()
+
+	storesDoctorStrict = false
+	if got := doctorExitCode(0, 0); got != 0 {
+		t.Errorf("clean run exits %d, want 0", got)
+	}
+	if got := doctorExitCode(0, 2); got != 0 {
+		t.Errorf("warnings without --strict exit %d, want 0", got)
+	}
+	if got := doctorExitCode(1, 0); got != 1 {
+		t.Errorf("one failure exits %d, want 1", got)
+	}
+
+	storesDoctorStrict = true
+	if got := doctorExitCode(0, 1); got != 1 {
+		t.Errorf("warnings with --strict exit %d, want 1", got)
+	}
+}
+
+// TestDoctorRegistrySentinel guards the scheduler contract behind robots-j4g9:
+// every 'stores doctor' exit 1 carries a 'FAILING STORES:' line, and the
+// registry-unreadable sentinel must stay a single whitespace-free token so the
+// scheduler files one bead for it instead of splitting it into several.
+func TestDoctorRegistrySentinel(t *testing.T) {
+	if doctorRegistrySentinel == "" {
+		t.Fatal("registry sentinel must be non-empty")
+	}
+	if strings.Contains(doctorRegistrySentinel, " ") {
+		t.Errorf("sentinel %q must not contain spaces — the scheduler splits FAILING STORES on whitespace", doctorRegistrySentinel)
+	}
+}
