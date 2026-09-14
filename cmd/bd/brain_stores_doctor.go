@@ -31,6 +31,14 @@ var (
 	storesDoctorStrict  bool
 )
 
+// doctorRegistrySentinel names the failure when the registry itself cannot be
+// read. Scheduler contract (see PAI/scripts/stores-doctor.sh): every 'stores
+// doctor' exit 1 is accompanied by a 'FAILING STORES: ...' line, so a failure
+// the probe cannot attribute to a store still names what broke instead of
+// surfacing as an opaque unnamed-failure bead (robots-j4g9). The scheduler
+// splits that line on whitespace, so the sentinel must stay a single token.
+const doctorRegistrySentinel = "__registry__"
+
 // storeUnreadableRe matches the exact line bd emits when the store it was
 // pointed at is missing or half-provisioned. Exit status is the primary signal;
 // this is the belt-and-braces check for modes that report the error and still
@@ -75,7 +83,11 @@ half-provisioned store surfaces within a day rather than a week.
 
 Exit codes:
   0 — every store answered a read
-  1 — at least one store failed (or, with --strict, produced a warning)`,
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: <names>' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.`,
 	Args: cobra.NoArgs,
 	Run:  runBrainStoresDoctor,
 }
@@ -83,7 +95,9 @@ Exit codes:
 func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 	stores, err := loadStoresRegistry()
 	if err != nil {
-		FatalError("loading registry: %v", err)
+		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
+		fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
+		os.Exit(1)
 	}
 	if len(stores) == 0 {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
@@ -176,9 +190,19 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 		}
 	}
 
-	if failCount > 0 || (storesDoctorStrict && warnCount > 0) {
-		os.Exit(1)
+	if code := doctorExitCode(failCount, warnCount); code != 0 {
+		os.Exit(code)
 	}
+}
+
+// doctorExitCode maps probe tallies to the process exit code. Kept separate
+// from runBrainStoresDoctor so the exit-1-means-named-failures contract stays
+// unit-testable without forking a process.
+func doctorExitCode(failCount, warnCount int) int {
+	if failCount > 0 || (storesDoctorStrict && warnCount > 0) {
+		return 1
+	}
+	return 0
 }
 
 // probeStore runs one read against a single registered store and classifies the
