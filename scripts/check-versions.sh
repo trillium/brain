@@ -8,8 +8,9 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
-# Get the canonical version from version.go
-CANONICAL=$(grep 'Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
+# Get the canonical version from version.go. Anchored to the exact `Version`
+# declaration so the fork's `BrainVersion` line never matches (de-PAI v0.5.0).
+CANONICAL=$(grep -E '^[[:space:]]*Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
 
 if [ -z "$CANONICAL" ]; then
     echo -e "${RED}❌ Could not read version from cmd/bd/version.go${NC}"

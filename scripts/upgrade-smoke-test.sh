@@ -66,9 +66,11 @@ fi
 if [ -n "${1:-}" ]; then
     PREV_VERSION="$1"
 else
-    # Default: fetch the latest release tag before the current version
-    CURRENT_VERSION=$(grep 'Version = ' "$PROJECT_ROOT/cmd/bd/version.go" \
-        | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    # Default: fetch the latest release tag before the current version.
+    # Anchored to the exact `Version` declaration so the fork's
+    # `BrainVersion` line never matches (de-PAI v0.5.0).
+    CURRENT_VERSION=$(grep -E '^[[:space:]]*Version = ' "$PROJECT_ROOT/cmd/bd/version.go" \
+        | sed 's/.*"\(.*\)".*/\1/')
     # Try to get the previous release tag from git
     PREV_VERSION=$(git -C "$PROJECT_ROOT" tag --sort=-version:refname \
         | grep '^v' | head -2 | tail -1 2>/dev/null || echo "")
