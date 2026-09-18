@@ -9,7 +9,7 @@ shipped as fork version `v0.5.0`
 
 | Before | After (canonical) | Compat |
 |---|---|---|
-| `~/.config/pai/stores.yaml` | `~/.config/brain/stores.yaml` | legacy path kept as symlink; reads fall back to legacy when canonical is absent |
+| `~/.config/pai/stores.yaml` | `~/.config/brain/stores.yaml` | legacy path kept as symlink; loads union-merge both files (canonical wins) so diverged copies lose nothing |
 | `~/.config/pai/stores.env` | `~/.config/brain/stores.env` | legacy path kept as symlink; file exports both `BRAIN_*` and deprecated `PAI_*` aliases |
 | `PAI_STORE_<NAME>` | `BRAIN_STORE_<NAME>` | old names still exported with deprecation note |
 | `PAI_STORES_LIST` | `BRAIN_STORES_LIST` | old name still exported with deprecation note |
@@ -24,10 +24,13 @@ shipped as fork version `v0.5.0`
   missing, or legacy regular file migrated after its contents were read).
   Existing regular files are never deleted without their contents already
   living at the canonical path.
-- **Old reads keep working.** Registry loads try
-  `~/.config/brain/stores.yaml` first, then `~/.config/pai/stores.yaml`.
-  Transfer-verb loads do the same. ISA exfil prefers the canonical root but
-  falls back to the legacy directory when it exists and the new one does not.
+- **Old reads keep working.** Registry loads union-merge
+  `~/.config/brain/stores.yaml` and `~/.config/pai/stores.yaml`
+  (canonical wins on conflict), so even a diverged legacy copy loses no
+  entries — the next save persists the union and converges the legacy path
+  to a symlink. Transfer-verb loads merge the same way. ISA exfil prefers
+  the canonical root but falls back to the legacy directory when it exists
+  and the new one does not.
 - **Old env names keep working.** `brain stores env` (and every
   `brain stores create/rename`) emits both `BRAIN_STORE_*` /
   `BRAIN_STORES_LIST` and deprecated `PAI_STORE_*` / `PAI_STORES_LIST`.

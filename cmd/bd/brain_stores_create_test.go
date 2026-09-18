@@ -426,3 +426,36 @@ func TestSaveStoresRegistry_ConvergesLegacyRegularFile(t *testing.T) {
 		t.Errorf("merged state lost; got %+v", back)
 	}
 }
+
+func TestLoadStoresRegistry_MergesDivergedFiles(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	home, _ := os.UserHomeDir()
+	for dir, body := range map[string]string{
+		// Legacy holds a store the canonical file never saw.
+		filepath.Join(home, ".config", "pai"): "stores:\n  task:\n    path: /data/tasks/.beads\n  shared:\n    path: /legacy/shared/.beads\n",
+		// Canonical wins on the conflicting key.
+		filepath.Join(home, ".config", "brain"): "stores:\n  recipes:\n    path: /data/recipes/.beads\n  shared:\n    path: /canonical/shared/.beads\n",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if stores["task"].Path != "/data/tasks/.beads" {
+		t.Errorf("legacy-only entry lost; got %+v", stores)
+	}
+	if stores["recipes"].Path != "/data/recipes/.beads" {
+		t.Errorf("canonical-only entry lost; got %+v", stores)
+	}
+	if stores["shared"].Path != "/canonical/shared/.beads" {
+		t.Errorf("canonical should win on conflict; got %+v", stores)
+	}
+}

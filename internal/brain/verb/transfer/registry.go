@@ -232,40 +232,42 @@ func Load(homeDir string) (*Registry, error) {
 		return r, nil
 	}
 
-	// Try the optional ~/.config/brain/stores.yaml registry (then the legacy
-	// ~/.config/pai/stores.yaml symlink for transition). Absence is
-	// the common case (fresh install); we silently keep the fallback.
-	var data []byte
-	var yamlPath string
+	// Read the optional ~/.config/brain/stores.yaml registry union-merged with
+	// the legacy ~/.config/pai/stores.yaml file for transition (canonical wins
+	// on name conflict). Merging guarantees a diverged legacy file can never
+	// hide stores from transfer routing. Absence of both is the common case
+	// (fresh install); we silently keep the fallback.
+	enriched := make(map[string]string)
 	for _, cand := range []string{
-		filepath.Join(homeDir, ".config", "brain", "stores.yaml"),
 		filepath.Join(homeDir, ".config", "pai", "stores.yaml"),
+		filepath.Join(homeDir, ".config", "brain", "stores.yaml"),
 	} {
 		raw, err := os.ReadFile(cand) //nolint:gosec // path is constructed from the caller-supplied home dir
-		if err == nil {
-			data = raw
-			yamlPath = cand
-			break
-		}
-		if !os.IsNotExist(err) {
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
 			// A real I/O error reading the yaml: keep the fallback but
 			// surface a clear message so the caller can decide whether
 			// the partial registry is acceptable for the user's command.
 			return r, fmt.Errorf("brain transfer: reading %s: %w", cand, err)
 		}
+		var doc storesYAML
+		if err := yaml.Unmarshal(raw, &doc); err != nil {
+			return r, fmt.Errorf("brain transfer: parsing %s: %w", cand, err)
+		}
+		for name, beadsPath := range doc.Stores {
+			enriched[strings.ToLower(strings.TrimSpace(name))] = beadsPath
+		}
 	}
-	if data == nil {
+	if len(enriched) == 0 {
 		return r, nil
 	}
-	var doc storesYAML
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return r, fmt.Errorf("brain transfer: parsing %s: %w", yamlPath, err)
-	}
 
-	// For each yaml entry, look up the store's .beads/metadata.json
+	// For each merged yaml entry, look up the store's .beads/metadata.json
 	// to learn its dolt_database name. Empty / unreadable / missing
 	// files leave that entry on the fallback row (if any).
-	for name, beadsPath := range doc.Stores {
+	for name, beadsPath := range enriched {
 		name = strings.ToLower(strings.TrimSpace(name))
 		beadsPath = strings.TrimSpace(beadsPath)
 		if name == "" || beadsPath == "" {

@@ -197,8 +197,16 @@ func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
 	_ = ensureCompatSymlink(canonicalPath, legacyPath)
 }
 
+// loadStoresRegistry reads the canonical registry file union-merged with the
+// legacy fallback (canonical wins on key conflict). Merging — rather than
+// first-file-wins — guarantees a diverged legacy regular file can never lose
+// entries silently: every load-then-save cycle persists the union, so the
+// post-save symlink convergence in migrateLegacyFileToSymlink is lossless.
 func loadStoresRegistry() (map[string]storeEntry, error) {
-	for _, path := range []string{storesYamlFile(), storesYamlLegacyFile()} {
+	merged := make(map[string]storeEntry)
+	found := false
+	// Read legacy first so canonical entries overwrite on conflict.
+	for _, path := range []string{storesYamlLegacyFile(), storesYamlFile()} {
 		if path == "" {
 			continue
 		}
@@ -213,12 +221,15 @@ func loadStoresRegistry() (map[string]storeEntry, error) {
 		if err := yaml.Unmarshal(data, &reg); err != nil {
 			return nil, fmt.Errorf("parsing %s: %w", path, err)
 		}
-		if reg.Stores == nil {
-			return make(map[string]storeEntry), nil
+		found = true
+		for name, entry := range reg.Stores {
+			merged[name] = entry
 		}
-		return reg.Stores, nil
 	}
-	return make(map[string]storeEntry), nil
+	if !found {
+		return make(map[string]storeEntry), nil
+	}
+	return merged, nil
 }
 
 func saveStoresRegistry(stores map[string]storeEntry) error {
