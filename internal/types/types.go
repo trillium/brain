@@ -557,7 +557,7 @@ const TypeEvent IssueType = "event"
 const (
 	TypeKnowledge IssueType = "knowledge"
 	TypeBoth      IssueType = "both"
-	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — see PAI/DOCUMENTATION/IsaFormat.md).
+	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — IsaFormat v2.7).
 	// Rides on the same issue_type TEXT column as task/knowledge/both/etc.
 	// Tracked sections live in the isa_sections table (migration 0051);
 	// ISA-specific columns (isa_phase, isa_progress_m/n, etc.) live on

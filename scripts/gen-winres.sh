@@ -22,7 +22,9 @@ OUT_PREFIX="$REPO_ROOT/cmd/bd/rsrc"
 if [[ $# -ge 1 ]]; then
     VERSION="$1"
 else
-    VERSION=$(grep 'Version = ' "$REPO_ROOT/cmd/bd/version.go" | sed 's/.*"\(.*\)".*/\1/')
+# Anchored to the exact `Version` declaration so the fork's `BrainVersion`
+# line never matches (de-PAI v0.5.0).
+    VERSION=$(grep -E '^[[:space:]]*Version = ' "$REPO_ROOT/cmd/bd/version.go" | sed 's/.*"\(.*\)".*/\1/')
 fi
 
 echo "[winres] Generating Windows PE resources for bd v${VERSION}"

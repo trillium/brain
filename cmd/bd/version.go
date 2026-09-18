@@ -20,7 +20,7 @@ var (
 	// BrainVersion is the brain fork version, set via -ldflags at build time from
 	// the most recent brain/vX.Y.Z git tag. Falls back to the in-source default
 	// below for manual builds.
-	BrainVersion = "0.4.0"
+	BrainVersion = "0.5.0"
 	// Build can be set via ldflags at compile time
 	Build = "dev"
 	// Commit and branch the git revision the binary was built from (optional ldflag)
@@ -52,7 +52,7 @@ var versionCombinedOnly bool
 
 // combinedVersion composes the canonical combined version token in SemVer
 // build-metadata form: <beadsVersion>+brain.<brainVersion>, e.g.
-// "1.1.0-rc.1+brain.0.4.0". It is the single source of truth for the combined
+// "1.1.0-rc.1+brain.0.5.0". It is the single source of truth for the combined
 // string, derived from the two existing ldflags-set vars. The beads core stays
 // semver-sortable because "+brain.x" is build metadata after "+", which tooling
 // ignores when comparing precedence.

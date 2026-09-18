@@ -10,12 +10,13 @@ Generated from `bd help --doc search`
 
 ## bd search
 
-Search issues across title, description, and ID (excludes closed issues by default).
+Search issues across title, description, comments, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
 Text queries are tokenized on whitespace and each token is matched against
-title and description; results are ranked by relevance unless --sort is given.
-Use --status all to include closed issues.
+title, description, and comment bodies; results are ranked by relevance unless
+--sort is given (comment-only matches rank below title/description matches).
+Use --no-comments to skip comment bodies, and --status all to include closed issues.
 
 Examples:
   bd search "authentication bug"
@@ -29,6 +30,8 @@ Examples:
   bd search "bug" --sort priority
   bd search "task" --sort created --reverse
   bd search "api" --desc-contains "endpoint"
+  bd search "release" --comments-contains "rollback"
+  bd search "fork-origin" --no-comments  # title/description/ID only
   bd search "cleanup" --no-assignee --no-labels
 
 ```
@@ -41,12 +44,13 @@ bd search [query] [flags]
   -a, --assignee string              Filter by assignee
       --closed-after string          Filter issues closed after date (YYYY-MM-DD or RFC3339)
       --closed-before string         Filter issues closed before date (YYYY-MM-DD or RFC3339)
+      --comments-contains string     Filter by comment-body substring (case-insensitive)
       --created-after string         Filter issues created after date (YYYY-MM-DD or RFC3339)
       --created-before string        Filter issues created before date (YYYY-MM-DD or RFC3339)
       --desc-contains string         Filter by description substring (case-insensitive)
       --empty-description            Filter issues with empty or missing description
       --external-contains string     Filter by external ref substring (case-insensitive)
-      --federated                    Search across all registered PAI stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
+      --federated                    Search across all registered brain stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
       --has-metadata-key string      Filter issues that have this metadata key set
   -l, --label strings                Filter by labels (AND: must have ALL)
       --label-any strings            Filter by labels (OR: must have AT LEAST ONE)
@@ -54,6 +58,7 @@ bd search [query] [flags]
       --long                         Show detailed multi-line output for each issue
       --metadata-field stringArray   Filter by metadata field (key=value, repeatable)
       --no-assignee                  Filter issues with no assignee
+      --no-comments                  Do not match the query against comment bodies (faster)
       --no-labels                    Filter issues with no labels
       --notes-contains string        Filter by notes substring (case-insensitive)
       --priority-max string          Filter by maximum priority (inclusive, 0-4 or P0-P4)

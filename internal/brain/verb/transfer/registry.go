@@ -18,13 +18,15 @@
 //
 // # Sources of truth (in priority order)
 //
-//  1. The optional `~/.config/pai/stores.yaml` registry + each store's
+//  1. The optional `~/.config/brain/stores.yaml` registry (legacy
+//     `~/.config/pai/stores.yaml` symlink still read for transition) +
+//     each store's
 //     `.beads/metadata.json#dolt_database`. When present, this gives the
 //     authoritative store-name → DB-name and store-name → prefix mappings
 //     for that user's actual setup.
 //  2. The hardcoded built-in fallback below. Used when stores.yaml is
 //     missing, unreadable, or does not list a name the user asked for.
-//     This matches the canonical 10-store PAI federation documented in
+//     This matches the canonical brain federation documented in
 //     the task spec.
 //
 // The hardcoded fallback is intentionally present even when the yaml
@@ -80,7 +82,7 @@ type Registry struct {
 	nameToPrefix map[string]string
 }
 
-// builtinRegistry is the canonical 10-store PAI federation mapping
+// builtinRegistry is the canonical brain federation mapping
 // documented in the task spec. Used as both the seed for Load and the
 // fallback when stores.yaml is missing or partial. The mapping is
 // intentionally hardcoded — the federation shape changes rarely, and a
@@ -157,7 +159,8 @@ var validDBName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_\-]*$`)
 //nolint:gochecknoglobals // compiled-once regex
 var validPrefix = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// storesYAML mirrors the on-disk shape of ~/.config/pai/stores.yaml.
+// storesYAML mirrors the on-disk shape of ~/.config/brain/stores.yaml
+// (legacy ~/.config/pai/stores.yaml).
 // Only the `stores: name → path` map is consumed; any other keys are
 // ignored so a yaml format extension upstream does not break us.
 type storesYAML struct {
@@ -190,6 +193,28 @@ type metadataJSON struct {
 // fallback for that entry. A partial registry with the builtin
 // fallback intact is more useful than a hard failure on a typo in
 // one entry.
+// readStoresDoc reads one registry yaml. found=false means absent (not an
+// error); a present-but-bad file returns found=true with the error so the
+// caller can decide whether the other file's healthy state suffices.
+func readStoresDoc(homeDir, dir string) (storesYAML, bool, error) {
+	var doc storesYAML
+	cand := filepath.Join(homeDir, ".config", dir, "stores.yaml")
+	raw, err := os.ReadFile(cand) //nolint:gosec // path is constructed from the caller-supplied home dir
+	if err != nil {
+		if os.IsNotExist(err) {
+			return doc, false, nil
+		}
+		// A real I/O error reading the yaml: keep the fallback but
+		// surface a clear message so the caller can decide whether
+		// the partial registry is acceptable for the user's command.
+		return doc, true, fmt.Errorf("brain transfer: reading %s: %w", cand, err)
+	}
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return doc, true, fmt.Errorf("brain transfer: parsing %s: %w", cand, err)
+	}
+	return doc, true, nil
+}
+
 func Load(homeDir string) (*Registry, error) {
 	r := &Registry{
 		nameToDB:      make(map[string]string, len(builtinRegistry)),
@@ -229,28 +254,38 @@ func Load(homeDir string) (*Registry, error) {
 		return r, nil
 	}
 
-	// Try the optional ~/.config/pai/stores.yaml registry. Absence is
-	// the common case (fresh install); we silently keep the fallback.
-	yamlPath := filepath.Join(homeDir, ".config", "pai", "stores.yaml")
-	data, err := os.ReadFile(yamlPath) //nolint:gosec // path is constructed from the caller-supplied home dir
+	// Read the optional ~/.config/brain/stores.yaml registry union-merged with
+	// the legacy ~/.config/pai/stores.yaml file for transition (canonical wins
+	// on name conflict). Merging guarantees a diverged legacy file can never
+	// hide stores from transfer routing. Absence of both is the common case
+	// (fresh install); we silently keep the fallback. The legacy read is
+	// best-effort: a corrupt/unreadable legacy file never blocks routing
+	// while the canonical file is healthy; a corrupt legacy with a missing
+	// canonical stays fatal so callers see the damage instead of silently
+	// routing on fallback alone.
+	legacyDoc, _, legacyErr := readStoresDoc(homeDir, "pai")
+	canonicalDoc, canonicalFound, err := readStoresDoc(homeDir, "brain")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return r, nil
-		}
-		// A real I/O error reading the yaml: keep the fallback but
-		// surface a clear message so the caller can decide whether
-		// the partial registry is acceptable for the user's command.
-		return r, fmt.Errorf("brain transfer: reading %s: %w", yamlPath, err)
+		return r, err
 	}
-	var doc storesYAML
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return r, fmt.Errorf("brain transfer: parsing %s: %w", yamlPath, err)
+	if !canonicalFound && legacyErr != nil {
+		return r, legacyErr
+	}
+	enriched := make(map[string]string)
+	for name, beadsPath := range legacyDoc.Stores {
+		enriched[strings.ToLower(strings.TrimSpace(name))] = beadsPath
+	}
+	for name, beadsPath := range canonicalDoc.Stores {
+		enriched[strings.ToLower(strings.TrimSpace(name))] = beadsPath
+	}
+	if len(enriched) == 0 {
+		return r, nil
 	}
 
-	// For each yaml entry, look up the store's .beads/metadata.json
+	// For each merged yaml entry, look up the store's .beads/metadata.json
 	// to learn its dolt_database name. Empty / unreadable / missing
 	// files leave that entry on the fallback row (if any).
-	for name, beadsPath := range doc.Stores {
+	for name, beadsPath := range enriched {
 		name = strings.ToLower(strings.TrimSpace(name))
 		beadsPath = strings.TrimSpace(beadsPath)
 		if name == "" || beadsPath == "" {

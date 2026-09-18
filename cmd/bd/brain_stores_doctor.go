@@ -32,7 +32,8 @@ var (
 )
 
 // doctorRegistrySentinel names the failure when the registry itself cannot be
-// read. Scheduler contract (see PAI/scripts/stores-doctor.sh): every 'stores
+// read. Scheduler contract (see brain/scripts/stores-doctor.sh, legacy
+// PAI/scripts/stores-doctor.sh): every 'stores
 // doctor' exit 1 is accompanied by a 'FAILING STORES: ...' line, so a failure
 // the probe cannot attribute to a store still names what broke instead of
 // surfacing as an opaque unnamed-failure bead (robots-j4g9). The scheduler
@@ -62,7 +63,7 @@ type storeHealth struct {
 var brainStoresDoctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Assert every store in the registry answers a read",
-	Long: `Walk every store registered in ~/.config/pai/stores.yaml and assert it
+	Long: `Walk every store registered in ~/.config/brain/stores.yaml and assert it
 answers a read. The registry is the source of truth for which stores must
 work; anything registered but unreadable is a provisioning bug.
 

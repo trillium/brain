@@ -19,7 +19,7 @@ atomic transaction.
         to a known store.
 
 &lt;dest&gt;  The destination store name. Must be one of the registered store
-        names — for the canonical PAI federation these are:
+        names — for the canonical brain federation these are:
         brain, tasks (alias: task), projects (alias: project),
         agents (alias: agent), inbox, decisions (alias: decision),
         ideas (alias: idea), life, questions (alias: question), assert.

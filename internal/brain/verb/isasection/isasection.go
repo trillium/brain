@@ -21,7 +21,7 @@ import (
 )
 
 // Canonical section name constants. The twelve names are locked to the ISA
-// format spec (PAI/DOCUMENTATION/IsaFormat.md) and the body order documented
+// format spec (IsaFormat v2.7) and the body order documented
 // there.
 const (
 	SectionProblem      = "problem"

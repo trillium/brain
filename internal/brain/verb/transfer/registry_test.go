@@ -309,6 +309,47 @@ func TestHubDB(t *testing.T) {
 	}
 }
 
+// TestLoad_CorruptLegacyHealthyCanonical verifies the legacy read is
+// best-effort: a corrupt legacy file never blocks routing while the
+// canonical registry is healthy.
+func TestLoad_CorruptLegacyHealthyCanonical(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	storeDir := filepath.Join(home, "custom-inbox")
+	beadsDir := filepath.Join(storeDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"dolt_database":"inbox_custom"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	for dir, body := range map[string]string{
+		filepath.Join(home, ".config", "pai"):   "not: [valid yaml: but parseable",
+		filepath.Join(home, ".config", "brain"): "stores:\n  inbox: " + storeDir + "\n",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	r, err := transfer.Load(home)
+	if err != nil {
+		t.Fatalf("corrupt legacy must not fail healthy-canonical Load: %v", err)
+	}
+	db, _, err := r.ResolveDest("inbox")
+	if err != nil {
+		t.Fatalf("ResolveDest(inbox): %v", err)
+	}
+	if db != "inbox_custom" {
+		t.Errorf("ResolveDest(inbox) db = %q, want \"inbox_custom\" (canonical override)", db)
+	}
+}
+
 // contains is a tiny substring helper kept local so the test file
 // has no fmt/strings churn on every check. Mirrors strings.Contains
 // without importing it (avoids a top-of-file import for one helper).

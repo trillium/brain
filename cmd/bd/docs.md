@@ -42,8 +42,8 @@ The CLI is built on the Cobra framework and consists of command implementations 
    - **scripts/install.sh** (`@/scripts/install.sh`, lines 13-14): Helper script for users who want to build from source with explicit git info passed to `go install`
 
 4. **Output Formatting**:
-   - **Combined Token** (`combinedVersion()`): The canonical `<beadsVersion>+brain.<brainVersion>` string (e.g. `1.1.0-rc.1+brain.0.4.0`), single-sourced from `Version` and `BrainVersion`. The `+brain.x` segment is SemVer build metadata, so the beads core stays version-sortable. `bd version --combined` prints this token alone.
-   - **Text Output**: Shows format like `bd version 1.1.0-rc.1+brain.0.4.0 (dev: main@7e70940)` when both commit and branch are available
+   - **Combined Token** (`combinedVersion()`): The canonical `<beadsVersion>+brain.<brainVersion>` string (e.g. `1.1.0-rc.1+brain.0.5.0`), single-sourced from `Version` and `BrainVersion`. The `+brain.x` segment is SemVer build metadata, so the beads core stays version-sortable. `bd version --combined` prints this token alone.
+   - **Text Output**: Shows format like `bd version 1.1.0-rc.1+brain.0.5.0 (dev: main@7e70940)` when both commit and branch are available
    - **JSON Output**: Includes `version`, `brain`, and `combined` fields, plus optional `commit` and `branch` fields when available
 
 5. **Server Version Checking** (lines 63-109): The `--server` flag shows server/client compatibility by calling health RPC endpoints

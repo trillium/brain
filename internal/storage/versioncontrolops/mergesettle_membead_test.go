@@ -9,10 +9,10 @@ import (
 
 func TestConfigConflictsAreMemoryConvergent(t *testing.T) {
 	tests := []struct {
-		name          string
-		conflictKeys  [][]string
+		name           string
+		conflictKeys   [][]string
 		wantConvergent bool
-		desc          string
+		desc           string
 	}{
 		{
 			name: "membead_only_converges",
@@ -49,8 +49,8 @@ func TestConfigConflictsAreMemoryConvergent(t *testing.T) {
 			desc:           "foreign config key prevents convergence",
 		},
 		{
-			name: "empty_converges",
-			conflictKeys: [][]string{},
+			name:           "empty_converges",
+			conflictKeys:   [][]string{},
 			wantConvergent: true,
 			desc:           "empty conflict set should converge",
 		},

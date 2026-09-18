@@ -1,7 +1,7 @@
 // Package transfer implements the `brain transfer <id> <dest>` verb.
 //
 // `brain transfer` is the brain v0.3 verb for atomic cross-store moves on
-// the shared Dolt SQL server. All 10 named PAI stores live as separate
+// the shared Dolt SQL server. All 10 named brain stores live as separate
 // databases on the same Dolt instance (default 127.0.0.1:3307), so a
 // transfer between any two stores is a single MySQL transaction that
 // touches multiple databases via `<db>.<table>` SQL refs — no

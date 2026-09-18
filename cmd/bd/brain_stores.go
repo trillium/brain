@@ -18,11 +18,23 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// storesYamlPath is the canonical registry file for PAI federation stores.
-const storesYamlPath = ".config/pai/stores.yaml"
+// storesYamlPath is the canonical registry file for brain federation stores.
+// De-PAI migration (brain v0.5.0): canonical path moved from
+// ~/.config/pai/stores.yaml to ~/.config/brain/stores.yaml. The legacy path
+// is kept as a compat symlink (see ensureCompatSymlink) so existing stores
+// keep working non-destructively.
+const storesYamlPath = ".config/brain/stores.yaml"
+
+// storesYamlLegacyPath is the pre-migration registry location. Read as a
+// fallback; written only as a symlink to the canonical path.
+const storesYamlLegacyPath = ".config/pai/stores.yaml"
 
 // storesEnvPath is the shell-sourceable export of the registry.
-const storesEnvPath = ".config/pai/stores.env"
+const storesEnvPath = ".config/brain/stores.env"
+
+// storesEnvLegacyPath is the pre-migration env export. Kept as a compat
+// symlink to the canonical file.
+const storesEnvLegacyPath = ".config/pai/stores.env"
 
 // storeEntry is the registry value for a single federated store. The Path
 // points at the store's .beads directory; About is an optional human blurb
@@ -51,7 +63,7 @@ func (s *storeEntry) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
-// storesRegistry is the on-disk shape of ~/.config/pai/stores.yaml.
+// storesRegistry is the on-disk shape of ~/.config/brain/stores.yaml.
 type storesRegistry struct {
 	Stores map[string]storeEntry `yaml:"stores"`
 }
@@ -64,23 +76,183 @@ func storesYamlFile() string {
 	return filepath.Join(home, storesYamlPath)
 }
 
-func loadStoresRegistry() (map[string]storeEntry, error) {
-	path := storesYamlFile()
+func storesYamlLegacyFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, storesYamlLegacyPath)
+}
+
+func storesEnvFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, storesEnvPath)
+}
+
+func storesEnvLegacyFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, storesEnvLegacyPath)
+}
+
+// ensureCompatSymlink points legacyPath at canonicalPath via a relative
+// symlink. Non-destructive by design:
+//   - legacy missing → create symlink.
+//   - legacy already the correct symlink → no-op.
+//   - legacy is a regular file/dir → leave untouched (a prior version's
+//     data); the caller has already migrated its contents by reading the
+//     legacy path first and writing the canonical path.
+//
+// Returns nil in all non-fatal cases so migration never blocks a store write.
+//
+//nolint:unparam // always-nil error keeps call sites uniform with other I/O helpers
+func ensureCompatSymlink(canonicalPath, legacyPath string) error {
+	if canonicalPath == "" || legacyPath == "" || canonicalPath == legacyPath {
+		return nil
+	}
+	if _, err := os.Lstat(legacyPath); err != nil {
+		if !os.IsNotExist(err) {
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(filepath.Dir(legacyPath), canonicalPath)
+		if err != nil {
+			rel = canonicalPath
+		}
+		_ = os.Symlink(rel, legacyPath)
+		return nil
+	}
+	// Legacy exists: if it is already a symlink, verify/fix its target.
+	if fi, err := os.Lstat(legacyPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		if target, err := os.Readlink(legacyPath); err == nil {
+			resolved := target
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(legacyPath), target)
+			}
+			if filepath.Clean(resolved) == filepath.Clean(canonicalPath) {
+				return nil
+			}
+		}
+		// Stale symlink pointing elsewhere: leave it; operator intent wins.
+		return nil
+	}
+	// Regular file/dir at legacy path: leave in place for compat reads.
+	return nil
+}
+
+// migrateLegacyFileToSymlink converges the legacy path to a symlink once the
+// canonical file holds the merged state. Called after each save, so the
+// transition always ends at: canonical file + legacy symlink. Safe in every
+// case because both callers (saveStoresRegistry, regenerateStoresEnv) write
+// the canonical file from content loaded through the legacy fallback first:
+// every byte of a legacy regular file is already present in the canonical
+// file before the legacy path is replaced, so no data is ever lost.
+// A legacy directory (never a file the migration wrote) is left untouched.
+func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
+	if canonicalPath == "" || legacyPath == "" {
+		return
+	}
+	fi, err := os.Lstat(legacyPath)
+	if err != nil {
+		// Legacy missing → ensure symlink for future compat reads.
+		_ = ensureCompatSymlink(canonicalPath, legacyPath)
+		return
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		_ = ensureCompatSymlink(canonicalPath, legacyPath)
+		return
+	}
+	if !fi.Mode().IsRegular() {
+		return
+	}
+	if _, err := os.Stat(canonicalPath); err != nil {
+		// Canonical absent but legacy is a regular file (e.g. a save that
+		// failed between load and write): seed canonical from legacy so
+		// the legacy content survives, then converge below.
+		data, err := os.ReadFile(legacyPath) //nolint:gosec
+		if err != nil {
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+			return
+		}
+		if err := os.WriteFile(canonicalPath, data, 0o644); err != nil { //nolint:gosec
+			return
+		}
+	}
+	// Both paths are regular files at this point. The canonical file was
+	// written from merged state that already includes the legacy content
+	// (loads read the legacy fallback), so replacing the stale legacy file
+	// with a symlink loses nothing and keeps old-path readers current.
+	// The remove+symlink is best-effort: a failure leaves the legacy file
+	// readable and the canonical file authoritative.
+	if err := os.Remove(legacyPath); err != nil {
+		return
+	}
+	_ = ensureCompatSymlink(canonicalPath, legacyPath)
+}
+
+// loadStoresRegistry reads the canonical registry file union-merged with the
+// legacy fallback (canonical wins on key conflict). Merging — rather than
+// first-file-wins — guarantees a diverged legacy regular file can never lose
+// entries silently: every load-then-save cycle persists the union, so the
+// post-save symlink convergence in migrateLegacyFileToSymlink is lossless.
+// readStoresFile reads one registry file. found=false means the file is
+// absent (not an error). A present-but-unreadable or unparseable file
+// returns found=true with the error, so callers can decide whether the
+// other file's healthy state is enough to proceed.
+func readStoresFile(path string) (stores map[string]storeEntry, found bool, err error) {
+	if path == "" {
+		return nil, false, nil
+	}
 	data, err := os.ReadFile(path) //nolint:gosec
 	if os.IsNotExist(err) {
-		return make(map[string]storeEntry), nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
+		return nil, true, fmt.Errorf("reading %s: %w", path, err)
 	}
 	var reg storesRegistry
 	if err := yaml.Unmarshal(data, &reg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
+		return nil, true, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if reg.Stores == nil {
-		return make(map[string]storeEntry), nil
+		return make(map[string]storeEntry), true, nil
 	}
-	return reg.Stores, nil
+	return reg.Stores, true, nil
+}
+
+func loadStoresRegistry() (map[string]storeEntry, error) {
+	merged := make(map[string]storeEntry)
+	// Legacy first so canonical entries overwrite on conflict. The legacy
+	// read is best-effort: a corrupt/unreadable legacy file must never break
+	// reads while the canonical file is healthy (otherwise a damaged legacy
+	// copy would wedge every load-then-save command in a stuck state, since
+	// load fails before save can converge it). A corrupt legacy with a
+	// missing canonical stays fatal, so a later save cannot persist an
+	// empty registry over unknown state.
+	legacy, _, legacyErr := readStoresFile(storesYamlLegacyFile())
+	canonical, canonicalFound, err := readStoresFile(storesYamlFile())
+	if err != nil {
+		return nil, err
+	}
+	if !canonicalFound && legacyErr != nil {
+		return nil, legacyErr
+	}
+	for name, entry := range legacy {
+		merged[name] = entry
+	}
+	for name, entry := range canonical {
+		merged[name] = entry
+	}
+	return merged, nil
 }
 
 func saveStoresRegistry(stores map[string]storeEntry) error {
@@ -93,8 +265,12 @@ func saveStoresRegistry(stores map[string]storeEntry) error {
 	if err != nil {
 		return fmt.Errorf("marshaling stores: %w", err)
 	}
-	header := "# PAI federation store registry — managed by 'brain stores'\n# Do not edit manually; use 'brain stores add/remove'.\n\n"
-	return os.WriteFile(path, append([]byte(header), data...), 0o644) //nolint:gosec
+	header := "# brain federation store registry — managed by 'brain stores'\n# Do not edit manually; use 'brain stores add/remove'.\n# Legacy path ~/.config/pai/stores.yaml is a compat symlink to this file.\n\n"
+	if err := os.WriteFile(path, append([]byte(header), data...), 0o644); err != nil { //nolint:gosec
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	migrateLegacyFileToSymlink(path, storesYamlLegacyFile())
+	return nil
 }
 
 var brainStoresCmd = &cobra.Command{
@@ -102,12 +278,15 @@ var brainStoresCmd = &cobra.Command{
 	Short: "Manage the brain federation store registry",
 	Long: `Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/pai/stores.yaml. Each registered store
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
-Run 'brain stores env' to regenerate ~/.config/pai/stores.env for
-shell wrapper scripts that need PAI_STORE_* variables.`,
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
 	},
@@ -232,8 +411,8 @@ var brainStoresCreateCmd = &cobra.Command{
   3. Write a CLI wrapper at ~/.local/bin/<name>. In shared-server mode the
      wrapper exports the four server pins (mirroring the review/brain wrappers);
      otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
-  4. Register the store in ~/.config/pai/stores.yaml.
-  5. Regenerate ~/.config/pai/stores.env.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/<name>. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
@@ -268,7 +447,7 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	beadsDir := filepath.Join(path, ".beads")
 	entriesDir := filepath.Join(path, "entries")
 
-	// Step 1: provision the Dolt store. In shared-server mode (the PAI
+	// Step 1: provision the Dolt store. In shared-server mode (the brain
 	// federation default — the brain wrapper exports BEADS_DOLT_SERVER_MODE=1
 	// and the server pins at create time) the store is a database in the running
 	// shared dolt sql-server, NOT an embedded .beads/.dolt repo. Only when those
@@ -384,7 +563,7 @@ func initDoltStore(beadsDir string) error {
 }
 
 // resolveSharedServerCreate detects whether 'brain stores create' is running in
-// PAI shared-server mode. The brain wrapper exports BEADS_DOLT_SERVER_MODE=1 (or
+// brain shared-server mode. The brain wrapper exports BEADS_DOLT_SERVER_MODE=1 (or
 // BEADS_DOLT_SHARED_SERVER=1) plus the server host/port at create time; when
 // present, a new store must be provisioned as a database in the running shared
 // dolt sql-server rather than as an embedded .beads/.dolt repo. Returns the
@@ -566,8 +745,10 @@ exec env BEADS_DIR=%q BD_NAME=%q %s "$@"
 	return wrapperPath, nil
 }
 
-// regenerateStoresEnv writes ~/.config/pai/stores.env from the registry,
-// matching the format `brain stores env` emits. Returns the written path.
+// regenerateStoresEnv writes ~/.config/brain/stores.env from the registry,
+// matching the format `brain stores env` emits. It exports the canonical
+// BRAIN_STORE_* / BRAIN_STORES_LIST variables plus deprecated PAI_STORE_* /
+// PAI_STORES_LIST aliases for transition. Returns the written path.
 func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -582,17 +763,26 @@ func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 
 	var sb strings.Builder
 	sb.WriteString("# Auto-generated by 'brain stores env' — do not edit manually.\n")
-	sb.WriteString("# Source in store wrapper scripts to get PAI_STORE_* vars.\n")
-	sb.WriteString("# Regenerate: brain stores env\n\n")
+	sb.WriteString("# Source in store wrapper scripts to get BRAIN_STORE_* vars.\n")
+	sb.WriteString("# Deprecated PAI_STORE_* aliases are emitted for transition and will be removed.\n")
+	sb.WriteString("# Regenerate: brain stores env\n")
+	sb.WriteString("# Canonical file: ~/.config/brain/stores.env (legacy ~/.config/pai/stores.env is a symlink).\n\n")
 	for _, n := range names {
-		varName := "PAI_STORE_" + strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-		sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n].Path))
+		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
+		sb.WriteString(fmt.Sprintf("export BRAIN_STORE_%s=%q\n", envKey, stores[n].Path))
 	}
-	sb.WriteString(fmt.Sprintf("\nexport PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
+	sb.WriteString(fmt.Sprintf("\nexport BRAIN_STORES_LIST=%q\n", strings.Join(names, ":")))
+	sb.WriteString("\n# Deprecated compat aliases (transition only).\n")
+	for _, n := range names {
+		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
+		sb.WriteString(fmt.Sprintf("export PAI_STORE_%s=%q\n", envKey, stores[n].Path))
+	}
+	sb.WriteString(fmt.Sprintf("export PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
 
 	if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
+	migrateLegacyFileToSymlink(outPath, filepath.Join(home, storesEnvLegacyPath))
 	return outPath, nil
 }
 
@@ -603,7 +793,7 @@ var (
 var brainStoresRenderAllCmd = &cobra.Command{
 	Use:   "render-all",
 	Short: "Run 'bd render-all' against every store in the federation registry",
-	Long: `Iterate every store registered in ~/.config/pai/stores.yaml and
+	Long: `Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
 re-invoked once per store with BEADS_DIR pinned, so per-store summaries
 land on stderr exactly as a stand-alone 'bd render-all' would.
@@ -856,8 +1046,8 @@ var brainStoresRenameCmd = &cobra.Command{
      A custom path is left in place; only the registry key changes.
   2. Rewrite the wrapper at ~/.local/bin/<old-name> to ~/.local/bin/<new-name>
      pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
-  3. Update ~/.config/pai/stores.yaml: <old-name> → <new-name>.
-  4. Regenerate ~/.config/pai/stores.env.
+  3. Update ~/.config/brain/stores.yaml: <old-name> → <new-name>.
+  4. Regenerate ~/.config/brain/stores.env.
 
 What this does NOT do:
   - The underlying Dolt database name stays the same — existing bead IDs
@@ -980,7 +1170,7 @@ var brainStoresSetAboutCmd = &cobra.Command{
 	Use:   "set-about <store> <blurb>",
 	Short: "Set the human-readable 'about' blurb for a registered store",
 	Long: `Attach a short description to a registered store, stored in the
-registry (~/.config/pai/stores.yaml) only. The wrapper script is left
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
 unchanged. View blurbs with 'brain stores list --verbose'.
 
 Pass an empty string to clear the blurb.
@@ -1021,43 +1211,24 @@ Examples:
 
 var brainStoresEnvCmd = &cobra.Command{
 	Use:   "env",
-	Short: "Write ~/.config/pai/stores.env from the registry (for shell wrappers)",
+	Short: "Write ~/.config/brain/stores.env from the registry (for shell wrappers)",
 	Run: func(cmd *cobra.Command, args []string) {
 		stores, err := loadStoresRegistry()
 		if err != nil {
 			FatalError("loading registry: %v", err)
 		}
 
-		home, err := os.UserHomeDir()
+		envPath, err := regenerateStoresEnv(stores)
 		if err != nil {
-			FatalError("resolving home dir: %v", err)
-		}
-		outPath := filepath.Join(home, storesEnvPath)
-		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-			FatalError("creating %s: %v", filepath.Dir(outPath), err)
+			FatalError("%v", err)
 		}
 
 		names := sortedKeys(stores)
-
-		var sb strings.Builder
-		sb.WriteString("# Auto-generated by 'brain stores env' — do not edit manually.\n")
-		sb.WriteString("# Source in store wrapper scripts to get PAI_STORE_* vars.\n")
-		sb.WriteString("# Regenerate: brain stores env\n\n")
-		for _, n := range names {
-			varName := "PAI_STORE_" + strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-			sb.WriteString(fmt.Sprintf("export %s=%q\n", varName, stores[n].Path))
-		}
-		sb.WriteString(fmt.Sprintf("\nexport PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
-
-		if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil { //nolint:gosec
-			FatalError("writing %s: %v", outPath, err)
-		}
-
 		if jsonOutput {
-			outputJSON(map[string]string{"path": outPath, "stores": strings.Join(names, ",")})
+			outputJSON(map[string]string{"path": envPath, "stores": strings.Join(names, ",")})
 			return
 		}
-		fmt.Printf("%s Wrote %s (%d stores)\n", ui.RenderPass("✓"), outPath, len(stores))
+		fmt.Printf("%s Wrote %s (%d stores)\n", ui.RenderPass("✓"), envPath, len(stores))
 	},
 }
 

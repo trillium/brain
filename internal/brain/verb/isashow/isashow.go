@@ -20,7 +20,7 @@ import (
 )
 
 // SpecOrderedSectionNames returns the twelve canonical ISA section names in
-// the order locked by the ISA format spec (PAI/DOCUMENTATION/IsaFormat.md):
+// the order locked by the ISA format spec (IsaFormat v2.7):
 // problem, vision, out_of_scope, principles, constraints, goal, criteria,
 // test_strategy, features, decisions, changelog, verification.
 //

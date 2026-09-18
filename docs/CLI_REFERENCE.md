@@ -307,7 +307,8 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores add](#bd-stores-add) — Register a store in the brain federation registry
   - [bd stores alias](#bd-stores-alias) — Make a second CLI name resolve to an existing store
   - [bd stores create](#bd-stores-create) — Provision a new connected store (dolt init + entries dir + wrapper + registry)
-  - [bd stores env](#bd-stores-env) — Write ~/.config/pai/stores.env from the registry (for shell wrappers)
+  - [bd stores doctor](#bd-stores-doctor) — Assert every store in the registry answers a read
+  - [bd stores env](#bd-stores-env) — Write ~/.config/brain/stores.env from the registry (for shell wrappers)
   - [bd stores list](#bd-stores-list) — List all registered stores
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
@@ -492,7 +493,18 @@ bd comments list
 
 ### bd create
 
-Create a new issue (or batch from markdown/graph JSON)
+Create a new issue (or batch from markdown/graph JSON).
+
+Compose in your editor when the body is more than a one-liner: the first line
+of the buffer is the title, everything after the first blank line is the body.
+
+Examples:
+  bd create "Short title"                      # title only
+  bd create "Short title" -d "Body text"       # title + body inline
+  bd create --edit                             # compose title + body in $EDITOR
+  bd create "Short title" --edit               # prefill the title, write the body
+  bd create                                    # same as --edit when run at a terminal
+  bd edit bd-42 --append                       # append more body later, in $EDITOR
 
 ```
 bd create [title] [flags]
@@ -515,6 +527,7 @@ bd create [title] [flags]
       --design-file string      Read design from file (use - for stdin)
       --dry-run                 Preview what would be created without actually creating
       --due string              Due date/time. Formats: +6h, +1d, +2w, tomorrow, next monday, 2025-01-15
+  -E, --edit                    Compose the title and body in $EDITOR (implied when no title is given at a terminal)
       --ephemeral               Create as ephemeral (short-lived, subject to TTL compaction)
   -e, --estimate int            Time estimate in minutes (e.g., 60 for 1 hour)
       --event-actor string      Entity URI who caused this event (requires --type=event)
@@ -628,6 +641,7 @@ Examples:
   bd edit bd-42 --design           # Edit design notes
   bd edit bd-42 --notes            # Edit notes
   bd edit bd-42 --acceptance       # Edit acceptance criteria
+  bd edit bd-42 --append           # Append to the description from an empty buffer
 
 ```
 bd edit [id] [flags]
@@ -637,6 +651,7 @@ bd edit [id] [flags]
 
 ```
       --acceptance    Edit the acceptance criteria
+      --append        Start from an empty buffer and append what you write to the field
       --description   Edit the description (default)
       --design        Edit the design notes
       --notes         Edit the notes
@@ -885,7 +900,9 @@ Render an ISA-kind issue to canonical markdown at
 &lt;exfil-root&gt;/&lt;slug&gt;/ISA.md.
 
 The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
-variable; it defaults to $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK. The render is
+variable; it defaults to $&#123;HOME&#125;/.claude/brain/MEMORY/WORK. When that
+path does not exist but the legacy $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK does,
+the legacy path is used instead. The render is
 atomic: a temp file is written first, then rename(2) makes the swap, so
 readers never observe a half-written file.
 
@@ -1544,12 +1561,13 @@ bd reopen [id...] [flags]
 
 ### bd search
 
-Search issues across title, description, and ID (excludes closed issues by default).
+Search issues across title, description, comments, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
 Text queries are tokenized on whitespace and each token is matched against
-title and description; results are ranked by relevance unless --sort is given.
-Use --status all to include closed issues.
+title, description, and comment bodies; results are ranked by relevance unless
+--sort is given (comment-only matches rank below title/description matches).
+Use --no-comments to skip comment bodies, and --status all to include closed issues.
 
 Examples:
   bd search "authentication bug"
@@ -1563,6 +1581,8 @@ Examples:
   bd search "bug" --sort priority
   bd search "task" --sort created --reverse
   bd search "api" --desc-contains "endpoint"
+  bd search "release" --comments-contains "rollback"
+  bd search "fork-origin" --no-comments  # title/description/ID only
   bd search "cleanup" --no-assignee --no-labels
 
 ```
@@ -1575,12 +1595,13 @@ bd search [query] [flags]
   -a, --assignee string              Filter by assignee
       --closed-after string          Filter issues closed after date (YYYY-MM-DD or RFC3339)
       --closed-before string         Filter issues closed before date (YYYY-MM-DD or RFC3339)
+      --comments-contains string     Filter by comment-body substring (case-insensitive)
       --created-after string         Filter issues created after date (YYYY-MM-DD or RFC3339)
       --created-before string        Filter issues created before date (YYYY-MM-DD or RFC3339)
       --desc-contains string         Filter by description substring (case-insensitive)
       --empty-description            Filter issues with empty or missing description
       --external-contains string     Filter by external ref substring (case-insensitive)
-      --federated                    Search across all registered PAI stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
+      --federated                    Search across all registered brain stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
       --has-metadata-key string      Filter issues that have this metadata key set
   -l, --label strings                Filter by labels (AND: must have ALL)
       --label-any strings            Filter by labels (OR: must have AT LEAST ONE)
@@ -1588,6 +1609,7 @@ bd search [query] [flags]
       --long                         Show detailed multi-line output for each issue
       --metadata-field stringArray   Filter by metadata field (key=value, repeatable)
       --no-assignee                  Filter issues with no assignee
+      --no-comments                  Do not match the query against comment bodies (faster)
       --no-labels                    Filter issues with no labels
       --notes-contains string        Filter by notes substring (case-insensitive)
       --priority-max string          Filter by maximum priority (inclusive, 0-4 or P0-P4)
@@ -5865,12 +5887,15 @@ bd brain related <id> [flags]
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/pai/stores.yaml. Each registered store
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
-Run 'brain stores env' to regenerate ~/.config/pai/stores.env for
-shell wrapper scripts that need PAI_STORE_* variables.
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).
 
 ```
 bd stores
@@ -5917,12 +5942,18 @@ bd stores alias <existing-store> <new-name> [flags]
 
 Provision a new connected store end-to-end. Does, in order:
 
-  1. Create &lt;path&gt;/.beads/ and run 'dolt init' inside it.
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in &lt;path&gt;/.beads/.
   2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt; that pins BEADS_DIR
-     and BD_NAME, then exec's bd.
-  4. Register the store in ~/.config/pai/stores.yaml.
-  5. Regenerate ~/.config/pai/stores.env.
+  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
@@ -5950,9 +5981,51 @@ bd stores create <name> [flags]
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
 ```
 
+##### bd brain stores doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd stores doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores env
 
-Write ~/.config/pai/stores.env from the registry (for shell wrappers)
+Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 
 ```
 bd stores env
@@ -5989,8 +6062,8 @@ Rename a connected store end-to-end. Does, in order:
      A custom path is left in place; only the registry key changes.
   2. Rewrite the wrapper at ~/.local/bin/&lt;old-name&gt; to ~/.local/bin/&lt;new-name&gt;
      pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
-  3. Update ~/.config/pai/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
-  4. Regenerate ~/.config/pai/stores.env.
+  3. Update ~/.config/brain/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
+  4. Regenerate ~/.config/brain/stores.env.
 
 What this does NOT do:
   - The underlying Dolt database name stays the same — existing bead IDs
@@ -6017,7 +6090,7 @@ bd stores rename <old-name> <new-name> [flags]
 
 ##### bd brain stores render-all
 
-Iterate every store registered in ~/.config/pai/stores.yaml and
+Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
 re-invoked once per store with BEADS_DIR pinned, so per-store summaries
 land on stderr exactly as a stand-alone 'bd render-all' would.
@@ -6051,7 +6124,7 @@ bd stores render-all [flags]
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
-registry (~/.config/pai/stores.yaml) only. The wrapper script is left
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
 unchanged. View blurbs with 'brain stores list --verbose'.
 
 Pass an empty string to clear the blurb.
@@ -7581,12 +7654,15 @@ bd ship <capability> [flags]
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/pai/stores.yaml. Each registered store
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
-Run 'brain stores env' to regenerate ~/.config/pai/stores.env for
-shell wrapper scripts that need PAI_STORE_* variables.
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).
 
 ```
 bd stores [flags]
@@ -7633,12 +7709,18 @@ bd stores alias <existing-store> <new-name> [flags]
 
 Provision a new connected store end-to-end. Does, in order:
 
-  1. Create &lt;path&gt;/.beads/ and run 'dolt init' inside it.
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in &lt;path&gt;/.beads/.
   2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt; that pins BEADS_DIR
-     and BD_NAME, then exec's bd.
-  4. Register the store in ~/.config/pai/stores.yaml.
-  5. Regenerate ~/.config/pai/stores.env.
+  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
@@ -7666,9 +7748,51 @@ bd stores create <name> [flags]
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
 ```
 
+#### bd stores doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd stores doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 #### bd stores env
 
-Write ~/.config/pai/stores.env from the registry (for shell wrappers)
+Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 
 ```
 bd stores env [flags]
@@ -7705,8 +7829,8 @@ Rename a connected store end-to-end. Does, in order:
      A custom path is left in place; only the registry key changes.
   2. Rewrite the wrapper at ~/.local/bin/&lt;old-name&gt; to ~/.local/bin/&lt;new-name&gt;
      pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
-  3. Update ~/.config/pai/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
-  4. Regenerate ~/.config/pai/stores.env.
+  3. Update ~/.config/brain/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
+  4. Regenerate ~/.config/brain/stores.env.
 
 What this does NOT do:
   - The underlying Dolt database name stays the same — existing bead IDs
@@ -7733,7 +7857,7 @@ bd stores rename <old-name> <new-name> [flags]
 
 #### bd stores render-all
 
-Iterate every store registered in ~/.config/pai/stores.yaml and
+Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
 re-invoked once per store with BEADS_DIR pinned, so per-store summaries
 land on stderr exactly as a stand-alone 'bd render-all' would.
@@ -7767,7 +7891,7 @@ bd stores render-all [flags]
 #### bd stores set-about
 
 Attach a short description to a registered store, stored in the
-registry (~/.config/pai/stores.yaml) only. The wrapper script is left
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
 unchanged. View blurbs with 'brain stores list --verbose'.
 
 Pass an empty string to clear the blurb.
@@ -7791,7 +7915,7 @@ atomic transaction.
         to a known store.
 
 &lt;dest&gt;  The destination store name. Must be one of the registered store
-        names — for the canonical PAI federation these are:
+        names — for the canonical brain federation these are:
         brain, tasks (alias: task), projects (alias: project),
         agents (alias: agent), inbox, decisions (alias: decision),
         ideas (alias: idea), life, questions (alias: question), assert.
