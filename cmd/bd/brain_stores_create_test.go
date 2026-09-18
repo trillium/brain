@@ -384,3 +384,45 @@ func TestSaveStoresRegistry_ConvergesLegacySymlink(t *testing.T) {
 		t.Errorf("round-trip mismatch; got %+v", back)
 	}
 }
+
+func TestSaveStoresRegistry_ConvergesLegacyRegularFile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	home, _ := os.UserHomeDir()
+	legacyDir := filepath.Join(home, ".config", "pai")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	// Pre-migration machine: only a legacy regular file exists.
+	legacyBody := "stores:\n  task:\n    path: /data/tasks/.beads\n"
+	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte(legacyBody), 0o644); err != nil {
+		t.Fatalf("write legacy yaml: %v", err)
+	}
+
+	// First post-migration save merges legacy content and must converge
+	// the legacy path to a symlink — never leave it stale.
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	stores["recipes"] = storeEntry{Path: "/data/recipes/.beads"}
+	if err := saveStoresRegistry(stores); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	legacy := filepath.Join(legacyDir, "stores.yaml")
+	fi, err := os.Lstat(legacy)
+	if err != nil {
+		t.Fatalf("legacy path missing after save: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("legacy path should be a symlink after first save, mode %v", fi.Mode())
+	}
+	back, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if back["task"].Path != "/data/tasks/.beads" || back["recipes"].Path != "/data/recipes/.beads" {
+		t.Errorf("merged state lost; got %+v", back)
+	}
+}

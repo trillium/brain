@@ -145,12 +145,14 @@ func ensureCompatSymlink(canonicalPath, legacyPath string) error {
 	return nil
 }
 
-// migrateLegacyFileToSymlink moves a legacy regular file's contents into the
-// canonical path (when the canonical file does not yet exist) and replaces
-// the legacy file with a symlink. Called once per save path so the
-// transition converges to: canonical file + legacy symlink. If the legacy
-// path is not a regular file, or the canonical file already exists, it only
-// ensures the symlink when safe (legacy missing) and never deletes data.
+// migrateLegacyFileToSymlink converges the legacy path to a symlink once the
+// canonical file holds the merged state. Called after each save, so the
+// transition always ends at: canonical file + legacy symlink. Safe in every
+// case because both callers (saveStoresRegistry, regenerateStoresEnv) write
+// the canonical file from content loaded through the legacy fallback first:
+// every byte of a legacy regular file is already present in the canonical
+// file before the legacy path is replaced, so no data is ever lost.
+// A legacy directory (never a file the migration wrote) is left untouched.
 func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
 	if canonicalPath == "" || legacyPath == "" {
 		return
@@ -168,22 +170,30 @@ func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
 	if !fi.Mode().IsRegular() {
 		return
 	}
-	if _, err := os.Stat(canonicalPath); err == nil {
-		// Both exist as regular files: canonical wins going forward;
-		// legacy stays readable until the operator removes it.
+	if _, err := os.Stat(canonicalPath); err != nil {
+		// Canonical absent but legacy is a regular file (e.g. a save that
+		// failed between load and write): seed canonical from legacy so
+		// the legacy content survives, then converge below.
+		data, err := os.ReadFile(legacyPath) //nolint:gosec
+		if err != nil {
+			return
+		}
+		if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
+			return
+		}
+		if err := os.WriteFile(canonicalPath, data, 0o644); err != nil { //nolint:gosec
+			return
+		}
+	}
+	// Both paths are regular files at this point. The canonical file was
+	// written from merged state that already includes the legacy content
+	// (loads read the legacy fallback), so replacing the stale legacy file
+	// with a symlink loses nothing and keeps old-path readers current.
+	// The remove+symlink is best-effort: a failure leaves the legacy file
+	// readable and the canonical file authoritative.
+	if err := os.Remove(legacyPath); err != nil {
 		return
 	}
-	data, err := os.ReadFile(legacyPath) //nolint:gosec
-	if err != nil {
-		return
-	}
-	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-		return
-	}
-	if err := os.WriteFile(canonicalPath, data, 0o644); err != nil { //nolint:gosec
-		return
-	}
-	_ = os.Remove(legacyPath)
 	_ = ensureCompatSymlink(canonicalPath, legacyPath)
 }
 
