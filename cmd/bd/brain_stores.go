@@ -204,32 +204,53 @@ func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
 // first-file-wins — guarantees a diverged legacy regular file can never lose
 // entries silently: every load-then-save cycle persists the union, so the
 // post-save symlink convergence in migrateLegacyFileToSymlink is lossless.
+// readStoresFile reads one registry file. found=false means the file is
+// absent (not an error). A present-but-unreadable or unparseable file
+// returns found=true with the error, so callers can decide whether the
+// other file's healthy state is enough to proceed.
+func readStoresFile(path string) (stores map[string]storeEntry, found bool, err error) {
+	if path == "" {
+		return nil, false, nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, true, fmt.Errorf("reading %s: %w", path, err)
+	}
+	var reg storesRegistry
+	if err := yaml.Unmarshal(data, &reg); err != nil {
+		return nil, true, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	if reg.Stores == nil {
+		return make(map[string]storeEntry), true, nil
+	}
+	return reg.Stores, true, nil
+}
+
 func loadStoresRegistry() (map[string]storeEntry, error) {
 	merged := make(map[string]storeEntry)
-	found := false
-	// Read legacy first so canonical entries overwrite on conflict.
-	for _, path := range []string{storesYamlLegacyFile(), storesYamlFile()} {
-		if path == "" {
-			continue
-		}
-		data, err := os.ReadFile(path) //nolint:gosec
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", path, err)
-		}
-		var reg storesRegistry
-		if err := yaml.Unmarshal(data, &reg); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", path, err)
-		}
-		found = true
-		for name, entry := range reg.Stores {
-			merged[name] = entry
-		}
+	// Legacy first so canonical entries overwrite on conflict. The legacy
+	// read is best-effort: a corrupt/unreadable legacy file must never break
+	// reads while the canonical file is healthy (otherwise a damaged legacy
+	// copy would wedge every load-then-save command in a stuck state, since
+	// load fails before save can converge it). A corrupt legacy with a
+	// missing canonical stays fatal, so a later save cannot persist an
+	// empty registry over unknown state.
+	legacy, _, legacyErr := readStoresFile(storesYamlLegacyFile())
+	canonical, canonicalFound, err := readStoresFile(storesYamlFile())
+	if err != nil {
+		return nil, err
 	}
-	if !found {
-		return make(map[string]storeEntry), nil
+	if !canonicalFound && legacyErr != nil {
+		return nil, legacyErr
+	}
+	for name, entry := range legacy {
+		merged[name] = entry
+	}
+	for name, entry := range canonical {
+		merged[name] = entry
 	}
 	return merged, nil
 }

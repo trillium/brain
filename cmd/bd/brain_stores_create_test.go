@@ -459,3 +459,48 @@ func TestLoadStoresRegistry_MergesDivergedFiles(t *testing.T) {
 		t.Errorf("canonical should win on conflict; got %+v", stores)
 	}
 }
+
+func TestLoadStoresRegistry_CorruptLegacyHealthyCanonical(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	home, _ := os.UserHomeDir()
+	for dir, body := range map[string]string{
+		// Corrupt legacy must never wedge reads while canonical is healthy.
+		filepath.Join(home, ".config", "pai"):   "not: [valid yaml: but parseable",
+		filepath.Join(home, ".config", "brain"): "stores:\n  task:\n    path: /data/tasks/.beads\n",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("corrupt legacy must not fail healthy-canonical load: %v", err)
+	}
+	if stores["task"].Path != "/data/tasks/.beads" {
+		t.Errorf("canonical content lost; got %+v", stores)
+	}
+}
+
+func TestLoadStoresRegistry_CorruptLegacyMissingCanonical(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	home, _ := os.UserHomeDir()
+	legacyDir := filepath.Join(home, ".config", "pai")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte("not: [valid yaml: but parseable"), 0o644); err != nil {
+		t.Fatalf("write legacy yaml: %v", err)
+	}
+
+	// Corrupt legacy with no canonical stays fatal: a later save must not
+	// persist an empty registry over unknown state.
+	if _, err := loadStoresRegistry(); err == nil {
+		t.Fatal("expected error for corrupt legacy with missing canonical, got nil")
+	}
+}
