@@ -109,6 +109,8 @@ func storesEnvLegacyFile() string {
 //     legacy path first and writing the canonical path.
 //
 // Returns nil in all non-fatal cases so migration never blocks a store write.
+//
+//nolint:unparam // always-nil error keeps call sites uniform with other I/O helpers
 func ensureCompatSymlink(canonicalPath, legacyPath string) error {
 	if canonicalPath == "" || legacyPath == "" || canonicalPath == legacyPath {
 		return nil
