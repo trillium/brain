@@ -4,7 +4,7 @@
 //
 // Direction: Dolt → markdown. Brain is the source of truth; the rendered file
 // at `<exfil-root>/{slug}/ISA.md` is a derived view that downstream tools
-// (PAI hooks, editors, grep) can read.
+// (brain hooks, editors, grep) can read.
 //
 // This package is intentionally fully pure-Go and has zero Dolt / cgo
 // dependencies so the byte-exact rendering, path resolution, and atomic-write
@@ -12,7 +12,8 @@
 // cmd/bd/isa_render.go is the thin shell that loads the row from the embedded
 // store and calls into this package.
 //
-// IsaFormat v2.7 contract (mirrors PAI/DOCUMENTATION/IsaFormat.md):
+// IsaFormat v2.7 contract (see docs/BRAIN_DEPAI_MIGRATION.md for the
+// pre-migration PAI/DOCUMENTATION/IsaFormat.md reference):
 //
 //	---
 //	task: "<title>"
@@ -47,9 +48,15 @@ import (
 )
 
 // DefaultExfilRoot is the on-disk root used when BRAIN_ISA_EXFIL_ROOT is
-// unset. Mirrors the PAI work-memory layout so a freshly rendered ISA lands
-// where the rest of the algorithm already looks.
-const DefaultExfilRoot = ".claude/PAI/MEMORY/WORK"
+// unset. De-PAI migration (brain v0.5.0): moved from
+// .claude/PAI/MEMORY/WORK to .claude/brain/MEMORY/WORK. ResolveExfilRoot
+// still falls back to the legacy path when it exists and the new one does
+// not, so existing renders keep working non-destructively.
+const DefaultExfilRoot = ".claude/brain/MEMORY/WORK"
+
+// LegacyDefaultExfilRoot is the pre-migration ISA exfil root. Read as a
+// fallback when the canonical root does not yet exist.
+const LegacyDefaultExfilRoot = ".claude/PAI/MEMORY/WORK"
 
 // EnvExfilRoot is the environment variable that overrides DefaultExfilRoot.
 // Documented for tests and ops; the verb reads this name and only this name.
@@ -122,7 +129,10 @@ func (e *InputError) Error() string { return e.Msg }
 // ResolveExfilRoot returns the on-disk root where rendered ISAs live.
 //
 //	BRAIN_ISA_EXFIL_ROOT set    → that value, verbatim (no $HOME expansion).
-//	BRAIN_ISA_EXFIL_ROOT unset  → ${HOME}/.claude/PAI/MEMORY/WORK.
+//	BRAIN_ISA_EXFIL_ROOT unset  → ${HOME}/.claude/brain/MEMORY/WORK,
+//	                               falling back to the legacy
+//	                               ${HOME}/.claude/PAI/MEMORY/WORK when the new
+//	                               path does not exist but the legacy one does.
 //
 // When HOME is also unset (extremely rare; CI without env), the default
 // collapses to the relative DefaultExfilRoot — the caller will hit a
@@ -135,7 +145,15 @@ func ResolveExfilRoot() string {
 	if err != nil || home == "" {
 		return DefaultExfilRoot
 	}
-	return filepath.Join(home, DefaultExfilRoot)
+	canonical := filepath.Join(home, DefaultExfilRoot)
+	legacy := filepath.Join(home, LegacyDefaultExfilRoot)
+	if _, err := os.Stat(canonical); err == nil {
+		return canonical
+	}
+	if _, err := os.Stat(legacy); err == nil {
+		return legacy
+	}
+	return canonical
 }
 
 // ResolveTargetPath returns the canonical render target for an ISA:
@@ -362,7 +380,7 @@ func yamlQuote(s string) string {
 }
 
 // CheckWriteAllowed decides whether a render may write over targetPath. It
-// enforces the "disk-canonical" doctrine (PAI 2026-06-25): an ISA.md that a
+// enforces the "disk-canonical" doctrine: an ISA.md that a
 // human/agent authored directly on disk is the source of truth, and the
 // IsaLifter hook lifts it INTO brain — a render must never clobber it.
 //

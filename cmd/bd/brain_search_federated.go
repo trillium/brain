@@ -1,8 +1,8 @@
-// Federated search across all registered PAI stores on the same Dolt server.
+// Federated search across all registered brain stores on the same Dolt server.
 //
 // Implements `bd search --federated <query>` (also reachable as
 // `brain search --federated <query>` via the brain wrapper). Reads the store
-// registry at ~/.config/pai/stores.yaml, resolves each store's Dolt database
+// registry at ~/.config/brain/stores.yaml (legacy ~/.config/pai/stores.yaml resolves each store's Dolt database
 // name from its <beadsDir>/metadata.json, and runs a single-table query
 // against every database on the already-open *sql.DB connection.
 //
@@ -340,7 +340,7 @@ func init() {
 	searchCmd.Flags().Bool(
 		"federated",
 		false,
-		"Search across all registered PAI stores on the same Dolt server "+
+		"Search across all registered brain stores on the same Dolt server "+
 			"(brain + secondaries). Sectioned output, primary store first.",
 	)
 }

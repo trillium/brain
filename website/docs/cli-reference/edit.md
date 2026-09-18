@@ -20,6 +20,7 @@ Examples:
   bd edit bd-42 --design           # Edit design notes
   bd edit bd-42 --notes            # Edit notes
   bd edit bd-42 --acceptance       # Edit acceptance criteria
+  bd edit bd-42 --append           # Append to the description from an empty buffer
 
 ```
 bd edit [id] [flags]
@@ -29,6 +30,7 @@ bd edit [id] [flags]
 
 ```
       --acceptance    Edit the acceptance criteria
+      --append        Start from an empty buffer and append what you write to the field
       --description   Edit the description (default)
       --design        Edit the design notes
       --notes         Edit the notes

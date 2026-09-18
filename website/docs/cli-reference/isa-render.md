@@ -14,7 +14,8 @@ Render an ISA-kind issue to canonical markdown at
 &lt;exfil-root&gt;/&lt;slug&gt;/ISA.md.
 
 The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
-variable; it defaults to $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK. The render is
+variable; it defaults to $&#123;HOME&#125;/.claude/brain/MEMORY/WORK (legacy $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK
+is used when it exists and the new path does not). The render is
 atomic: a temp file is written first, then rename(2) makes the swap, so
 readers never observe a half-written file.
 

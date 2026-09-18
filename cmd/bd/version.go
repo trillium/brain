@@ -20,7 +20,7 @@ var (
 	// BrainVersion is the brain fork version, set via -ldflags at build time from
 	// the most recent brain/vX.Y.Z git tag. Falls back to the in-source default
 	// below for manual builds.
-	BrainVersion = "0.4.0"
+	BrainVersion = "0.5.0"
 	// Build can be set via ldflags at compile time
 	Build = "dev"
 	// Commit and branch the git revision the binary was built from (optional ldflag)

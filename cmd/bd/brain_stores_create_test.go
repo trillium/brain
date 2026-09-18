@@ -85,10 +85,15 @@ func TestRegenerateStoresEnv_WritesShellExports(t *testing.T) {
 	}
 	got := string(body)
 	for _, want := range []string{
+		`export BRAIN_STORE_RECIPES="/data/recipes/.beads"`,
+		`export BRAIN_STORE_IDEAS="/data/ideas/.beads"`,
+		`export BRAIN_STORE_SIDE_QUESTS="/data/side-quests/.beads"`,
+		`export BRAIN_STORES_LIST="ideas:recipes:side-quests"`, // sorted, colon-joined
+		// Deprecated compat aliases (transition only).
 		`export PAI_STORE_RECIPES="/data/recipes/.beads"`,
 		`export PAI_STORE_IDEAS="/data/ideas/.beads"`,
 		`export PAI_STORE_SIDE_QUESTS="/data/side-quests/.beads"`,
-		`export PAI_STORES_LIST="ideas:recipes:side-quests"`, // sorted, colon-joined
+		`export PAI_STORES_LIST="ideas:recipes:side-quests"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("env file missing line %q. Got:\n%s", want, got)
@@ -324,5 +329,58 @@ func TestInitDoltStore_ErrorsWhenDoltMissing(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "dolt binary not found") {
 		t.Errorf("error should name missing dolt; got: %v", err)
+	}
+}
+
+func TestLoadStoresRegistry_LegacyFallback(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	home, _ := os.UserHomeDir()
+	legacyDir := filepath.Join(home, ".config", "pai")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("mkdir legacy: %v", err)
+	}
+	legacyBody := "stores:\n  task:\n    path: /data/tasks/.beads\n"
+	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte(legacyBody), 0o644); err != nil {
+		t.Fatalf("write legacy yaml: %v", err)
+	}
+
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("loadStoresRegistry: %v", err)
+	}
+	if stores["task"].Path != "/data/tasks/.beads" {
+		t.Errorf("legacy fallback not read; got %+v", stores)
+	}
+}
+
+func TestSaveStoresRegistry_ConvergesLegacySymlink(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	stores := map[string]storeEntry{"task": {Path: "/data/tasks/.beads"}}
+	if err := saveStoresRegistry(stores); err != nil {
+		t.Fatalf("saveStoresRegistry: %v", err)
+	}
+
+	home, _ := os.UserHomeDir()
+	canonical := filepath.Join(home, ".config", "brain", "stores.yaml")
+	legacy := filepath.Join(home, ".config", "pai", "stores.yaml")
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("canonical registry missing: %v", err)
+	}
+	fi, err := os.Lstat(legacy)
+	if err != nil {
+		t.Fatalf("legacy compat path missing: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("legacy path should be a symlink, mode %v", fi.Mode())
+	}
+	// Round-trip: load reads the canonical file back.
+	back, err := loadStoresRegistry()
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if back["task"].Path != "/data/tasks/.beads" {
+		t.Errorf("round-trip mismatch; got %+v", back)
 	}
 }

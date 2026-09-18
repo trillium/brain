@@ -12,12 +12,15 @@ Generated from `bd help --doc stores`
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/pai/stores.yaml. Each registered store
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
-Run 'brain stores env' to regenerate ~/.config/pai/stores.env for
-shell wrapper scripts that need PAI_STORE_* variables.
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).
 
 ```
 bd stores [flags]
@@ -64,12 +67,18 @@ bd stores alias <existing-store> <new-name> [flags]
 
 Provision a new connected store end-to-end. Does, in order:
 
-  1. Create &lt;path&gt;/.beads/ and run 'dolt init' inside it.
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in &lt;path&gt;/.beads/.
   2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt; that pins BEADS_DIR
-     and BD_NAME, then exec's bd.
-  4. Register the store in ~/.config/pai/stores.yaml.
-  5. Regenerate ~/.config/pai/stores.env.
+  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
@@ -97,9 +106,51 @@ bd stores create <name> [flags]
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
 ```
 
+### bd stores doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd stores doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ### bd stores env
 
-Write ~/.config/pai/stores.env from the registry (for shell wrappers)
+Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 
 ```
 bd stores env [flags]
@@ -136,8 +187,8 @@ Rename a connected store end-to-end. Does, in order:
      A custom path is left in place; only the registry key changes.
   2. Rewrite the wrapper at ~/.local/bin/&lt;old-name&gt; to ~/.local/bin/&lt;new-name&gt;
      pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
-  3. Update ~/.config/pai/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
-  4. Regenerate ~/.config/pai/stores.env.
+  3. Update ~/.config/brain/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
+  4. Regenerate ~/.config/brain/stores.env.
 
 What this does NOT do:
   - The underlying Dolt database name stays the same — existing bead IDs
@@ -164,7 +215,7 @@ bd stores rename <old-name> <new-name> [flags]
 
 ### bd stores render-all
 
-Iterate every store registered in ~/.config/pai/stores.yaml and
+Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
 re-invoked once per store with BEADS_DIR pinned, so per-store summaries
 land on stderr exactly as a stand-alone 'bd render-all' would.
@@ -198,7 +249,7 @@ bd stores render-all [flags]
 ### bd stores set-about
 
 Attach a short description to a registered store, stored in the
-registry (~/.config/pai/stores.yaml) only. The wrapper script is left
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
 unchanged. View blurbs with 'brain stores list --verbose'.
 
 Pass an empty string to clear the blurb.

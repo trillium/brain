@@ -10,7 +10,18 @@ Generated from `bd help --doc create`
 
 ## bd create
 
-Create a new issue (or batch from markdown/graph JSON)
+Create a new issue (or batch from markdown/graph JSON).
+
+Compose in your editor when the body is more than a one-liner: the first line
+of the buffer is the title, everything after the first blank line is the body.
+
+Examples:
+  bd create "Short title"                      # title only
+  bd create "Short title" -d "Body text"       # title + body inline
+  bd create --edit                             # compose title + body in $EDITOR
+  bd create "Short title" --edit               # prefill the title, write the body
+  bd create                                    # same as --edit when run at a terminal
+  bd edit bd-42 --append                       # append more body later, in $EDITOR
 
 ```
 bd create [title] [flags]
@@ -33,6 +44,7 @@ bd create [title] [flags]
       --design-file string      Read design from file (use - for stdin)
       --dry-run                 Preview what would be created without actually creating
       --due string              Due date/time. Formats: +6h, +1d, +2w, tomorrow, next monday, 2025-01-15
+  -E, --edit                    Compose the title and body in $EDITOR (implied when no title is given at a terminal)
       --ephemeral               Create as ephemeral (short-lived, subject to TTL compaction)
   -e, --estimate int            Time estimate in minutes (e.g., 60 for 1 hour)
       --event-actor string      Entity URI who caused this event (requires --type=event)
