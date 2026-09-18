@@ -2,7 +2,8 @@
 //
 // Implements `bd search --federated <query>` (also reachable as
 // `brain search --federated <query>` via the brain wrapper). Reads the store
-// registry at ~/.config/brain/stores.yaml (legacy ~/.config/pai/stores.yaml resolves each store's Dolt database
+// registry at ~/.config/brain/stores.yaml (legacy ~/.config/pai/stores.yaml
+// still read for transition), resolves each store's Dolt database
 // name from its <beadsDir>/metadata.json, and runs a single-table query
 // against every database on the already-open *sql.DB connection.
 //
