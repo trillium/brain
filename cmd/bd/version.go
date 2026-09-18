@@ -52,7 +52,7 @@ var versionCombinedOnly bool
 
 // combinedVersion composes the canonical combined version token in SemVer
 // build-metadata form: <beadsVersion>+brain.<brainVersion>, e.g.
-// "1.1.0-rc.1+brain.0.4.0". It is the single source of truth for the combined
+// "1.1.0-rc.1+brain.0.5.0". It is the single source of truth for the combined
 // string, derived from the two existing ldflags-set vars. The beads core stays
 // semver-sortable because "+brain.x" is build metadata after "+", which tooling
 // ignores when comparing precedence.
