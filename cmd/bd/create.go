@@ -394,6 +394,7 @@ Examples:
 			})
 
 			if jsonOutput {
+				previewIssue.EnsureName()
 				return outputJSON(previewIssue)
 			}
 			renderCreateDryRunPreview(previewIssue, labels, deps)
@@ -728,6 +729,7 @@ Examples:
 		discardComposeDraft()
 
 		if jsonOutput {
+			issue.EnsureName()
 			if err := outputJSON(issue); err != nil {
 				return err
 			}

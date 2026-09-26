@@ -167,6 +167,9 @@ func ScanIssueFrom(s IssueScanner, extra ...any) (*types.Issue, error) {
 	if sourceSystem.Valid {
 		issue.SourceSystem = sourceSystem.String
 	}
+	// Additive voice/display name derived from the title. The canonical id
+	// is untouched; Name is a presentation aid only (see types.DisplayName).
+	issue.EnsureName()
 	// Custom metadata field (GH#1406)
 	if metadata.Valid && metadata.String != "" && metadata.String != "{}" {
 		issue.Metadata = []byte(metadata.String)
