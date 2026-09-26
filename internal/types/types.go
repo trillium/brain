@@ -15,7 +15,19 @@ import (
 // Fields are organized into logical groups for maintainability.
 type Issue struct {
 	// ===== Core Identification =====
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// Name is the additive human/voice-facing kebab-case bead name derived
+	// deterministically from Title via DisplayName (same rules as the brain
+	// slug.Auto helper: lowercase, non-alphanumeric runs collapse to a
+	// single hyphen, trimmed, capped at 64 chars on a word boundary).
+	//
+	// The canonical id stays authoritative in all machine-readable output;
+	// Name is a display aid only: it is NOT unique (two beads whose titles
+	// kebab to the same string share a name), NOT stable across title
+	// edits, and MUST NOT be used as a lookup key. Disambiguate by ID.
+	// Empty (omitted) when the title yields no alphanumerics.
+	// See docs/brain/VOICE_IDENTIFIERS.md.
+	Name        string `json:"name,omitempty"`
 	ContentHash string `json:"-"` // Internal: SHA256 of canonical content
 
 	// ===== Issue Content =====
@@ -110,6 +122,59 @@ type Issue struct {
 	Actor     string `json:"actor,omitempty"`      // Entity URI who caused this event
 	Target    string `json:"target,omitempty"`     // Entity URI or bead ID affected
 	Payload   string `json:"payload,omitempty"`    // Event-specific JSON data
+}
+
+// DisplayName derives the human/voice-facing kebab-case bead name for
+// title. It mirrors the brain slug.Auto algorithm (see
+// internal/brain/verb/slug) so every non-empty result is a valid --slug:
+//
+//  1. Lowercase the title.
+//  2. Replace runs of non-[a-z0-9] chars with a single hyphen.
+//  3. Trim leading/trailing hyphens.
+//  4. Truncate to 64 chars; walk back to the last hyphen so the name
+//     ends on a word boundary.
+//  5. Titles with no alphanumerics yield "" (the JSON field omits it).
+//
+// Kept as a local pure function (rather than importing the brain verb
+// package) because core types must not depend on the brain verb layer;
+// the exfiltrator's kebab helper follows the same precedent.
+func DisplayName(title string) string {
+	if title == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(title))
+	prevHyphen := false
+	for _, r := range strings.ToLower(title) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevHyphen = false
+		} else if !prevHyphen {
+			b.WriteByte('-')
+			prevHyphen = true
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return ""
+	}
+	if len(s) > 64 {
+		s = s[:64]
+		if i := strings.LastIndex(s, "-"); i > 0 {
+			s = s[:i]
+		}
+		s = strings.TrimRight(s, "-")
+	}
+	return s
+}
+
+// EnsureName sets i.Name from i.Title when Name is empty. Storage scan
+// paths call this so every DB-read issue carries its display name;
+// in-memory producers (create preview/result) call it before JSON output.
+func (i *Issue) EnsureName() {
+	if i != nil && i.Name == "" {
+		i.Name = DisplayName(i.Title)
+	}
 }
 
 // ComputeContentHash creates a deterministic hash of the issue's content.

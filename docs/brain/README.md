@@ -7,6 +7,7 @@ Anything that's specifically about the brain layer — the `kind` discriminator,
 ## What lives here
 
 - [`WHAT_IS_BRAIN.md`](WHAT_IS_BRAIN.md) — plain-English explainer with ASCII diagrams and Given/When/Then scenarios. **brain IS bd, renamed.** One binary, one bag of brain docs (kind ∈ {task, knowledge, both}), four added verbs (`new`, `link`, `related`, `recast`), two added edge types (`extends`, `learned-from`), and a markdown-exfiltration hook. Start here if you've never used brain before. (Replaces the earlier `BRAIN_VS_BD.md` whose "verb-vocabulary lens over bd" framing was wrong — see `divergence/0006`.)
+- [`VOICE_IDENTIFIERS.md`](VOICE_IDENTIFIERS.md) — the additive `name` field on every issue-bearing JSON payload: derivation rule, collision behaviour, why `id` stays canonical, and how an agent should present a bead when speaking.
 
 This directory will grow as brain v0.3 is built. Beyond the explainer above, expected residents:
 
