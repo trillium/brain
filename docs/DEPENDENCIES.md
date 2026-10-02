@@ -144,7 +144,7 @@ bd dep cycles
 Beads also rejects cycles at write time — `bd dep add` checks for
 cycles before committing.
 
-## Cross-Repo Dependencies
+## External and Cross-Store Dependencies
 
 Dependencies can reference issues in other beads rigs:
 
@@ -154,6 +154,18 @@ bd dep add local-issue external:other-project:remote-issue
 
 External dependencies always block. When the remote issue closes,
 `bd ready` reflects the change (checked at query time).
+
+In a named-store federation, `dep add` also accepts an ID with a different
+store prefix:
+
+```bash
+brain dep add brain-abc task-xyz --type related
+```
+
+The source store persists that target as an external dependency without
+creating a local target row. `dep list` (including `--json`), `brain related`,
+and `show --json` retain the edge even when the target is absent from the
+source store; graph traversal treats it as a leaf.
 
 ## Gates
 

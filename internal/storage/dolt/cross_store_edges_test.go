@@ -25,10 +25,13 @@ func TestGetDependenciesWithMetadata_ExternalEdges(t *testing.T) {
 		t.Fatalf("failed to create issue: %v", err)
 	}
 
-	// Add an external dependency (cross-store reference)
+	// Add a related edge to an ID that does not exist in this store. This
+	// mirrors `dep add` across named stores, which persists its target in
+	// depends_on_external rather than creating a local issue row.
+	const externalID = "crossstore-reader-target-9lp"
 	externalDep := &types.Dependency{
 		IssueID:     issue.ID,
-		DependsOnID: "resume_bullets-9lp",
+		DependsOnID: externalID,
 		Type:        "related",
 	}
 	if err := store.AddDependency(ctx, externalDep, "tester"); err != nil {
@@ -48,8 +51,8 @@ func TestGetDependenciesWithMetadata_ExternalEdges(t *testing.T) {
 
 	// Verify the external dependency is present with correct ID
 	if len(deps) > 0 {
-		if deps[0].ID != "resume_bullets-9lp" {
-			t.Errorf("expected dependency ID 'resume_bullets-9lp', got %q", deps[0].ID)
+		if deps[0].ID != externalID {
+			t.Errorf("expected dependency ID %q, got %q", externalID, deps[0].ID)
 		}
 		if deps[0].DependencyType != "related" {
 			t.Errorf("expected dependency type 'related', got %q", deps[0].DependencyType)

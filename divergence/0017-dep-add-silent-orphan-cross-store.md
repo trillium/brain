@@ -2,15 +2,18 @@
 
 **Filed:** 2026-06-26
 **Source:** PAI multi-store cross-link audit (`~/.claude/PAI/MEMORY/STATE/brain-cross-store-link-audit.md`)
-**bd version:** v1.0.5
+**bd version at filing:** v1.0.5
+**Status:** Resolved — cross-store targets remain visible in reader views.
 
-## Symptom
+## Symptom at filing
 
-`bd dep add <local-id> <foreign-id>` returns exit 0 with `✓ Added dependency: <local-id> depends on <foreign-id> (blocks)` even when `<foreign-id>` lives in a different store (different bd prefix, different `.beads` dir, different Dolt database). The row is persisted to the `dependencies` table with `depends_on_issue_id IS NULL` and `depends_on_external='<foreign-id>'`, but every user-facing read verb hides it.
+`bd dep add <local-id> <foreign-id>` returned exit 0 with `✓ Added dependency: <local-id> depends on <foreign-id> (blocks)` when `<foreign-id>` lived in a different store (different bd prefix, different `.beads` dir, different Dolt database). The row was persisted to the `dependencies` table with `depends_on_issue_id IS NULL` and `depends_on_external='<foreign-id>'`, but user-facing read verbs hid it.
 
-Sibling verbs — `bd link`, `bd brain link`, `bd dep relate` — all error correctly with `no issue found matching "<foreign-id>"`. Only `bd dep add` accepts the foreign-prefix ID silently.
+At filing, sibling verbs — `bd link`, `bd brain link`, `bd dep relate` — errored with `no issue found matching "<foreign-id>"`. Only `bd dep add` accepted the foreign-prefix ID silently.
 
-## Reproduction
+## Reproduction at filing
+
+The following output records the pre-fix behavior.
 
 ```sh
 # In store A:
@@ -27,7 +30,7 @@ $ bd -C ~/data/brain dep add brain-5wcg person-dnf
 $ echo $?
 0
 
-# But every read path hides the edge:
+# At filing, every read path hid the edge:
 $ bd -C ~/data/brain dep list brain-5wcg --json
 [{"issue_id":"brain-5wcg","depends_on":"brain-heg7","type":"related","status":"open"}]
 # ^ only the WITHIN-store edge appears. The person-dnf edge is gone from view.
@@ -50,38 +53,35 @@ $ dolt sql -q "SELECT issue_id, type, depends_on_issue_id, depends_on_external F
 +------------+---------+---------------------+---------------------+
 ```
 
-## Expected behavior
+## Resolution
 
-One of:
+The reader-rendering design was restored. A cross-store `dep add` continues to
+persist its target in `depends_on_external`; reader paths construct a minimal
+target when no local issue row exists. Consequently `dep list` (text and JSON),
+`brain related`, and `show --json` surface the edge. Cross-store targets remain
+leaf nodes rather than triggering a lookup or traversal into another store.
 
-1. **Reject foreign IDs at write time.** Match sibling verbs (`bd link`, `bd dep relate`) — error with `no issue found matching "<foreign-id>"` and exit non-zero. This is the simplest fix and produces the strongest invariant: `dep add` write success implies the edge is visible to `dep list`.
-2. **Render `depends_on_external` rows in read verbs.** Teach `bd dep list`, `bd brain related`, `bd show` to surface external-target rows with a clear marker (e.g. `→ person-dnf (external)`). This preserves the write but closes the gap between persisted state and visible state.
+The user-facing contract is documented in [Dependencies and Gates](../docs/DEPENDENCIES.md#external-and-cross-store-dependencies).
 
-Option 1 is the safe default. Option 2 enables real cross-store graph semantics but requires the read verbs to know about the federation registry and to handle "target store not resolvable" gracefully.
+## Why this mattered
 
-## Why this matters
+Cross-store linking is a primary use case for a multi-store brain federation.
+Hiding a successfully persisted edge made users retry it, accumulate unseen
+rows, and work around the CLI with metadata fields.
 
-Cross-store linking is the dominant use case for a multi-store brain federation. The current state silently swallows edges that the user reasonably believes they wrote, leading to:
+## Historical PAI mitigation
 
-- **Data loss from the user's perspective.** `brain show` says no link exists; the user adds it again; orphan accumulates.
-- **Lifter complexity.** PAI lifters (`PersonLifter`, `decisions-lifter`) already work around this with `metadata.<store>_<kind>_id` fields and explicit "expected to fail and is swallowed" comments around their `bd link` calls. These workarounds are correct but encode a footgun that should not exist at the CLI layer.
-- **Doctor invariants.** `cmd/bd/doctor/integrity.go` is currently the ONLY consumer of `depends_on_external` outside `brain transfer`. Every orphan row is a future false positive in an integrity check.
+Before the reader fix, the audit recommended canonicalizing
+`metadata.<store>_<kind>_id` (for example, `metadata.brain_isa = "brain-fc1f"`
+on a decision row) as a durable cross-store reference pattern. That workaround
+is not required for a dependency edge; use the documented dependency contract
+above when an edge is the intended relationship.
 
-## Current PAI mitigation
+## Regression coverage
 
-The audit recommended canonicalizing `metadata.<store>_<kind>_id` (e.g. `metadata.brain_isa = "brain-fc1f"` on a decision row in `~/data/decisions`) as the durable cross-store reference pattern. PersonLifter already uses `metadata.brain_slug`; decisions-lifter uses `metadata.parent_isa`. Both work without `bd link` and survive across stores.
-
-## Suggested patch direction
-
-In `cmd/bd/dep.go` (or wherever `dep add` resolves arguments), perform the same ID-resolution check that `bd link` does before writing. If `depends_on_issue_id` cannot be resolved within the current store, error out:
-
-```go
-if depID == nil && !explicit_external_flag {
-    return fmt.Errorf("no issue found matching %q (use --external if you intend an external reference)", target)
-}
-```
-
-An `--external` opt-in flag preserves the existing `depends_on_external` write path for callers that genuinely need it (`brain transfer` is the only known one today) without making it the silent default.
+`TestGetDependenciesWithMetadata_ExternalEdges` in
+`internal/storage/dolt/cross_store_edges_test.go` verifies that a related edge
+to an absent foreign-prefix target is returned with its ID and type.
 
 ## Related divergence docs
 
@@ -91,9 +91,9 @@ An `--external` opt-in flag preserves the existing `depends_on_external` write p
 
 These together suggest a v1.1.0 cleanup pass on the "write succeeds, read disagrees" footguns — same class of bug, different verbs.
 
-## Test artifacts
+## Historical test artifacts
 
-Orphan row deliberately left in `~/data/brain` as evidence:
+The original audit left an orphan row in `~/data/brain` as evidence:
 
 ```sql
 DELETE FROM dependencies WHERE issue_id='brain-5wcg' AND depends_on_external='person-dnf';
