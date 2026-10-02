@@ -197,6 +197,10 @@ func Initialize() error {
 	v.SetDefault("metrics.disabled", false)
 	v.SetDefault("metrics.endpoint", "https://gastownhall-eventsapi.com/mp/collect")
 
+	// Generic workspace diagnostics guide standalone users to bd init by default.
+	// Federated store wrappers can disable only that suggestion with BD_HINTS_INIT=false.
+	v.SetDefault("hints.init", true)
+
 	// Federation configuration (optional Dolt remote)
 	v.SetDefault("federation.remote", "")                          // e.g., dolthub://org/beads, gs://bucket/beads, s3://bucket/beads, az://account.blob.core.windows.net/container/beads
 	v.SetDefault("federation.sovereignty", "")                     // T1 | T2 | T3 | T4 (empty = no restriction)

@@ -71,6 +71,8 @@ One Go binary (`~/.local/bin/bd`), many install names. Each wrapper is a shell s
 #!/bin/sh
 export BEADS_DIR="$HOME/data/tasks/.beads"
 export BD_NAME="task"
+# This command is a named external store, not the caller's repository.
+export BD_HINTS_INIT=false
 exec "$HOME/.local/bin/bd" "$@"
 ```
 

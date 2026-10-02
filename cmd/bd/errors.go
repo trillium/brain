@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/metrics"
 )
 
@@ -41,17 +42,34 @@ func whereDiagHint() string {
 	return workspaceDiagHint(false)
 }
 
+// ConfigKeyHintsInit controls the generic "bd init" suggestion in workspace
+// diagnostics. It leaves the error and workspace-resolution guidance intact.
+const ConfigKeyHintsInit = "hints.init"
+
 func workspaceDiagHint(includeWhere bool) string {
+	initHint := config.GetBool(ConfigKeyHintsInit)
 	if includeWhere {
 		if !usesSQLServer() {
-			return "run 'bd where' to inspect the resolved workspace, or 'bd init' to create a new database"
+			if initHint {
+				return "run 'bd where' to inspect the resolved workspace, or 'bd init' to create a new database"
+			}
+			return "run 'bd where' to inspect the resolved workspace"
 		}
-		return "run 'bd where' to inspect the resolved workspace, run 'bd doctor' to diagnose, or 'bd init' to create a new database"
+		if initHint {
+			return "run 'bd where' to inspect the resolved workspace, run 'bd doctor' to diagnose, or 'bd init' to create a new database"
+		}
+		return "run 'bd where' to inspect the resolved workspace, run 'bd doctor' to diagnose"
 	}
 	if !usesSQLServer() {
-		return "check BEADS_DIR/worktree setup, or run 'bd init' to create a new database"
+		if initHint {
+			return "check BEADS_DIR/worktree setup, or run 'bd init' to create a new database"
+		}
+		return "check BEADS_DIR/worktree setup"
 	}
-	return "check BEADS_DIR/worktree setup, run 'bd doctor' to diagnose, or run 'bd init' to create a new database"
+	if initHint {
+		return "check BEADS_DIR/worktree setup, run 'bd doctor' to diagnose, or run 'bd init' to create a new database"
+	}
+	return "check BEADS_DIR/worktree setup, run 'bd doctor' to diagnose"
 }
 
 func buildJSONError(message, hint string) interface{} {

@@ -2,8 +2,57 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"strings"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/config"
 )
+
+func TestWorkspaceDiagHint_HintsInitConfiguration(t *testing.T) {
+	original, wasSet := os.LookupEnv("BD_HINTS_INIT")
+	t.Cleanup(func() {
+		if wasSet {
+			_ = os.Setenv("BD_HINTS_INIT", original)
+		} else {
+			_ = os.Unsetenv("BD_HINTS_INIT")
+		}
+		if err := config.Initialize(); err != nil {
+			t.Errorf("restore config: %v", err)
+		}
+	})
+
+	t.Run("default retains standalone init guidance", func(t *testing.T) {
+		_ = os.Unsetenv("BD_HINTS_INIT")
+		if err := config.Initialize(); err != nil {
+			t.Fatal(err)
+		}
+		if !config.GetBool(ConfigKeyHintsInit) {
+			t.Fatalf("%s should default to true", ConfigKeyHintsInit)
+		}
+		if hint := diagHint(); !strings.Contains(hint, "bd init") {
+			t.Fatalf("default diagnostic hint lost init guidance: %q", hint)
+		}
+	})
+
+	t.Run("wrapper environment suppresses only init guidance", func(t *testing.T) {
+		if err := os.Setenv("BD_HINTS_INIT", "false"); err != nil {
+			t.Fatal(err)
+		}
+		if err := config.Initialize(); err != nil {
+			t.Fatal(err)
+		}
+		if config.GetBool(ConfigKeyHintsInit) {
+			t.Fatalf("%s should honor BD_HINTS_INIT=false", ConfigKeyHintsInit)
+		}
+		if hint := diagHint(); strings.Contains(hint, "bd init") || !strings.Contains(hint, "bd where") {
+			t.Fatalf("suppressed hint = %q; want workspace guidance without bd init", hint)
+		}
+		if hint := whereDiagHint(); strings.Contains(hint, "bd init") || !strings.Contains(hint, "BEADS_DIR/worktree setup") {
+			t.Fatalf("suppressed where hint = %q; want workspace guidance without bd init", hint)
+		}
+	})
+}
 
 func TestJsonStderrError_StructuredOutput(t *testing.T) {
 	tests := []struct {

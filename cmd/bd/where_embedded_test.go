@@ -87,6 +87,40 @@ func TestWhereNoWorkspace(t *testing.T) {
 	})
 }
 
+func TestMissingDatabaseHint_HintsInitConfiguration(t *testing.T) {
+	bd := buildEmbeddedBD(t)
+	dir := t.TempDir()
+
+	for _, tt := range []struct {
+		name         string
+		hintsInit    string
+		wantInitHint bool
+	}{
+		{name: "default retains init guidance", hintsInit: "true", wantInitHint: true},
+		{name: "federated wrapper suppresses init guidance", hintsInit: "false", wantInitHint: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(bd, "list")
+			cmd.Dir = dir
+			cmd.Env = append(bdEnv(dir), "BD_HINTS_INIT="+tt.hintsInit)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatal("bd list should fail without a workspace")
+			}
+			output := string(out)
+			if !strings.Contains(output, "Error: no beads database found") {
+				t.Fatalf("missing database error = %q", output)
+			}
+			if got := strings.Contains(output, "bd init"); got != tt.wantInitHint {
+				t.Fatalf("bd init hint present = %t, want %t:\n%s", got, tt.wantInitHint, output)
+			}
+			if !strings.Contains(output, "set BEADS_DIR") {
+				t.Fatalf("suppression must retain BEADS_DIR guidance:\n%s", output)
+			}
+		})
+	}
+}
+
 func TestEmbeddedWhere(t *testing.T) {
 	if os.Getenv("BEADS_TEST_EMBEDDED_DOLT") != "1" {
 		t.Skip("set BEADS_TEST_EMBEDDED_DOLT=1 to run embedded dolt integration tests")

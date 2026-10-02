@@ -42,6 +42,7 @@ func TestWriteStoreWrapper_WritesExecutableWrapper(t *testing.T) {
 		"#!/bin/sh",
 		`BEADS_DIR="/data/recipes/.beads"`,
 		`BD_NAME="recipes"`,
+		"BD_HINTS_INIT=false",
 		` bd "$@"`, // default bd binary
 	} {
 		if !strings.Contains(got, want) {
@@ -238,6 +239,7 @@ func TestWriteServerStoreWrapper_EmitsServerPins(t *testing.T) {
 		"#!/bin/sh",
 		`export BEADS_DIR="/data/friction/.beads"`,
 		`export BD_NAME="friction"`,
+		"export BD_HINTS_INIT=false",
 		`export BRAIN_KNOWLEDGE_ROOT="/data/friction"`,
 		"export BRAIN_EXFIL_FLAT=1",
 		"export BEADS_DOLT_SERVER_MODE=1",
