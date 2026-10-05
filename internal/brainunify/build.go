@@ -88,6 +88,13 @@ type Builder struct {
 	template         SourceFacts
 	plans            []TablePlan
 	templateDatabase string
+	// jsonCols maps a source table to its json-typed columns, resolved once
+	// from the template. Resolving it per source instead would cost two
+	// information_schema queries per (store, table) — thousands of them
+	// against a live server — and the unified schema is the template's, so
+	// the template's answer is the correct one. A source that genuinely
+	// differs still fails loudly on insert rather than silently.
+	jsonCols map[string][]string
 }
 
 // NewBuilder returns a builder reading from source and migrating according to
@@ -335,6 +342,14 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	b.plans, err = b.tablePlans(ctx)
 	if err != nil {
 		return BuildResult{}, err
+	}
+	b.jsonCols = map[string][]string{}
+	for _, tp := range b.plans {
+		cols, err := b.source.JSONColumns(ctx, b.templateDatabase, tp.Table)
+		if err != nil {
+			return BuildResult{}, fmt.Errorf("reading json columns of %s: %w", tp.Table, err)
+		}
+		b.jsonCols[tp.Table] = cols
 	}
 
 	srv, err := StartIsolatedServer(ctx, b.opts.DoltBin, b.opts.DataDir)
@@ -647,6 +662,9 @@ func (b *Builder) planFor(table string) *TablePlan {
 	return nil
 }
 
+// jsonColsFor returns the json-typed columns resolved from the template.
+func (b *Builder) jsonColsFor(table string) []string { return b.jsonCols[table] }
+
 // sharedColumns returns the columns both the template schema and this source
 // have, so a source that lags the template is reported by column count rather
 // than failing mid-insert with an opaque SQL error.
@@ -725,12 +743,8 @@ func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table s
 	}
 	stmt := insertPrefix(targetTable, full)
 
-	jsonCols, err := b.source.JSONColumns(ctx, database, table)
-	if err != nil {
-		return 0, err
-	}
 	var imported int64
-	err = b.source.CopyRows(ctx, database, table, cols, jsonCols, func(rows [][]any) error {
+	err := b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), func(rows [][]any) error {
 		batch := make([]string, 0, len(rows))
 		for _, r := range rows {
 			vals := make([]any, 0, len(r)+len(prefixValues))
@@ -759,11 +773,8 @@ func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, ta
 	for _, e := range exclude {
 		excluded[e] = true
 	}
-	jsonCols, err := b.source.JSONColumns(ctx, database, table)
-	if err != nil {
-		return 0, 0, err
-	}
-	err = b.source.CopyRows(ctx, database, table, cols, jsonCols, func(rows [][]any) error {
+	var importedCopy int64
+	err = b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), func(rows [][]any) error {
 		batch := make([]string, 0, len(rows))
 		for _, r := range rows {
 			key := fmt.Sprint(r[keyIdx])
@@ -779,10 +790,10 @@ func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, ta
 		if _, err := target.ExecContext(ctx, stmt+strings.Join(batch, ",")); err != nil {
 			return fmt.Errorf("inserting into %s from %s: %w\nstatement: %s", table, database, err, truncate(stmt+batch[0], 1200))
 		}
-		imported += int64(len(batch))
+		importedCopy += int64(len(batch))
 		return nil
 	})
-	return imported, skipped, err
+	return importedCopy, skipped, err
 }
 
 // truncate shortens a statement for an error message so a failure reports the

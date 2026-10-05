@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 // Check is one mechanical comparison between the source data and the unified
@@ -116,89 +115,72 @@ func NewVerifier(ctx context.Context, source *readOnlySource, plan Plan, plans [
 func (v *Verifier) Close() error { return v.unified.Close() }
 
 // Verify runs every comparison and returns the result.
+//
+// Both sides are read in one grouped pass per table: the source side groups by
+// id prefix, the unified side does the same. Comparing group by group then
+// proves both things at once — that every row arrived, and that it arrived in
+// the namespace it belongs to.
 func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 	var res VerifyResult
-
 	losingIDs := losingIssueIDs(v.plan.Collisions)
 
-	// Per-namespace comparison. A namespace is the unit the unified database
-	// can actually express, so it is the unit the comparison uses: the
-	// source side is every source's rows under that prefix, minus the copies
-	// the recorded collision decision removed.
-	for _, ns := range SortedNamespaces(v.plan.Namespaces) {
-		if ns.Prefix == "" || ns.Prefix == UnattributedNamespace {
-			continue
+	for _, tp := range v.plans {
+		// Expected side: every participating source, with its own collision
+		// losers removed.
+		expectedByGroup, err := v.expectedByGroup(ctx, tp, losingIDs)
+		if err != nil {
+			return res, err
 		}
-		escaped := escapeLike(ns.Prefix)
-		for _, tp := range v.plans {
+		actualByGroup, err := v.unified.FingerprintByGroup(ctx, v.opts.Database, tp.Target,
+			tp.ScopeColumnName(), storeGroupColumn(tp.Scope), nil)
+		if err != nil {
+			return res, err
+		}
+
+		groups := map[string]bool{}
+		for g := range expectedByGroup {
+			groups[g] = true
+		}
+		for g := range actualByGroup {
+			groups[g] = true
+		}
+		for _, g := range sortedKeys(groups) {
+			exp := expectedByGroup[g]
+			act := actualByGroup[g]
+			scope := "namespace " + g
 			if tp.Scope == ScopeDatabaseState {
-				continue
+				scope = "store " + g
 			}
-			where := fmt.Sprintf("`%s` like '%s-%%'", tp.ScopeColumnName(), escaped)
-			expected, contributors, err := v.expectedFingerprint(ctx, tp, where, losingIDs)
-			if err != nil {
-				return res, err
-			}
-			if contributors == 0 {
-				continue
-			}
-			actual, err := v.unified.Fingerprint(ctx, v.opts.Database, tp.Target, where)
-			if err != nil {
-				return res, err
+			note := ""
+			if skipped := losingCountFor(losingIDs, g); skipped > 0 && tp.Scope != ScopeDatabaseState {
+				note = fmt.Sprintf("%d colliding row(s) here were removed from the source side and are recorded in brain_unify_collisions", skipped)
 			}
 			res.Checks = append(res.Checks, Check{
-				Scope: "namespace " + ns.Prefix, Table: tp.Target,
-				Expected: expected, Actual: actual, OK: expected == actual,
+				Scope: scope, Table: tp.Target, Note: note,
+				Expected: exp, Actual: act, OK: exp == act,
 			})
-			res.NamespacesChecked++
+			if tp.Scope == ScopeDatabaseState {
+				res.StoresChecked++
+			} else {
+				res.NamespacesChecked++
+			}
 		}
-	}
 
-	// Per-store comparison of the re-keyed database-state tables. These are
-	// compared per store because the unified database addresses them by the
-	// store column rather than by a prefix.
-	for _, tp := range v.plans {
-		if tp.Scope != ScopeDatabaseState {
-			continue
+		// Whole-table comparison: states the total as a single number, and
+		// catches a row that arrived in a group no source contributed to.
+		var want, got Fingerprint
+		for _, fp := range expectedByGroup {
+			want = Combine(want, fp)
 		}
-		expected, _, err := v.expectedFingerprint(ctx, tp, "", nil)
-		if err != nil {
-			return res, err
-		}
-		actual, err := v.unified.Fingerprint(ctx, v.opts.Database, tp.Target,
-			fmt.Sprintf("`store` in (%s)", quoteList(storeNames(v.plan.Sources))))
-		if err != nil {
-			return res, err
+		for _, fp := range actualByGroup {
+			got = Combine(got, fp)
 		}
 		res.Checks = append(res.Checks, Check{
-			Scope: "all stores", Table: tp.Target,
-			Expected: expected, Actual: actual, OK: expected == actual,
+			Scope: "all groups", Table: tp.Target,
+			Expected: want, Actual: got, OK: want == got,
 		})
-		res.StoresChecked++
 	}
 
-	// Whole-table comparison for every issue-scoped table, which catches a
-	// row that landed in the unified database but under no prefix at all.
-	for _, tp := range v.plans {
-		if tp.Scope == ScopeDatabaseState {
-			continue
-		}
-		expected, _, err := v.expectedFingerprint(ctx, tp, "", losingIDs)
-		if err != nil {
-			return res, err
-		}
-		actual, err := v.unified.Fingerprint(ctx, v.opts.Database, tp.Target, "")
-		if err != nil {
-			return res, err
-		}
-		res.Checks = append(res.Checks, Check{
-			Scope: "all namespaces", Table: tp.Target,
-			Expected: expected, Actual: actual, OK: expected == actual,
-		})
-		res.NamespacesChecked++
-	}
-
-	// The provenance tables must agree with the plan that produced them.
 	confirmed, err := v.confirmCollisions(ctx)
 	if err != nil {
 		return res, err
@@ -209,53 +191,52 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 	return res, nil
 }
 
-// expectedFingerprint computes the source-side fingerprint of one table under
-// one filter by combining every contributing source, with the rows the
-// recorded collisions removed.
-//
-// Combining is exact rather than approximate: after the collision exclusions
-// the contributing row sets are disjoint, so their counts and sizes sum and
-// their digests combine by XOR — the same identity the server applies when it
-// aggregates the unified table in a single pass.
-func (v *Verifier) expectedFingerprint(ctx context.Context, tp TablePlan, where string, losingIDs map[string]string) (Fingerprint, int, error) {
-	var total Fingerprint
-	contributors := 0
+// expectedByGroup combines every source's per-group fingerprints for one
+// table, excluding the collision losers. After the exclusion the contributing
+// row sets are disjoint, so counts and sizes sum and digests combine by XOR —
+// the same identity the server applies when it aggregates in a single pass.
+func (v *Verifier) expectedByGroup(ctx context.Context, tp TablePlan, losingIDs map[string]string) (map[string]Fingerprint, error) {
+	out := map[string]Fingerprint{}
 	for _, src := range v.plan.Sources {
 		has, err := v.source.HasTable(ctx, src.Database, tp.Table)
 		if err != nil || !has {
 			continue
 		}
-		var excluded []string
+		var exclude []string
 		if tp.Scope != ScopeDatabaseState {
-			excluded = losingIDsFor(losingIDs, src.Namespace)
+			exclude = losingIDsFor(losingIDs, src.Namespace)
 		}
-		fp, err := v.fingerprintExcluding(ctx, src.Database, tp.Table, where, excluded, tp.ScopeColumnName())
+		byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
+			tp.ScopeColumnName(), storeGroupColumn(tp.Scope), exclude)
 		if err != nil {
-			return Fingerprint{}, 0, err
+			return nil, err
 		}
-		if fp.Rows == 0 {
-			continue
+		for g, fp := range byGroup {
+			out[g] = Combine(out[g], fp)
 		}
-		contributors++
-		total = Combine(total, fp)
 	}
-	return total, contributors, nil
+	return out, nil
 }
 
-// fingerprintExcluding computes a table fingerprint with rows whose key is
-// listed in excluded removed. The exclusion is applied inside the same query
-// as the digest so the value is comparable with the unified side without the
-// verifier ever holding rows in memory.
-func (v *Verifier) fingerprintExcluding(ctx context.Context, database, table, where string, excluded []string, keyColumn string) (Fingerprint, error) {
-	if len(excluded) > 0 {
-		cond := fmt.Sprintf("`%s` not in (%s)", keyColumn, quoteList(excluded))
-		if strings.TrimSpace(where) == "" {
-			where = cond
-		} else {
-			where = "(" + where + ") and " + cond
+// storeGroupColumn is the grouping column for re-keyed database-state tables:
+// the store column the unified database addresses them by.
+func storeGroupColumn(scope Scope) string {
+	if scope == ScopeDatabaseState {
+		return storeColumn
+	}
+	return ""
+}
+
+// losingCountFor reports how many collision losers sat in a namespace, which is
+// the difference between a source's raw count and the unified table's.
+func losingCountFor(losingIDs map[string]string, prefix string) int {
+	var n int
+	for id := range losingIDs {
+		if PrefixOf(id) == prefix {
+			n++
 		}
 	}
-	return v.source.Fingerprint(ctx, database, table, where)
+	return n
 }
 
 // confirmCollisions re-reads the recorded collision decisions out of the
@@ -305,37 +286,13 @@ func Combine(a, b Fingerprint) Fingerprint {
 	}
 }
 
+// sortChecks orders the report so two runs of the verifier produce a diffable
+// output.
 func sortChecks(checks []Check) {
 	sort.SliceStable(checks, func(i, j int) bool {
-		if checks[i].Scope != checks[j].Scope {
-			return checks[i].Scope < checks[j].Scope
+		if checks[i].Table != checks[j].Table {
+			return checks[i].Table < checks[j].Table
 		}
-		return checks[i].Table < checks[j].Table
+		return checks[i].Scope < checks[j].Scope
 	})
-}
-
-func storeNames(sources []SourceFacts) []string {
-	out := make([]string, 0, len(sources))
-	for _, s := range sources {
-		out = append(out, s.Namespace)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// quoteList renders a string slice as a quoted SQL list.
-func quoteList(values []string) string {
-	quoted := make([]string, 0, len(values))
-	for _, v := range values {
-		quoted = append(quoted, quoteLiteral(v))
-	}
-	return strings.Join(quoted, ",")
-}
-
-// escapeLike escapes the LIKE wildcards in a literal prefix. Prefixes are
-// operator-controlled, but escaping keeps a store named "a_b" from matching
-// "aXb-" ids and silently inflating a fingerprint.
-func escapeLike(s string) string {
-	r := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_")
-	return r.Replace(s)
 }

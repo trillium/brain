@@ -6180,14 +6180,14 @@ bd brain unify build [flags]
 **Flags:**
 
 ```
-      --allow-collisions   proceed even when a duplicated id has divergent copies
+      --allow-collisions   proceed even when a duplicated id has copies that disagree on content
       --data-dir string    scratch directory for the isolated dolt server holding the unified database (required)
       --database string    name of the unified database inside the isolated server (default "brain_unified")
       --dolt-bin string    dolt binary used to start the isolated server (default "dolt")
       --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
       --port int           dolt sql-server port holding the production stores (default 3307)
       --template string    store whose schema the unified database inherits (default: the store with the most beads)
-      --timeout duration   overall time budget for the build (default 30m0s)
+      --timeout duration   overall time budget for the build (default 1h30m0s)
 ```
 
 ##### bd brain unify plan
@@ -6205,7 +6205,7 @@ bd brain unify plan [flags]
       --json               emit the plan as JSON
       --port int           dolt sql-server port holding the production stores (default 3307)
       --template string    store whose schema the unified database inherits (default: the store with the most beads)
-      --timeout duration   overall time budget for the plan (default 15m0s)
+      --timeout duration   overall time budget for the plan (default 20m0s)
 ```
 
 ##### bd brain unify verify
@@ -6225,7 +6225,7 @@ bd brain unify verify [flags]
       --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
       --port int           dolt sql-server port holding the production stores (default 3307)
       --template string    store whose schema the unified database inherited
-      --timeout duration   overall time budget for verification (default 30m0s)
+      --timeout duration   overall time budget for verification (default 1h30m0s)
 ```
 
 ### bd completion

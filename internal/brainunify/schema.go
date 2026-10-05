@@ -424,3 +424,10 @@ func contains(haystack []string, needle string) bool {
 	}
 	return false
 }
+
+// escapeLike escapes the LIKE wildcards in a literal prefix. Prefixes are
+// operator-controlled, but escaping keeps a store named "a_b" from matching
+// "aXb-" ids and silently inflating a fingerprint.
+func escapeLike(s string) string {
+	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(s)
+}

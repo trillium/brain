@@ -266,6 +266,70 @@ func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where
 	return fp, nil
 }
 
+// FingerprintByGroup computes per-group fingerprints of a table in a single
+// query, grouping by a leading substring of scopeCol (the id prefix) or, when
+// scopeCol is empty, by the whole value of groupCol.
+//
+// One grouped query per source replaces one query per source per namespace,
+// which is the difference between a verification that finishes and one that
+// runs for hours: on the live federation there are 55 sources and roughly 60
+// namespaces, and the cross product is the wrong shape for this job.
+//
+// exclude removes rows whose scopeCol value is listed, which is how the
+// collision losers are kept out of the expected side.
+func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table, scopeCol, groupCol string, exclude []string) (map[string]Fingerprint, error) {
+	cols, err := s.Columns(ctx, database, table)
+	if err != nil {
+		return nil, err
+	}
+	if len(cols) == 0 {
+		return map[string]Fingerprint{}, nil
+	}
+	fields := make([]string, 0, len(cols))
+	for _, c := range cols {
+		fields = append(fields, fmt.Sprintf("ifnull(concat('\x02', `%s`), '\x01')", c))
+	}
+	rowText := fmt.Sprintf("concat_ws('\x1f', %s)", strings.Join(fields, ", "))
+
+	groupExpr := groupCol
+	if groupExpr == "" {
+		groupExpr = "substring_index(`" + scopeCol + "`, '-', 1)"
+	}
+
+	stmt := fmt.Sprintf(
+		"select g as grp, count(*) as n, ifnull(sum(length(rowtext)),0) as b, ifnull(bit_xor(crc32(rowtext)),0) as h "+
+			"from (select %s as g, %s as rowtext from `%s`.`%s`%s) t group by g",
+		groupExpr, rowText, database, table, exclusionClause(scopeCol, exclude))
+	rows, err := s.query(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("fingerprinting %s.%s by group: %w", database, table, err)
+	}
+	defer rows.Close()
+	out := map[string]Fingerprint{}
+	for rows.Next() {
+		var g string
+		var fp Fingerprint
+		if err := rows.Scan(&g, &fp.Rows, &fp.Bytes, &fp.Hash); err != nil {
+			return nil, err
+		}
+		out[g] = fp
+	}
+	return out, rows.Err()
+}
+
+// exclusionClause renders a WHERE fragment dropping the listed keys, or the
+// empty string when there is nothing to exclude.
+func exclusionClause(scopeCol string, exclude []string) string {
+	if len(exclude) == 0 || scopeCol == "" {
+		return ""
+	}
+	quoted := make([]string, 0, len(exclude))
+	for _, e := range exclude {
+		quoted = append(quoted, quoteLiteral(e))
+	}
+	return fmt.Sprintf(" where `%s` not in (%s)", scopeCol, strings.Join(quoted, ","))
+}
+
 // issueIDRow is the identity of a bead as far as collision analysis needs.
 type issueIDRow struct {
 	ID          string
