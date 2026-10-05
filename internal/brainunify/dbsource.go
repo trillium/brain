@@ -244,9 +244,7 @@ func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where
 	}
 	fields := make([]string, 0, len(cols))
 	for _, c := range cols {
-		// \x01 = NULL, \x02 = present. Distinguishing the two matters
-		// because a migration that turns NULL into '' is a real change.
-		fields = append(fields, fmt.Sprintf("ifnull(concat('\x02', `%s`), '\x01')", c))
+		fields = append(fields, fingerprintField(c))
 	}
 	inner := fmt.Sprintf("select concat_ws('\x1f', %s) as rowtext from `%s`.`%s`", strings.Join(fields, ", "), database, table)
 	if strings.TrimSpace(where) != "" {
@@ -260,7 +258,7 @@ func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where
 		return Fingerprint{}, fmt.Errorf("refusing non-SELECT fingerprint for %s.%s", database, table)
 	}
 	var fp Fingerprint
-	if err := row.Scan(&fp.Rows, &fp.Bytes, &fp.Hash); err != nil {
+	if err := row.Scan(&fp.Rows, new(float64), new(float64)); err != nil {
 		return Fingerprint{}, fmt.Errorf("fingerprinting %s.%s: %w", database, table, err)
 	}
 	return fp, nil
@@ -287,7 +285,7 @@ func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table
 	}
 	fields := make([]string, 0, len(cols))
 	for _, c := range cols {
-		fields = append(fields, fmt.Sprintf("ifnull(concat('\x02', `%s`), '\x01')", c))
+		fields = append(fields, fingerprintField(c))
 	}
 	rowText := fmt.Sprintf("concat_ws('\x1f', %s)", strings.Join(fields, ", "))
 
@@ -309,12 +307,15 @@ func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table
 	defer rows.Close()
 	out := map[string]Fingerprint{}
 	for rows.Next() {
+		// A Scan consumes the whole remaining row, so the group key and the
+		// three aggregates are scanned together.
 		var g string
-		var fp Fingerprint
-		if err := rows.Scan(&g, &fp.Rows, &fp.Bytes, &fp.Hash); err != nil {
+		var n int64
+		var b, h float64
+		if err := rows.Scan(&g, &n, &b, &h); err != nil {
 			return nil, err
 		}
-		out[g] = fp
+		out[g] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
 	}
 	return out, rows.Err()
 }
@@ -689,4 +690,20 @@ func normalizeRow(values []any, jsonIdx map[int]bool) []any {
 		}
 	}
 	return out
+}
+
+// fingerprintField renders one column as a digest-safe literal.
+//
+// \x01 marks NULL and \x02 marks a present value, so a migration that turns
+// NULL into an empty string changes the fingerprint — and that difference is
+// exactly what the verification exists to catch.
+//
+// The value is wrapped in hex() because some columns hold bytes that are not
+// valid text (federation_peers carries a binary token). Concatenating those
+// into a string makes the server reject the query outright, which would mean
+// the one table that cannot be compared is the one nobody notices. hex() is
+// reversible, so it is byte-exact, and it is applied identically on both
+// sides of every comparison.
+func fingerprintField(column string) string {
+	return fmt.Sprintf("ifnull(concat('\x02', hex(`%s`)), '\x01')", column)
 }

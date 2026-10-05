@@ -43,6 +43,12 @@ type SourceFacts struct {
 // concatenated row text; Hash is the bitwise XOR of per-row CRC32 values,
 // which is order independent so two copies of the same data in different
 // insertion orders fingerprint identically.
+// Fingerprint holds the three values every fingerprint is made of.
+//
+// Bytes and Hash are int64 here, but Dolt returns SUM() and BIT_XOR() over
+// the per-row digests as a double, so they are scanned as float64 and
+// converted. Every value involved is far below 2^53, where a double is exact,
+// so the conversion loses nothing.
 type Fingerprint struct {
 	Rows  int64 `json:"rows"`
 	Bytes int64 `json:"bytes"`
