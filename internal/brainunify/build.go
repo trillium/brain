@@ -68,6 +68,15 @@ type BuildResult struct {
 	ServerLogPath string
 }
 
+// GroupFingerprint is what the build read from one source, for one table, in
+// one namespace.
+type GroupFingerprint struct {
+	Store string
+	Table string
+	Group string
+	Fingerprint
+}
+
 // SkippedFor returns the total number of rows skipped for a store.
 func (r BuildResult) SkippedFor(store string) int64 {
 	var n int64
@@ -390,6 +399,9 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 		return res, err
 	}
 	if err := b.writeProvenance(ctx, target); err != nil {
+		return res, err
+	}
+	if err := b.recordSourceFingerprints(ctx, target); err != nil {
 		return res, err
 	}
 	if err := WriteImportLog(ctx, target, res.Stats); err != nil {
@@ -986,6 +998,74 @@ func (b *Builder) losingRow(c Collision) map[string]any {
 	row["_captured_from_store"] = src.Namespace
 	row["_captured_from_database"] = src.Database
 	return row
+}
+
+// recordSourceFingerprints stores what the build read from every source, per
+// table, per namespace.
+//
+// This is the reference the verification compares against. Brain's stores are
+// written continuously — the lifespan ledger alone takes hundreds of rows an
+// hour — so re-reading production after a build measures how far the
+// federation moved, not whether the migration was correct. Recording the read
+// makes the comparison a snapshot against a snapshot, and makes it
+// reproducible: anyone can re-run verification against a finished build and
+// get the same answer.
+func (b *Builder) recordSourceFingerprints(ctx context.Context, target *sql.DB) error {
+	losingIDs := losingIssueIDs(b.plan.Collisions)
+	recorded := 0
+	for _, tp := range b.plans {
+		for _, src := range b.plan.Sources {
+			has, err := b.source.HasTable(ctx, src.Database, tp.Table)
+			if err != nil || !has {
+				continue
+			}
+			if tp.Scope == ScopeDatabaseState {
+				fp, err := b.source.Fingerprint(ctx, src.Database, tp.Table, "")
+				if err != nil {
+					return err
+				}
+				if fp.Rows == 0 {
+					continue
+				}
+				if err := writeSourceFingerprint(ctx, target, GroupFingerprint{
+					Store: src.Namespace, Table: tp.Table, Group: src.Namespace, Fingerprint: fp,
+				}); err != nil {
+					return err
+				}
+				recorded++
+				continue
+			}
+			byGroup, err := b.source.FingerprintByGroup(ctx, src.Database, tp.Table,
+				tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
+			if err != nil {
+				return err
+			}
+			for group, fp := range byGroup {
+				if fp.Rows == 0 {
+					continue
+				}
+				if err := writeSourceFingerprint(ctx, target, GroupFingerprint{
+					Store: src.Namespace, Table: tp.Table, Group: group, Fingerprint: fp,
+				}); err != nil {
+					return err
+				}
+				recorded++
+			}
+		}
+	}
+	b.log("recorded %d source fingerprint(s) for verification", recorded)
+	return nil
+}
+
+// writeSourceFingerprint records one measured source group.
+func writeSourceFingerprint(ctx context.Context, target *sql.DB, gf GroupFingerprint) error {
+	_, err := target.ExecContext(ctx,
+		"replace into `brain_unify_source_fingerprints` (`store`,`table_name`,`group_name`,`row_count`,`byte_count`,`hash_value`) values "+
+			valueTuple([]any{gf.Store, gf.Table, gf.Group, gf.Rows, gf.Bytes, gf.Hash}))
+	if err != nil {
+		return fmt.Errorf("recording source fingerprint for %s.%s/%s: %w", gf.Store, gf.Table, gf.Group, err)
+	}
+	return nil
 }
 
 func boolToInt(b bool) int {

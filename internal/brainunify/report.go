@@ -174,7 +174,7 @@ func WriteVerify(w io.Writer, res VerifyResult) error {
 		}
 		failed++
 	}
-	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d\n\n",
+	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d\n\nreference: what the build recorded it read from each source, compared against the unified database\n\n",
 		len(res.Checks), passed, failed, res.NamespacesChecked, res.CollisionsConfirmed); err != nil {
 		return err
 	}

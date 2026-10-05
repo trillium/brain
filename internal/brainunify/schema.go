@@ -56,6 +56,7 @@ var brainTables = []string{
 	"brain_store_prefixes",
 	"brain_unify_collisions",
 	"brain_unify_import_log",
+	"brain_unify_source_fingerprints",
 }
 
 // BrainTableDDL is the schema of the provenance tables. Each carries a stated
@@ -111,6 +112,23 @@ var BrainTableDDL = map[string]string{
   verified tinyint(1) NOT NULL DEFAULT 0,
   note text NOT NULL,
   PRIMARY KEY (store, table_name)
+)`,
+	// brain_unify_source_fingerprints records what the build actually read
+	// from each source, per store, per table, per namespace. Verification
+	// compares the unified database against this rather than against a live
+	// re-read: brain's stores are written continuously (the lifespan ledger
+	// alone takes hundreds of rows an hour), so re-reading production after
+	// the build measures how much the federation moved, not whether the
+	// migration was correct. Reading this table also makes a verification
+	// reproducible — it compares a snapshot to a snapshot.
+	"brain_unify_source_fingerprints": `CREATE TABLE brain_unify_source_fingerprints (
+  store varchar(128) NOT NULL,
+  table_name varchar(255) NOT NULL,
+  group_name varchar(255) NOT NULL,
+  row_count bigint NOT NULL DEFAULT 0,
+  byte_count bigint NOT NULL DEFAULT 0,
+  hash_value bigint NOT NULL DEFAULT 0,
+  PRIMARY KEY (store, table_name, group_name)
 )`,
 }
 

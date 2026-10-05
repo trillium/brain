@@ -193,3 +193,16 @@ func TestReadDeclaredPrefixesKeepsBoth(t *testing.T) {
 		t.Errorf("declared prefixes = %v, want [robots agent]", got)
 	}
 }
+
+func TestFingerprintInvariantRejectsRowsWithNoContent(t *testing.T) {
+	// A fingerprint that reports rows but zero bytes means the aggregate
+	// columns were never read. That must be an error, not a passing
+	// comparison: it is how a real defect hides inside a green result.
+	fp := Fingerprint{Rows: 10}
+	if err := fp.checkInvariant("applications", "config"); err == nil {
+		t.Fatal("expected an error for a fingerprint with rows but no content bytes")
+	}
+	if err := (Fingerprint{}).checkInvariant("applications", "config"); err != nil {
+		t.Fatalf("an empty table must be a valid fingerprint: %v", err)
+	}
+}

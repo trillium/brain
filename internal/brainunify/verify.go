@@ -133,16 +133,21 @@ func (v *Verifier) Close() error { return v.unified.Close() }
 // the namespace it belongs to.
 func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 	var res VerifyResult
-	losingIDs := losingIssueIDs(v.plan.Collisions)
+
+	// The recorded source fingerprints are the reference. Reading them is
+	// also what makes a verification reproducible: the build measured the
+	// sources at a point in time, and the comparison is that measurement
+	// against the database it produced.
+	recorded, err := v.readRecordedFingerprints(ctx)
+	if err != nil {
+		return res, err
+	}
+	v.log("read %d recorded source fingerprint(s) from the build", countRecorded(recorded))
 
 	for _, tp := range v.plans {
 		v.log("table %-34s scope=%s", tp.Target, tp.Scope)
-		// Expected side: every participating source, with its own collision
-		// losers removed.
-		expectedByGroup, err := v.expectedByGroup(ctx, tp, losingIDs)
-		if err != nil {
-			return res, err
-		}
+		expectedByGroup := combineRecorded(recorded[tp.Target])
+
 		actualByGroup, err := v.unified.FingerprintByGroup(ctx, v.opts.Database, tp.Target,
 			tp.ScopeColumnName(), unifiedGroupColumn(tp.Scope), nil)
 		if err != nil {
@@ -164,12 +169,8 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 			if tp.Scope == ScopeDatabaseState {
 				scope = "store " + g
 			}
-			note := ""
-			if skipped := losingCountFor(losingIDs, g); skipped > 0 && tp.Scope != ScopeDatabaseState {
-				note = fmt.Sprintf("%d colliding row(s) here were removed from the source side and are recorded in brain_unify_collisions", skipped)
-			}
 			res.Checks = append(res.Checks, Check{
-				Scope: scope, Table: tp.Target, Note: note,
+				Scope: scope, Table: tp.Target,
 				Expected: exp, Actual: act, OK: exp == act,
 			})
 			if tp.Scope == ScopeDatabaseState {
@@ -179,8 +180,6 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 			}
 		}
 
-		// Whole-table comparison: states the total as a single number, and
-		// catches a row that arrived in a group no source contributed to.
 		var want, got Fingerprint
 		for _, fp := range expectedByGroup {
 			want = Combine(want, fp)
@@ -204,43 +203,47 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 	return res, nil
 }
 
-// expectedByGroup combines every source's per-group fingerprints for one
-// table, excluding the collision losers. After the exclusion the contributing
-// row sets are disjoint, so counts and sizes sum and digests combine by XOR —
-// the same identity the server applies when it aggregates in a single pass.
-func (v *Verifier) expectedByGroup(ctx context.Context, tp TablePlan, losingIDs map[string]string) (map[string]Fingerprint, error) {
-	out := map[string]Fingerprint{}
-	for _, src := range v.plan.Sources {
-		has, err := v.source.HasTable(ctx, src.Database, tp.Table)
-		if err != nil || !has {
-			continue
-		}
-		if tp.Scope == ScopeDatabaseState {
-			// A re-keyed source table has no store column: the store is the
-			// database it came from. Fingerprint it whole and file it under
-			// that store, which is the name the unified table groups by.
-			fp, err := v.source.Fingerprint(ctx, src.Database, tp.Table, "")
-			if err != nil {
-				return nil, err
-			}
-			if fp.Rows > 0 {
-				out[src.Namespace] = Combine(out[src.Namespace], fp)
-			}
-			v.log("  source %-24s %-30s %d row(s)", src.Namespace, tp.Table, fp.Rows)
-			continue
-		}
-		byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
-			tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
-		if err != nil {
-			v.log("  source %-24s %-30s FAILED: %v", src.Namespace, tp.Table, err)
+// readRecordedFingerprints reads what the build recorded it read, keyed by
+// table and then by namespace/store.
+func (v *Verifier) readRecordedFingerprints(ctx context.Context) (map[string]map[string]Fingerprint, error) {
+	stmt := fmt.Sprintf(
+		"select `table_name`, `group_name`, `row_count`, `byte_count`, `hash_value` from `%s`.`brain_unify_source_fingerprints`",
+		v.opts.Database)
+	rows, err := v.unified.query(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("reading recorded source fingerprints: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]map[string]Fingerprint{}
+	for rows.Next() {
+		var table, group string
+		var n int64
+		var b, h float64
+		if err := rows.Scan(&table, &group, &n, &b, &h); err != nil {
 			return nil, err
 		}
-		v.log("  source %-24s %-30s %d group(s)", src.Namespace, tp.Table, len(byGroup))
-		for g, fp := range byGroup {
-			out[g] = Combine(out[g], fp)
+		if out[table] == nil {
+			out[table] = map[string]Fingerprint{}
 		}
+		out[table][group] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
 	}
-	return out, nil
+	return out, rows.Err()
+}
+
+func combineRecorded(byGroup map[string]Fingerprint) map[string]Fingerprint {
+	out := map[string]Fingerprint{}
+	for g, fp := range byGroup {
+		out[g] = Combine(out[g], fp)
+	}
+	return out
+}
+
+func countRecorded(recorded map[string]map[string]Fingerprint) int {
+	var n int
+	for _, m := range recorded {
+		n += len(m)
+	}
+	return n
 }
 
 // unifiedGroupColumn is the grouping column in the unified database: the
@@ -250,18 +253,6 @@ func unifiedGroupColumn(scope Scope) string {
 		return storeColumn
 	}
 	return ""
-}
-
-// losingCountFor reports how many collision losers sat in a namespace, which is
-// the difference between a source's raw count and the unified table's.
-func losingCountFor(losingIDs map[string]string, prefix string) int {
-	var n int
-	for id := range losingIDs {
-		if PrefixOf(id) == prefix {
-			n++
-		}
-	}
-	return n
 }
 
 // confirmCollisions re-reads the recorded collision decisions out of the

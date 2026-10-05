@@ -257,9 +257,17 @@ func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where
 	if row == nil {
 		return Fingerprint{}, fmt.Errorf("refusing non-SELECT fingerprint for %s.%s", database, table)
 	}
-	var fp Fingerprint
-	if err := row.Scan(&fp.Rows, new(float64), new(float64)); err != nil {
+	// Dolt returns SUM() and BIT_XOR() as doubles, so the two aggregate
+	// columns are scanned as float64 and narrowed. Every value involved is
+	// far below 2^53, where a double is exact.
+	var rows int64
+	var bytes, hash float64
+	if err := row.Scan(&rows, &bytes, &hash); err != nil {
 		return Fingerprint{}, fmt.Errorf("fingerprinting %s.%s: %w", database, table, err)
+	}
+	fp := Fingerprint{Rows: rows, Bytes: int64(bytes), Hash: int64(hash)}
+	if err := fp.checkInvariant(database, table); err != nil {
+		return Fingerprint{}, err
 	}
 	return fp, nil
 }
@@ -315,7 +323,11 @@ func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table
 		if err := rows.Scan(&g, &n, &b, &h); err != nil {
 			return nil, err
 		}
-		out[g] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
+		fp := Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
+		if err := fp.checkInvariant(database, table); err != nil {
+			return nil, err
+		}
+		out[g] = fp
 	}
 	return out, rows.Err()
 }
@@ -722,4 +734,20 @@ func (s *readOnlySource) fingerprintFields(ctx context.Context, database, table 
 		out = append(out, fmt.Sprintf("ifnull(concat('\x02', %s), '\x01')", expr))
 	}
 	return out, nil
+}
+
+// checkInvariant refuses a fingerprint that reports rows but no content.
+//
+// Every row contributes at least one character per column — the NULL marker is
+// \x01 and a present value is \x02 followed by its encoding — so a table with
+// rows always has bytes. A zero here means the aggregate columns were not read,
+// not that the table is empty, and letting that through would turn a broken
+// measurement into a confident "no difference". This is the check that would
+// have caught the scan bug that silently discarded the bytes and hash of every
+// database-state table.
+func (f Fingerprint) checkInvariant(database, table string) error {
+	if f.Rows > 0 && f.Bytes == 0 {
+		return fmt.Errorf("fingerprint of %s.%s reports %d rows but zero content bytes: the aggregate columns were not read", database, table, f.Rows)
+	}
+	return nil
 }
