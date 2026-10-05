@@ -15,21 +15,29 @@ func TestClassify(t *testing.T) {
 		cols  []string
 		pk    []string
 		want  Scope
+		scope string
 	}{
-		{"issues", []string{"id", "title"}, []string{"id"}, ScopeIssues},
-		{"labels", []string{"issue_id", "label"}, []string{"issue_id", "label"}, ScopeIssueChild},
-		{"comments", []string{"id", "issue_id", "text"}, []string{"id"}, ScopeIssueChild},
-		{"dependencies", []string{"id", "issue_id", "depends_on_issue_id"}, []string{"id"}, ScopeIssueChild},
-		// config has no issue_id: it describes the database, not a bead, so
-		// several stores cannot share it unchanged.
-		{"config", []string{"key", "value"}, []string{"key"}, ScopeDatabaseState},
-		{"local_metadata", []string{"key", "value"}, []string{"key"}, ScopeDatabaseState},
-		// A table that happens to have an issue_id but is really bead-scoped.
-		{"child_counters", []string{"issue_id", "level", "next"}, []string{"issue_id", "level"}, ScopeIssueChild},
+		{"issues", []string{"id", "title"}, []string{"id"}, ScopeIssues, "id"},
+		{"labels", []string{"issue_id", "label"}, []string{"issue_id", "label"}, ScopeIssueChild, "issue_id"},
+		{"comments", []string{"id", "issue_id", "text"}, []string{"id"}, ScopeIssueChild, "issue_id"},
+		{"dependencies", []string{"id", "issue_id", "depends_on_issue_id"}, []string{"id"}, ScopeIssueChild, "issue_id"},
+		// config has no bead reference: it describes the database, not a
+		// bead, so several stores cannot share it unchanged.
+		{"config", []string{"key", "value"}, []string{"key"}, ScopeDatabaseState, ""},
+		{"local_metadata", []string{"key", "value"}, []string{"key"}, ScopeDatabaseState, ""},
+		// child_counters references its parent through parent_id, not
+		// issue_id. Classifying it as database state would move its rows into
+		// a per-store table and make them unaddressable by namespace.
+		{"child_counters", []string{"parent_id", "last_child"}, []string{"parent_id"}, ScopeIssueChild, "parent_id"},
+		{"wisp_child_counters", []string{"parent_id", "last_child"}, []string{"parent_id"}, ScopeIssueChild, "parent_id"},
+		// A wisp has no parent column at all: its own id is a hierarchical
+		// bead id, so it is addressable by that id.
+		{"wisps", []string{"id", "title", "description"}, []string{"id"}, ScopeIssueChild, "id"},
 	}
 	for _, tc := range cases {
-		if got := Classify(tc.table, tc.cols, tc.pk); got != tc.want {
-			t.Errorf("Classify(%s) = %v, want %v", tc.table, got, tc.want)
+		got, scope := Classify(tc.table, tc.cols, tc.pk)
+		if got != tc.want || scope != tc.scope {
+			t.Errorf("Classify(%s) = (%v, %q), want (%v, %q)", tc.table, got, scope, tc.want, tc.scope)
 		}
 	}
 }

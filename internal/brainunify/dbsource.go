@@ -293,11 +293,13 @@ func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table
 
 	groupExpr := groupCol
 	if groupExpr == "" {
-		groupExpr = "substring_index(`" + scopeCol + "`, '-', 1)"
+		// NULL group keys (interactions.issue_id is nullable) are folded to
+		// a sentinel on both sides so the two sides agree on the bucket.
+		groupExpr = fmt.Sprintf("ifnull(substring_index(`%s`, '-', 1), '(no-namespace)')", scopeCol)
 	}
 
 	stmt := fmt.Sprintf(
-		"select g as grp, count(*) as n, ifnull(sum(length(rowtext)),0) as b, ifnull(bit_xor(crc32(rowtext)),0) as h "+
+		"select ifnull(g, '(null)') as grp, count(*) as n, ifnull(sum(length(rowtext)),0) as b, ifnull(bit_xor(crc32(rowtext)),0) as h "+
 			"from (select %s as g, %s as rowtext from `%s`.`%s`%s) t group by g",
 		groupExpr, rowText, database, table, exclusionClause(scopeCol, exclude))
 	rows, err := s.query(ctx, stmt)

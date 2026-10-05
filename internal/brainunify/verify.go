@@ -132,7 +132,7 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 			return res, err
 		}
 		actualByGroup, err := v.unified.FingerprintByGroup(ctx, v.opts.Database, tp.Target,
-			tp.ScopeColumnName(), storeGroupColumn(tp.Scope), nil)
+			tp.ScopeColumnName(), unifiedGroupColumn(tp.Scope), nil)
 		if err != nil {
 			return res, err
 		}
@@ -202,12 +202,21 @@ func (v *Verifier) expectedByGroup(ctx context.Context, tp TablePlan, losingIDs 
 		if err != nil || !has {
 			continue
 		}
-		var exclude []string
-		if tp.Scope != ScopeDatabaseState {
-			exclude = losingIDsFor(losingIDs, src.Namespace)
+		if tp.Scope == ScopeDatabaseState {
+			// A re-keyed source table has no store column: the store is the
+			// database it came from. Fingerprint it whole and file it under
+			// that store, which is the name the unified table groups by.
+			fp, err := v.source.Fingerprint(ctx, src.Database, tp.Table, "")
+			if err != nil {
+				return nil, err
+			}
+			if fp.Rows > 0 {
+				out[src.Namespace] = Combine(out[src.Namespace], fp)
+			}
+			continue
 		}
 		byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
-			tp.ScopeColumnName(), storeGroupColumn(tp.Scope), exclude)
+			tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
 		if err != nil {
 			return nil, err
 		}
@@ -218,9 +227,9 @@ func (v *Verifier) expectedByGroup(ctx context.Context, tp TablePlan, losingIDs 
 	return out, nil
 }
 
-// storeGroupColumn is the grouping column for re-keyed database-state tables:
-// the store column the unified database addresses them by.
-func storeGroupColumn(scope Scope) string {
+// unifiedGroupColumn is the grouping column in the unified database: the
+// store column for re-keyed tables, and nothing (the id prefix) for the rest.
+func unifiedGroupColumn(scope Scope) string {
 	if scope == ScopeDatabaseState {
 		return storeColumn
 	}

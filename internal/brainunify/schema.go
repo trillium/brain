@@ -132,35 +132,58 @@ type TablePlan struct {
 }
 
 // ScopeColumnName returns the column that addresses a row's namespace: the id
-// itself for issues, the referencing id for issue children, and nothing for
-// database state, which the unified database addresses by its store column.
+// itself for a table of beads, the referencing id for bead children, and
+// nothing for database state, which the unified database addresses by its
+// store column.
 func (t TablePlan) ScopeColumnName() string {
-	switch t.Scope {
-	case ScopeIssues:
-		return "id"
-	case ScopeIssueChild:
-		return issueScopeColumn
-	default:
+	if t.Scope == ScopeDatabaseState {
 		return ""
 	}
+	return t.ScopeColumn
 }
 
-// issueScopeColumn is the column an issue-scoped child table is filtered by.
+// issueScopeColumn is the most common bead reference column, named here so the
+// verifier and the classifier agree on what "the issue column" means.
 const issueScopeColumn = "issue_id"
 
 // NamespacedName returns the re-keyed table name for a database-state table.
 func NamespacedName(table string) string { return NamespacedPrefix + table }
 
-// Classify decides a table's scope from its columns and key.
-func Classify(table string, cols, pk []string) Scope {
-	switch {
-	case table == "issues":
-		return ScopeIssues
-	case contains(cols, "issue_id"):
-		return ScopeIssueChild
-	default:
-		return ScopeDatabaseState
+// beadScopeColumns are the columns that hold a reference to a bead id. A table
+// carrying one is namespace-addressable after unification, because the id it
+// references already names the namespace, so the table folds in unchanged.
+//
+// The set is enumerated rather than guessed because the schema uses more than
+// one name: child_counters and wisp_child_counters reference their parent
+// through parent_id rather than issue_id. A table with neither is
+// database-state.
+var beadScopeColumns = []string{"issue_id", "parent_id"}
+
+// beadTables are tables that are themselves collections of beads. Their
+// namespace is their own primary key, so they fold in unchanged and are
+// addressed by their id. wisps belongs here: it has no parent column at all,
+// because a wisp's id is itself a hierarchical bead id.
+var beadTables = map[string]string{
+	"issues": "id",
+	"wisps":  "id",
+}
+
+// Classify decides a table's scope from its columns and key, returning the
+// scope and the column that addresses a row's namespace (empty for database
+// state, which the unified database addresses by its store column).
+func Classify(table string, cols, pk []string) (Scope, string) {
+	if c, ok := beadTables[table]; ok && contains(cols, c) {
+		if table == "issues" {
+			return ScopeIssues, c
+		}
+		return ScopeIssueChild, c
 	}
+	for _, c := range beadScopeColumns {
+		if contains(cols, c) {
+			return ScopeIssueChild, c
+		}
+	}
+	return ScopeDatabaseState, ""
 }
 
 // PlanTables classifies every source table and resolves where its rows go.
@@ -179,11 +202,13 @@ func PlanTables(tables []string, metaOf func(string) ([]string, []string, error)
 		if len(cols) == 0 {
 			return nil, fmt.Errorf("table %s has no columns", t)
 		}
-		scope := Classify(t, cols, pk)
-		tp := TablePlan{Table: t, Scope: scope, Target: t, Columns: cols, PrimaryKey: pk}
+		scope, scopeCol := Classify(t, cols, pk)
+		tp := TablePlan{Table: t, Scope: scope, Target: t, Columns: cols, PrimaryKey: pk, ScopeColumn: scopeCol}
 		switch scope {
-		case ScopeIssueChild:
-			tp.ScopeColumn = "issue_id"
+		case ScopeIssueChild, ScopeIssues:
+			if scopeCol == "" {
+				return nil, fmt.Errorf("table %s is bead-scoped but has no scope column", t)
+			}
 		case ScopeDatabaseState:
 			tp.Target = NamespacedName(t)
 			if len(pk) == 0 {
