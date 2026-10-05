@@ -203,6 +203,8 @@ var unifyVerifyCmd = &cobra.Command{
 		}
 		defer func() { _ = srv.Stop() }()
 
+		started := time.Now()
+
 		plans, err := brainunify.TablePlansFor(ctx, source, plan, unifyTemplate)
 		if err != nil {
 			return err
@@ -211,6 +213,14 @@ var unifyVerifyCmd = &cobra.Command{
 			Database: unifyDatabase,
 			Host:     "127.0.0.1",
 			Port:     srv.Port,
+			// Progress goes to stderr, flushed per line and stamped with the
+			// elapsed time. Verification reads every row of every table on
+			// both sides, so a stall must be visible while it happens rather
+			// than inferred an hour later from an empty log.
+			Logf: func(format string, args ...any) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[%7.1fs] %s\n",
+					time.Since(started).Seconds(), fmt.Sprintf(format, args...))
+			},
 		})
 		if err != nil {
 			return err

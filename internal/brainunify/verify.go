@@ -76,6 +76,12 @@ type VerifyOptions struct {
 	// Hosts locates the unified database's Dolt server.
 	Host string
 	Port int
+	// Logf receives a line as each table and each source is read. Verification
+	// compares every row of every table on both sides, so without progress
+	// output a stall is indistinguishable from a long run — and a full
+	// federation takes long enough that "wait longer" is not a debugging
+	// strategy.
+	Logf func(format string, args ...any)
 }
 
 // Verifier compares the source federation against a built unified database.
@@ -91,6 +97,7 @@ type Verifier struct {
 	plan    Plan
 	plans   []TablePlan
 	opts    VerifyOptions
+	log     func(format string, args ...any)
 }
 
 // NewVerifier opens the unified database for reading. The connection is
@@ -108,7 +115,11 @@ func NewVerifier(ctx context.Context, source *readOnlySource, plan Plan, plans [
 		_ = unified.Close()
 		return nil, err
 	}
-	return &Verifier{source: source, unified: unified, plan: plan, plans: plans, opts: opts}, nil
+	log := opts.Logf
+	if log == nil {
+		log = func(string, ...any) {}
+	}
+	return &Verifier{source: source, unified: unified, plan: plan, plans: plans, opts: opts, log: log}, nil
 }
 
 // Close releases the verifier's connections.
@@ -125,6 +136,7 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 	losingIDs := losingIssueIDs(v.plan.Collisions)
 
 	for _, tp := range v.plans {
+		v.log("table %-34s scope=%s", tp.Target, tp.Scope)
 		// Expected side: every participating source, with its own collision
 		// losers removed.
 		expectedByGroup, err := v.expectedByGroup(ctx, tp, losingIDs)
@@ -136,6 +148,7 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 		if err != nil {
 			return res, err
 		}
+		v.log("  unified %-32s %d group(s)", tp.Target, len(actualByGroup))
 
 		groups := map[string]bool{}
 		for g := range expectedByGroup {
@@ -213,13 +226,16 @@ func (v *Verifier) expectedByGroup(ctx context.Context, tp TablePlan, losingIDs 
 			if fp.Rows > 0 {
 				out[src.Namespace] = Combine(out[src.Namespace], fp)
 			}
+			v.log("  source %-24s %-30s %d row(s)", src.Namespace, tp.Table, fp.Rows)
 			continue
 		}
 		byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
 			tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
 		if err != nil {
+			v.log("  source %-24s %-30s FAILED: %v", src.Namespace, tp.Table, err)
 			return nil, err
 		}
+		v.log("  source %-24s %-30s %d group(s)", src.Namespace, tp.Table, len(byGroup))
 		for g, fp := range byGroup {
 			out[g] = Combine(out[g], fp)
 		}
