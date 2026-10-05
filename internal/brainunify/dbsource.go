@@ -242,9 +242,9 @@ func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where
 	if len(cols) == 0 {
 		return Fingerprint{}, nil
 	}
-	fields := make([]string, 0, len(cols))
-	for _, c := range cols {
-		fields = append(fields, fingerprintField(c))
+	fields, err := s.fingerprintFields(ctx, database, table, cols)
+	if err != nil {
+		return Fingerprint{}, err
 	}
 	inner := fmt.Sprintf("select concat_ws('\x1f', %s) as rowtext from `%s`.`%s`", strings.Join(fields, ", "), database, table)
 	if strings.TrimSpace(where) != "" {
@@ -283,9 +283,9 @@ func (s *readOnlySource) FingerprintByGroup(ctx context.Context, database, table
 	if len(cols) == 0 {
 		return map[string]Fingerprint{}, nil
 	}
-	fields := make([]string, 0, len(cols))
-	for _, c := range cols {
-		fields = append(fields, fingerprintField(c))
+	fields, err := s.fingerprintFields(ctx, database, table, cols)
+	if err != nil {
+		return nil, err
 	}
 	rowText := fmt.Sprintf("concat_ws('\x1f', %s)", strings.Join(fields, ", "))
 
@@ -692,18 +692,34 @@ func normalizeRow(values []any, jsonIdx map[int]bool) []any {
 	return out
 }
 
-// fingerprintField renders one column as a digest-safe literal.
+// fingerprintFields renders every column as a digest-safe literal.
 //
 // \x01 marks NULL and \x02 marks a present value, so a migration that turns
 // NULL into an empty string changes the fingerprint — and that difference is
 // exactly what the verification exists to catch.
 //
-// The value is wrapped in hex() because some columns hold bytes that are not
+// Values are wrapped in hex() because some columns hold bytes that are not
 // valid text (federation_peers carries a binary token). Concatenating those
 // into a string makes the server reject the query outright, which would mean
 // the one table that cannot be compared is the one nobody notices. hex() is
-// reversible, so it is byte-exact, and it is applied identically on both
-// sides of every comparison.
-func fingerprintField(column string) string {
-	return fmt.Sprintf("ifnull(concat('\x02', hex(`%s`)), '\x01')", column)
+// reversible, so it stays byte-exact.
+//
+// json columns are the exception: Dolt rejects hex() on them, and a json
+// document is always valid text, so those are cast to char. The choice is made
+// from the column's declared type, and both sides of every comparison build
+// their fields the same way.
+func (s *readOnlySource) fingerprintFields(ctx context.Context, database, table string, cols []string) ([]string, error) {
+	types, err := s.ColumnTypes(ctx, database, table)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		expr := fmt.Sprintf("hex(`%s`)", c)
+		if types[c] == "json" {
+			expr = fmt.Sprintf("cast(`%s` as char)", c)
+		}
+		out = append(out, fmt.Sprintf("ifnull(concat('\x02', %s), '\x01')", expr))
+	}
+	return out, nil
 }
