@@ -350,6 +350,13 @@ func isSelectedNoDBCommand(cmd *cobra.Command) bool {
 // path can execute without an opened Dolt store. This lets no-workspace calls
 // fail or degrade in the command itself instead of tripping low-level DB init.
 func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
+	// 'brain unify' reads and writes databases on the Dolt server directly
+	// and never touches the caller's own store, so requiring a local store
+	// here would only stop the one command whose whole job is to run when
+	// there is no local store at all.
+	if unifyCommandCanRunWithoutStore(cmd) {
+		return true
+	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "config" {
 		return false
 	}
@@ -392,6 +399,24 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 		return false
 	}
 	return cmd.Name() == "doctor"
+}
+
+// unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand
+// operates purely against the Dolt sql-server and therefore must run even when
+// the caller's working directory has no beads database. All three phases —
+// plan, build, verify — qualify: none of them reads or writes the caller's
+// store, and all of them are meaningless if they cannot be run from an
+// arbitrary directory.
+func unifyCommandCanRunWithoutStore(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "unify" {
+		return false
+	}
+	switch cmd.Name() {
+	case "plan", "build", "verify":
+		return true
+	default:
+		return false
+	}
 }
 
 func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
@@ -848,6 +873,14 @@ var rootCmd = &cobra.Command{
 		// the probe ever runs — in exactly the situation it exists to detect
 		// (robots-nka3).
 		if storesCommandCanRunWithoutStore(cmd) {
+			skipsStoreInit = true
+		}
+
+		// 'brain unify' talks to the Dolt server, not to a local store, so
+		// it must be classified as store-free here too: a caller store that
+		// exists but cannot open would abort PersistentPreRunE before the
+		// migration ever starts.
+		if unifyCommandCanRunWithoutStore(cmd) {
 			skipsStoreInit = true
 		}
 

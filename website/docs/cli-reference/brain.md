@@ -454,3 +454,93 @@ Examples:
 ```
 bd stores set-about <store> <blurb> [flags]
 ```
+
+### bd brain unify
+
+brain stores each keep their own Dolt database on a shared server. 'unify'
+consolidates them into ONE authoritative database while preserving the logical
+separation between stores.
+
+The mechanism is prefixes. A bead id is already self-describing
+("brain-se7t.389" is in the "brain" namespace), so store identity is already
+encoded in the primary key and unification needs no schema change, no id
+rewrite and no query rewrite. What the separate databases carried implicitly —
+which physical database a row came from, which store declares which prefix —
+is written into brain_stores and brain_store_prefixes.
+
+Phases:
+
+  plan    read production and print the deterministic mapping: participating
+          databases, namespace ownership, and every id that exists in more
+          than one database
+  build   construct the unified database in an isolated Dolt server started
+          under --data-dir, reading production but never writing to it
+  verify  compare the unified database against production mechanically, by
+          row count, content size and an order-independent content digest
+
+Production safety: this command group opens production read-only. The builder
+writes only to a Dolt server it starts itself, so a build cannot modify a live
+store even by accident.
+
+```
+bd brain unify [flags]
+```
+
+#### bd brain unify build
+
+Construct the unified database in an isolated Dolt server from live store data
+
+```
+bd brain unify build [flags]
+```
+
+**Flags:**
+
+```
+      --allow-collisions   proceed even when a duplicated id has divergent copies
+      --data-dir string    scratch directory for the isolated dolt server holding the unified database (required)
+      --database string    name of the unified database inside the isolated server (default "brain_unified")
+      --dolt-bin string    dolt binary used to start the isolated server (default "dolt")
+      --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
+      --port int           dolt sql-server port holding the production stores (default 3307)
+      --template string    store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration   overall time budget for the build (default 30m0s)
+```
+
+#### bd brain unify plan
+
+Print the deterministic mapping from every current store into the unified database
+
+```
+bd brain unify plan [flags]
+```
+
+**Flags:**
+
+```
+      --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
+      --json               emit the plan as JSON
+      --port int           dolt sql-server port holding the production stores (default 3307)
+      --template string    store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration   overall time budget for the plan (default 15m0s)
+```
+
+#### bd brain unify verify
+
+Compare the unified database against production by counts, size and content digest
+
+```
+bd brain unify verify [flags]
+```
+
+**Flags:**
+
+```
+      --data-dir string    directory holding the unified database built by 'unify build' (required)
+      --database string    name of the unified database (default "brain_unified")
+      --dolt-bin string    dolt binary used to start the server over the unified database (default "dolt")
+      --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
+      --port int           dolt sql-server port holding the production stores (default 3307)
+      --template string    store whose schema the unified database inherited
+      --timeout duration   overall time budget for verification (default 30m0s)
+```
