@@ -6187,7 +6187,7 @@ bd brain unify build [flags]
       --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
       --port int           dolt sql-server port holding the production stores (default 3307)
       --template string    store whose schema the unified database inherits (default: the store with the most beads)
-      --timeout duration   overall time budget for the build (default 1h30m0s)
+      --timeout duration   overall time budget for the build (default 4h0m0s)
 ```
 
 ##### bd brain unify plan
@@ -6225,7 +6225,7 @@ bd brain unify verify [flags]
       --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
       --port int           dolt sql-server port holding the production stores (default 3307)
       --template string    store whose schema the unified database inherited
-      --timeout duration   overall time budget for verification (default 1h30m0s)
+      --timeout duration   overall time budget for verification (default 3h0m0s)
 ```
 
 ### bd completion

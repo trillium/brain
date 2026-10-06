@@ -77,7 +77,7 @@ func init() {
 	unifyBuildCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the isolated server")
 	unifyBuildCmd.Flags().StringVar(&unifyTemplate, "template", "", "store whose schema the unified database inherits (default: the store with the most beads)")
 	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "proceed even when a duplicated id has copies that disagree on content")
-	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 90*time.Minute, "overall time budget for the build")
+	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
 
 	unifyVerifyCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the production stores")
 	unifyVerifyCmd.Flags().IntVar(&unifyPort, "port", 3307, "dolt sql-server port holding the production stores")
@@ -85,7 +85,7 @@ func init() {
 	unifyVerifyCmd.Flags().StringVar(&unifyDatabase, "database", "brain_unified", "name of the unified database")
 	unifyVerifyCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the server over the unified database")
 	unifyVerifyCmd.Flags().StringVar(&unifyTemplate, "template", "", "store whose schema the unified database inherited")
-	unifyVerifyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 90*time.Minute, "overall time budget for verification")
+	unifyVerifyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 3*time.Hour, "overall time budget for verification")
 
 	brainCmd.AddCommand(brainUnifyCmd)
 	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyVerifyCmd)
