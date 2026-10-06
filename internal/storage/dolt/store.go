@@ -195,6 +195,11 @@ type DoltStore struct {
 	// auto-start. Close() uses it to stop the server when the last store
 	// referencing it is closed (tracked via autoStartRefs).
 	autoStartedServerDir string
+
+	// unifiedNS memoises the namespace-prefix resolution for the unified
+	// database (see unified_namespace.go). Resolved once per store; on a
+	// legacy database it records "not unified".
+	unifiedNS unifiedNamespaceCache
 }
 
 // Config holds Dolt database configuration

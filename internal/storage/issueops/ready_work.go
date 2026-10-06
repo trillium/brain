@@ -287,6 +287,7 @@ func readyWorkExcludeTypes(extra []types.IssueType) []types.IssueType {
 func readyWorkWispIssueFilter(filter types.WorkFilter) types.IssueFilter {
 	pinnedFalse := false
 	wispFilter := types.IssueFilter{
+		Namespaces:     filter.Namespaces,
 		Priority:       filter.Priority,
 		Labels:         filter.Labels,
 		LabelsAny:      filter.LabelsAny,

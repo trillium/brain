@@ -289,3 +289,8 @@ func (sc UnifiedScope) metadataDeleteQuery() string {
 	}
 	return "DELETE FROM metadata WHERE `key` = ?"
 }
+
+// ResetUnifiedScopeCacheForTest clears the memoised probe answers. Test-only:
+// package-scoped tests must not inherit one database's cached answer in
+// another's expectations.
+func ResetUnifiedScopeCacheForTest() { unifiedScopeCache = sync.Map{} }

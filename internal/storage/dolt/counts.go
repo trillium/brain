@@ -25,6 +25,7 @@ const depTargetExpr = "COALESCE(depends_on_issue_id, depends_on_wisp_id, depends
 // Wisps-merge semantics follow SearchIssues: SkipWisps=true counts the
 // durable issues table only, otherwise the wisps tier is merged in (GH#4387).
 func (s *DoltStore) CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error) {
+	filter = s.scopeNamespaces(ctx, filter)
 	var n int64
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		count, err := issueops.CountIssuesInTx(ctx, tx, query, filter)
@@ -40,6 +41,7 @@ func (s *DoltStore) CountIssues(ctx context.Context, query string, filter types.
 // CountIssuesByGroup returns per-group issue counts. groupBy is one of:
 // status, priority, type, assignee, label.
 func (s *DoltStore) CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error) {
+	filter = s.scopeNamespaces(ctx, filter)
 	var result map[string]int
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/types"
@@ -23,17 +24,30 @@ func GetStaleIssuesInTx(ctx context.Context, tx *sql.Tx, filter types.StaleFilte
 		statusClause = "status = ?"
 	}
 
-	query := fmt.Sprintf(`
-		SELECT id FROM issues
-		WHERE updated_at < ?
-		  AND %s
-		  AND (ephemeral = 0 OR ephemeral IS NULL)
-		ORDER BY updated_at ASC
-	`, statusClause)
+	namespaceClause := ""
 	args := []interface{}{cutoff}
 	if filter.Status != "" {
 		args = append(args, filter.Status)
 	}
+	if len(filter.Namespaces) > 0 {
+		// Namespace scoping on the unified database (see IssueFilter.Namespaces):
+		// each listed namespace contributes `id LIKE '<prefix>-%'`, OR'd.
+		ors := make([]string, 0, len(filter.Namespaces))
+		for _, ns := range filter.Namespaces {
+			ors = append(ors, "id LIKE ?")
+			args = append(args, strings.TrimSuffix(ns, "-")+"-%")
+		}
+		namespaceClause = fmt.Sprintf("\n\t  AND (%s)", strings.Join(ors, " OR "))
+	}
+
+	//nolint:gosec // G201: fixed fragments and ? placeholders only
+	query := fmt.Sprintf(`
+		SELECT id FROM issues
+		WHERE updated_at < ?
+		  AND %s
+		  AND (ephemeral = 0 OR ephemeral IS NULL)%s
+		ORDER BY updated_at ASC
+	`, statusClause, namespaceClause)
 
 	if filter.Limit > 0 {
 		query += fmt.Sprintf(" LIMIT %d", filter.Limit)

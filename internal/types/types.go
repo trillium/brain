@@ -1347,6 +1347,13 @@ type IssueFilter struct {
 	PriorityMin *int
 	PriorityMax *int
 
+	// Namespace scoping on the unified database (docs/design/
+	// brain-single-database.md): restrict the read to the listed stores'
+	// namespaces. A bead's namespace is its id prefix, so each namespace
+	// contributes one `id LIKE '<prefix>-%'` clause. Nil/empty = unscoped
+	// (the pre-unification behaviour; a legacy database has one namespace).
+	Namespaces []string
+
 	// Source repo filtering (for multi-repo support)
 	SourceRepo *string // Filter by source_repo field (nil = any)
 
@@ -1435,6 +1442,9 @@ func (s SortPolicy) IsValid() bool {
 
 // WorkFilter is used to filter ready work queries
 type WorkFilter struct {
+	// Namespaces scopes the ready/blocked read to the listed stores'
+	// namespaces on the unified database (same semantics as IssueFilter's).
+	Namespaces    []string
 	Status        Status
 	Type          string // Filter by issue type (task, bug, feature, epic, merge-request, etc.)
 	Priority      *int
@@ -1483,9 +1493,10 @@ type WorkFilter struct {
 
 // StaleFilter is used to filter stale issue queries
 type StaleFilter struct {
-	Days   int    // Issues not updated in this many days
-	Status string // Filter by status (open|in_progress|blocked), empty = all non-closed
-	Limit  int    // Maximum issues to return
+	Days       int      // Issues not updated in this many days
+	Status     string   // Filter by status (open|in_progress|blocked), empty = all non-closed
+	Limit      int      // Maximum issues to return
+	Namespaces []string // Namespace scoping on the unified database (see IssueFilter)
 }
 
 // WispFilter is used to filter ListWisps queries.

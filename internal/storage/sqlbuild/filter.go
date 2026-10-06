@@ -153,6 +153,17 @@ func BuildIssueFilterClauses(query string, filter types.IssueFilter, tables Filt
 		whereClauses = append(whereClauses, "id LIKE ?")
 		args = append(args, filter.IDPrefix+"%")
 	}
+	if len(filter.Namespaces) > 0 {
+		// Namespace scoping on the unified database: each listed namespace
+		// contributes `id LIKE '<prefix>-%'` — the bead's id prefix is its
+		// namespace. OR'd among the namespaces, ANDed with the rest.
+		ors := make([]string, 0, len(filter.Namespaces))
+		for _, ns := range filter.Namespaces {
+			ors = append(ors, "id LIKE ?")
+			args = append(args, strings.TrimSuffix(ns, "-")+"-%")
+		}
+		whereClauses = append(whereClauses, "("+strings.Join(ors, " OR ")+")")
+	}
 	if filter.SpecIDPrefix != "" {
 		whereClauses = append(whereClauses, "spec_id LIKE ?")
 		args = append(args, filter.SpecIDPrefix+"%")

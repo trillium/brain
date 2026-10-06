@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/steveyegge/beads/internal/types"
 )
 
 // pinScope replaces the scope resolver for the duration of a test so the
@@ -341,5 +343,61 @@ func TestProbeSuccessMemoises(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("probe success: %v", err)
+	}
+}
+
+// TestScanIssueCountsScopedInTx pins statistics scoping: the namespace clauses
+// are ANDed into the counts; nil prefixes keeps the unscoped single query.
+func TestScanIssueCountsScopedInTx(t *testing.T) {
+	ctx := context.Background()
+	pinScope(t, UnifiedScope{})
+
+	mock, db := newMock(t)
+	tx := txOf(ctx, t, mock, db)
+	mock.ExpectQuery("SELECT").WillReturnRows(sqlmock.NewRows(
+		[]string{"total", "open", "in_progress", "closed", "deferred", "pinned"}).
+		AddRow(3, 1, 0, 2, 0, 0))
+	stats := &types.Statistics{}
+	if err := ScanIssueCountsScopedInTx(ctx, tx, stats, nil); err != nil {
+		t.Fatalf("unscoped: %v", err)
+	}
+	if stats.TotalIssues != 3 {
+		t.Fatalf("total = %d", stats.TotalIssues)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unscoped statistics: %v", err)
+	}
+}
+
+// TestScanIssueCountsScopedInTx_Namespaced pins the scoped variant: the
+// namespace clauses are ANDed into the count query with the store prefixes.
+func TestScanIssueCountsScopedInTx_Namespaced(t *testing.T) {
+	ctx := context.Background()
+	pinScope(t, UnifiedScope{})
+
+	mock, db := newMock(t)
+	tx := txOf(ctx, t, mock, db)
+	mock.ExpectQuery("FROM issues WHERE \\(id LIKE \\? OR id LIKE \\?\\)").
+		WithArgs("task-%", "brain-%").
+		WillReturnRows(sqlmock.NewRows(
+			[]string{"total", "open", "in_progress", "closed", "deferred", "pinned"}).
+			AddRow(1, 1, 0, 0, 0, 0))
+	stats := &types.Statistics{}
+	if err := ScanIssueCountsScopedInTx(ctx, tx, stats, []string{"task-", "brain"}); err != nil {
+		t.Fatalf("scoped: %v", err)
+	}
+	if stats.TotalIssues != 1 {
+		t.Fatalf("total = %d", stats.TotalIssues)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("scoped statistics: %v", err)
 	}
 }

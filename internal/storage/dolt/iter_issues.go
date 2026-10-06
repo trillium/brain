@@ -49,6 +49,7 @@ func (s *DoltStore) IterIssues(ctx context.Context, query string, filter types.I
 	if s.closed.Load() {
 		return nil, ErrStoreClosed
 	}
+	filter = s.scopeNamespaces(ctx, filter)
 	whereClauses, args, err := issueops.BuildIssueFilterClauses(query, filter, issueops.IssuesFilterTables)
 	if err != nil {
 		return nil, fmt.Errorf("iter issues: build filter: %w", err)
