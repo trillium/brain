@@ -324,42 +324,98 @@ that is a separate, deliberate act.
 * The brain-jueql ownership/state/messaging model on the firstmate side reads
   through the store wrappers. Those wrappers keep working unchanged, which is
   what makes steps 3–6 reversible one store at a time.
-## Verification status: NOT VERIFIED
+## Verification status: COMPLETED, AND IT FAILED
 
-`bd brain unify verify` has never completed against a full build. What follows
-is what is established and what is not, stated plainly because the difference
-matters.
+`bd brain unify verify` has now completed against a full build. It returned
+`RESULT: FAIL` with 279 failing checks, and it separated two findings of
+completely different kinds. The full run is recorded in
+[brain-unify-mini0-run.md](brain-unify-mini0-run.md); the summary follows,
+stated plainly because the difference between the two findings matters more
+than the count.
+
+**The outcome is one of the three honest outcomes: a named list of genuine
+defects with failing checks.** Not zero failures, and not "verification cannot
+be made reliable" — verification *was* reliable, and it caught exactly one real
+problem.
+
+| | |
+|---|---|
+| build | exit 0, 990s, **55/55** sources, 685 collision losers skipped and recorded, 359MB unified database, 43 tables |
+| verify | completed in **57s**, `RESULT: FAIL`, **279** failing checks |
+
+**Defect B — a genuine migration defect, and it blocks cutover.** Two beads in
+namespace `task` silently lose their `metadata` JSON to `{}`: `task-a44d4`
+(1116 bytes → 2) and `task-ybur` (1177 bytes → 2), which is 2289 bytes of real
+content. It is silent: `brain_unify_import_log` reports `source_rows=5706,
+imported_rows=5706, skipped_rows=0` and no collision is recorded for either id.
+It is deterministic rather than a race — an independent second build from the
+same frozen source reproduced the same two beads exactly. Declared column-type
+skew, column-count skew, the write path, duplicate ids, apostrophes, value size,
+position in the read stream, and every substring or bigram shared by the two
+values were each ruled out by measurement. **The mechanism is not identified.**
+
+**Defect A — a genuine verifier defect.** The other 277 failures cannot pass for
+any store, ever: each compares a source-side fingerprint that has no `store`
+column against a re-keyed table that has one, and different column sets cannot
+produce the same digest. Recomputing both sides by hand reproduces the
+verifier's own numbers exactly — source `tasks.config` 10 rows / 476 bytes /
+307648475 against unified `brain_unified_config` for store `task` 10 / 576 /
+1552887092, the 100-byte difference being exactly the added `store` value
+rendered into each of the 10 rows. These are not evidence of data loss, but an
+alarm that cannot clear is worse than no alarm: it overstates the problem by two
+orders of magnitude and would mask a real regression.
 
 ### What is established
 
 **The mapping, against live production.** `bd brain unify plan` runs reliably
 and has been run repeatedly against the real federation. It reports 55
-participating sources, 22,391 beads, 123 ids present in more than one database
-and 27 of those disagreeing on content. The namespace ownership table, the
-collision winner rule, the exclusion of `beads_global` and `TinyKeyboard`, and
-the per-prefix ambiguity list all come from that run, not from reasoning about
-what the code should do.
+participating sources, 123 ids present in more than one database and 27 of those
+disagreeing on content. (The bead total is live data and drifts: an early run
+read 22,391, the frozen copy the completed build was taken from holds 22,523
+issues rows.) The namespace ownership table, the collision winner rule, the
+exclusion of `beads_global` and `TinyKeyboard`, and the per-prefix ambiguity
+list all come from those runs, not from reasoning about what the code should do.
 
 **The build works at full scale.** `bd brain unify build` completed successfully
-against the live federation more than once (4m52s for the whole federation,
-~685 rows skipped as recorded collisions, 314MB cloned database). It reads
-production through a connection that structurally refuses any non-SELECT
+against a full federation: **exit 0, 990s, all 55 sources**, 685 rows skipped as
+recorded collisions, a 359MB unified database of 43 tables. Earlier runs against
+the live federation completed in 4m52s at ~314MB; the completed run was taken
+from a frozen copy, and per-source cost is a constant ~15.5s regardless of bead
+count, so wall time scales with the number of stores rather than with data. It
+reads production through a connection that structurally refuses any non-SELECT
 statement, and writes only to a Dolt server it starts itself under `--data-dir`.
 Production was never written to at any point.
 
 **The verifier refuses bad input.** Given a deliberately truncated build it
 reported `collision agent-0bq appears 0 time(s) in the unified database, want
 exactly 1` and failed, rather than comparing partial data and reporting a
-result. That is the property that matters most in an instrument like this.
+result.
+
+**The verifier tells a real defect from its own.** The 279 failures were not one
+undifferentiated mass: 277 of them were shown to be an alarm in the instrument
+that can never clear, and 2 were shown to be a real, silent loss of 2289 bytes
+of data. The second of those was then shown to be deterministic by an
+independent build. That is the property that matters most in an instrument like
+this — not that it can say "pass", but that it can say *what* is wrong, and
+survive an attempt to explain the failure away.
 
 ### What is not established
 
-**A green verification.** Never obtained. No run of `bd brain unify verify`
-against a complete build has finished, so the claim "the unified database
-matches the source" is unproven.
+**Why two beads lose their metadata.** Defect B is deterministic and
+data-dependent, so it is bisectable, but no property of those two rows has been
+found that distinguishes them from the other 5704. Until that mechanism is
+identified, the migration is not sound.
 
-Three verifier defects were found and fixed in sequence, all of them in the
-instrument rather than in the migration:
+**Whether the verifier is sound.** Defect A is an alarm that cannot clear. Until
+it is fixed, a genuine regression on a re-keyed table would be indistinguishable
+from the 277 that are always there — which is the failure mode this instrument
+exists to prevent.
+
+### The verifier defects found on the way
+
+Four verifier defects have been found, all of them in the instrument rather
+than in the migration. The first three were fixed in sequence; the fourth is
+outstanding and is Defect A above.
 
 1. Fingerprint scanned its aggregate columns into discarded variables, so every
    database-state table compared as zero content.
@@ -368,31 +424,44 @@ instrument rather than in the migration:
 3. The client reimplemented the server's column encoding to digest rows at copy
    time; the two implementations drifted by a few bytes per row, producing
    failures indistinguishable from real corruption.
+4. Defect A above, found by *running* the verifier to completion rather than by
+   reading it: the two sides digest different column sets on re-keyed tables.
 
-The third was the design fault, and the fix was to delete the second encoding
-rather than tolerate its drift, so that exactly one encoding exists and both
-sides run it by construction.
+(3) was the design fault, and the fix was to delete the second encoding rather
+than tolerate its drift, so that exactly one encoding exists and both sides run
+it by construction. (4) is the same class of fault that survived that fix: two
+sides that must agree, not agreeing by construction.
 
-### Why it could not be completed here
+### Why the earlier attempts did not complete
 
-After the encoding fix the build became materially heavier — the source is
-now digested immediately before each table is copied, which roughly doubles the
+After the encoding fix the build became materially heavier — the source is now
+digested immediately before each table is copied, which roughly doubles the
 reads against a live production server. The 90-minute default cut a build off
 partway, leaving a partial database (correctly refused by the verifier). With
-the budget raised to four hours, the build was killed by the environment about
-two minutes in: the process group disappeared with no exit status written,
-alongside 5.5GB of swap in use on a machine running many concurrent agent
-lanes.
+the budget raised to four hours, the build was killed by the environment.
 
-This is a finding about the environment, not about the migration, but it means
-the honest answer today is that **verification cannot be made reliable on this
-machine as the migration is currently written**, and no production cutover
-should be attempted on the strength of this work.
+The earlier account of that kill blamed memory pressure. That was wrong. A
+later attempt on this machine was killed with swap **flat at 735MB for the whole
+run** while the host's load average sat near 100 on 10 cores: CPU contention,
+not memory. The run that finally completed used a host at load ~3 and never
+needed memory headroom either — dolt's resident set there reached 16.8GB while
+swap stayed unchanged at 98.81MB. Per-source cost is a constant ~15.5s
+regardless of bead count (0 beads and 4303 beads both cost 15.5s), so the
+scaling axis is **the number of stores, not the amount of data**.
+
+What this costs: for a long time the environment was blamed for a failure that
+had a code explanation, and the search for that explanation stopped at the
+host. The two findings above were reachable as soon as a run completed; nothing
+about them needed a different machine, only a machine that was not already
+saturated.
 
 ### What would settle it
 
-Run `bd brain unify build` and `bd brain unify verify` on a machine that is not
-running the federation it is copying — a box with the production server
-reachable read-only and its own disk and memory. The tooling is in place and the
-plan phase already works there; what is untested is whether a full federation
-build and its verification complete inside one process on a loaded host.
+1. Identify the mechanism of Defect B. It is deterministic, so a bisect from
+   the frozen source is the direct route.
+2. Fix Defect A in the verifier so both sides digest the same column set.
+   This must not be done by skipping the check — the check is correct in
+   intent and wrong only in what it compares.
+3. Re-run build and verify and confirm that only Defect B remains. `RESULT:
+   PASS` is not reachable before step 2, and cutover is not reachable before
+   steps 1–3.
