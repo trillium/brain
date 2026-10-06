@@ -170,6 +170,17 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		return fmt.Errorf("exfiltrator: mkdir for %s: %w", issue.ID, err)
 	}
 
+	if owner, err := m.existingOwnerID(path); err == nil && owner != "" && owner != issue.ID {
+		// The render key is the slug, so two rows can map to one file
+		// (cutover probe Question (b): cross-namespace slug collisions
+		// become reachable in a unified database). Last-write-wins would
+		// silently corrupt the file — refuse the overwrite and name both
+		// ids instead; the reconciler / render-all report surfaces it.
+		return fmt.Errorf(
+			"exfiltrator: refusing to overwrite %s: it belongs to %s, and %s's render key maps to the same slug %q — rename one of the two beads' brain_slug",
+			path, owner, issue.ID, slug)
+	}
+
 	if err := m.writeCheckpoint(checkpointEntry{
 		ID:   issue.ID,
 		Kind: string(issue.IssueType),
@@ -198,6 +209,32 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		return fmt.Errorf("exfiltrator: clear checkpoint for %s: %w", issue.ID, err)
 	}
 	return nil
+}
+
+// existingOwnerID reads the id frontmatter line of an already-rendered
+// markdown file. Empty means unreadable, unparsable, or no recorded id —
+// callers treat that as "no owner on record" and proceed (a file from a
+// pre-id renderer must not wedge every subsequent write).
+func (m *MarkdownExfiltrator) existingOwnerID(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	// Stay inside the frontmatter block: stop at its closing "---" line.
+	if end := strings.Index(head, "\n---\n"); end >= 0 {
+		head = head[:end]
+	}
+	for _, line := range strings.Split(head, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "id:"); ok {
+			return strings.TrimSpace(after), nil
+		}
+	}
+	return "", nil
 }
 
 // Remove deletes the markdown for the given (kind, slug) pair if it

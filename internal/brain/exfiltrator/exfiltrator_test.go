@@ -772,3 +772,64 @@ func TestRender_OKFConformance(t *testing.T) {
 		t.Errorf("type should be first field in frontmatter; got: %q", lines[1])
 	}
 }
+
+// TestRender_RefusesCrossIDOverwrite pins the slug-collision guard: two rows
+// mapping one render key must not silently overwrite each other's file
+// (cutover probe Question (b) — real file corruption reproduced with
+// metadata.brain_slug collisions). The second render refuses, names both ids,
+// and leaves the first render's file intact.
+func TestRender_RefusesCrossIDOverwrite(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	persister := &fakePersister{}
+	exf := exfiltrator.NewMarkdownExfiltrator(root, persister)
+
+	first := mustBrainIssue(t, "B-task01", "first task", types.TypeTask)
+	if err := exf.Render(context.Background(), first); err != nil {
+		t.Fatalf("first Render: %v", err)
+	}
+
+	// A second row whose brain_slug maps to the same file.
+	second := mustBrainIssue(t, "B-task99", "first task", types.TypeTask)
+	second.Metadata = json.RawMessage(`{"brain_slug":"first-task"}`)
+	err := exf.Render(context.Background(), second)
+	if err == nil {
+		t.Fatal("second Render succeeded; want refusal")
+	}
+	if !strings.Contains(err.Error(), "B-task01") || !strings.Contains(err.Error(), "B-task99") {
+		t.Fatalf("refusal must name both ids; got: %v", err)
+	}
+
+	// The first render's file is intact.
+	path := filepath.Join(root, "entries", "task", "first-task.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile after refusal: %v", err)
+	}
+	if !strings.Contains(string(data), "id: B-task01") || strings.Contains(string(data), "B-task99") {
+		t.Fatalf("first render's file was clobbered:\n%s", data)
+	}
+}
+
+// TestRender_SameIDReRenderOverwrites pins that re-rendering the same issue
+// (the normal mutation path) still overwrites its own file.
+func TestRender_SameIDReRenderOverwrites(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	persister := &fakePersister{}
+	exf := exfiltrator.NewMarkdownExfiltrator(root, persister)
+
+	issue := mustBrainIssue(t, "B-task01", "first task", types.TypeTask)
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("first Render: %v", err)
+	}
+	issue.Description = "body for B-task01, amended"
+	if err := exf.Render(context.Background(), issue); err != nil {
+		t.Fatalf("re-Render same id: %v", err)
+	}
+	path := filepath.Join(root, "entries", "task", "first-task.md")
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "amended") {
+		t.Fatalf("re-render did not update the file:\n%s", data)
+	}
+}
