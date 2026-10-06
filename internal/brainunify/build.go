@@ -658,7 +658,10 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 	// mismatch. That window is milliseconds per table rather than the minutes
 	// a post-copy re-read allowed.
 	if tp.Scope == ScopeDatabaseState {
-		fp, err := b.source.Fingerprint(ctx, src.Database, tp.Table, "")
+		// Digested over the unified table's column set, store column included,
+		// because that is the row the verifier will compare against. See
+		// ReferenceDigest.
+		fp, err := b.source.ReferenceDigest(ctx, src.Database, tp, src.Namespace)
 		if err != nil {
 			return stats, err
 		}

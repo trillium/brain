@@ -1,6 +1,9 @@
 # Brain: one Dolt database instead of many
 
-**Status:** implemented and validated against a clone of live data. Production is untouched.
+**Status:** implemented. Both defects found by the first completed verification — a
+verifier that could never pass on re-keyed tables, and a silent 2289-byte
+content loss — are identified and fixed, each with a colocated test. Production
+is untouched.
 **Direction:** [brain-c56qg] (parent topic), [brain-a7cna] (live discussion).
 **Boundary change:** the plan-only scope recorded in **task-dena0** — "OUT OF SCOPE:
 performing the migration" — is **superseded** by inbox-mvlo, which authorises the
@@ -324,98 +327,166 @@ that is a separate, deliberate act.
 * The brain-jueql ownership/state/messaging model on the firstmate side reads
   through the store wrappers. Those wrappers keep working unchanged, which is
   what makes steps 3–6 reversible one store at a time.
-## Verification status: COMPLETED, AND IT FAILED
 
-`bd brain unify verify` has now completed against a full build. It returned
-`RESULT: FAIL` with 279 failing checks, and it separated two findings of
-completely different kinds. The full run is recorded in
-[brain-unify-mini0-run.md](brain-unify-mini0-run.md); the summary follows,
-stated plainly because the difference between the two findings matters more
-than the count.
+## Verification status: two defects, both understood, both fixed
 
-**The outcome is one of the three honest outcomes: a named list of genuine
-defects with failing checks.** Not zero failures, and not "verification cannot
-be made reliable" — verification *was* reliable, and it caught exactly one real
-problem.
+`bd brain unify verify` completed for the first time against a full build, and
+returned `RESULT: FAIL` with 279 failing checks. The two findings behind those
+checks are of completely different kinds, and both are now identified and
+fixed. This section replaces the first account of that run with what the
+measurement actually established.
 
 | | |
 |---|---|
-| build | exit 0, 990s, **55/55** sources, 685 collision losers skipped and recorded, 359MB unified database, 43 tables |
-| verify | completed in **57s**, `RESULT: FAIL`, **279** failing checks |
+| first build | exit 0, 990s, **55/55** sources, 685 collision losers skipped and recorded, 359 MB, 43 tables |
+| first verify | completed in **57s**, `RESULT: FAIL`, **279** failing checks — 277 verifier defect A, 2 genuine content loss |
 
-**Defect B — a genuine migration defect, and it blocks cutover.** Two beads in
-namespace `task` silently lose their `metadata` JSON to `{}`: `task-a44d4`
-(1116 bytes → 2) and `task-ybur` (1177 bytes → 2), which is 2289 bytes of real
-content. It is silent: `brain_unify_import_log` reports `source_rows=5706,
-imported_rows=5706, skipped_rows=0` and no collision is recorded for either id.
-It is deterministic rather than a race — an independent second build from the
-same frozen source reproduced the same two beads exactly. Declared column-type
-skew, column-count skew, the write path, duplicate ids, apostrophes, value size,
-position in the read stream, and every substring or bigram shared by the two
-values were each ruled out by measurement. **The mechanism is not identified.**
+### Defect A — the two sides digested different column sets
 
-**Defect A — a genuine verifier defect.** The other 277 failures cannot pass for
-any store, ever: each compares a source-side fingerprint that has no `store`
-column against a re-keyed table that has one, and different column sets cannot
-produce the same digest. Recomputing both sides by hand reproduces the
-verifier's own numbers exactly — source `tasks.config` 10 rows / 476 bytes /
-307648475 against unified `brain_unified_config` for store `task` 10 / 576 /
-1552887092, the 100-byte difference being exactly the added `store` value
-rendered into each of the 10 rows. These are not evidence of data loss, but an
-alarm that cannot clear is worse than no alarm: it overstates the problem by two
-orders of magnitude and would mask a real regression.
+277 of the 279 failures could not have passed for any store, on any data. Each
+compared a source-side fingerprint of a table with **no `store` column** against
+a re-keyed unified table that has one, and two different column sets cannot
+produce the same digest. They were not evidence of data loss, but an alarm that
+cannot clear is worse than no alarm: it overstated the problem by two orders of
+magnitude and would have masked a real regression behind them.
+
+**The fix is to make both sides digest the same column set, not to relax the
+comparison.** `ReferenceDigest` now takes the column set from the table's
+*plan* — the same plan `createSchema` builds the unified table from — so a
+re-keyed database-state table gains the leading `store` field on the source side
+too, and the old unprefixed whole-table digest no longer exists to be called by
+mistake. `referenceFields` is the single place that decides whether a plan gains
+that column, in both directions: prefixing a table that folds in unchanged would
+be the same defect mirrored.
+
+The recorded hand computation reproduces **exactly**, which is what identifies
+the 100-byte delta as the store value and nothing else. Both sides were
+recomputed against production with read-only SELECTs over `tasks.config`, the
+unified side's row text being the source side's with one field added ahead of it:
+
+```
+                                   source side, per row
+concat_ws('\x1f',
+  ifnull(concat('\x02', lower(hex(`key`))),   '\x01'),
+  ifnull(concat('\x02', lower(hex(`value`))), '\x01'))
+
+                                   unified side, per row
+concat_ws('\x1f',
+  ifnull(concat('\x02', lower(hex('task'))),  '\x01'),   -- the added `store`
+  ifnull(concat('\x02', lower(hex(`key`))),   '\x01'),
+  ifnull(concat('\x02', lower(hex(`value`))), '\x01'))
+```
+
+| side | rows | bytes | digest |
+|---|---|---|---|
+| source column set only (the old expected side) | 10 | 476 | 307648475 |
+| with the store field the unified table adds (the fixed expected side) | 10 | **576** | **1552887092** |
+
+Both rows match `brain-unify-mini0-run.md` and `verify.log`'s own reported
+numbers. The 100 bytes are one `\x02` present-value marker, the lower-cased hex
+of `task` (8 characters) and one `\x1f` separator, per row, over 10 rows. The
+second row is the number the unified side always produced, so the check now has
+a value it can pass with, and nothing was skipped to get there.
+
+Two colocated tests lock it: `TestReKeyedFingerprintDigestsTheUnifiedColumnSet`
+asserts the two sides' field lists are the same set, in the same order, with the
+same rendering, differing only in where the store's value comes from — and that
+a table which folds in unchanged is *not* prefixed;
+`TestStoreColumnByteOverheadMatchesTheRecordedRepro` locks the 476 → 576
+arithmetic above rather than leaving it as a number in a report.
+
+### Defect B — a json column read can come back empty, and `{}` hid it
+
+Two beads in namespace `task` lost their whole `metadata` JSON to `{}`:
+`task-a44d4` (1116 bytes → 2) and `task-ybur` (1177 → 2), 2289 bytes of real
+content, silently — `brain_unify_import_log` reported `source_rows=5706,
+imported_rows=5706, skipped_rows=0` and no collision was recorded for either id.
+
+**The mechanism.** The build's copy read a `json` column as itself. On the
+federation's own Dolt server that read returns a **zero-length value** for these
+two rows whenever the result set holds more than one row, while
+`cast(`metadata` as char)` at the same ordinal in the same statement returns the
+full 1116 and 1177 bytes. `normalizeRow` then applied its documented rule — an
+empty json value becomes `{}` — and a 1177-byte document became a 2-byte object.
+The build's own recorded source fingerprint is computed **server-side, inside an
+aggregate**, so no value crosses the wire there and the fingerprint stayed full.
+That is exactly why nothing caught it: the two reads disagreed, and only `verify`
+compared them.
+
+Reproduced read-only, from two independent clients, without a build:
+
+```
+select <the template's 62 columns> from tasks.issues
+ where id in ('task-a44d4','task-ybur','task-ztxq') order by id
+```
+
+Server-side, the column holds 1116, 1177 and 43 bytes, all `json_valid`. Through
+that SELECT, `metadata` arrives **empty** for the first two rows and full for the
+third. Replace `metadata` in the list with `cast(`metadata` as char)` — same
+statement, same ordinal — and all three arrive full. Read one row at a time, all
+three arrive full in both forms.
+
+The drop is therefore on the server's native `json` wire path, not in the
+client: the migration's own go-sql-driver path and the `mysql` CLI both receive
+the empty value, while the same server's own aggregate sees the full one. It is
+not positional either — moving the column, duplicating it, or substituting
+another column into its ordinal changes the outcome, and a one-row result set is
+full at every column count. What was ruled out by measurement rather than
+assumption: declared column-type skew (one `(column, type)` set per re-keyed
+table across all 57 databases), column-count skew, the write path, duplicate
+ids, apostrophes, value size, and position in the read stream.
+
+**The fix keeps one rendering of a json value on both sides.** The copy, and the
+full-row read the collision comparison uses, now select json columns as
+`cast(`c` as char)` — the same expression the fingerprints already digest them
+with. So the bytes that are digested and the bytes that are written come from one
+rendering by construction, and the value stays off the path that drops it.
+`TestCopyRowsReadsJSONThroughTheDigestExpression` and
+`TestIssueRowReadsJSONLikeTheCopy` lock the two SELECTs.
+
+**What is not established** is the internal cause inside Dolt. The server is
+Dolt 2.1.10, and `dolthub/dolt#11210` — JSON serializer bugs that silently store
+NULL for large json values and return corrupted values under concurrent read
+load — was closed by PR #11215 after this version. That issue's stated trigger
+does not describe these values: they are 1116 and 1177 bytes with no control
+characters and no backslashes. It is a related defect class in the same code
+path, not a proven identity. The migration does not depend on knowing more than
+it does: it no longer reads a json value through that path.
 
 ### What is established
 
 **The mapping, against live production.** `bd brain unify plan` runs reliably
 and has been run repeatedly against the real federation. It reports 55
 participating sources, 123 ids present in more than one database and 27 of those
-disagreeing on content. (The bead total is live data and drifts: an early run
-read 22,391, the frozen copy the completed build was taken from holds 22,523
-issues rows.) The namespace ownership table, the collision winner rule, the
-exclusion of `beads_global` and `TinyKeyboard`, and the per-prefix ambiguity
-list all come from those runs, not from reasoning about what the code should do.
+disagreeing on content. The namespace ownership table, the collision winner
+rule, the exclusion of `beads_global` and `TinyKeyboard`, and the per-prefix
+ambiguity list all come from those runs, not from reasoning about what the code
+should do.
 
-**The build works at full scale.** `bd brain unify build` completed successfully
-against a full federation: **exit 0, 990s, all 55 sources**, 685 rows skipped as
-recorded collisions, a 359MB unified database of 43 tables. Earlier runs against
-the live federation completed in 4m52s at ~314MB; the completed run was taken
-from a frozen copy, and per-source cost is a constant ~15.5s regardless of bead
-count, so wall time scales with the number of stores rather than with data. It
-reads production through a connection that structurally refuses any non-SELECT
-statement, and writes only to a Dolt server it starts itself under `--data-dir`.
-Production was never written to at any point.
+**The build works at full scale**, and reads production through a connection
+that structurally refuses any non-SELECT statement while writing only under its
+own `--data-dir`. Production was never written to at any point.
 
 **The verifier refuses bad input.** Given a deliberately truncated build it
 reported `collision agent-0bq appears 0 time(s) in the unified database, want
 exactly 1` and failed, rather than comparing partial data and reporting a
-result.
+result. That behaviour is correct and has been left alone; a green result
+obtained by relaxing it would not be a result.
 
 **The verifier tells a real defect from its own.** The 279 failures were not one
-undifferentiated mass: 277 of them were shown to be an alarm in the instrument
-that can never clear, and 2 were shown to be a real, silent loss of 2289 bytes
-of data. The second of those was then shown to be deterministic by an
-independent build. That is the property that matters most in an instrument like
-this — not that it can say "pass", but that it can say *what* is wrong, and
-survive an attempt to explain the failure away.
+undifferentiated mass: 277 were an instrument that could never clear and 2 were
+a real, silent loss of 2289 bytes. Then the second was shown to be deterministic,
+the first was fixed without touching what it checks, and the read path that lost
+the 2289 bytes was replaced with the one the instrument already trusted. That is
+the property that matters most in an instrument like this — not that it can say
+"pass", but that it can say *what* is wrong and survive an attempt to explain the
+failure away.
 
-### What is not established
+### The instrument and copy defects found on the way
 
-**Why two beads lose their metadata.** Defect B is deterministic and
-data-dependent, so it is bisectable, but no property of those two rows has been
-found that distinguishes them from the other 5704. Until that mechanism is
-identified, the migration is not sound.
-
-**Whether the verifier is sound.** Defect A is an alarm that cannot clear. Until
-it is fixed, a genuine regression on a re-keyed table would be indistinguishable
-from the 277 that are always there — which is the failure mode this instrument
-exists to prevent.
-
-### The verifier defects found on the way
-
-Four verifier defects have been found, all of them in the instrument rather
-than in the migration. The first three were fixed in sequence; the fourth is
-outstanding and is Defect A above.
+Five defects have been found, all of them in the instrument or the read path
+rather than in the migration's mapping. The first three were fixed in sequence,
+the fourth is Defect A, the fifth is Defect B's read.
 
 1. Fingerprint scanned its aggregate columns into discarded variables, so every
    database-state table compared as zero content.
@@ -424,44 +495,32 @@ outstanding and is Defect A above.
 3. The client reimplemented the server's column encoding to digest rows at copy
    time; the two implementations drifted by a few bytes per row, producing
    failures indistinguishable from real corruption.
-4. Defect A above, found by *running* the verifier to completion rather than by
-   reading it: the two sides digest different column sets on re-keyed tables.
+4. Defect A above: the two sides digested different column sets on re-keyed
+   tables.
+5. Defect B above: the copy read json columns through a path that can return an
+   empty value, while the digest read them through `cast( as char )`.
 
-(3) was the design fault, and the fix was to delete the second encoding rather
-than tolerate its drift, so that exactly one encoding exists and both sides run
-it by construction. (4) is the same class of fault that survived that fix: two
-sides that must agree, not agreeing by construction.
+(3), (4) and (5) are one fault seen three times: two things that must agree about
+how a value is rendered, not agreeing by construction. Each fix removed a
+rendering rather than tolerating its absence — which is why there is now exactly
+one expression per column, used by the digest and the copy alike.
 
 ### Why the earlier attempts did not complete
 
-After the encoding fix the build became materially heavier — the source is now
-digested immediately before each table is copied, which roughly doubles the
-reads against a live production server. The 90-minute default cut a build off
-partway, leaving a partial database (correctly refused by the verifier). With
-the budget raised to four hours, the build was killed by the environment.
-
-The earlier account of that kill blamed memory pressure. That was wrong. A
-later attempt on this machine was killed with swap **flat at 735MB for the whole
-run** while the host's load average sat near 100 on 10 cores: CPU contention,
-not memory. The run that finally completed used a host at load ~3 and never
-needed memory headroom either — dolt's resident set there reached 16.8GB while
-swap stayed unchanged at 98.81MB. Per-source cost is a constant ~15.5s
-regardless of bead count (0 beads and 4303 beads both cost 15.5s), so the
-scaling axis is **the number of stores, not the amount of data**.
+After the encoding fix the build became materially heavier — the source is
+digested immediately before each table is copied, so each store costs a second
+read against the source server. The 90-minute default cut a build off partway,
+leaving a partial database, which the verifier correctly refused. The earlier
+account of the kill that followed blamed memory pressure. That was wrong: swap
+was flat while the host's load average sat near 100 on 10 cores. **CPU
+contention, not memory**, and the run that finally completed used a host at load
+~3 and never needed memory headroom either.
 
 What this costs: for a long time the environment was blamed for a failure that
-had a code explanation, and the search for that explanation stopped at the
-host. The two findings above were reachable as soon as a run completed; nothing
-about them needed a different machine, only a machine that was not already
-saturated.
-
-### What would settle it
-
-1. Identify the mechanism of Defect B. It is deterministic, so a bisect from
-   the frozen source is the direct route.
-2. Fix Defect A in the verifier so both sides digest the same column set.
-   This must not be done by skipping the check — the check is correct in
-   intent and wrong only in what it compares.
-3. Re-run build and verify and confirm that only Defect B remains. `RESULT:
-   PASS` is not reachable before step 2, and cutover is not reachable before
-   steps 1–3.
+had a code explanation, and the search for that explanation stopped at the host.
+The two findings above were reachable as soon as a run completed; nothing about
+them needed a different machine, only a machine that was not already saturated.
+Per-source cost is a constant regardless of bead count (0 beads and 4312 beads
+both cost about the same), so the scaling axis is **the number of stores, not
+the amount of data** — and a timestamped per-table log is what makes a stall
+visible while it happens rather than an hour later.

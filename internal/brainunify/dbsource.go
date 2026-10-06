@@ -226,30 +226,61 @@ func (s *readOnlySource) Columns(ctx context.Context, database, table string) ([
 	return out, nil
 }
 
-// Fingerprint computes an order-independent content digest of a table, or of
-// the subset selected by where (which the verifier uses to scope a table's
-// rows to one namespace inside the unified database).
+// ReferenceDigest is the source-side measurement the verifier compares the
+// unified table against: an order-independent content digest of one source
+// table, over the column set the unified table will actually hold.
+//
+// The column set is taken from the table's plan rather than from the source
+// table, and that is the fix for the verifier defect that made 277 of the 279
+// checks of the completed run unfailable. A re-keyed database-state table gains
+// a leading `store` column, so its source-side digest has to carry that
+// column's field; without it the two sides digest different column sets and can
+// never agree, for any store, on any data. The recorded reproduction: source
+// tasks.config 10 rows / 476 bytes / digest 307648475 against unified
+// brain_unified_config for store `task` 10 rows / 576 / 1552887092, the 100
+// bytes being the store value rendered into each of the 10 rows. Nothing is
+// skipped or relaxed to make that difference go away; the source side is made
+// to describe the same row the unified side describes.
+func (s *readOnlySource) ReferenceDigest(ctx context.Context, database string, tp *TablePlan, store string) (Fingerprint, error) {
+	types, err := s.ColumnTypes(ctx, database, tp.Table)
+	if err != nil {
+		return Fingerprint{}, err
+	}
+	if len(tp.Columns) == 0 {
+		return Fingerprint{}, nil
+	}
+	// Every column of the plan is required, which is not a new demand: the copy
+	// inserts all of them a few lines later, so a source that lacks one would
+	// fail there instead. Failing here names the column.
+	for _, c := range tp.Columns {
+		if _, ok := types[c]; !ok {
+			return Fingerprint{}, fmt.Errorf("source %s.%s has no column %q, which the unified %s needs", database, tp.Table, c, tp.Target)
+		}
+	}
+	return s.digestFields(ctx, database, tp.Table, referenceFields(tp, types, store))
+}
+
+// referenceFields is the column set the unified table will hold, rendered for
+// the side being digested. It is the single place that decides whether a plan
+// gains the leading store column, so the two sides of a comparison cannot
+// disagree about their column set by accident.
+func referenceFields(tp *TablePlan, sourceTypes map[string]string, store string) []string {
+	fields := fingerprintFieldsForTypes(sourceTypes, tp.Columns)
+	if tp.Scope != ScopeDatabaseState {
+		return fields
+	}
+	// NamespacedDDL declares the store column first, so its field is first.
+	return append([]string{storeFieldExpr(store)}, fields...)
+}
+
+// digestFields runs the order-independent digest over an explicit field list.
 //
 // The digest is count + total length + XOR of per-row CRC32. Each field is
 // tagged so that a NULL and an empty string do not fingerprint alike, and the
 // XOR makes the result independent of row order, so a unified database that
 // received the same rows in a different order still matches.
-func (s *readOnlySource) Fingerprint(ctx context.Context, database, table, where string) (Fingerprint, error) {
-	cols, err := s.Columns(ctx, database, table)
-	if err != nil {
-		return Fingerprint{}, err
-	}
-	if len(cols) == 0 {
-		return Fingerprint{}, nil
-	}
-	fields, err := s.fingerprintFields(ctx, database, table, cols)
-	if err != nil {
-		return Fingerprint{}, err
-	}
+func (s *readOnlySource) digestFields(ctx context.Context, database, table string, fields []string) (Fingerprint, error) {
 	inner := fmt.Sprintf("select concat_ws('\x1f', %s) as rowtext from `%s`.`%s`", strings.Join(fields, ", "), database, table)
-	if strings.TrimSpace(where) != "" {
-		inner += " where " + where
-	}
 	stmt := fmt.Sprintf(
 		"select count(*) as n, ifnull(sum(length(rowtext)),0) as b, ifnull(bit_xor(crc32(rowtext)),0) as h from (%s) t",
 		inner)
@@ -548,11 +579,11 @@ func (s *readOnlySource) IssueRow(ctx context.Context, database, id string) (map
 	if err != nil {
 		return nil, err
 	}
-	quoted := make([]string, 0, len(cols))
-	for _, c := range cols {
-		quoted = append(quoted, "`"+c+"`")
+	jsonCols, err := s.JSONColumns(ctx, database, "issues")
+	if err != nil {
+		return nil, err
 	}
-	stmt := fmt.Sprintf("select %s from `%s`.`issues` where `id` = ?", strings.Join(quoted, ", "), database)
+	stmt := issueRowSelect(database, cols, jsonCols)
 	rows, err := s.query(ctx, stmt, id)
 	if err != nil {
 		return nil, err
@@ -583,6 +614,15 @@ func (s *readOnlySource) IssueRow(ctx context.Context, database, id string) (map
 	return out, nil
 }
 
+// issueRowSelect is the statement IssueRow reads a duplicated id with. It is
+// built from the same column list the copy uses, so a json column is read the
+// same way on both paths: what the collision comparison compares and what the
+// migration would write are then the same rendering of the value, and an empty
+// json read can no longer look like two copies agreeing.
+func issueRowSelect(database string, cols, jsonCols []string) string {
+	return fmt.Sprintf("select %s from `%s`.`issues` where `id` = ?", copySelectList(cols, jsonCols), database)
+}
+
 // CopyRowsResult is what a copy pass copied, digested from the rows themselves
 // rather than from a second read of the source.
 type CopyRowsResult struct {
@@ -594,6 +634,40 @@ type CopyRowsResult struct {
 	// only that every row arrived but that it arrived in the namespace it
 	// belongs to.
 	Groups map[string]Fingerprint
+}
+
+// copySelectList renders the column list of the SELECT a copy reads through.
+//
+// json-typed columns are read as cast(`c` as char) rather than as their own
+// type, for two reasons that are one reason: it is the expression the
+// fingerprints digest the column with, so the copy writes exactly the bytes
+// the digest measured; and it keeps the value off the server's native json
+// wire path.
+//
+// That path loses data. Measured on the federation's own Dolt server (2.1.10),
+// reading tasks.issues through the migration's 62-column SELECT returns a
+// zero-length value for `metadata` on task-a44d4 and task-ybur whenever the
+// result set holds more than one row, while cast(`metadata` as char) at the
+// same ordinal returns the full 1116 and 1177 bytes. Two independent clients
+// see the same empty value, and the server's own aggregate sees the full one,
+// so it is a server-side value drop, not a client or read-order artifact; a
+// single-row result set is unaffected. Recording a silent 2-byte {} for a
+// 1177-byte document is how the completed build lost 2289 bytes of content
+// with source_rows == imported_rows and no collision on record.
+func copySelectList(cols, jsonCols []string) string {
+	json := make(map[string]bool, len(jsonCols))
+	for _, c := range jsonCols {
+		json[c] = true
+	}
+	quoted := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if json[c] {
+			quoted = append(quoted, fmt.Sprintf("cast(`%s` as char)", c))
+			continue
+		}
+		quoted = append(quoted, "`"+c+"`")
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // CopyRows streams a source table's rows to fn in batches bounded by both row
@@ -612,11 +686,7 @@ func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, c
 	if len(cols) == 0 {
 		return nil
 	}
-	quoted := make([]string, 0, len(cols))
-	for _, c := range cols {
-		quoted = append(quoted, "`"+c+"`")
-	}
-	stmt := fmt.Sprintf("select %s from `%s`.`%s`", strings.Join(quoted, ", "), database, table)
+	stmt := fmt.Sprintf("select %s from `%s`.`%s`", copySelectList(cols, jsonCols), database, table)
 	rows, err := s.query(ctx, stmt)
 	if err != nil {
 		return fmt.Errorf("reading %s.%s: %w", database, table, err)
@@ -725,10 +795,6 @@ func normalizeRow(values []any, jsonIdx map[int]bool) []any {
 
 // fingerprintFields renders every column as a digest-safe literal.
 //
-// \x01 marks NULL and \x02 marks a present value, so a migration that turns
-// NULL into an empty string changes the fingerprint — and that difference is
-// exactly what the verification exists to catch.
-//
 // Values are wrapped in hex() because some columns hold bytes that are not
 // valid text (federation_peers carries a binary token). Concatenating those
 // into a string makes the server reject the query outright, which would mean
@@ -739,21 +805,53 @@ func normalizeRow(values []any, jsonIdx map[int]bool) []any {
 // json columns are the exception: Dolt rejects hex() on them, and a json
 // document is always valid text, so those are cast to char. The choice is made
 // from the column's declared type, and both sides of every comparison build
-// their fields the same way.
+// their fields the same way. It is also the expression the copy reads a json
+// column through — see copySelectList — so the bytes that are digested and the
+// bytes that are written come from one rendering of the value.
 func (s *readOnlySource) fingerprintFields(ctx context.Context, database, table string, cols []string) ([]string, error) {
 	types, err := s.ColumnTypes(ctx, database, table)
 	if err != nil {
 		return nil, err
 	}
+	return fingerprintFieldsForTypes(types, cols), nil
+}
+
+// fingerprintFieldsForTypes is fingerprintFields without the database read.
+// The declared types are the only input the rendering needs, so the two sides
+// of a re-keyed comparison can be checked against each other without a server.
+func fingerprintFieldsForTypes(types map[string]string, cols []string) []string {
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
 		expr := fmt.Sprintf("lower(hex(`%s`))", c)
 		if types[c] == "json" {
 			expr = fmt.Sprintf("cast(`%s` as char)", c)
 		}
-		out = append(out, fmt.Sprintf("ifnull(concat('\x02', %s), '\x01')", expr))
+		out = append(out, digestFieldExpr(expr))
 	}
-	return out, nil
+	return out
+}
+
+// digestFieldExpr renders one value as a digest-safe field.
+//
+// \x01 marks NULL and \x02 marks a present value, so a migration that turns
+// NULL into an empty string changes the fingerprint — and that difference is
+// exactly what the verification exists to catch. Every field on both sides of
+// every comparison, including the store column a re-keyed table adds, is built
+// here, so two sides that must agree cannot drift apart in their encoding.
+func digestFieldExpr(expr string) string {
+	return fmt.Sprintf("ifnull(concat('\x02', %s), '\x01')", expr)
+}
+
+// storeFieldExpr renders the leading `store` column of a re-keyed table for a
+// store whose name is known at digest time — that is, on the source side.
+//
+// The unified side renders the same column from the column itself, as
+// lower(hex(`store`)); a varchar's hex is the lower-cased hex of its bytes, so
+// running the same expression over the store literal produces the same bytes
+// the unified table holds. The two sides therefore digest the same column set
+// with the same rendering, which is the whole of the fix for verifier defect A.
+func storeFieldExpr(store string) string {
+	return digestFieldExpr(fmt.Sprintf("lower(hex(%s))", quoteLiteral(store)))
 }
 
 // checkInvariant refuses a fingerprint that reports rows but no content.
