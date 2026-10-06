@@ -418,10 +418,26 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	if err := WriteImportLog(ctx, target, res.Stats); err != nil {
 		return res, err
 	}
-	if _, err := target.ExecContext(ctx, "select dolt_commit('-Am', 'brain unify: import federation into one database')"); err != nil {
-		// A commit failure is reported, not swallowed: the rows are already
-		// in the database, but an uncommitted build is not a durable result.
-		b.log("warning: could not create a dolt commit: %v", err)
+	// dolt 2.x exposes dolt_commit as a stored procedure ("call"), not a
+	// scalar function: the build's previous "select dolt_commit(...)" failed
+	// with "function: 'dolt_commit' not found" on every run, leaving the
+	// unified database with zero dolt history — a crash between build and
+	// first write would lose the whole working set (cutover probe, rough
+	// edge 4). The call returns a result set; drain it, keep the error.
+	{
+		rows, err := target.QueryContext(ctx, "call dolt_commit('-Am', 'brain unify: import federation into one database')")
+		if err != nil {
+			// A commit failure is reported, not swallowed: the rows are
+			// already in the database, but an uncommitted build is not a
+			// durable result.
+			b.log("warning: could not create a dolt commit: %v", err)
+		} else {
+			for rows.Next() {
+			}
+			_ = rows.Err()
+			_ = rows.Close()
+			b.log("created initial dolt commit of the unified database")
+		}
 	}
 	res.Elapsed = time.Since(start)
 	return res, nil
