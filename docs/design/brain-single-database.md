@@ -328,13 +328,25 @@ that is a separate, deliberate act.
    `brain_unify_collisions.losing_row`. The cutover itself is still not
    authorized by this acceptance.
 3. The unified database's `config`/`metadata` seeding story is settled for the
-   stores being moved (see "What changes shape" above).
+   stores being moved (see "What changes shape" above). **Met** — the config
+   layer reads and writes the re-keyed `brain_unified_config`/`_metadata`/
+   `_local_metadata` and derived custom-status/type tables filtered by the
+   wrapper's namespace (BD_NAME), degrading to the seeded plain tables when no
+   namespace is pinned (fm/brain-unify-verify `0dd496ca3`).
 4. The markdown exfiltration bridge has been pointed at the unified database,
    or confirmed not to need to be: every write renders
    `<store>/entries/<kind>/<slug>.md`, and the store name it writes under must
-   come from the namespace, not the database.
+   come from the namespace, not the database. **Met** — the render root nests
+   under the namespace (BD_NAME) when it disagrees with the shared BEADS_DIR's
+   parent, and a render refuses to overwrite a file whose frontmatter id
+   belongs to a different bead (fm/brain-unify-verify `716bf240b`).
 5. `brain search` federation has been re-pointed: it walks stores, and after
    unification there is one store to walk with many namespaces to filter.
+   **Met** — on the unified database the federated walk is one query over the
+   connected database bucketed per owning store from `brain_store_prefixes`,
+   and every user-facing read (list, search, counts, ready, blocked, stale,
+   render-all, statistics) is scoped to the wrapper's namespaces
+   (fm/brain-unify-verify `2fa23685d`).
 6. A backup of the unified database exists and has been restored once.
 
 ## What this does not change
