@@ -37,7 +37,8 @@ func NewBatchContext(ctx context.Context, tx *sql.Tx, opts storage.BatchCreateOp
 		return nil, err
 	}
 	var allowedPrefixes string
-	_ = tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "allowed_prefixes").Scan(&allowedPrefixes)
+	sc := UnifiedScopeForTx(ctx, tx)
+	_ = tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "allowed_prefixes")...).Scan(&allowedPrefixes)
 
 	return &BatchContext{
 		CustomStatuses:  customStatuses,

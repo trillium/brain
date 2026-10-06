@@ -99,7 +99,9 @@ func ResolveCustomConfigInTx(ctx context.Context, tx DBTX) (statuses []types.Cus
 }
 
 func resolveCustomStatusesFromTableInTx(ctx context.Context, tx DBTX) ([]types.CustomStatus, bool, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT name, category FROM custom_statuses ORDER BY name")
+	sc := UnifiedScopeForTx(ctx, tx)
+	table, store := sc.customTable(utCustomStatuses)
+	rows, err := tx.QueryContext(ctx, "SELECT name, category FROM "+table+" "+store+"ORDER BY name", sc.customTableArgs()...)
 	if err != nil {
 		return nil, false, nil
 	}
@@ -122,7 +124,9 @@ func resolveCustomStatusesFromTableInTx(ctx context.Context, tx DBTX) ([]types.C
 }
 
 func resolveCustomTypesFromTableInTx(ctx context.Context, tx DBTX) ([]string, bool, error) {
-	rows, err := tx.QueryContext(ctx, "SELECT name FROM custom_types ORDER BY name")
+	sc := UnifiedScopeForTx(ctx, tx)
+	table, store := sc.customTable(utCustomTypes)
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM "+table+" "+store+"ORDER BY name", sc.customTableArgs()...)
 	if err != nil {
 		return nil, false, nil
 	}
@@ -152,7 +156,10 @@ func getConfigKeysInTx(ctx context.Context, tx DBTX, keys ...string) (map[string
 		args[i] = k
 	}
 	//nolint:gosec // G201: only ? placeholders are formatted in.
-	q := fmt.Sprintf("SELECT `key`, value FROM config WHERE `key` IN (%s)", strings.Join(placeholders, ","))
+	sc := UnifiedScopeForTx(ctx, tx)
+	table, store := sc.customTable(utConfig)
+	q := fmt.Sprintf("SELECT `key`, value FROM %s %sWHERE `key` IN (%s)", table, store, strings.Join(placeholders, ","))
+	args = append(sc.customTableArgs(), args...)
 	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("get config keys: %w", err)
@@ -175,8 +182,10 @@ func getConfigKeysInTx(ctx context.Context, tx DBTX, keys ...string) (map[string
 // Returns nil on parse errors (degraded mode). Does not cache or log —
 // callers layer those concerns on top.
 func ResolveCustomStatusesDetailedInTx(ctx context.Context, tx DBTX) ([]types.CustomStatus, error) {
-	// Try the normalized table first
-	rows, err := tx.QueryContext(ctx, "SELECT name, category FROM custom_statuses ORDER BY name")
+	// Try the normalized table first (the namespace's rows when scoped)
+	sc := UnifiedScopeForTx(ctx, tx)
+	table, store := sc.customTable(utCustomStatuses)
+	rows, err := tx.QueryContext(ctx, "SELECT name, category FROM "+table+" "+store+"ORDER BY name", sc.customTableArgs()...)
 	if err == nil {
 		defer rows.Close()
 		var result []types.CustomStatus
@@ -241,8 +250,10 @@ func ResolveCustomStatusesDetailedInTx(ctx context.Context, tx DBTX) ([]types.Cu
 func ResolveCustomTypesInTx(ctx context.Context, tx DBTX) ([]string, error) {
 	var fromDB []string
 
-	// Try the normalized table first.
-	rows, err := tx.QueryContext(ctx, "SELECT name FROM custom_types ORDER BY name")
+	// Try the normalized table first (the namespace's rows when scoped).
+	sc := UnifiedScopeForTx(ctx, tx)
+	table, store := sc.customTable(utCustomTypes)
+	rows, err := tx.QueryContext(ctx, "SELECT name FROM "+table+" "+store+"ORDER BY name", sc.customTableArgs()...)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -367,7 +378,8 @@ func dedupePreservingOrder(in []string) []string {
 // SyncCustomStatusesTable replaces all rows in custom_statuses with parsed config value.
 // Used by both DoltStore and EmbeddedDoltStore when "status.custom" config changes.
 func SyncCustomStatusesTable(ctx context.Context, tx DBTX, value string) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM custom_statuses"); err != nil {
+	sc := UnifiedScopeForTx(ctx, tx)
+	if _, err := sc.deleteAllCustomRowsInTx(ctx, tx, utCustomStatuses); err != nil {
 		return err
 	}
 	if value == "" {
@@ -378,8 +390,7 @@ func SyncCustomStatusesTable(ctx context.Context, tx DBTX, value string) error {
 		return fmt.Errorf("invalid status.custom value: %w", err)
 	}
 	for _, s := range parsed {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO custom_statuses (name, category) VALUES (?, ?)",
-			s.Name, string(s.Category)); err != nil {
+		if err := sc.insertCustomStatusRowInTx(ctx, tx, s.Name, string(s.Category)); err != nil {
 			return err
 		}
 	}
@@ -389,7 +400,8 @@ func SyncCustomStatusesTable(ctx context.Context, tx DBTX, value string) error {
 // SyncCustomTypesTable replaces all rows in custom_types with parsed config value.
 // Used by both DoltStore and EmbeddedDoltStore when "types.custom" config changes.
 func SyncCustomTypesTable(ctx context.Context, tx DBTX, value string) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM custom_types"); err != nil {
+	sc := UnifiedScopeForTx(ctx, tx)
+	if _, err := sc.deleteAllCustomRowsInTx(ctx, tx, utCustomTypes); err != nil {
 		return err
 	}
 	if value == "" {
@@ -397,7 +409,7 @@ func SyncCustomTypesTable(ctx context.Context, tx DBTX, value string) error {
 	}
 	names := parseTypesValue(value)
 	for _, name := range names {
-		if _, err := tx.ExecContext(ctx, "INSERT INTO custom_types (name) VALUES (?)", name); err != nil {
+		if err := sc.insertCustomTypeRowInTx(ctx, tx, name); err != nil {
 			return err
 		}
 	}
@@ -438,8 +450,8 @@ func EnsureCustomTypeInTx(ctx context.Context, tx DBTX, name string) error {
 			return nil
 		}
 	}
-	_, err = tx.ExecContext(ctx, "INSERT INTO custom_types (name) VALUES (?)", name)
-	return err
+	sc := UnifiedScopeForTx(ctx, tx)
+	return sc.insertCustomTypeRowInTx(ctx, tx, name)
 }
 
 // ResolveInfraTypesInTx reads infrastructure types from the database,
