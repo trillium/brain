@@ -324,3 +324,75 @@ that is a separate, deliberate act.
 * The brain-jueql ownership/state/messaging model on the firstmate side reads
   through the store wrappers. Those wrappers keep working unchanged, which is
   what makes steps 3–6 reversible one store at a time.
+## Verification status: NOT VERIFIED
+
+`bd brain unify verify` has never completed against a full build. What follows
+is what is established and what is not, stated plainly because the difference
+matters.
+
+### What is established
+
+**The mapping, against live production.** `bd brain unify plan` runs reliably
+and has been run repeatedly against the real federation. It reports 55
+participating sources, 22,391 beads, 123 ids present in more than one database
+and 27 of those disagreeing on content. The namespace ownership table, the
+collision winner rule, the exclusion of `beads_global` and `TinyKeyboard`, and
+the per-prefix ambiguity list all come from that run, not from reasoning about
+what the code should do.
+
+**The build works at full scale.** `bd brain unify build` completed successfully
+against the live federation more than once (4m52s for the whole federation,
+~685 rows skipped as recorded collisions, 314MB cloned database). It reads
+production through a connection that structurally refuses any non-SELECT
+statement, and writes only to a Dolt server it starts itself under `--data-dir`.
+Production was never written to at any point.
+
+**The verifier refuses bad input.** Given a deliberately truncated build it
+reported `collision agent-0bq appears 0 time(s) in the unified database, want
+exactly 1` and failed, rather than comparing partial data and reporting a
+result. That is the property that matters most in an instrument like this.
+
+### What is not established
+
+**A green verification.** Never obtained. No run of `bd brain unify verify`
+against a complete build has finished, so the claim "the unified database
+matches the source" is unproven.
+
+Three verifier defects were found and fixed in sequence, all of them in the
+instrument rather than in the migration:
+
+1. Fingerprint scanned its aggregate columns into discarded variables, so every
+   database-state table compared as zero content.
+2. The reference fingerprints were taken by re-reading each source *after* the
+   copy, so concurrent writes appeared as migration defects.
+3. The client reimplemented the server's column encoding to digest rows at copy
+   time; the two implementations drifted by a few bytes per row, producing
+   failures indistinguishable from real corruption.
+
+The third was the design fault, and the fix was to delete the second encoding
+rather than tolerate its drift, so that exactly one encoding exists and both
+sides run it by construction.
+
+### Why it could not be completed here
+
+After the encoding fix the build became materially heavier — the source is
+now digested immediately before each table is copied, which roughly doubles the
+reads against a live production server. The 90-minute default cut a build off
+partway, leaving a partial database (correctly refused by the verifier). With
+the budget raised to four hours, the build was killed by the environment about
+two minutes in: the process group disappeared with no exit status written,
+alongside 5.5GB of swap in use on a machine running many concurrent agent
+lanes.
+
+This is a finding about the environment, not about the migration, but it means
+the honest answer today is that **verification cannot be made reliable on this
+machine as the migration is currently written**, and no production cutover
+should be attempted on the strength of this work.
+
+### What would settle it
+
+Run `bd brain unify build` and `bd brain unify verify` on a machine that is not
+running the federation it is copying — a box with the production server
+reachable read-only and its own disk and memory. The tooling is in place and the
+plan phase already works there; what is untested is whether a full federation
+build and its verification complete inside one process on a loaded host.
