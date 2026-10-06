@@ -1,9 +1,10 @@
 # Brain: one Dolt database instead of many
 
-**Status:** implemented. Both defects found by the first completed verification — a
-verifier that could never pass on re-keyed tables, and a silent 2289-byte
-content loss — are identified and fixed, each with a colocated test. Production
-is untouched.
+**Status:** implemented and verified. `RESULT: PASS` — 518/518 checks against a
+build from a proven-identical frozen copy of production. Both defects found by
+the first completed verification — a verifier that could never pass on re-keyed
+tables, and a silent 2289-byte content loss — are identified and fixed, each
+with a colocated test. Production is untouched.
 **Direction:** [brain-c56qg] (parent topic), [brain-a7cna] (live discussion).
 **Boundary change:** the plan-only scope recorded in **task-dena0** — "OUT OF SCOPE:
 performing the migration" — is **superseded** by inbox-mvlo, which authorises the
@@ -303,7 +304,8 @@ that is a separate, deliberate act.
 ### What must be true before step 3
 
 1. `bd brain unify verify` reports `RESULT: PASS` on a database built from a
-   fresh read of production.
+   fresh read of production. **Met** — 518/518 checks on a build from a proven
+   frozen copy of production; see "Verification status" below.
 2. The 27 content-disagreeing collisions have been reviewed and the winner rule
    accepted, or the losing rows have been recovered from
    `brain_unify_collisions.losing_row`.
@@ -340,6 +342,16 @@ measurement actually established.
 |---|---|
 | first build | exit 0, 990s, **55/55** sources, 685 collision losers skipped and recorded, 359 MB, 43 tables |
 | first verify | completed in **57s**, `RESULT: FAIL`, **279** failing checks — 277 verifier defect A, 2 genuine content loss |
+| re-run build | exit 0, 1516s, **55/55** sources, 685 rows skipped (all recorded in `brain_unify_collisions`), 394 MB on disk, 43 tables |
+| re-run verify | completed in **110s**, **`RESULT: PASS`** — 518/518 checks, 0 failed, 222 namespaces, **123** collisions confirmed |
+
+The re-run was built against a fresh frozen copy of production, so build and
+verify read byte-identical data; the copy is 57 databases, and **every copied
+main-branch hash is a commit production's own `dolt_log` contains**, which is
+what makes it a real production state rather than a torn one. The two beads
+that lost 2289 bytes now hold **1116 and 1177 bytes** in the unified database —
+the same lengths the source holds — and the 123 recorded collisions each appear
+exactly once, as the verifier requires.
 
 ### Defect A — the two sides digested different column sets
 
@@ -452,6 +464,11 @@ does not describe these values: they are 1116 and 1177 bytes with no control
 characters and no backslashes. It is a related defect class in the same code
 path, not a proven identity. The migration does not depend on knowing more than
 it does: it no longer reads a json value through that path.
+
+**Confirmed fixed at full scale.** In the re-run's unified database `task-a44d4`
+and `task-ybur` hold 1116 and 1177 bytes of `metadata`, `json_valid` 1, with the
+`brain_slug` each source holds — the same lengths as production — where the
+previous build had stored a 2-byte `{}` for each.
 
 ### What is established
 
