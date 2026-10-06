@@ -227,12 +227,27 @@ store). The copies disagree on `close_reason`, `closed_at`, `notes`, `status`
 and `updated_at`: the `agent` copy is **closed** as of 2026-07-29, the `dolt`
 copy is **open** and stale. Keeping the wrong one loses real state.
 
-**27 of the 123 duplicated ids disagree on content**; the rest differ only in
-bookkeeping (`content_hash`, `updated_at`) or not at all. The plan compares
-duplicated rows **column by column**, not by trusting the stored
-`content_hash` — the three `assert-*` ids that looked divergent on
-`content_hash` turned out to have identical titles, descriptions and status,
-while the `task-*` ids differ in `status`, `closed_at` and `close_reason`.
+**31 of the 123 duplicated ids disagree on content** (24 on actual content —
+`status`, `closed_at`, `close_reason`, `notes`, `description` — 7 on bookkeeping
+only), and the rest not at all. The plan compares duplicated rows **column by
+column**, not by trusting the stored `content_hash` — the three `assert-*` ids
+that looked divergent on `content_hash` turned out to have identical titles,
+descriptions and status, while the `task-*` ids differ in `status`, `closed_at`
+and `close_reason`. This count was 27 when first recorded; the divergence set
+grows as production moves — two ids gained notes after this doc was written
+(`project-2g7` on 2026-09-16, `project-xat` on 2026-10-02) — so the number is
+read from the build's `brain_unify_collisions` table, not quoted from here.
+
+**The winner rule was reviewed and accepted per id.** The per-id review is
+recorded at
+`fm/brain-unify-verify` artifact
+`/Users/mini0/fm_home/mini0-ops/data/brain-unify-verify/item2-collision-review.md`:
+every losing row is the brain store's stale snapshot of the same bead (made
+under the old `repos.additional` federation), the winner is a strict superset
+wherever prose differs (dated appended notes, verified-fixed notes, migration
+close-reasons the losers lack), and there is not one column where the losing
+copy holds newer content. Every losing row stays recoverable in full from
+`brain_unify_collisions.losing_row` if any id is ever disputed.
 
 A content disagreement **blocks** the build. Bookkeeping-only differences are
 reported but do not block, because keeping one copy loses nothing the bead
@@ -306,9 +321,12 @@ that is a separate, deliberate act.
 1. `bd brain unify verify` reports `RESULT: PASS` on a database built from a
    fresh read of production. **Met** — 518/518 checks on a build from a proven
    frozen copy of production; see "Verification status" below.
-2. The 27 content-disagreeing collisions have been reviewed and the winner rule
+2. The 31 content-disagreeing collisions have been reviewed and the winner rule
    accepted, or the losing rows have been recovered from
-   `brain_unify_collisions.losing_row`.
+   `brain_unify_collisions.losing_row`. **Met** — winner rule accepted per id
+   (see the collision section above); the losing rows stay recoverable from
+   `brain_unify_collisions.losing_row`. The cutover itself is still not
+   authorized by this acceptance.
 3. The unified database's `config`/`metadata` seeding story is settled for the
    stores being moved (see "What changes shape" above).
 4. The markdown exfiltration bridge has been pointed at the unified database,
