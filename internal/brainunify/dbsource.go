@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/crc32"
 	"sort"
 	"strings"
 	"sync"
@@ -583,15 +584,37 @@ func (s *readOnlySource) IssueRow(ctx context.Context, database, id string) (map
 	return out, nil
 }
 
+// CopyRowsResult is what a copy pass copied, digested from the rows themselves
+// rather than from a second read of the source.
+type CopyRowsResult struct {
+	Fingerprint
+	// Yielded is the number of rows handed to the caller.
+	Yielded int64
+	// Groups are the per-namespace digests of the rows yielded, keyed by the
+	// same prefix rule the server would use, so a verification can prove not
+	// only that every row arrived but that it arrived in the namespace it
+	// belongs to.
+	Groups map[string]Fingerprint
+}
+
 // CopyRows streams a source table's rows to fn in batches bounded by both row
 // count and total size, because a single events row can carry a whole session
 // transcript and an unbounded batch would exceed the server's packet limit.
 // the columns the caller names are selected, so a source that gained a column
 // the unified schema lacks is reported by the caller rather than failing
 // mid-insert with an opaque SQL error.
-func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, cols []string, jsonCols []string, fn func(rows [][]any) error) error {
+//
+// It returns a digest of the rows it yielded. Computing that here rather than
+// by reading the table again is the whole point: brain's stores are written
+// continuously, so a fingerprint taken after the copy measures a later
+// snapshot, and every row written in between shows up as a migration defect
+// that never happened.
+func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, cols, jsonCols []string, groupCol int, fn func(rows [][]any) error) (CopyRowsResult, error) {
+	var out CopyRowsResult
+	out.Groups = map[string]Fingerprint{}
+	jsonIdx := jsonIdx(cols, jsonCols)
 	if len(cols) == 0 {
-		return nil
+		return out, nil
 	}
 	quoted := make([]string, 0, len(cols))
 	for _, c := range cols {
@@ -600,7 +623,7 @@ func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, c
 	stmt := fmt.Sprintf("select %s from `%s`.`%s`", strings.Join(quoted, ", "), database, table)
 	rows, err := s.query(ctx, stmt)
 	if err != nil {
-		return fmt.Errorf("reading %s.%s: %w", database, table, err)
+		return out, fmt.Errorf("reading %s.%s: %w", database, table, err)
 	}
 	defer rows.Close()
 
@@ -628,10 +651,19 @@ func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, c
 			ptrs[i] = &values[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			return fmt.Errorf("scanning %s.%s: %w", database, table, err)
+			return out, fmt.Errorf("scanning %s.%s: %w", database, table, err)
 		}
-		batch = append(batch, normalizeRow(values, jsonIdx(cols, jsonCols)))
-		for _, v := range values {
+		row := normalizeRow(values, jsonIdx)
+		batch = append(batch, row)
+		digestRow(&out.Fingerprint, row, jsonIdx)
+		if groupCol >= 0 && groupCol < len(row) {
+			group := groupOf(row[groupCol])
+			fp := out.Groups[group]
+			digestRow(&fp, row, jsonIdx)
+			out.Groups[group] = fp
+		}
+		out.Yielded++
+		for _, v := range row {
 			if b, ok := v.([]byte); ok {
 				size += len(b)
 			} else if s, ok := v.(string); ok {
@@ -640,14 +672,71 @@ func (s *readOnlySource) CopyRows(ctx context.Context, database, table string, c
 		}
 		if len(batch) == batchRows || size >= batchBytes {
 			if err := flush(); err != nil {
-				return err
+				return out, err
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return err
+		return out, err
 	}
-	return flush()
+	return out, flush()
+}
+
+// digestRow folds one copied row into a running fingerprint, using exactly the
+// expression the server uses in fingerprintFields: \x01 for NULL, \x02
+// followed by lower(hex(value)) otherwise, joined by \x1f, with the per-row
+// CRC32 XOR-ed in. Doing it here means the digest describes the rows that were
+// written, not the rows that happened to be there a second read.
+func digestRow(fp *Fingerprint, row []any, jsonIdx map[int]bool) {
+	var b strings.Builder
+	for i, v := range row {
+		if i > 0 {
+			b.WriteByte('\x1f')
+		}
+		if v == nil {
+			b.WriteByte('\x01')
+			continue
+		}
+		b.WriteString("\x02")
+		switch t := v.(type) {
+		case string:
+			if jsonIdx[i] {
+				// A json column is compared as its text, matching
+				// cast(... as char) on the server.
+				b.WriteString(t)
+				continue
+			}
+			b.WriteString(hexLower(t))
+		case []byte:
+			if jsonIdx[i] {
+				b.WriteString(string(t))
+				continue
+			}
+			b.WriteString(hexLower(string(t)))
+		default:
+			if jsonIdx[i] {
+				b.WriteString(fmt.Sprint(t))
+				continue
+			}
+			b.WriteString(hexLower(fmt.Sprint(t)))
+		}
+	}
+	text := b.String()
+	fp.Rows++
+	fp.Bytes += int64(len(text))
+	fp.Hash ^= int64(crc32.ChecksumIEEE([]byte(text)))
+}
+
+// hexLower renders bytes the way lower(hex(x)) does on the server, so a digest
+// computed here and one computed there are the same number.
+func hexLower(s string) string {
+	const digits = "0123456789abcdef"
+	out := make([]byte, 0, len(s)*2)
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		out = append(out, digits[c>>4], digits[c&0x0f])
+	}
+	return string(out)
 }
 
 // jsonIdx maps each column position to whether it is json-typed, so the row
@@ -714,7 +803,8 @@ func normalizeRow(values []any, jsonIdx map[int]bool) []any {
 // valid text (federation_peers carries a binary token). Concatenating those
 // into a string makes the server reject the query outright, which would mean
 // the one table that cannot be compared is the one nobody notices. hex() is
-// reversible, so it stays byte-exact.
+// reversible, so it stays byte-exact. lower() pins the case so the same
+// digest can be recomputed client-side from the rows a copy is sending.
 //
 // json columns are the exception: Dolt rejects hex() on them, and a json
 // document is always valid text, so those are cast to char. The choice is made
@@ -727,7 +817,7 @@ func (s *readOnlySource) fingerprintFields(ctx context.Context, database, table 
 	}
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
-		expr := fmt.Sprintf("hex(`%s`)", c)
+		expr := fmt.Sprintf("lower(hex(`%s`))", c)
 		if types[c] == "json" {
 			expr = fmt.Sprintf("cast(`%s` as char)", c)
 		}
@@ -750,4 +840,18 @@ func (f Fingerprint) checkInvariant(database, table string) error {
 		return fmt.Errorf("fingerprint of %s.%s reports %d rows but zero content bytes: the aggregate columns were not read", database, table, f.Rows)
 	}
 	return nil
+}
+
+// groupOf applies the namespace rule the server would apply with
+// substring_index(id, '-', 1), including the sentinel for a NULL key, so the
+// client-side grouping and the server-side grouping produce the same buckets.
+func groupOf(v any) string {
+	if v == nil {
+		return "(no-namespace)"
+	}
+	s := fmt.Sprint(v)
+	if i := strings.IndexByte(s, '-'); i > 0 {
+		return s[:i]
+	}
+	return s
 }
