@@ -3,6 +3,7 @@ package brainunify
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -207,53 +208,17 @@ func TestFingerprintInvariantRejectsRowsWithNoContent(t *testing.T) {
 	}
 }
 
-func TestGroupOfMatchesServerRule(t *testing.T) {
-	// The client-side grouping must agree with the server's
-	// substring_index(id, '-', 1) or every per-namespace check compares the
-	// wrong buckets.
-	cases := []struct {
-		in   any
-		want string
-	}{
-		{"brain-se7t.389", "brain"},
-		{"external_llm_tasks-9", "external_llm_tasks"},
-		{"TK1", "TK1"},
-		{"", ""},
-		{nil, "(no-namespace)"},
+// TestSingleEncodingIsUsedOnBothSides documents the invariant that replaced
+// three verifier defects: there is exactly one column encoding in the
+// migration, the SQL in fingerprintFields, and the copy path computes no
+// digest of its own. A client-side digest is what drifted from the server by a
+// few bytes per row and produced failures indistinguishable from corruption.
+func TestSingleEncodingIsUsedOnBothSides(t *testing.T) {
+	src := reflect.TypeOf(&readOnlySource{})
+	if _, ok := src.MethodByName("Digest"); ok {
+		t.Error("readOnlySource must not expose a client-side digest; the server expression is the only encoding")
 	}
-	for _, tc := range cases {
-		if got := groupOf(tc.in); got != tc.want {
-			t.Errorf("groupOf(%v) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
-
-func TestDigestRowIsStableAndOrderIndependent(t *testing.T) {
-	jsonIdx := map[int]bool{}
-	rows := [][]any{
-		{"a-1", "one"},
-		{"b-2", "two"},
-	}
-	var forward, reverse Fingerprint
-	for _, r := range rows {
-		digestRow(&forward, r, jsonIdx)
-	}
-	for i := len(rows) - 1; i >= 0; i-- {
-		digestRow(&reverse, rows[i], jsonIdx)
-	}
-	if forward != reverse {
-		t.Errorf("digest must be order independent: %+v vs %+v", forward, reverse)
-	}
-	if forward.Rows != 2 || forward.Bytes == 0 {
-		t.Errorf("unexpected digest %+v", forward)
-	}
-
-	// A changed byte must change the digest, or the verification cannot
-	// detect an altered row.
-	var altered Fingerprint
-	digestRow(&altered, []any{"a-1", "ONE"}, jsonIdx)
-	digestRow(&altered, []any{"b-2", "two"}, jsonIdx)
-	if altered.Hash == forward.Hash {
-		t.Error("a changed value must change the digest")
+	if _, ok := src.MethodByName("CopyRows"); !ok {
+		t.Fatal("CopyRows must remain the row-copying path")
 	}
 }

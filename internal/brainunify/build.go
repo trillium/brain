@@ -34,14 +34,13 @@ type BuildOptions struct {
 // every re-keyed database-state table.
 const storeColumn = "store"
 
-// brainunifyCopy is what one copy pass wrote, with the digest taken from the
-// rows it actually sent. Group is "" for bead tables, where the per-namespace
-// breakdown lives in Groups instead.
+// brainunifyCopy is what one source contributed to one table: a digest taken
+// server-side with the same expression the verifier will run on the unified
+// table, and the namespace or store it belongs to.
 type brainunifyCopy struct {
 	Fingerprint
 	Source string
 	Group  string
-	Groups map[string]Fingerprint
 }
 
 // ImportStats records what happened to one source table.
@@ -114,9 +113,6 @@ type Builder struct {
 	// the template's answer is the correct one. A source that genuinely
 	// differs still fails loudly on insert rather than silently.
 	jsonCols map[string][]string
-	// jsonIdxCache holds json-column positions per table, so a copy pass can
-	// digest its rows the same way the server would.
-	jsonIdxCache map[string]map[int]bool
 	// recorded accumulates the copy-time digests, keyed by table and group.
 	recorded map[string]GroupFingerprint
 }
@@ -690,29 +686,29 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 		if err != nil {
 			return stats, err
 		}
-		copied, skipped, err := b.copyIssues(ctx, target, src, tp.Target, cols, losingIDs)
+		imported, skipped, err := b.copyIssues(ctx, target, src, tp.Target, cols, losingIDs)
 		if err != nil {
 			return stats, err
 		}
-		stats.ImportedRows, stats.SkippedRows = copied.Rows, skipped
+		stats.ImportedRows, stats.SkippedRows = imported, skipped
 		if skipped > 0 {
 			stats.Note = fmt.Sprintf("%d row(s) lost to an id collision; every one is recorded in brain_unify_collisions", skipped)
 		}
 	case ScopeIssueChild:
-		copied, skipped, err := b.copyChildRows(ctx, target, src, tp, losingIDs)
+		imported, skipped, err := b.copyChildRows(ctx, target, src, tp, losingIDs)
 		if err != nil {
 			return stats, err
 		}
-		stats.ImportedRows, stats.SkippedRows = copied.Rows, skipped
+		stats.ImportedRows, stats.SkippedRows = imported, skipped
 		if skipped > 0 {
 			stats.Note = fmt.Sprintf("%d row(s) belonged to an issue copy that lost an id collision", skipped)
 		}
 	case ScopeDatabaseState:
-		copied, err := b.copyRaw(ctx, target, src.Database, table, tp.Columns, tp.Target, []any{src.Namespace})
+		imported, err := b.copyRaw(ctx, target, src.Database, table, tp.Columns, tp.Target, []any{src.Namespace})
 		if err != nil {
 			return stats, fmt.Errorf("importing %s.%s: %w", src.Database, table, err)
 		}
-		stats.ImportedRows = copied.Rows
+		stats.ImportedRows = imported
 	}
 	return stats, nil
 }
@@ -755,27 +751,27 @@ func (b *Builder) sharedColumns(ctx context.Context, src SourceFacts, tp *TableP
 
 // copyIssues imports a source's beads, skipping copies that lost an id
 // collision.
-func (b *Builder) copyIssues(ctx context.Context, target *sql.DB, src SourceFacts, table string, cols []string, losingIDs map[string]string) (copied brainunifyCopy, skipped int64, err error) {
+func (b *Builder) copyIssues(ctx context.Context, target *sql.DB, src SourceFacts, table string, cols []string, losingIDs map[string]string) (imported, skipped int64, err error) {
 	if !contains(cols, "id") {
-		return brainunifyCopy{}, 0, fmt.Errorf("issues copy lost its id column")
+		return 0, 0, fmt.Errorf("issues copy lost its id column")
 	}
 	stmt := insertPrefix(table, cols)
-	copied, skipped, err = b.copyFiltered(ctx, target, src.Database, table, cols, stmt,
+	imported, skipped, err = b.copyFiltered(ctx, target, src.Database, table, cols, stmt,
 		indexOf(cols, "id"), losingIDsFor(losingIDs, src.Namespace))
 	if err != nil {
-		return copied, skipped, err
+		return imported, skipped, err
 	}
 	if skipped > 0 {
 		b.log("  %-24s %d bead(s) skipped as collision losers", src.Namespace, skipped)
 	}
-	return copied, skipped, nil
+	return imported, skipped, nil
 }
 
 // copyChildRows imports an issue-scoped table, dropping rows whose issue copy
 // lost a collision.
-func (b *Builder) copyChildRows(ctx context.Context, target *sql.DB, src SourceFacts, tp *TablePlan, losingIDs map[string]string) (copied brainunifyCopy, skipped int64, err error) {
+func (b *Builder) copyChildRows(ctx context.Context, target *sql.DB, src SourceFacts, tp *TablePlan, losingIDs map[string]string) (imported, skipped int64, err error) {
 	if !contains(tp.Columns, tp.ScopeColumn) {
-		return brainunifyCopy{}, 0, fmt.Errorf("table %s has no %s column to scope by", tp.Table, tp.ScopeColumn)
+		return 0, 0, fmt.Errorf("table %s has no %s column to scope by", tp.Table, tp.ScopeColumn)
 	}
 	stmt := insertPrefix(tp.Target, tp.Columns)
 	return b.copyFiltered(ctx, target, src.Database, tp.Table, tp.Columns, stmt,
@@ -795,7 +791,7 @@ func losingIDsFor(losingIDs map[string]string, source string) []string {
 
 // copyRaw copies a table verbatim, optionally stamping each row with the
 // store it came from.
-func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table string, cols []string, targetTable string, prefixValues []any) (brainunifyCopy, error) {
+func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table string, cols []string, targetTable string, prefixValues []any) (int64, error) {
 	full := make([]string, 0, len(cols)+len(prefixValues))
 	for range prefixValues {
 		// insertPrefix adds the backticks; passing an already-quoted name
@@ -807,7 +803,8 @@ func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table s
 	}
 	stmt := insertPrefix(targetTable, full)
 
-	res, err := b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), -1, func(rows [][]any) error {
+	var imported int64
+	err := b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), func(rows [][]any) error {
 		batch := make([]string, 0, len(rows))
 		for _, r := range rows {
 			vals := make([]any, 0, len(r)+len(prefixValues))
@@ -819,38 +816,25 @@ func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table s
 			return fmt.Errorf("inserting into %s from %s.%s: %w\nstatement: %s",
 				targetTable, database, table, err, truncate(stmt+batch[0], 1200))
 		}
+		imported += int64(len(rows))
 		return nil
 	})
-	if err != nil {
-		return brainunifyCopy{}, err
-	}
-	group := ""
-	if len(prefixValues) > 0 {
-		group, _ = prefixValues[0].(string)
-	}
-	return brainunifyCopy{Fingerprint: res.Fingerprint, Source: b.namespaceFor(database), Group: group}, nil
+	return imported, err
 }
 
 // copyFiltered copies a table, dropping rows whose value in keyIdx is one of
 // the excluded keys. Exclusion happens in Go rather than SQL so one code path
-// serves every table shape.
-//
-// The returned digest covers only the rows that reached the statement. The
-// losers were read but deliberately not written, so counting them would record
-// rows the unified database does not hold and verification would then demand
-// them.
-func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, table string, cols []string, stmt string, keyIdx int, exclude []string) (copied brainunifyCopy, skipped int64, err error) {
+// serves every table shape. It copies and counts; it computes no digest, so
+// there is exactly one column encoding in the whole migration.
+func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, table string, cols []string, stmt string, keyIdx int, exclude []string) (imported, skipped int64, err error) {
 	if keyIdx < 0 || keyIdx >= len(cols) {
-		return brainunifyCopy{}, 0, fmt.Errorf("key column index %d out of range for %s", keyIdx, table)
+		return 0, 0, fmt.Errorf("key column index %d out of range for %s", keyIdx, table)
 	}
 	excluded := make(map[string]bool, len(exclude))
 	for _, e := range exclude {
 		excluded[e] = true
 	}
-	jsonIdx := b.jsonIdxFor(table)
-	copied.Groups = map[string]Fingerprint{}
-
-	if _, err := b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), -1, func(rows [][]any) error {
+	err = b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), func(rows [][]any) error {
 		batch := make([]string, 0, len(rows))
 		for _, r := range rows {
 			key := fmt.Sprint(r[keyIdx])
@@ -859,10 +843,6 @@ func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, ta
 				continue
 			}
 			batch = append(batch, valueTuple(r))
-			digestRow(&copied.Fingerprint, r, jsonIdx)
-			gp := copied.Groups[groupOf(r[keyIdx])]
-			digestRow(&gp, r, jsonIdx)
-			copied.Groups[groupOf(r[keyIdx])] = gp
 		}
 		if len(batch) == 0 {
 			return nil
@@ -870,30 +850,10 @@ func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, ta
 		if _, err := target.ExecContext(ctx, stmt+strings.Join(batch, ",")); err != nil {
 			return fmt.Errorf("inserting into %s from %s: %w\nstatement: %s", table, database, err, truncate(stmt+batch[0], 1200))
 		}
+		imported += int64(len(batch))
 		return nil
-	}); err != nil {
-		return brainunifyCopy{}, skipped, err
-	}
-	copied.Source = b.namespaceFor(database)
-	return copied, skipped, nil
-}
-
-// jsonIdxFor returns the json-column positions for a table, resolved once from
-// the template schema.
-func (b *Builder) jsonIdxFor(table string) map[int]bool {
-	if b.jsonIdxCache == nil {
-		b.jsonIdxCache = map[string]map[int]bool{}
-	}
-	if v, ok := b.jsonIdxCache[table]; ok {
-		return v
-	}
-	cols, err := b.source.Columns(context.Background(), b.templateDatabase, table)
-	if err != nil {
-		return nil
-	}
-	v := jsonIdx(cols, b.jsonColsFor(table))
-	b.jsonIdxCache[table] = v
-	return v
+	})
+	return imported, skipped, err
 }
 
 // namespaceFor maps a Dolt database to the unified namespace it migrates as.
@@ -1101,25 +1061,16 @@ func (b *Builder) record(copied brainunifyCopy, target, source string) {
 	if b.recorded == nil {
 		b.recorded = map[string]GroupFingerprint{}
 	}
-	if copied.Group != "" {
-		key := target + "\x00" + copied.Group
-		gf := b.recorded[key]
-		gf.Store = source
-		gf.Table = target
-		gf.Group = copied.Group
-		gf.Fingerprint = Combine(gf.Fingerprint, copied.Fingerprint)
-		b.recorded[key] = gf
+	if copied.Group == "" {
 		return
 	}
-	for group, fp := range copied.Groups {
-		key := target + "\x00" + group
-		gf := b.recorded[key]
-		gf.Store = source
-		gf.Table = target
-		gf.Group = group
-		gf.Fingerprint = Combine(gf.Fingerprint, fp)
-		b.recorded[key] = gf
-	}
+	key := target + "\x00" + copied.Group
+	gf := b.recorded[key]
+	gf.Store = source
+	gf.Table = target
+	gf.Group = copied.Group
+	gf.Fingerprint = Combine(gf.Fingerprint, copied.Fingerprint)
+	b.recorded[key] = gf
 }
 
 // writeRecordedFingerprints stores the accumulated copy-time digests so the
