@@ -153,18 +153,23 @@ no collision is recorded for either id.
 
 Ruled out by measurement, not assumption:
 
-- **declared column type skew** — no: `issues` column types are identical across the template (`lifespan`), `tasks` and `task`
+- **declared column type skew** — no: `issues` column types are identical across the template (`lifespan`), `tasks` and `task`, all with `metadata` declared `json`
+- **column-count skew** — no: `lifespan.issues`, `tasks.issues` and `task.issues` all have 62 columns, and the build logged no `note: … has N of the template's M columns` line at all
 - **the write path** — no: inserting the real value into a json column using `quoteLiteral`'s exact escaping stores all 1 116 bytes correctly
 - **a duplicate id from another store overwriting it** — no: both ids exist in exactly one database (`tasks`) on all 57
 - **apostrophes** — no: 41 rows contain one, only 2 fail
 - **size** — no: the second-longest `metadata` value (1 174 bytes) is unaffected
-- **any distinguishing character or bigram** — no: none is unique to the two failing values
+- **any distinguishing character, bigram or longer substring** — no: no substring shared by both failing values and absent from all 5 704 others survives past length 11, and those that do (`backends`, `/fm-backend`, `n parlay's`) are incidental prose. `hold_reason`, which both share, appears in 160 rows
+- **position in the read stream** — no: the failures sit at scan positions 1 723 and 5 428, nowhere near the 200-row batch boundaries, and no boundary row is affected
 
-So the mechanism is **not yet identified**. What is established is that the
-build reads the correct value at digest time (its own recorded source
-fingerprint is the full one) and that the value does not survive into the
-unified table. A determinism check was run — see
-[What was not established](#7-what-was-not-established).
+So the mechanism is **not identified**. What is established is stronger than a
+single observation, though: the failure is **deterministic**. A second,
+independent build from the same frozen source into a separate data directory
+reproduced it exactly — `exit 0`, and again the *same two beads* with `metadata`
+reduced to `{}`, and again exactly 2 such rows in the namespace. The delivered
+copy shows the same 2. It is also established that the build reads the correct
+value at digest time (its own recorded source fingerprint is the full one) and
+that the value does not survive into the unified table.
 
 ## 6. The copy back
 
@@ -212,11 +217,14 @@ either, but it did the job it exists for.
 
 ## 8. What was not established
 
-- **The mechanism of Defect B.** The observable facts are pinned down and the
-  obvious explanations are excluded; the cause is not. A second build from the
-  same frozen source into a separate data directory was run to test whether the
-  same two beads are affected (deterministic) or different ones
-  (nondeterministic). Its result is not recorded here.
+- **The mechanism of Defect B.** The observable facts are pinned down and every
+  obvious explanation is excluded; the cause is not. It is known to be
+  deterministic — a second build from the same frozen source affected the same
+  two beads and no others — so it is data-dependent, yet no textual or
+  positional property of those two rows distinguishes them. Whoever picks this
+  up should start at `copyFiltered` / `CopyRows` / `normalizeRow`: the
+  digest-side read (server-side SQL) sees the correct value, and the copy-side
+  read (through the Go driver) is where it stops surviving.
 - **Whether Defect A is only a verifier bug.** That the 277 checks can never
   pass is proven. Whether a correct comparison would also find *data* problems
   in the re-keyed tables is not — proving that needs a fixed comparison.
