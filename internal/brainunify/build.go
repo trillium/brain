@@ -628,7 +628,7 @@ func (b *Builder) copyStoreState(ctx context.Context, target *sql.DB, src Source
 }
 
 // copyTable imports one table of one source.
-func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts, table string, losingIDs map[string]string) (ImportStats, error) {
+func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts, table string, losingIDs map[string]string) (ImportStats, error) { //nolint:gocyclo // one linear pipeline: digest, then copy
 	stats := ImportStats{Store: src.Namespace, Table: table}
 	tp := b.planFor(table)
 	if tp == nil {
@@ -647,6 +647,43 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 	}
 	stats.SourceRows = total
 
+	// Digest the source with the SAME server-side expression the verifier
+	// will use on the unified table, immediately before copying.
+	//
+	// This replaced a client-side digest of the copied rows. The client-side
+	// version was exact but not comparable: reproducing the server's rendering
+	// of every column type (notably datetimes) is a second implementation of
+	// the same rules, and it drifted from the server by a few bytes per row,
+	// which is indistinguishable from real corruption. One implementation, used
+	// on both sides, is worth more than exactness against a second one.
+	//
+	// The cost is that the digest and the copy are two reads rather than
+	// one, so a row written in the gap between them would show up as a
+	// mismatch. That window is milliseconds per table rather than the minutes
+	// a post-copy re-read allowed.
+	if tp.Scope == ScopeDatabaseState {
+		fp, err := b.source.Fingerprint(ctx, src.Database, tp.Table, "")
+		if err != nil {
+			return stats, err
+		}
+		if fp.Rows > 0 {
+			copied := brainunifyCopy{Fingerprint: fp, Source: src.Namespace, Group: src.Namespace}
+			b.record(copied, tp.Target, src.Namespace)
+		}
+	} else {
+		byGroup, err := b.source.FingerprintByGroup(ctx, src.Database, tp.Table,
+			tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
+		if err != nil {
+			return stats, err
+		}
+		for group, fp := range byGroup {
+			if fp.Rows == 0 {
+				continue
+			}
+			b.record(brainunifyCopy{Fingerprint: fp, Source: src.Namespace, Group: group}, tp.Target, src.Namespace)
+		}
+	}
+
 	switch tp.Scope {
 	case ScopeIssues:
 		cols, err := b.sharedColumns(ctx, src, tp)
@@ -658,7 +695,6 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 			return stats, err
 		}
 		stats.ImportedRows, stats.SkippedRows = copied.Rows, skipped
-		b.record(copied, tp.Target, src.Namespace)
 		if skipped > 0 {
 			stats.Note = fmt.Sprintf("%d row(s) lost to an id collision; every one is recorded in brain_unify_collisions", skipped)
 		}
@@ -668,7 +704,6 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 			return stats, err
 		}
 		stats.ImportedRows, stats.SkippedRows = copied.Rows, skipped
-		b.record(copied, tp.Target, src.Namespace)
 		if skipped > 0 {
 			stats.Note = fmt.Sprintf("%d row(s) belonged to an issue copy that lost an id collision", skipped)
 		}
@@ -678,7 +713,6 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 			return stats, fmt.Errorf("importing %s.%s: %w", src.Database, table, err)
 		}
 		stats.ImportedRows = copied.Rows
-		b.record(copied, tp.Target, src.Namespace)
 	}
 	return stats, nil
 }
