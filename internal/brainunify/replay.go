@@ -142,7 +142,8 @@ type replayWork struct {
 	changedTables map[string]map[string]bool
 	// stateChanged maps a store to the state tables to replace for it.
 	stateChanged map[string]map[string]bool
-	// changedStores are the stores whose history showed changes.
+	// changedStores are the stores whose history showed changes (tables the
+	// sources keep no history for are reloaded every time and do not count).
 	changedStores map[string]bool
 
 	live map[string]Collision
@@ -592,12 +593,13 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 						w.stateChanged[src.Namespace] = map[string]bool{}
 					}
 					w.stateChanged[src.Namespace][tp.Table] = true
-					w.changedStores[src.Namespace] = true
+					if versioned {
+						w.changedStores[src.Namespace] = true
+					}
 				}
 			default:
 				if !versioned {
 					w.full[tp.Table] = true
-					w.changedStores[src.Namespace] = true
 					continue
 				}
 				ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)

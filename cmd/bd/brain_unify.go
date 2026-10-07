@@ -24,7 +24,7 @@ import (
 // --data-dir.
 var brainUnifyCmd = &cobra.Command{
 	Use:   "unify",
-	Short: "Plan, build and verify the consolidation of brain's stores into one Dolt database",
+	Short: "Plan, build, replay and verify the consolidation of brain's stores into one Dolt database",
 	Long: `brain stores each keep their own Dolt database on a shared server. 'unify'
 consolidates them into ONE authoritative database while preserving the logical
 separation between stores.

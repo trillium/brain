@@ -208,7 +208,7 @@ func referenceDescription(ref string) string {
 
 // WriteReplay renders what a replay did.
 func WriteReplay(w io.Writer, res ReplayResult) error {
-	if _, err := fmt.Fprintf(w, "brain unify replay\n==================\n\ndatabase: %s\ndata dir: %s\nelapsed: %s\nstores with changes: %s\nbeads reconciled: %d\n\n",
+	if _, err := fmt.Fprintf(w, "brain unify replay\n==================\n\ndatabase: %s\ndata dir: %s\nelapsed: %s\nstores with changes in their history: %s\nbeads reconciled: %d\n\n",
 		res.Database, res.DataDir, res.Elapsed.Round(1e6), joinOrNone(res.ChangedStores), len(res.Beads)); err != nil {
 		return err
 	}

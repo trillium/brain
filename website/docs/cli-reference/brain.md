@@ -475,8 +475,11 @@ Phases:
           than one database
   build   construct the unified database in an isolated Dolt server started
           under --data-dir, reading production but never writing to it
+  replay  apply the changes the sources made since the build into the unified
+          database, so it can be kept current until it becomes the reference
   verify  compare the unified database against production mechanically, by
-          row count, content size and an order-independent content digest
+          row count, content size and an order-independent content digest;
+          --reference live compares against the sources as they stand now
 
 Production safety: this command group opens production read-only. The builder
 writes only to a Dolt server it starts itself, so a build cannot modify a live
@@ -525,6 +528,52 @@ bd brain unify plan [flags]
       --timeout duration   overall time budget for the plan (default 20m0s)
 ```
 
+#### bd brain unify replay
+
+A merged database is built from a moment in the past. Every bead written,
+edited or closed in a source store after that moment exists only in the source.
+'replay' carries those changes into the merged database, so it can be kept
+current until it becomes the reference.
+
+For every source it reads the Dolt history since the commit 'unify build'
+recorded (brain_unify_source_commits), finds the beads and the database-state
+tables that changed, and re-reads exactly those from the source as it stands
+now. Inserts, updates and deletes are one operation: the merged database's rows
+for a changed bead are made equal to what the sources hold for it. Duplicated
+ids follow the same winner rule the build uses, and are recorded in
+brain_unify_collisions. Tables Dolt keeps no history for (wisps) are reloaded
+whole. The next replay starts where this one read.
+
+Anything it cannot resolve confidently is a refusal that names the store and the
+table, and a refused replay leaves the merged database untouched:
+
+  - a merged database built before builds recorded their commits (rebuild it)
+  - a store that joined, left or moved to another database since the build
+  - a source whose history no longer contains its recorded commit
+  - a source table the build imported rows from that is gone
+  - a table or column the merged schema does not have
+  - duplicated ids whose copies disagree on content (override with
+    --allow-collisions)
+
+Prove a replay with 'unify verify --reference live', which compares the merged
+database against the sources as they stand. Sources are only ever read.
+
+```
+bd brain unify replay [flags]
+```
+
+**Flags:**
+
+```
+      --allow-collisions   proceed even when a duplicated id has copies that disagree on content
+      --data-dir string    directory holding the merged database built by 'unify build' (required)
+      --database string    name of the merged database (default "brain_unified")
+      --dolt-bin string    dolt binary used to start the server over the merged database (default "dolt")
+      --host string        dolt sql-server host holding the source stores (default "127.0.0.1")
+      --port int           dolt sql-server port holding the source stores (default 3307)
+      --timeout duration   overall time budget for the replay (default 4h0m0s)
+```
+
 #### bd brain unify verify
 
 Compare the unified database against production by counts, size and content digest
@@ -541,6 +590,7 @@ bd brain unify verify [flags]
       --dolt-bin string    dolt binary used to start the server over the unified database (default "dolt")
       --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
       --port int           dolt sql-server port holding the production stores (default 3307)
+      --reference string   what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
       --template string    store whose schema the unified database inherited
       --timeout duration   overall time budget for verification (default 3h0m0s)
 ```
