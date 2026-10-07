@@ -2,6 +2,10 @@
 
 **Status:** design only — nothing is built, no behaviour changes, no verb is
 wired up. Production is untouched. This document proposes; it does not land.
+One question left open here — whether a beads-carrying prefix may be released
+under an override (question b) — has since been **decided (2026-10-07):
+absolute refusal, no `--with-beads` override**; see §Question b and refusal 4
+in §Question e.
 **Companion material:** the namespace-model report
 (`/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md`,
 §Requirement 3), which records the runtime claim surface and the conflict rule
@@ -156,9 +160,29 @@ ambiguity the prefix record exists to remove, and it is what a `store` column
 on `issues` would have been (rejected in `brain-single-database.md` §The
 mechanism).
 
+**Decision on the beads-carrying-release question (decided 2026-10-07,
+close-over of b): absolute refusal.** A prefix that still carries beads
+cannot be released — the flow refuses (refusal 4 in §Question e), and there
+is no `--with-beads` override. The captain's reasoning, adopted here verbatim
+in substance: it matches the captain's own "refuse rather than guess"
+posture; releasing a prefix that still owns beads would let a second store
+claim it and make ownership of the existing beads ambiguous; and a prefix
+frees only when it carries no beads — migrating beads off it first is the
+explicit, auditable path. If a genuine operational need for an override
+appears later, adding one is a small reversible addition, whereas shipping
+the override first and withdrawing it is not. The audited `--with-beads`
+override this section originally recommended remains documented as the
+**rejected alternative** — see refusal 5 in §Question e — rejected as
+overbuilding this round (the one legitimate decomposition case is better
+served by the sequenced off-migration than by a single hide-the-beads verb).
+
 **Recommendation (not a decision): b1**, without reservation — it is the only
 shape consistent with "the prefix record is the thing that is true about the
-data".
+data". Under absolute refusal this is no longer a preference but the
+mechanism forced by the refusal: a released prefix by definition carries no
+beads (the operator migrates them away first), so the beads-become-wide-only
+consequence described for b1 applies to no release this decision permits,
+and the residual choice is exactly b1's, not b2's.
 
 **What the row becomes.** Two sub-options, and the difference matters for the
 transfer window in (c):
@@ -260,7 +284,6 @@ CREATE TABLE brain_store_prefix_events (
   new_store varchar(128) NOT NULL,-- owner after ('' when unclaimed)
   reason varchar(64) NOT NULL,    -- the human why, free text up to the row's limit
   bead_count bigint NOT NULL DEFAULT 0,  -- live bead count observed at event time
-  override_used tinyint(1) NOT NULL DEFAULT 0, -- the (e)-override flag, when set
   event_at datetime NOT NULL,
   PRIMARY KEY (id),
   KEY idx_brain_prefix_events (prefix)
@@ -337,21 +360,36 @@ reason).
    `observed_by`) mean something different from what the build proved.
 4. **The prefix still carries live beads.** Count beads under the prefix from
    the merged `issues` table (not the row's stale `bead_count`) and refuse
-   when non-zero, *unless* the explicit override flag is given (below). A
-   release without this check would strand every bead in the prefix in
-   wide-only limbo as a surprise rather than as a recorded cost.
-5. **The override itself, when used, must be impossible to mistake.** For the
-   beads-carrying release there are two shapes: **hard refusal always**
-   (purest, but pushes the one legitimate case — decommissioning a store whose
-   prefixes must all go — into raw SQL, which is unaudited and worse than a
-   loud override), or **refuse unless the operator repeats the intent**
-   (`--with-beads`), records the override in the event row
-   (`override_used=1`) with the live bead count, and prints the bead count
-   and the wide-only consequence in the command's output. **Recommendation
-   (not a decision): the `--with-beads` override**, because an unaudited
-   hand-written UPDATE is strictly worse than an audited flagged act, and
-   because "the flow must refuse rather than guess" is satisfied — the flow
-   refuses *until intent is explicit*, and never guesses.
+   when non-zero. **Absolute refusal — decided 2026-10-07 (question b, above):
+   a prefix that still carries beads cannot be released; there is no
+   `--with-beads` override.** Ownership of existing beads would become
+   ambiguous if a second store could claim the prefix, and a prefix frees
+   only when it carries no beads; migrating beads off it first is the
+   explicit, auditable path. Release without this check would strand every
+   bead in the prefix in wide-only limbo as a surprise rather than as the
+   recorded cost of a deliberate migration.
+5. **The `--with-beads` override — rejected (decided 2026-10-07).** The
+   beads-carrying-release question had a second shape on the table: refuse
+   unless the operator repeats the intent (`--with-beads`), record the
+   override in the event row (`override_used=1`) with the live bead count,
+   and print the bead count and the wide-only consequence in the command's
+   output. The original design recommended this audited-override shape, on
+   the argument that an unaudited hand-written UPDATE is strictly worse than
+   an audited flagged act, and that "refuse rather than guess" is satisfied
+   because the flow refuses *until intent is explicit* and never guesses.
+   **This recommendation was overruled — the shipped decision is absolute
+   refusal (see refusal 4).** The reasoning that carried it: the stricter
+   reading of "refuse rather than guess" matches the captain's own posture,
+   releasing a beads-carrying prefix would let a second store claim it and
+   make ownership of the existing beads ambiguous, and a prefix frees only
+   when it carries no beads — migrating beads off it first is the explicit,
+   auditable path. The override is rejected for this round as
+   **overbuilding**: forcing the one legitimate case (decommissioning a
+   store whose prefixes must all go) into a sequenced migration of beads off
+   the prefixes first is the honest path for decomposition, not hiding it in
+   a single verb. If a genuine operational need for an override appears
+   later, adding one is a small reversible addition, whereas shipping the
+   override first and withdrawing it is not.
 6. **A release that would leave a namespace unmintable.** Checked and stated
    rather than engineered: a store's own-name prefix is *structural* — the
    fallback in `resolveNamespacePrefixes` (no rows → own name) means a store
@@ -405,9 +443,9 @@ reason).
    `RecordStorePrefix` / `ListStorePrefixes` in
    `internal/storage/issueops/unified_namespaces.go`, transactional, with the
    refusal rules above.
-3. `bd store-prefix release <prefix> [--confirm] [--with-beads]` in
-   `cmd/bd/store_prefix.go`, mirroring `add`'s reporting style (outcome,
-   consequences printed, `--json` shape).
+3. `bd store-prefix release <prefix> [--confirm]` in `cmd/bd/store_prefix.go`,
+   mirroring `add`'s reporting style (outcome, consequences printed, `--json`
+   shape).
 4. Claim events: `RecordStorePrefix` gains the same-transaction event append,
    so the trail is complete for claims too.
 5. `bd store-prefix history <prefix>` (or `list --history`).
@@ -430,24 +468,66 @@ reason).
   runtime/build-decided row, governed by the same rules. The structural
   own-name fallback means no release can strand a store's minting.
 - **No silent path.** No flag combination rewrites ownership without an event
-  row in the same transaction. The one override (`--with-beads`) is itself
-  recorded.
+  row in the same transaction. There is no beads-carrying release at all:
+  absolute refusal (decided 2026-10-07, question b) forecloses
+  `--with-beads`, and nothing else shortcuts the never-silently rule.
+
+## Decided by the captain
+
+1. **The override policy (originally question e5 / b):** decided
+   **2026-10-07** — **absolute refusal** (see §Question b, "decided on the
+   beads-carrying-release question"). A prefix that still carries beads
+   cannot be released; there is no `--with-beads` override. The audited
+   override this design originally recommended is now documented as the
+   rejected alternative (refusal 5 in §Question e), overruled on the
+   captain's own "refuse rather than guess" posture and the ownership-
+   ambiguity argument, with the later-need escape hatch (a small reversible
+   addition if ever genuinely required) recorded on the record, not carried
+   as a live option.
 
 ## Left to the captain
 
-1. **The override policy (e5):** hard refusal on beads-carrying releases, or
-   the explicit `--with-beads` recorded override. The design recommends the
-   override; a stricter reading of "refuse rather than guess" supports hard
-   refusal. This is the one place the design knowingly trades an absolute
-   refusal for an audited one.
-2. **The history surface (d):** subcommand vs flag on `list` — presentation,
+1. **The history surface (d):** subcommand vs flag on `list` — presentation,
    not substance.
-3. **Whether claim events start being recorded now or only with the first
+2. **Whether claim events start being recorded now or only with the first
    release.** Recording claims from adoption onward leaves pre-adoption
    claims (already landed) without event rows; the design accepts that gap
    and documents the boundary, but the captain may prefer to backfill one
    synthetic `claim` event per existing runtime row.
-4. **Transfer urgency:** if contested transfers are expected soon (two stores
+3. **Transfer urgency:** if contested transfers are expected soon (two stores
    legitimately wanting the same prefix with intent on both sides), c2 should
    be prioritised over c1; the design's read of current practice is that they
    are not expected soon.
+
+## Update 2026-10-07: the beads-carrying-release decision
+
+The recommendation on the one genuinely open question in this design —
+whether a beads-carrying prefix may be released under an explicit, audited
+`--with-beads` override — **changed to absolute refusal** on that date, on
+the captain's decision "ABSOLUTE REFUSAL. A prefix that still carries beads
+cannot be released; there is no `--with-beads` override." The reasoning
+adopted with it: it matches the captain's own "refuse rather than guess"
+posture; releasing a prefix that still owns beads would let a second store
+claim it and make ownership of the existing beads ambiguous; and a prefix
+frees only when it carries no beads — migrating beads off it first is the
+explicit, auditable path. The audited-override shape was not silently
+dropped: it remains documented above as the rejected alternative (refusal 5
+in §Question e) with its original reasoning and the reason it was overruled,
+so the record shows the road not taken. If a genuine operational need for an
+override appears later, adding one is a small reversible addition, whereas
+shipping the override first and withdrawing it is not. The remaining three
+items in "Left to the captain" are unchanged and stay open.
+
+---
+
+**Editing history (2026-10-07):** decision recorded. Changes made in this
+revision: (a) §Question b — a "Decision on the
+beads-carrying-release question" block added, with the captain's rationale;
+(b) §Question e — refusal 4 rewritten to absolute refusal, refusal 5
+rewritten as the rejected alternative with its original reasoning and the
+reason it was overruled; (c) header Status note added; (d) the DDL
+`override_used` column removed from the event table; (e) build item 3 and
+the test list updated to drop the `--with-beads` surface; (f) "What would
+deliberately NOT be built" updated; (g) a new "Decided by the captain"
+section, and the former item 1 of "Left to the captain" removed, with the
+remaining three items renumbered but otherwise unchanged.

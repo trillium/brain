@@ -43,8 +43,9 @@ flow"). This entry lands the design, not the flow.
   claims included — which is what makes a recorded, transactional rewrite of
   the ownership row consistent with the never-silently rule); the refusal
   semantics (build-decided prefixes refused outright; beads-carrying prefixes
-  refused unless an explicit, recorded `--with-beads` override; no owner
-  impersonation via `--store`; racing acts serialise and refuse loudly); and
+  refused outright — absolute refusal, no `--with-beads` override, decided
+  2026-10-07, see below; no owner impersonation via `--store`; racing acts
+  serialise and refuse loudly); and
   the cutover interaction (independent in mechanism, meaningful only after
   cutover in practice).
 - **`docs/brain/README.md`** — index pointer to the design doc.
@@ -63,3 +64,25 @@ event-recorded; it builds nothing.
 No verb, no code path, no schema change, no behaviour change. The design doc
 is the deliverable; the implementing commit (if accepted) writes its own
 divergence entry and cites this one.
+
+## Update 2026-10-07: beads-carrying-release order overruled to absolute refusal
+
+The design's recommendation on the one genuinely open question — whether a
+prefix that still carries beads may be released under an explicit, audited
+`--with-beads` override — **changed to absolute refusal** on 2026-10-07, by
+captain's decision: "ABSOLUTE REFUSAL. A prefix that still carries beads
+cannot be released; there is no `--with-beads` override." The reasoning
+recorded with the decision: it matches the captain's own "refuse rather than
+guess" posture; releasing a prefix that still owns beads would let a second
+store claim it and make ownership of the existing beads ambiguous; and a
+prefix frees only when it carries no beads — migrating beads off it first is
+the explicit, auditable path. The audited-override shape is not silently
+dropped: `docs/design/brain-prefix-release.md` now documents it as the
+rejected alternative (refusal 5 there) with its original reasoning and the
+reason it was overruled, so the record shows the road not taken. If a
+genuine operational need for an override appears later, adding one is a
+small reversible addition, whereas shipping the override first and
+withdrawing it is not. This update is documentation-only: no code, no verb,
+no behaviour change, nothing implemented. The other three items the design
+left open (history surface, claim-event backfill, transfer urgency) are
+unchanged and stay open.
