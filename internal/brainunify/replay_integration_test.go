@@ -55,9 +55,10 @@ func newReplayFixture(t *testing.T) *replayFixture {
 	for _, s := range []struct{ name, prefix string }{{"alpha", "alp"}, {"beta", "bet"}, {"gamma", "gam"}} {
 		f.exec("create database `" + s.name + "`")
 		for _, stmt := range []string{
-			"create table issues (id varchar(255) primary key, title varchar(500) not null, status varchar(32) not null default 'open', content_hash varchar(64), created_at datetime not null default current_timestamp, updated_at datetime not null default current_timestamp)",
+			"create table issues (id varchar(255) primary key, title varchar(500) not null, description varchar(2000) not null default '', notes varchar(2000) not null default '', status varchar(32) not null default 'open', priority int not null default 2, issue_type varchar(32) not null default 'task', content_hash varchar(64), created_at datetime not null default current_timestamp, created_by varchar(255) default '', updated_at datetime not null default current_timestamp)",
 			"create table labels (issue_id varchar(255) not null, label varchar(255) not null, primary key (issue_id, label))",
 			"create table comments (id char(36) primary key, issue_id varchar(255) not null, body text not null)",
+			"create table dependencies (id char(36) primary key, issue_id varchar(255) not null, type varchar(32) not null default 'blocks', created_at datetime not null default current_timestamp, created_by varchar(255) not null default '', thread_id varchar(255) default '', depends_on_issue_id varchar(255))",
 			"create table config (`key` varchar(255) primary key, value text not null)",
 			"create table metadata (`key` varchar(255) primary key, value text not null)",
 			"replace into dolt_ignore values ('wisps', true)",
@@ -146,7 +147,7 @@ func (f *replayFixture) build() {
 	f.t.Helper()
 	source, plan := f.discover()
 	b := NewBuilder(source, plan, BuildOptions{
-		DataDir: f.dataDir, Database: fixtureMergedDB, DoltBin: "dolt", AllowCollisions: true,
+		DataDir: f.dataDir, Database: fixtureMergedDB, DoltBin: "dolt",
 		Host: "127.0.0.1", Port: f.srcSrv.Port,
 	})
 	if _, err := b.Build(f.ctx); err != nil {
@@ -154,12 +155,12 @@ func (f *replayFixture) build() {
 	}
 }
 
-func (f *replayFixture) replay(allow bool) (ReplayResult, error) {
+func (f *replayFixture) replay() (ReplayResult, error) {
 	f.t.Helper()
 	source, plan := f.discover()
 	r := NewReplayer(source, plan, ReplayOptions{
 		DataDir: f.dataDir, Database: fixtureMergedDB, DoltBin: "dolt",
-		Host: "127.0.0.1", Port: f.srcSrv.Port, AllowCollisions: allow,
+		Host: "127.0.0.1", Port: f.srcSrv.Port,
 	})
 	return r.Replay(f.ctx)
 }
@@ -266,7 +267,7 @@ func TestReplayMakesLiveVerificationPass(t *testing.T) {
 
 	requireFailures(t, "before the replay", f.verify(ReferenceLive))
 
-	res, err := f.replay(false)
+	res, err := f.replay()
 	if err != nil {
 		t.Fatalf("replay: %v", err)
 	}
@@ -284,7 +285,7 @@ func TestReplayMakesLiveVerificationPass(t *testing.T) {
 	// The proof is real: one more edit in one source fails it again.
 	f.execIn("beta", "update issues set title='beta bead 2 edited later', updated_at=now() where id='bet-2'")
 	requireFailures(t, "after one further edit", f.verify(ReferenceLive))
-	if _, err := f.replay(false); err != nil {
+	if _, err := f.replay(); err != nil {
 		t.Fatalf("second replay: %v", err)
 	}
 	requireNoFailures(t, "after the second replay", f.verify(ReferenceLive))
@@ -292,7 +293,7 @@ func TestReplayMakesLiveVerificationPass(t *testing.T) {
 	// Deleting the duplicate removes its collision record again.
 	f.execIn("gamma", "delete from issues where id='alp-1'")
 	f.commit("gamma", "drop the copy")
-	res, err = f.replay(false)
+	res, err = f.replay()
 	if err != nil {
 		t.Fatalf("third replay: %v", err)
 	}
@@ -302,51 +303,26 @@ func TestReplayMakesLiveVerificationPass(t *testing.T) {
 	requireNoFailures(t, "after the duplicate went away", f.verify(ReferenceLive))
 }
 
-// TestReplayMovesAWinnerBetweenStores covers the case a plain row diff gets
-// wrong: when no store owns the prefix, the newest copy wins, so an edit to the
-// losing copy flips the winner and the children must follow.
-func TestReplayMovesAWinnerBetweenStores(t *testing.T) {
-	f := newReplayFixture(t)
-	// "shr" is declared by no store, so the most recently updated copy wins.
-	f.execIn("alpha", "insert into issues (id, title, updated_at) values ('shr-1', 'shared', '2020-01-01 00:00:00')")
-	f.execIn("alpha", "insert into labels values ('shr-1', 'from-alpha')")
-	f.commit("alpha", "shared bead")
-	f.execIn("beta", "insert into issues (id, title, updated_at) values ('shr-1', 'shared', '2021-01-01 00:00:00')")
-	f.execIn("beta", "insert into labels values ('shr-1', 'from-beta')")
-	f.commit("beta", "shared bead")
-	f.build()
-	requireNoFailures(t, "right after the build", f.verify(ReferenceLive))
-
-	// alpha's copy becomes the newest: the winner moves from beta to alpha.
-	f.execIn("alpha", "update issues set updated_at='2026-01-01 00:00:00' where id='shr-1'")
-	f.commit("alpha", "touch")
-	requireFailures(t, "before the replay", f.verify(ReferenceLive))
-	if _, err := f.replay(true); err != nil {
-		t.Fatalf("replay: %v", err)
-	}
-	requireNoFailures(t, "after the winner moved", f.verify(ReferenceLive))
-}
-
 func TestReplayRefusals(t *testing.T) {
 	t.Run("a merged database built without recorded commits", func(t *testing.T) {
 		f := newReplayFixture(t)
 		f.build()
 		f.mergedSQL("drop table brain_unify_source_commits")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "brain_unify_source_commits", "rebuild")
 	})
 	t.Run("history that no longer holds the recorded commit", func(t *testing.T) {
 		f := newReplayFixture(t)
 		f.build()
 		f.mergedSQL("update brain_unify_source_commits set commit_hash='0123456789abcdefghijklmnopqrstuv' where store='beta'")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "store beta", "no longer contains its recorded commit")
 	})
 	t.Run("a store that joined after the build", func(t *testing.T) {
 		f := newReplayFixture(t)
 		f.build()
 		f.mergedSQL("delete from brain_unify_source_commits where store='gamma'")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "store gamma", "no recorded commit")
 	})
 	t.Run("a store that left", func(t *testing.T) {
@@ -354,7 +330,7 @@ func TestReplayRefusals(t *testing.T) {
 		f.build()
 		f.reg.Stores = f.reg.Stores[:2]
 		f.exec("drop database `gamma`")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "store gamma", "no longer participates")
 	})
 	t.Run("a source table the build imported rows from is gone", func(t *testing.T) {
@@ -362,31 +338,22 @@ func TestReplayRefusals(t *testing.T) {
 		f.build()
 		f.execIn("beta", "drop table labels")
 		f.commit("beta", "drop labels")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "store beta", "labels")
 	})
 	t.Run("the merged schema lacks a column", func(t *testing.T) {
 		f := newReplayFixture(t)
 		f.build()
 		f.mergedSQL("alter table comments drop column body")
-		_, err := f.replay(false)
+		_, err := f.replay()
 		wantRefusal(t, err, "comments", "column body")
 	})
-	t.Run("duplicated copies disagree on content and the replay writes nothing", func(t *testing.T) {
+	t.Run("a merged database built before differing copies became conflict beads", func(t *testing.T) {
 		f := newReplayFixture(t)
 		f.build()
-		f.execIn("gamma", "insert into issues (id, title) values ('alp-2', 'a different title for the same id')")
-		f.commit("gamma", "conflicting copy")
-		_, err := f.replay(false)
-		wantRefusal(t, err, "alp-2", "disagree on content")
-		wantRefusal(t, err, "table issues", "--allow-collisions")
-		// Nothing was written: the recorded starting points are unchanged and
-		// no collision record appeared.
-		requireFailures(t, "a refused replay leaves the merged database as it was", f.verify(ReferenceLive))
-		if _, err := f.replay(true); err != nil {
-			t.Fatalf("replay with --allow-collisions: %v", err)
-		}
-		requireNoFailures(t, "after the replay that accepted the collision", f.verify(ReferenceLive))
+		f.mergedSQL("alter table brain_unify_collisions drop column copy_ids")
+		_, err := f.replay()
+		wantRefusal(t, err, "copy_ids", "rebuild")
 	})
 }
 

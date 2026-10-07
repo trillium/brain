@@ -23,10 +23,15 @@ import (
 //
 // What the replay promises, and how:
 //
-//   - The merged database ends equal to what the sources hold NOW, under the
-//     same winner rule the build used for duplicated ids. The rule is not
-//     reimplemented: the plan handed in was computed by Discover, the same
-//     function the build uses, and the replay applies its collisions.
+//   - The merged database ends equal to what the sources hold NOW, with
+//     duplicated ids handled the way the build handles them: identical copies
+//     merge into one bead, and copies that differ become a conflict bead plus
+//     one minted bead per copy. Nothing is reimplemented: the plan handed in
+//     was computed by Discover, the same function the build uses, and the
+//     replay maps every row through the build's row mapper and writes the
+//     conflict beads with the build's functions. A change that creates, edits
+//     or removes a divergent duplicate therefore re-derives the conflict bead
+//     and its copies from the sources, deleting the ids the old decision used.
 //   - It never applies a diff row's values. A diff only names WHICH beads
 //     changed; the rows written are re-read from the sources through the
 //     build's own column encoding, so inserts, updates and deletes are all one
@@ -56,10 +61,6 @@ type ReplayOptions struct {
 	// Host and Port locate the Dolt server holding the sources.
 	Host string
 	Port int
-	// AllowCollisions mirrors the build's flag: a replay that would resolve a
-	// duplicated id by discarding content the copies disagree on is refused
-	// without it.
-	AllowCollisions bool
 	// Logf receives progress lines.
 	Logf func(format string, args ...any)
 }
@@ -72,7 +73,7 @@ type ReplayTableStats struct {
 	// Inserted counts rows written from the sources.
 	Inserted int64
 	// Skipped counts source rows not written because their bead's copy in that
-	// store lost an id collision.
+	// store is the skipped copy of an identical duplicate.
 	Skipped int64
 	// Full reports that the table was reloaded whole because the sources keep
 	// no history for it (a table Dolt does not version, such as wisps).
@@ -147,8 +148,11 @@ type replayWork struct {
 	changedStores map[string]bool
 
 	live map[string]Collision
-	// losers maps a duplicated id to the stores whose copy of it lost.
-	losers map[string]map[string]bool
+	// recorded are the collision records the merged database held before the
+	// replay.
+	recorded map[string]recordedCollision
+	// mapper maps source rows to merged rows, as the build does.
+	mapper *rowMapper
 	// collisionsToWrite are ids whose record is written; collisionsToDelete
 	// are recorded ids that are no longer duplicated.
 	collisionsToWrite  []string
@@ -240,6 +244,18 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	if err != nil {
 		return res, err
 	}
+	if err := r.plan.Refusal(); err != nil {
+		return res, fmt.Errorf("refusing to replay: %w", err)
+	}
+	if len(r.plan.Conflicts()) > 0 || hasConflicts(recorded) {
+		if err := validateRekeying(w.plans); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+		if err := validateConflictTables(w.plans); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	w.mapper = newRowMapper(r.plan)
 
 	// ---- decide ------------------------------------------------------------
 	if err := r.collectChanges(ctx, mergedRO, database, w, imported); err != nil {
@@ -333,6 +349,15 @@ func (r *Replayer) validateMerged(ctx context.Context, mergedRO *readOnlySource,
 			return fmt.Errorf("refusing to replay: %s has no brain_unify_source_commits table, so it was built before builds recorded a replay starting point and a replay cannot know what it missed; rebuild it", database)
 		}
 		return fmt.Errorf("refusing to replay: %s has no %s table, so it is not a database 'unify build' made; rebuild it", database, table)
+	}
+	have, err := mergedRO.Columns(ctx, database, "brain_unify_collisions")
+	if err != nil {
+		return fmt.Errorf("refusing to replay: listing the columns of brain_unify_collisions in %s: %w", database, err)
+	}
+	for _, col := range []string{"resolution", "copy_ids", "copy_hashes"} {
+		if !contains(have, col) {
+			return fmt.Errorf("refusing to replay: brain_unify_collisions in %s has no %s column, so it was built before duplicated ids with differing copies became conflict beads, and its duplicates follow a different rule; rebuild it", database, col)
+		}
 	}
 	return nil
 }
@@ -629,26 +654,63 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 // recordedCollision is the part of a brain_unify_collisions row a replay
 // compares with the sources.
 type recordedCollision struct {
-	Winner string
-	Losers []string
+	Resolution string
+	Winner     string
+	Losers     []string
+	// CopyIDs maps each copy of a conflict to the id it was minted under.
+	CopyIDs map[string]string
+}
+
+func hasConflicts(recorded map[string]recordedCollision) bool {
+	for _, rec := range recorded {
+		if rec.Resolution == ResolutionConflict {
+			return true
+		}
+	}
+	return false
+}
+
+func (rec recordedCollision) matches(c Collision) bool {
+	if rec.Resolution != c.Resolution {
+		return false
+	}
+	if c.Divergent {
+		return equalStringMaps(rec.CopyIDs, c.copyIDs())
+	}
+	return rec.Winner == c.Winner && equalStrings(rec.Losers, c.Losers)
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *Replayer) readCollisionRecords(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]recordedCollision, error) {
 	rows, err := mergedRO.query(ctx, fmt.Sprintf(
-		"select `id`, `winner`, `losers` from `%s`.`brain_unify_collisions`", database))
+		"select `id`, `winner`, `losers`, `resolution`, `copy_ids` from `%s`.`brain_unify_collisions`", database))
 	if err != nil {
 		return nil, fmt.Errorf("reading brain_unify_collisions: %w", err)
 	}
 	defer rows.Close()
 	out := map[string]recordedCollision{}
 	for rows.Next() {
-		var id, winner, losers string
-		if err := rows.Scan(&id, &winner, &losers); err != nil {
+		var id, winner, losers, resolution, copyIDs string
+		if err := rows.Scan(&id, &winner, &losers, &resolution, &copyIDs); err != nil {
 			return nil, err
 		}
-		rec := recordedCollision{Winner: winner}
+		rec := recordedCollision{Winner: winner, Resolution: resolution, CopyIDs: map[string]string{}}
 		if err := json.Unmarshal([]byte(losers), &rec.Losers); err != nil {
 			return nil, fmt.Errorf("refusing to replay: the losers of recorded collision %s are unreadable (%q): %w", id, losers, err)
+		}
+		if err := json.Unmarshal([]byte(copyIDs), &rec.CopyIDs); err != nil {
+			return nil, fmt.Errorf("refusing to replay: the copy ids of recorded collision %s are unreadable (%q): %w", id, copyIDs, err)
 		}
 		sort.Strings(rec.Losers)
 		out[id] = rec
@@ -657,20 +719,19 @@ func (r *Replayer) readCollisionRecords(ctx context.Context, mergedRO *readOnlyS
 }
 
 // reconcileCollisions compares the duplicated ids the sources hold now (the
-// plan's collisions, decided by the build's own winner rule) with the ones the
-// merged database recorded, and widens the set of beads to reconcile to every
-// id whose decision changed. A winner that moved from one store to another
-// needs the new winner's rows loaded and the old one's removed; reconciling
-// the id in every bead-scoped table does exactly that.
+// plan's collisions, resolved by the build's own rules) with the ones the merged
+// database recorded, and widens the set of beads to reconcile to every id whose
+// resolution changed. An id that became a conflict needs its copies minted and
+// the conflict bead written; one that stopped being a conflict needs them
+// removed; a conflict whose copies changed needs the old minted ids deleted and
+// the new ones loaded. Reconciling the id in every bead-scoped table, deleting
+// every id the old and the new resolution used, does all of it with one
+// operation.
 func (r *Replayer) reconcileCollisions(w *replayWork, recorded map[string]recordedCollision) error {
 	w.live = map[string]Collision{}
-	w.losers = map[string]map[string]bool{}
+	w.recorded = recorded
 	for _, c := range r.plan.Collisions {
 		w.live[c.ID] = c
-		w.losers[c.ID] = map[string]bool{}
-		for _, l := range c.Losers {
-			w.losers[c.ID][l] = true
-		}
 	}
 
 	touchedAnywhere := unionSet(w.touched)
@@ -686,37 +747,39 @@ func (r *Replayer) reconcileCollisions(w *replayWork, recorded map[string]record
 		}
 	}
 	w.wide = map[string]bool{}
-	noteStores := func(c Collision, rec *recordedCollision) {
-		w.wide[c.Winner] = true
-		for _, l := range c.Losers {
-			w.wide[l] = true
+	noteStores := func(c *Collision, rec *recordedCollision) {
+		if c != nil {
+			for _, s := range c.holders() {
+				w.wide[s] = true
+			}
 		}
 		if rec != nil {
-			w.wide[rec.Winner] = true
+			if rec.Winner != "" {
+				w.wide[rec.Winner] = true
+			}
 			for _, l := range rec.Losers {
 				w.wide[l] = true
+			}
+			for s := range rec.CopyIDs {
+				w.wide[s] = true
 			}
 		}
 	}
 
-	var blocking []Collision
 	for _, id := range sortedKeys(w.live) {
 		c := w.live[id]
 		rec, had := recorded[id]
-		changed := !had || rec.Winner != c.Winner || !equalStrings(rec.Losers, c.Losers)
+		changed := !had || !rec.matches(c)
 		if !changed && !touchedAnywhere[id] {
 			continue
-		}
-		if c.DataColumnsDiffer {
-			blocking = append(blocking, c)
 		}
 		w.collisionsToWrite = append(w.collisionsToWrite, id)
 		if changed {
 			widen(id)
 			if had {
-				noteStores(c, &rec)
+				noteStores(&c, &rec)
 			} else {
-				noteStores(c, nil)
+				noteStores(&c, nil)
 			}
 		}
 	}
@@ -727,19 +790,29 @@ func (r *Replayer) reconcileCollisions(w *replayWork, recorded map[string]record
 		rec := recorded[id]
 		w.collisionsToDelete = append(w.collisionsToDelete, id)
 		widen(id)
-		w.wide[rec.Winner] = true
-		for _, l := range rec.Losers {
-			w.wide[l] = true
-		}
-	}
-
-	if len(blocking) > 0 && !r.opts.AllowCollisions {
-		c := blocking[0]
-		return fmt.Errorf(
-			"refusing to replay: %d duplicated id(s) in table issues have copies that disagree on content (first: %s in stores %s, winner %s, differing columns %s); keeping the winner's copy discards real state, which is a decision for a human; reconcile the copies, or re-run with --allow-collisions",
-			len(blocking), c.ID, strings.Join(append([]string{c.Winner}, c.Losers...), ", "), c.Winner, strings.Join(c.DifferingColumns, ", "))
+		noteStores(nil, &rec)
 	}
 	return nil
+}
+
+// mergedIDs expands bead ids as the sources name them into every id those beads
+// occupy in the merged database, under the resolution the merged database
+// recorded and the one the sources now call for: the id itself (a plain bead,
+// or a conflict bead) and the minted id of each copy.
+func (w *replayWork) mergedIDs(ids []string) []string {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+		if c, ok := w.live[id]; ok {
+			for _, cp := range c.Copies {
+				seen[cp.ID] = true
+			}
+		}
+		for _, minted := range w.recorded[id].CopyIDs {
+			seen[minted] = true
+		}
+	}
+	return sortedKeys(seen)
 }
 
 // ---------------------------------------------------------------------------
@@ -789,8 +862,10 @@ func (r *Replayer) applyChanges(ctx context.Context, tx *sql.Tx, mergedRO *readO
 }
 
 // reloadBeadTable replaces the merged rows of the given beads (or of the whole
-// table) with the rows the sources hold now, leaving out any copy that lost an
-// id collision, exactly as the build's copy does.
+// table) with the rows the sources hold now, mapped exactly as the build maps
+// them (the skipped copy of an identical duplicate left out, a conflict's copies
+// moved under their minted ids), and then writes the rows the tool authors for
+// the conflicts among them.
 func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWork, tp TablePlan, ids []string, full bool, st *ReplayTableStats) error {
 	if full {
 		res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"`")
@@ -800,7 +875,7 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 		n, _ := res.RowsAffected()
 		st.Deleted += n
 	} else {
-		for _, chunk := range chunks(ids, 200) {
+		for _, chunk := range chunks(w.mergedIDs(ids), 200) {
 			clause, args := inClause(tp.ScopeColumn, chunk)
 			res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"` where "+clause, args...)
 			if err != nil {
@@ -828,14 +903,11 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 			return fmt.Errorf("refusing to replay: store %s table %s has no %s column", src.Namespace, tp.Table, tp.ScopeColumn)
 		}
 		insert := func(rows [][]any) error {
-			kept := rows[:0:0]
-			for _, row := range rows {
-				if w.losers[fmt.Sprint(row[scopeIdx])][src.Namespace] {
-					st.Skipped++
-					continue
-				}
-				kept = append(kept, row)
+			kept, skipped, err := w.mapper.mapRows(tp, src.Namespace, cols, rows)
+			if err != nil {
+				return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
 			}
+			st.Skipped += skipped
 			if err := insertRows(ctx, tx, tp.Target, cols, kept); err != nil {
 				return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", src.Namespace, tp.Table, tp.Target, err)
 			}
@@ -862,6 +934,22 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 				return err
 			}
 		}
+	}
+
+	// The conflict beads among the reloaded ids, written by the build's own
+	// function; on a whole-table reload, every conflict.
+	var conflicts []Collision
+	for _, id := range sortedKeys(w.live) {
+		c := w.live[id]
+		if c.Divergent && (full || contains(ids, id)) {
+			conflicts = append(conflicts, c)
+		}
+	}
+	if cols, rows := tableConflictRows(tp, conflicts); len(rows) > 0 {
+		if err := insertRows(ctx, tx, tp.Target, cols, rows); err != nil {
+			return fmt.Errorf("refusing to replay: writing the conflict beads' rows into %s: %w", tp.Target, err)
+		}
+		st.Inserted += int64(len(rows))
 	}
 	return nil
 }
@@ -962,8 +1050,11 @@ func insertRows(ctx context.Context, ex sqlExecer, table string, cols []string, 
 // collisions the sources hold now.
 func (r *Replayer) writeCollisionRecords(ctx context.Context, tx *sql.Tx, w *replayWork) error {
 	for _, id := range w.collisionsToWrite {
-		c := w.live[id]
-		if err := writeCollisionRow(ctx, tx, c, readLosingRow(r.source, r.plan, c)); err != nil {
+		rec, err := buildCollisionRecord(ctx, r.source, r.plan, w.plans, w.mapper, w.live[id])
+		if err != nil {
+			return fmt.Errorf("refusing to replay: %w", err)
+		}
+		if err := writeCollisionRow(ctx, tx, rec); err != nil {
 			return fmt.Errorf("refusing to replay: %w", err)
 		}
 	}
@@ -996,7 +1087,6 @@ func (r *Replayer) refreshPrefixes(ctx context.Context, tx *sql.Tx) error {
 // showed a change in them, when the sources keep no history for them, or for
 // every table of a store whose collision decisions changed.
 func (r *Replayer) rerecordFingerprints(ctx context.Context, tx *sql.Tx, w *replayWork) error {
-	losing := losingIssueIDs(r.plan.Collisions)
 	for _, src := range r.plan.Sources {
 		var done []string
 		for i := range w.plans {
@@ -1028,7 +1118,7 @@ func (r *Replayer) rerecordFingerprints(ctx context.Context, tx *sql.Tx, w *repl
 				}
 				continue
 			}
-			byGroup, err := r.source.FingerprintByGroup(ctx, src.Database, tp.Table, tp.ScopeColumnName(), "", losingIDsFor(losing, src.Namespace))
+			byGroup, err := r.source.FingerprintByGroup(ctx, src.Database, tp.Table, tp.ScopeColumnName(), "", r.plan.sourceExclusions(src.Namespace))
 			if err != nil {
 				return fmt.Errorf("refusing to replay: fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
 			}

@@ -1,7 +1,6 @@
 package brainunify
 
 import (
-	"fmt"
 	"sort"
 	"strings"
 )
@@ -64,27 +63,38 @@ type Collision struct {
 	Prefix string
 	// Owner is the namespace that owns the prefix.
 	Owner string
-	// Winner is the source whose copy lands in the unified database.
+	// Winner is the source whose copy lands in the unified database when the
+	// copies are identical. A divergent collision has no winner: every copy
+	// is kept (see Copies).
 	Winner string
-	// Losers are the other sources holding a copy, in sorted order.
+	// Losers are the other sources holding a copy of an identical duplicate,
+	// in sorted order. Their copies are the ones skipped. Empty for a
+	// divergent collision.
 	Losers []string
 	// Reason explains the choice in one clause.
 	Reason string
+	// Resolution is ResolutionMergedIdentical or ResolutionConflict.
+	Resolution string
 	// Divergent reports whether the copies differ anywhere. A divergent
-	// collision is the case where choosing wrong could lose state, so it is
-	// reported individually rather than absorbed into a count.
+	// collision becomes a conflict bead with one new bead per copy: see
+	// conflict.go.
 	Divergent bool
+	// Copies are the copies of a divergent collision, one per source holding
+	// it, sorted by store, each with the id it is minted under. Empty for
+	// identical copies.
+	Copies []ConflictCopy
 	// DifferingColumns names the columns whose values differ between the
-	// winner and its losers, sorted. It is empty when the copies are
-	// identical.
+	// copies, sorted. It is empty when the copies are identical.
 	DifferingColumns []string
 	// DataColumnsDiffer reports whether any column that carries the bead's
 	// content differs, as opposed to only its bookkeeping.
 	DataColumnsDiffer bool
 	// WinnerHash is the content hash of the winning copy, so the report shows
-	// what was compared rather than asserting a comparison.
+	// what was compared rather than asserting a comparison. Empty for a
+	// divergent collision.
 	WinnerHash string
-	// LoserHashes maps each losing source to its content hash.
+	// LoserHashes maps each losing source to its content hash. Empty for a
+	// divergent collision, whose copies' hashes are on Copies.
 	LoserHashes map[string]string
 }
 
@@ -96,7 +106,9 @@ var bookkeepingColumns = map[string]bool{
 	"updated_at":   true,
 }
 
-// WinnerReason values, recorded in the brain_unify_collisions table.
+// Reason values of an identical duplicate, recorded in the
+// brain_unify_collisions table. They say how the copy that stays was chosen;
+// the copies are identical, so the choice does not change any content.
 const (
 	// CollisionReasonOwner: the prefix owner held a copy.
 	CollisionReasonOwner = "prefix-owner-holds-copy"
@@ -137,6 +149,8 @@ type Plan struct {
 	// TemplateNamespace is the source whose schema the unified database is
 	// built from. Empty means the caller chose no template.
 	TemplateNamespace string
+	// Refusals are the reasons the plan cannot be applied (see Refusal).
+	Refusals []string
 }
 
 // ExcludedSource is a database deliberately left out of the migration, and
@@ -178,15 +192,26 @@ func (p Plan) TotalBeads() int64 {
 	return n
 }
 
-// DistinctBeads is the number of unique ids across all sources, which is what
-// the unified issues table can actually hold.
+// DistinctBeads is the number of beads the unified issues table holds: the
+// source rows, less the skipped copy of every identical duplicate, plus one
+// conflict bead for every duplicate whose copies differ (its copies are source
+// rows, so they are already counted).
 func (p Plan) DistinctBeads() int64 {
-	return p.TotalBeads() - int64(len(p.Collisions))
+	n := p.TotalBeads()
+	for _, c := range p.Collisions {
+		if c.Divergent {
+			n++
+		} else {
+			n -= int64(len(c.Losers))
+		}
+	}
+	return n
 }
 
 // DuplicateCopies is the number of source rows that will not become a row of
-// their own because a colliding id already exists. Each is recorded in
-// brain_unify_collisions; none is dropped silently.
+// their own because an identical copy of the same id already exists. Each is
+// recorded in brain_unify_collisions; none is dropped silently. The copies of
+// a divergent duplicate are not counted: every one of them becomes a bead.
 func (p Plan) DuplicateCopies() int64 {
 	var n int64
 	for _, c := range p.Collisions {
@@ -196,21 +221,16 @@ func (p Plan) DuplicateCopies() int64 {
 }
 
 // DivergentCollisions returns the collisions whose copies disagree anywhere,
-// including in bookkeeping columns. They are reported, but they are not the
-// same as a disagreement about content: see DataLossCollisions.
+// including in bookkeeping columns. They become conflict beads.
 func (p Plan) DivergentCollisions() []Collision {
-	var out []Collision
-	for _, c := range p.Collisions {
-		if c.Divergent {
-			out = append(out, c)
-		}
-	}
-	return out
+	return p.Conflicts()
 }
 
-// DataLossCollisions returns the collisions where a column carrying the bead's
-// content — not merely its bookkeeping — differs between the copies. These are
-// the ones where keeping a single copy discards something real.
+// DataLossCollisions returns the divergent collisions where a column carrying
+// the bead's content - not merely its bookkeeping - differs between the copies.
+// Under the winner rule these were the ones where keeping a single copy
+// discarded something real; they are now only reported as such, because no
+// copy is discarded.
 func (p Plan) DataLossCollisions() []Collision {
 	var out []Collision
 	for _, c := range p.Collisions {
@@ -225,14 +245,8 @@ func (p Plan) DataLossCollisions() []Collision {
 func (p Plan) CollisionsFor(source string) map[string]Collision {
 	out := map[string]Collision{}
 	for _, c := range p.Collisions {
-		if c.Winner == source {
+		if contains(c.holders(), source) {
 			out[c.ID] = c
-			continue
-		}
-		for _, l := range c.Losers {
-			if l == source {
-				out[c.ID] = c
-			}
 		}
 	}
 	return out
@@ -282,6 +296,7 @@ func BuildPlan(facts []SourceFacts, copies map[string][]IDCopy) Plan {
 		plan.Collisions = append(plan.Collisions, resolveCollision(id, plan.Namespaces, group))
 	}
 	sort.Slice(plan.Collisions, func(i, j int) bool { return plan.Collisions[i].ID < plan.Collisions[j].ID })
+	plan.Refusals = planRefusals(plan.Conflicts())
 	return plan
 }
 
@@ -353,6 +368,28 @@ func resolveCollision(id string, namespaces map[string]Namespace, group []IDCopy
 				}
 			}
 		}
+	}
+
+	if !c.Divergent {
+		c.Resolution = ResolutionMergedIdentical
+		return c
+	}
+
+	// The copies differ: nothing wins. Every copy is kept under a minted id and
+	// the original id becomes the conflict bead. The winner computed above only
+	// served as the baseline the other copies were compared with; it is not a
+	// choice and is not recorded as one.
+	c.Resolution = ResolutionConflict
+	c.Reason = CollisionReasonConflict
+	c.Winner, c.WinnerHash = "", ""
+	c.Losers, c.LoserHashes = nil, map[string]string{}
+	for _, cp := range sorted {
+		c.Copies = append(c.Copies, ConflictCopy{
+			Store:       cp.Source,
+			ID:          mintCopyID(namespaces, cp.Source, id),
+			ContentHash: cp.ContentHash,
+			Row:         cp.Row,
+		})
 	}
 	return c
 }
@@ -429,19 +466,4 @@ func tiebreakReason(sorted []IDCopy, best IDCopy) string {
 		return CollisionReasonFirst
 	}
 	return ""
-}
-
-// Blocks reports whether the plan is safe to execute without a human having
-// acknowledged the collision set. A collision whose copies disagree on a
-// content column always blocks: the winner rule then discards a real state
-// difference, and that is a decision for a human. Copies that differ only in
-// bookkeeping (content_hash, updated_at) do not block, because keeping one
-// of them loses nothing the bead said — and the difference is still reported.
-func (p Plan) Blocks() (string, bool) {
-	if loss := p.DataLossCollisions(); len(loss) > 0 {
-		c := loss[0]
-		return fmt.Sprintf("%d id collision(s) whose copies disagree on content (first: %s, winner %s, losers %s, differing columns %s)",
-			len(loss), c.ID, c.Winner, strings.Join(c.Losers, ","), strings.Join(c.DifferingColumns, ",")), true
-	}
-	return "", false
 }

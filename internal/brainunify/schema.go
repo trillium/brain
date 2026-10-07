@@ -86,6 +86,14 @@ var BrainTableDDL = map[string]string{
   PRIMARY KEY (prefix),
   KEY idx_brain_prefix_store (store)
 )`,
+	// brain_unify_collisions has one row per duplicated id. resolution says what
+	// became of it. 'merged-identical': the copies were identical, winner and
+	// losers name the stores, one bead remains, and losing_row holds the skipped
+	// copy in full. 'conflict-bead': the copies differ, nothing was skipped,
+	// winner is empty, copy_ids maps each copy's store to the id it was minted
+	// under (the original id is the conflict bead), and copy_hashes maps each
+	// store to a digest of that copy's rows as they should be in the merged
+	// database.
 	"brain_unify_collisions": `CREATE TABLE brain_unify_collisions (
   id varchar(255) NOT NULL,
   prefix varchar(255) NOT NULL,
@@ -97,6 +105,9 @@ var BrainTableDDL = map[string]string{
   winner_hash varchar(64) NOT NULL DEFAULT '',
   loser_hashes text NOT NULL,
   losing_row longtext NOT NULL,
+  resolution varchar(24) NOT NULL DEFAULT 'merged-identical',
+  copy_ids text NOT NULL,
+  copy_hashes text NOT NULL,
   PRIMARY KEY (id),
   KEY idx_brain_collision_prefix (prefix)
 )`,

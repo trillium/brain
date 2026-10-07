@@ -54,8 +54,13 @@ type VerifyResult struct {
 	// StoresChecked counts the per-store comparisons.
 	StoresChecked int
 	// CollisionsConfirmed counts collisions whose recorded decision was
-	// re-read from the unified database and matched.
+	// re-read from the unified database and matched: identical duplicates and
+	// conflicts alike.
 	CollisionsConfirmed int
+	// ConflictsConfirmed counts the conflicts among them: each has its conflict
+	// bead, exactly the copies it names, and every copy's rows as the source
+	// holds them.
+	ConflictsConfirmed int
 	// Reference is the side the unified database was compared against:
 	// ReferenceRecorded or ReferenceLive.
 	Reference string
@@ -140,6 +145,7 @@ type Verifier struct {
 	plans   []TablePlan
 	opts    VerifyOptions
 	log     func(format string, args ...any)
+	mapper  *rowMapper
 }
 
 // NewVerifier opens the unified database for reading. The connection is
@@ -161,7 +167,7 @@ func NewVerifier(ctx context.Context, source *readOnlySource, plan Plan, plans [
 	if log == nil {
 		log = func(string, ...any) {}
 	}
-	return &Verifier{source: source, unified: unified, plan: plan, plans: plans, opts: opts, log: log}, nil
+	return &Verifier{source: source, unified: unified, plan: plan, plans: plans, opts: opts, log: log, mapper: newRowMapper(plan)}, nil
 }
 
 // Close releases the verifier's connections.
@@ -206,8 +212,11 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 			expectedByGroup = combineRecorded(recorded[tp.Target])
 		}
 
+		// The conflict beads and their copies are left out of the aggregate on
+		// this side exactly as the conflicted ids are on the source side; they are
+		// verified one id at a time (confirmConflict).
 		actualByGroup, err := v.unified.FingerprintByGroup(ctx, v.opts.Database, tp.Target,
-			tp.ScopeColumnName(), unifiedGroupColumn(tp.Scope), nil)
+			tp.ScopeColumnName(), unifiedGroupColumn(tp.Scope), v.plan.mergedExclusions())
 		if err != nil {
 			return res, err
 		}
@@ -251,11 +260,12 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 		})
 	}
 
-	confirmed, failed, err := v.confirmCollisions(ctx)
+	confirmed, conflicts, failed, err := v.confirmCollisions(ctx)
 	if err != nil {
 		return res, err
 	}
 	res.CollisionsConfirmed = confirmed
+	res.ConflictsConfirmed = conflicts
 	res.Checks = append(res.Checks, failed...)
 
 	sortChecks(res.Checks)
@@ -269,7 +279,6 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 // the present. This is the side a replay is judged against.
 func (v *Verifier) expectedFromLiveSources(ctx context.Context, tp TablePlan) (map[string]Fingerprint, error) {
 	out := map[string]Fingerprint{}
-	losing := losingIssueIDs(v.plan.Collisions)
 	for _, src := range v.plan.Sources {
 		if !src.Reachable {
 			continue
@@ -292,7 +301,7 @@ func (v *Verifier) expectedFromLiveSources(ctx context.Context, tp TablePlan) (m
 			}
 		default:
 			byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
-				tp.ScopeColumnName(), "", losingIDsFor(losing, src.Namespace))
+				tp.ScopeColumnName(), "", v.plan.sourceExclusions(src.Namespace))
 			if err != nil {
 				return nil, fmt.Errorf("live fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
 			}
@@ -360,47 +369,71 @@ func unifiedGroupColumn(scope Scope) string {
 }
 
 // confirmCollisions re-reads the recorded collision decisions out of the
-// unified database and confirms that exactly one copy of each duplicated id
-// survived, that it is the recorded winner, and that every losing copy is on
-// record. This is the check that would catch a migration which quietly dropped
-// a relationship.
+// unified database and confirms each against the sources.
+//
+// For an identical duplicate it confirms that exactly one copy of the id
+// survived, that it is the recorded winner, and that every skipped copy is on
+// record. For a conflict it confirms the conflict bead, exactly the copies it
+// names, and each copy's rows (confirmConflict). This is the check that would
+// catch a migration which quietly dropped a relationship.
 //
 // A collision that does not match is a failed check in the report, not an
 // aborted run: the table comparisons beside it still print, so a reader sees
 // everything that differs at once. Only a read that cannot be made at all
 // aborts.
-func (v *Verifier) confirmCollisions(ctx context.Context) (confirmed int, failed []Check, err error) {
+func (v *Verifier) confirmCollisions(ctx context.Context) (confirmed, conflicts int, failed []Check, err error) {
 	fail := func(id, detail string) {
 		failed = append(failed, Check{Scope: "collision " + id, Table: "brain_unify_collisions", Detail: detail})
 	}
 	known := map[string]bool{}
+	orphans, err := v.orphanCounts(ctx)
+	if err != nil {
+		return confirmed, conflicts, failed, err
+	}
 	for _, c := range v.plan.Collisions {
 		known[c.ID] = true
+		if c.Divergent {
+			problems, err := v.confirmConflict(ctx, c, orphans)
+			if err != nil {
+				return confirmed, conflicts, failed, err
+			}
+			if len(problems) > 0 {
+				fail(c.ID, "conflict: "+strings.Join(problems, "; "))
+				continue
+			}
+			confirmed++
+			conflicts++
+			continue
+		}
 		copies := 0
 		stmt := fmt.Sprintf("select count(*) from `%s`.`issues` where `id` = ?", v.opts.Database)
 		row := v.unified.queryRow(ctx, stmt, c.ID)
 		if row == nil {
-			return confirmed, failed, fmt.Errorf("refusing non-SELECT collision check for %s", c.ID)
+			return confirmed, conflicts, failed, fmt.Errorf("refusing non-SELECT collision check for %s", c.ID)
 		}
 		if err := row.Scan(&copies); err != nil {
-			return confirmed, failed, fmt.Errorf("counting %s in the unified database: %w", c.ID, err)
+			return confirmed, conflicts, failed, fmt.Errorf("counting %s in the unified database: %w", c.ID, err)
 		}
 		if copies != 1 {
 			fail(c.ID, fmt.Sprintf("appears %d time(s) in the unified database, want exactly 1", copies))
 			continue
 		}
-		stmt = fmt.Sprintf("select `winner`, `losers` from `%s`.`brain_unify_collisions` where `id` = ?", v.opts.Database)
+		stmt = fmt.Sprintf("select `winner`, `losers`, `resolution` from `%s`.`brain_unify_collisions` where `id` = ?", v.opts.Database)
 		r := v.unified.queryRow(ctx, stmt, c.ID)
 		if r == nil {
-			return confirmed, failed, fmt.Errorf("refusing non-SELECT collision lookup for %s", c.ID)
+			return confirmed, conflicts, failed, fmt.Errorf("refusing non-SELECT collision lookup for %s", c.ID)
 		}
-		var winner, losers string
-		if err := r.Scan(&winner, &losers); err != nil {
+		var winner, losers, resolution string
+		if err := r.Scan(&winner, &losers, &resolution); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				fail(c.ID, fmt.Sprintf("is duplicated across %s (winner %s) but the unified database records no collision for it", strings.Join(append([]string{c.Winner}, c.Losers...), ", "), c.Winner))
 				continue
 			}
-			return confirmed, failed, fmt.Errorf("reading recorded collision %s: %w", c.ID, err)
+			return confirmed, conflicts, failed, fmt.Errorf("reading recorded collision %s: %w", c.ID, err)
+		}
+		if resolution != ResolutionMergedIdentical {
+			fail(c.ID, fmt.Sprintf("recorded as %q but the sources hold identical copies, which merge into one bead", resolution))
+			continue
 		}
 		if winner != c.Winner {
 			fail(c.ID, fmt.Sprintf("recorded winner %q but the sources' winner rule chooses %q", winner, c.Winner))
@@ -423,19 +456,247 @@ func (v *Verifier) confirmCollisions(ctx context.Context) (confirmed int, failed
 	stmt := fmt.Sprintf("select `id` from `%s`.`brain_unify_collisions`", v.opts.Database)
 	rows, qerr := v.unified.query(ctx, stmt)
 	if qerr != nil {
-		return confirmed, failed, fmt.Errorf("reading recorded collisions: %w", qerr)
+		return confirmed, conflicts, failed, fmt.Errorf("reading recorded collisions: %w", qerr)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return confirmed, failed, err
+			return confirmed, conflicts, failed, err
 		}
 		if !known[id] {
 			fail(id, "the unified database records a collision for an id the sources no longer duplicate")
 		}
 	}
-	return confirmed, failed, rows.Err()
+	return confirmed, conflicts, failed, rows.Err()
+}
+
+// orphanCounts counts, per merged table and conflicted id, the rows that stores
+// holding no copy of the id have for it. Such rows are not moved to any copy;
+// they stay at the original id, beside the conflict bead's own rows.
+func (v *Verifier) orphanCounts(ctx context.Context) (map[string]map[string]int64, error) {
+	out := map[string]map[string]int64{}
+	conflicts := v.plan.Conflicts()
+	if len(conflicts) == 0 {
+		return out, nil
+	}
+	ids := make([]string, 0, len(conflicts))
+	byID := map[string]Collision{}
+	for _, c := range conflicts {
+		ids = append(ids, c.ID)
+		byID[c.ID] = c
+	}
+	for _, src := range v.plan.Sources {
+		for _, tp := range beadTablePlans(v.plans) {
+			has, err := v.source.HasTable(ctx, src.Database, tp.Table)
+			if err != nil {
+				return nil, fmt.Errorf("checking store %s for table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if !has {
+				continue
+			}
+			clause, args := inClause(tp.ScopeColumn, ids)
+			stmt := fmt.Sprintf("select `%s`, count(*) from `%s`.`%s` where %s group by `%s`", tp.ScopeColumn, src.Database, tp.Table, clause, tp.ScopeColumn)
+			rows, err := v.source.query(ctx, stmt, args...)
+			if err != nil {
+				return nil, fmt.Errorf("counting the rows of store %s table %s that name a conflicted id: %w", src.Namespace, tp.Table, err)
+			}
+			for rows.Next() {
+				var raw any
+				var n int64
+				if err := rows.Scan(&raw, &n); err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				id := cellText(raw)
+				if contains(byID[id].holders(), src.Namespace) {
+					continue
+				}
+				if out[tp.Target] == nil {
+					out[tp.Target] = map[string]int64{}
+				}
+				out[tp.Target][id] += n
+			}
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	return out, nil
+}
+
+// confirmConflict checks one conflict against the unified database and returns
+// what is wrong with it, or nothing:
+//
+//   - the record: it says conflict-bead and names exactly the copies the sources
+//     call for, each under the minted id the sources' ids derive;
+//   - the conflict bead: the original id is one open issue, whose rows (and its
+//     label and its dependency to each copy) are exactly the rows the tool
+//     authors, and nothing else sits at the id but rows of stores holding no
+//     copy;
+//   - each copy: one issue under its minted id, and with its child rows a digest
+//     equal to that of the source's copy put through the build's mapper - read
+//     from the sources as they stand now (--reference live) or as the build
+//     recorded it (recorded). Children resolve because they are read by the
+//     minted id.
+//
+// "Nothing extra" is the aggregate comparison beside this one: a bead the plan
+// does not name, in the namespace of a minted id, is a difference there.
+func (v *Verifier) confirmConflict(ctx context.Context, c Collision, orphans map[string]map[string]int64) ([]string, error) {
+	var problems []string
+
+	recRow := v.unified.queryRow(ctx, fmt.Sprintf("select `resolution`, `copy_ids`, `copy_hashes` from `%s`.`brain_unify_collisions` where `id` = ?", v.opts.Database), c.ID)
+	if recRow == nil {
+		return nil, fmt.Errorf("refusing non-SELECT collision lookup for %s", c.ID)
+	}
+	var resolution, copyIDsJSON, copyHashesJSON string
+	recorded := true
+	if err := recRow.Scan(&resolution, &copyIDsJSON, &copyHashesJSON); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("reading recorded collision %s: %w", c.ID, err)
+		}
+		recorded = false
+		problems = append(problems, "the unified database records no collision for it")
+	}
+	recordedHashes := map[string]string{}
+	if recorded {
+		var gotIDs map[string]string
+		if resolution != ResolutionConflict {
+			problems = append(problems, fmt.Sprintf("recorded as %q, want %q", resolution, ResolutionConflict))
+		}
+		if err := json.Unmarshal([]byte(copyIDsJSON), &gotIDs); err != nil || !equalStringMaps(gotIDs, c.copyIDs()) {
+			problems = append(problems, fmt.Sprintf("records the copies %s but the sources call for %s", copyIDsJSON, mapText(c.copyIDs())))
+		}
+		if err := json.Unmarshal([]byte(copyHashesJSON), &recordedHashes); err != nil {
+			problems = append(problems, fmt.Sprintf("recorded copy digests %q are unreadable", copyHashesJSON))
+		}
+	}
+
+	problems = append(problems, v.checkConflictBead(ctx, c, orphans)...)
+
+	for _, cp := range c.Copies {
+		src, ok := v.plan.SourceByNamespace(cp.Store)
+		if !ok {
+			problems = append(problems, fmt.Sprintf("the copy held by store %s has no participating source", cp.Store))
+			continue
+		}
+		want, err := copyRowsFromSource(ctx, v.source, v.plans, v.mapper, src, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		got, err := copyRowsFromMerged(ctx, v.unified, v.opts.Database, v.plans, want.Cols, cp.ID)
+		if err != nil {
+			return nil, err
+		}
+		if n := len(got.Rows["issues"]); n != 1 {
+			problems = append(problems, fmt.Sprintf("the copy from store %s is %d row(s) of issues under %s, want exactly 1", cp.Store, n, cp.ID))
+			continue
+		}
+		gotDigest := digestCopy(got.Rows)
+		if normalizeReference(v.opts.Reference) == ReferenceLive {
+			if wantDigest := digestCopy(want.Rows); wantDigest != gotDigest {
+				problems = append(problems, fmt.Sprintf("the copy from store %s (%s) differs from the source's copy in %s", cp.Store, cp.ID, strings.Join(differingTables(want.Rows, got.Rows), ", ")))
+			}
+			continue
+		}
+		wantDigest, ok := recordedHashes[cp.Store]
+		switch {
+		case !ok && recorded:
+			problems = append(problems, fmt.Sprintf("the record has no digest for the copy from store %s", cp.Store))
+		case ok && wantDigest != gotDigest:
+			problems = append(problems, fmt.Sprintf("the copy from store %s (%s) no longer matches the digest the build recorded for it (%s vs %s)", cp.Store, cp.ID, shortDigestText(wantDigest), shortDigestText(gotDigest)))
+		}
+	}
+	return problems, nil
+}
+
+func shortDigestText(d string) string {
+	if len(d) > 12 {
+		return d[:12]
+	}
+	return d
+}
+
+func mapText(m map[string]string) string {
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+// differingTables names the tables in which two sets of rows differ.
+func differingTables(a, b map[string][][]any) []string {
+	names := map[string]bool{}
+	for t := range a {
+		names[t] = true
+	}
+	for t := range b {
+		names[t] = true
+	}
+	var out []string
+	for _, t := range sortedKeys(names) {
+		if digestCopy(map[string][][]any{t: a[t]}) != digestCopy(map[string][][]any{t: b[t]}) {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// checkConflictBead compares what sits at the conflicted id in every
+// bead-scoped table with the rows the tool authors for the conflict. The rows
+// are matched on the columns the tool provides; a row that matches none of them
+// must be one of a store that holds no copy.
+func (v *Verifier) checkConflictBead(ctx context.Context, c Collision, orphans map[string]map[string]int64) []string {
+	var problems []string
+	for _, tp := range beadTablePlans(v.plans) {
+		wantCols, wantRows := tableConflictRows(tp, []Collision{c})
+		rows, err := v.unified.ReadRows(ctx, v.opts.Database, tp.Target, tp.Columns, "`"+tp.ScopeColumn+"` = ?", c.ID)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("reading %s at the conflict id: %v", tp.Target, err))
+			continue
+		}
+		idx := make([]int, len(wantCols))
+		for i, col := range wantCols {
+			idx[i] = indexOf(tp.Columns, col)
+		}
+		project := func(row []any) string {
+			var b strings.Builder
+			for _, i := range idx {
+				b.WriteString(cellText(row[i]))
+				b.WriteByte(0x1f)
+			}
+			return b.String()
+		}
+		wantSet := map[string]int{}
+		for _, row := range wantRows {
+			var b strings.Builder
+			for _, cell := range row {
+				b.WriteString(cellText(cell))
+				b.WriteByte(0x1f)
+			}
+			wantSet[b.String()]++
+		}
+		strays := int64(0)
+		for _, row := range rows {
+			key := project(row)
+			if wantSet[key] > 0 {
+				wantSet[key]--
+				continue
+			}
+			strays++
+		}
+		missing := 0
+		for _, n := range wantSet {
+			missing += n
+		}
+		if missing > 0 {
+			problems = append(problems, fmt.Sprintf("%s lacks %d of the %d row(s) the conflict bead should have", tp.Target, missing, len(wantRows)))
+		}
+		if want := orphans[tp.Target][c.ID]; strays != want {
+			problems = append(problems, fmt.Sprintf("%s holds %d other row(s) at the conflict id, want %d (only rows of stores holding no copy stay there)", tp.Target, strays, want))
+		}
+	}
+	return problems
 }
 
 // Combine merges disjoint fingerprints. Counts and sizes sum; digests combine

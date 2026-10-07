@@ -516,7 +516,10 @@ func exclusionClause(scopeCol string, exclude []string) string {
 	for _, e := range exclude {
 		quoted = append(quoted, quoteLiteral(e))
 	}
-	return fmt.Sprintf(" where `%s` not in (%s)", scopeCol, strings.Join(quoted, ","))
+	// A NULL scope value (interactions.issue_id is nullable) is not "in" any
+	// list, but `NULL not in (...)` is NULL, which would drop the row from one
+	// side of a comparison only when the list is non-empty.
+	return fmt.Sprintf(" where (`%s` is null or `%s` not in (%s))", scopeCol, scopeCol, strings.Join(quoted, ","))
 }
 
 // issueIDRow is the identity of a bead as far as collision analysis needs.

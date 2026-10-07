@@ -40,7 +40,7 @@ Phases:
 
   plan    read production and print the deterministic mapping: participating
           databases, namespace ownership, and every id that exists in more
-          than one database
+          than one database and what becomes of it
   build   construct the unified database in an isolated Dolt server started
           under --data-dir, reading production but never writing to it
   replay  apply the changes the sources made since the build into the unified
@@ -49,10 +49,26 @@ Phases:
           row count, content size and an order-independent content digest;
           --reference live compares against the sources as they stand now
 
+Duplicated ids. An id that more than one store holds is merged into one bead
+when the copies are identical. When the copies differ, nothing is picked and
+nothing is discarded: each copy becomes a bead of its own under a new id
+(<authoring store's prefix>-<12 hex of sha256(id NUL store)>), carrying that
+copy's row and child rows, and the original id becomes an open conflict bead
+that says so and lists both copies. Links other beads hold to the original id
+still point at it, so they reach the conflict bead.
+
 Production safety: this command group opens production read-only. The builder
 writes only to a Dolt server it starts itself, so a build cannot modify a live
 store even by accident.`,
 }
+
+// allowCollisionsRetired is the deprecation message of --allow-collisions. The
+// flag used to override the refusal to build or replay when a duplicated id's
+// copies disagreed on content, because keeping one copy discarded the other's
+// state. No copy is discarded any more - each becomes a bead and the original id
+// a conflict bead - so there is nothing left to override. The flag is still
+// accepted so existing scripts keep working.
+const allowCollisionsRetired = "duplicated ids whose copies differ no longer need a decision: each copy is kept as a bead and the original id becomes a conflict bead, so nothing is discarded; the flag has no effect"
 
 var (
 	unifyHost      string
@@ -80,7 +96,8 @@ func init() {
 	unifyBuildCmd.Flags().StringVar(&unifyDatabase, "database", "brain_unified", "name of the unified database inside the isolated server")
 	unifyBuildCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the isolated server")
 	unifyBuildCmd.Flags().StringVar(&unifyTemplate, "template", "", "store whose schema the unified database inherits (default: the store with the most beads)")
-	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "proceed even when a duplicated id has copies that disagree on content")
+	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "no longer has any effect")
+	_ = unifyBuildCmd.Flags().MarkDeprecated("allow-collisions", allowCollisionsRetired)
 	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
 
 	unifyReplayCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the source stores")
@@ -88,7 +105,8 @@ func init() {
 	unifyReplayCmd.Flags().StringVar(&unifyDataDir, "data-dir", "", "directory holding the merged database built by 'unify build' (required)")
 	unifyReplayCmd.Flags().StringVar(&unifyDatabase, "database", "brain_unified", "name of the merged database")
 	unifyReplayCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the server over the merged database")
-	unifyReplayCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "proceed even when a duplicated id has copies that disagree on content")
+	unifyReplayCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "no longer has any effect")
+	_ = unifyReplayCmd.Flags().MarkDeprecated("allow-collisions", allowCollisionsRetired)
 	unifyReplayCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the replay")
 
 	unifyVerifyCmd.Flags().StringVar(&unifyReference, "reference", brainunify.ReferenceRecorded,
@@ -167,12 +185,11 @@ var unifyBuildCmd = &cobra.Command{
 		}
 
 		builder := brainunify.NewBuilder(source, plan, brainunify.BuildOptions{
-			DataDir:         unifyDataDir,
-			Database:        unifyDatabase,
-			DoltBin:         unifyDoltBin,
-			AllowCollisions: unifyAllowColl,
-			Host:            unifyHost,
-			Port:            unifyPort,
+			DataDir:  unifyDataDir,
+			Database: unifyDatabase,
+			DoltBin:  unifyDoltBin,
+			Host:     unifyHost,
+			Port:     unifyPort,
 			Logf: func(format string, args ...any) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
 			},
@@ -198,9 +215,12 @@ recorded (brain_unify_source_commits), finds the beads and the database-state
 tables that changed, and re-reads exactly those from the source as it stands
 now. Inserts, updates and deletes are one operation: the merged database's rows
 for a changed bead are made equal to what the sources hold for it. Duplicated
-ids follow the same winner rule the build uses, and are recorded in
-brain_unify_collisions. Tables Dolt keeps no history for (wisps) are reloaded
-whole. The next replay starts where this one read.
+ids are handled by the build's own functions: identical copies stay one bead;
+copies that differ become a conflict bead plus one minted bead per copy, so a
+change that creates, edits or removes such a duplicate re-derives the conflict
+bead and its copies. Every duplicate is recorded in brain_unify_collisions.
+Tables Dolt keeps no history for (wisps) are reloaded whole. The next replay
+starts where this one read.
 
 Anything it cannot resolve confidently is a refusal that names the store and the
 table, and a refused replay leaves the merged database untouched:
@@ -210,8 +230,8 @@ table, and a refused replay leaves the merged database untouched:
   - a source whose history no longer contains its recorded commit
   - a source table the build imported rows from that is gone
   - a table or column the merged schema does not have
-  - duplicated ids whose copies disagree on content (override with
-    --allow-collisions)
+  - a merged database built before differing copies became conflict beads
+  - a minted copy id that two copies derive, or that an existing bead has
 
 Prove a replay with 'unify verify --reference live', which compares the merged
 database against the sources as they stand. Sources are only ever read.`,
@@ -237,12 +257,11 @@ database against the sources as they stand. Sources are only ever read.`,
 
 		started := time.Now()
 		replayer := brainunify.NewReplayer(source, plan, brainunify.ReplayOptions{
-			DataDir:         unifyDataDir,
-			Database:        unifyDatabase,
-			DoltBin:         unifyDoltBin,
-			Host:            unifyHost,
-			Port:            unifyPort,
-			AllowCollisions: unifyAllowColl,
+			DataDir:  unifyDataDir,
+			Database: unifyDatabase,
+			DoltBin:  unifyDoltBin,
+			Host:     unifyHost,
+			Port:     unifyPort,
 			Logf: func(format string, args ...any) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[%7.1fs] %s\n",
 					time.Since(started).Seconds(), fmt.Sprintf(format, args...))
@@ -346,7 +365,9 @@ type unifyPlanJSON struct {
 	TotalBeads      int64                `json:"total_beads"`
 	DistinctBeads   int64                `json:"distinct_beads"`
 	DuplicateCopies int64                `json:"duplicate_copies"`
-	Blocked         string               `json:"blocked,omitempty"`
+	Conflicts       int                  `json:"conflicts"`
+	MintedCopies    int                  `json:"minted_copies"`
+	Refused         string               `json:"refused,omitempty"`
 }
 
 type unifySourceJSON struct {
@@ -372,12 +393,16 @@ type unifyCollisionJSON struct {
 	ID         string            `json:"id"`
 	Prefix     string            `json:"prefix"`
 	Owner      string            `json:"owner"`
-	Winner     string            `json:"winner"`
+	Resolution string            `json:"resolution"`
+	Winner     string            `json:"winner,omitempty"`
 	Losers     []string          `json:"losers"`
 	Reason     string            `json:"reason"`
 	Divergent  bool              `json:"divergent"`
 	WinnerHash string            `json:"winner_hash,omitempty"`
 	LoserHash  map[string]string `json:"loser_hashes,omitempty"`
+	// Copies maps each copy of a conflict to the id it is minted under.
+	Copies           map[string]string `json:"copies,omitempty"`
+	DifferingColumns []string          `json:"differing_columns,omitempty"`
 }
 
 type unifyExcludedJSON struct {
@@ -398,6 +423,8 @@ func writeUnifyJSON(cmd *cobra.Command, plan brainunify.Plan, disc brainunify.Di
 		TotalBeads:      plan.TotalBeads(),
 		DistinctBeads:   plan.DistinctBeads(),
 		DuplicateCopies: plan.DuplicateCopies(),
+		Conflicts:       len(plan.Conflicts()),
+		MintedCopies:    plan.MintedCopies(),
 	}
 	for _, s := range plan.Sources {
 		out.Sources = append(out.Sources, unifySourceJSON{
@@ -417,17 +444,30 @@ func writeUnifyJSON(cmd *cobra.Command, plan brainunify.Plan, disc brainunify.Di
 			ID: c.ID, Prefix: c.Prefix, Owner: c.Owner, Winner: c.Winner,
 			Losers: c.Losers, Reason: c.Reason, Divergent: c.Divergent,
 			WinnerHash: c.WinnerHash, LoserHash: c.LoserHashes,
+			Resolution: c.Resolution, Copies: copyMap(c), DifferingColumns: c.DifferingColumns,
 		})
 	}
 	for _, e := range plan.Excluded {
 		out.Excluded = append(out.Excluded, unifyExcludedJSON{Database: e.Database, Reason: e.Reason, Beads: e.Beads})
 	}
-	if reason, blocked := plan.Blocks(); blocked {
-		out.Blocked = reason
+	if err := plan.Refusal(); err != nil {
+		out.Refused = err.Error()
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
+}
+
+// copyMap maps each copy of a conflict to the id it is minted under.
+func copyMap(c brainunify.Collision) map[string]string {
+	if len(c.Copies) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(c.Copies))
+	for _, cp := range c.Copies {
+		out[cp.Store] = cp.ID
+	}
+	return out
 }
 
 // openUnifySources loads the store registry and opens production read-only.

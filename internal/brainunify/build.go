@@ -21,11 +21,6 @@ type BuildOptions struct {
 	Database string
 	// DoltBin is the dolt binary used to start the isolated server.
 	DoltBin string
-	// AllowCollisions permits the build to proceed when the plan found
-	// divergent id collisions. Without it a divergent collision stops the
-	// build, because the winner rule then discards a real state difference
-	// and that is a decision for a human.
-	AllowCollisions bool
 	// Host and Port locate the Dolt server holding the sources. These are
 	// needed for the per-database history read that records every source's
 	// commit at the moment the build sees it, which is what a later replay
@@ -121,6 +116,9 @@ type Builder struct {
 	jsonCols map[string][]string
 	// recorded accumulates the copy-time digests, keyed by table and group.
 	recorded map[string]GroupFingerprint
+	// mapper decides what each source row becomes: skipped, moved to a
+	// conflict's copy, or copied as it is.
+	mapper *rowMapper
 }
 
 // NewBuilder returns a builder reading from source and migrating according to
@@ -144,6 +142,9 @@ type Discovery struct {
 	Replicas []string
 	// Unregistered lists participating databases claimed by no store.
 	Unregistered []string
+	// IDs holds every bead id of every participating source, so an id minted
+	// for a conflict's copy can be checked against the ids that exist.
+	IDs map[string]bool
 }
 
 // Discover inspects the server and the registry.
@@ -171,7 +172,7 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 		claimedBy[s.Database] = append(claimedBy[s.Database], s.Namespace)
 	}
 
-	d := Discovery{Copies: map[string][]IDCopy{}}
+	d := Discovery{Copies: map[string][]IDCopy{}, IDs: map[string]bool{}}
 	idOwners := map[string][]IDCopy{}
 
 	for _, dbName := range dbs {
@@ -244,6 +245,7 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 			d.Unregistered = append(d.Unregistered, dbName)
 		}
 		for _, r := range ids {
+			d.IDs[r.ID] = true
 			hash := r.ContentHash
 			if hash == "" {
 				hash = shortDigest(r.ID, r.CreatedAt, r.UpdatedAt)
@@ -301,6 +303,7 @@ func unreadable(f SourceFacts, reason string) SourceFacts {
 func (d Discovery) Plan() Plan {
 	p := BuildPlan(d.Facts, d.Copies)
 	sort.Slice(p.Excluded, func(i, j int) bool { return p.Excluded[i].Database < p.Excluded[j].Database })
+	p.Refusals = append(p.Refusals, mintedClashes(p.Conflicts(), d.IDs)...)
 	return p
 }
 
@@ -343,9 +346,8 @@ func shortDigest(parts ...string) string {
 // Build constructs the unified database and returns what it did.
 func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	start := time.Now()
-	if reason, blocked := b.plan.Blocks(); blocked && !b.opts.AllowCollisions {
-		return BuildResult{}, fmt.Errorf(
-			"refusing to build: %s (re-run with --allow-collisions after reviewing the plan)", reason)
+	if err := b.plan.Refusal(); err != nil {
+		return BuildResult{}, fmt.Errorf("refusing to build: %w", err)
 	}
 	if len(b.plan.Sources) == 0 {
 		return BuildResult{}, fmt.Errorf("nothing to migrate: no source database was reachable")
@@ -368,6 +370,15 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	b.plans, err = b.tablePlans(ctx)
 	if err != nil {
 		return BuildResult{}, err
+	}
+	b.mapper = newRowMapper(b.plan)
+	if len(b.plan.Conflicts()) > 0 {
+		if err := validateRekeying(b.plans); err != nil {
+			return BuildResult{}, fmt.Errorf("refusing to build: %w", err)
+		}
+		if err := validateConflictTables(b.plans); err != nil {
+			return BuildResult{}, fmt.Errorf("refusing to build: %w", err)
+		}
 	}
 	b.jsonCols = map[string][]string{}
 	for _, tp := range b.plans {
@@ -421,6 +432,9 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 		return res, err
 	}
 	if err := b.copySources(ctx, target, &res); err != nil {
+		return res, err
+	}
+	if err := b.writeConflictBeads(ctx, target, &res); err != nil {
 		return res, err
 	}
 	if err := b.writeProvenance(ctx, target); err != nil {
@@ -586,12 +600,6 @@ func (b *Builder) createSchema(ctx context.Context, target *sql.DB) error {
 
 // copySources loads every source into the unified database.
 func (b *Builder) copySources(ctx context.Context, target *sql.DB, res *BuildResult) error {
-	// Rows belonging to an issue copy that lost an id collision must not be
-	// imported either, or the unified database would carry relationships to
-	// an id whose winning row came from somewhere else. The excluded set is
-	// derived from the collision decision, not guessed.
-	losingIDs := losingIssueIDs(b.plan.Collisions)
-
 	order := LoadOrder(tableNames(b.plans), func(t string) []string {
 		refs, err := b.source.ForeignKeys(ctx, b.templateDatabase, t)
 		if err != nil {
@@ -611,7 +619,7 @@ func (b *Builder) copySources(ctx context.Context, target *sql.DB, res *BuildRes
 			}
 		}
 		for _, table := range order {
-			stats, err := b.copyTable(ctx, target, src, table, losingIDs)
+			stats, err := b.copyTable(ctx, target, src, table)
 			if err != nil {
 				return err
 			}
@@ -621,18 +629,6 @@ func (b *Builder) copySources(ctx context.Context, target *sql.DB, res *BuildRes
 		}
 	}
 	return nil
-}
-
-// losingIssueIDs maps a duplicated id to the source whose copy did not become
-// a row of its own.
-func losingIssueIDs(collisions []Collision) map[string]string {
-	out := map[string]string{}
-	for _, c := range collisions {
-		for _, l := range c.Losers {
-			out[c.ID] = l
-		}
-	}
-	return out
 }
 
 // copyStoreState gives the template store's config/metadata rows a home in the
@@ -658,7 +654,7 @@ func (b *Builder) copyStoreState(ctx context.Context, target *sql.DB, src Source
 }
 
 // copyTable imports one table of one source.
-func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts, table string, losingIDs map[string]string) (ImportStats, error) { //nolint:gocyclo // one linear pipeline: digest, then copy
+func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts, table string) (ImportStats, error) { //nolint:gocyclo // one linear pipeline: digest, then copy
 	stats := ImportStats{Store: src.Namespace, Table: table}
 	tp := b.planFor(table)
 	if tp == nil {
@@ -705,7 +701,7 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 		}
 	} else {
 		byGroup, err := b.source.FingerprintByGroup(ctx, src.Database, tp.Table,
-			tp.ScopeColumnName(), "", losingIDsFor(losingIDs, src.Namespace))
+			tp.ScopeColumnName(), "", b.plan.sourceExclusions(src.Namespace))
 		if err != nil {
 			return stats, err
 		}
@@ -723,22 +719,22 @@ func (b *Builder) copyTable(ctx context.Context, target *sql.DB, src SourceFacts
 		if err != nil {
 			return stats, err
 		}
-		imported, skipped, err := b.copyIssues(ctx, target, src, tp.Target, cols, losingIDs)
+		imported, skipped, err := b.copyMapped(ctx, target, src, tp, cols)
 		if err != nil {
 			return stats, err
 		}
 		stats.ImportedRows, stats.SkippedRows = imported, skipped
 		if skipped > 0 {
-			stats.Note = fmt.Sprintf("%d row(s) lost to an id collision; every one is recorded in brain_unify_collisions", skipped)
+			stats.Note = fmt.Sprintf("%d row(s) were the skipped copy of an identical duplicate; every one is recorded in brain_unify_collisions", skipped)
 		}
 	case ScopeIssueChild:
-		imported, skipped, err := b.copyChildRows(ctx, target, src, tp, losingIDs)
+		imported, skipped, err := b.copyMapped(ctx, target, src, tp, tp.Columns)
 		if err != nil {
 			return stats, err
 		}
 		stats.ImportedRows, stats.SkippedRows = imported, skipped
 		if skipped > 0 {
-			stats.Note = fmt.Sprintf("%d row(s) belonged to an issue copy that lost an id collision", skipped)
+			stats.Note = fmt.Sprintf("%d row(s) belonged to the skipped copy of an identical duplicate", skipped)
 		}
 	case ScopeDatabaseState:
 		imported, err := b.copyRaw(ctx, target, src.Database, table, tp.Columns, tp.Target, []any{src.Namespace})
@@ -786,44 +782,39 @@ func (b *Builder) sharedColumns(ctx context.Context, src SourceFacts, tp *TableP
 	return common, nil
 }
 
-// copyIssues imports a source's beads, skipping copies that lost an id
-// collision.
-func (b *Builder) copyIssues(ctx context.Context, target *sql.DB, src SourceFacts, table string, cols []string, losingIDs map[string]string) (imported, skipped int64, err error) {
-	if !contains(cols, "id") {
-		return 0, 0, fmt.Errorf("issues copy lost its id column")
-	}
-	stmt := insertPrefix(table, cols)
-	imported, skipped, err = b.copyFiltered(ctx, target, src.Database, table, cols, stmt,
-		indexOf(cols, "id"), losingIDsFor(losingIDs, src.Namespace))
-	if err != nil {
-		return imported, skipped, err
-	}
-	if skipped > 0 {
-		b.log("  %-24s %d bead(s) skipped as collision losers", src.Namespace, skipped)
-	}
-	return imported, skipped, nil
-}
-
-// copyChildRows imports an issue-scoped table, dropping rows whose issue copy
-// lost a collision.
-func (b *Builder) copyChildRows(ctx context.Context, target *sql.DB, src SourceFacts, tp *TablePlan, losingIDs map[string]string) (imported, skipped int64, err error) {
-	if !contains(tp.Columns, tp.ScopeColumn) {
+// copyMapped imports a bead-scoped table of one source through the row mapper:
+// the rows of an identical duplicate's skipped copy are dropped, the rows of a
+// conflicted id this source holds a copy of land under that copy's minted id
+// (with a new key where the table needs one), and every other row is copied as
+// it is. The replay maps through the same function.
+func (b *Builder) copyMapped(ctx context.Context, target *sql.DB, src SourceFacts, tp *TablePlan, cols []string) (imported, skipped int64, err error) {
+	if !contains(cols, tp.ScopeColumn) {
 		return 0, 0, fmt.Errorf("table %s has no %s column to scope by", tp.Table, tp.ScopeColumn)
 	}
-	stmt := insertPrefix(tp.Target, tp.Columns)
-	return b.copyFiltered(ctx, target, src.Database, tp.Table, tp.Columns, stmt,
-		indexOf(tp.Columns, tp.ScopeColumn), losingIDsFor(losingIDs, src.Namespace))
-}
-
-func losingIDsFor(losingIDs map[string]string, source string) []string {
-	var out []string
-	for id, loser := range losingIDs {
-		if loser == source {
-			out = append(out, id)
+	stmt := insertPrefix(tp.Target, cols)
+	err = b.source.CopyRows(ctx, src.Database, tp.Table, cols, b.jsonColsFor(tp.Table), func(rows [][]any) error {
+		kept, sk, err := b.mapper.mapRows(*tp, src.Namespace, cols, rows)
+		if err != nil {
+			return fmt.Errorf("mapping %s.%s of store %s: %w", src.Database, tp.Table, src.Namespace, err)
 		}
+		skipped += sk
+		if len(kept) == 0 {
+			return nil
+		}
+		batch := make([]string, 0, len(kept))
+		for _, r := range kept {
+			batch = append(batch, valueTuple(r))
+		}
+		if _, err := target.ExecContext(ctx, stmt+strings.Join(batch, ",")); err != nil {
+			return fmt.Errorf("inserting into %s from %s: %w\nstatement: %s", tp.Target, src.Database, err, truncate(stmt+batch[0], 1200))
+		}
+		imported += int64(len(batch))
+		return nil
+	})
+	if err == nil && skipped > 0 && tp.Scope == ScopeIssues {
+		b.log("  %-24s %d bead(s) skipped as identical duplicates", src.Namespace, skipped)
 	}
-	sort.Strings(out)
-	return out
+	return imported, skipped, err
 }
 
 // copyRaw copies a table verbatim, optionally stamping each row with the
@@ -857,40 +848,6 @@ func (b *Builder) copyRaw(ctx context.Context, target *sql.DB, database, table s
 		return nil
 	})
 	return imported, err
-}
-
-// copyFiltered copies a table, dropping rows whose value in keyIdx is one of
-// the excluded keys. Exclusion happens in Go rather than SQL so one code path
-// serves every table shape. It copies and counts; it computes no digest, so
-// there is exactly one column encoding in the whole migration.
-func (b *Builder) copyFiltered(ctx context.Context, target *sql.DB, database, table string, cols []string, stmt string, keyIdx int, exclude []string) (imported, skipped int64, err error) {
-	if keyIdx < 0 || keyIdx >= len(cols) {
-		return 0, 0, fmt.Errorf("key column index %d out of range for %s", keyIdx, table)
-	}
-	excluded := make(map[string]bool, len(exclude))
-	for _, e := range exclude {
-		excluded[e] = true
-	}
-	err = b.source.CopyRows(ctx, database, table, cols, b.jsonColsFor(table), func(rows [][]any) error {
-		batch := make([]string, 0, len(rows))
-		for _, r := range rows {
-			key := fmt.Sprint(r[keyIdx])
-			if excluded[key] {
-				skipped++
-				continue
-			}
-			batch = append(batch, valueTuple(r))
-		}
-		if len(batch) == 0 {
-			return nil
-		}
-		if _, err := target.ExecContext(ctx, stmt+strings.Join(batch, ",")); err != nil {
-			return fmt.Errorf("inserting into %s from %s: %w\nstatement: %s", table, database, err, truncate(stmt+batch[0], 1200))
-		}
-		imported += int64(len(batch))
-		return nil
-	})
-	return imported, skipped, err
 }
 
 // namespaceFor maps a Dolt database to the unified namespace it migrates as.
@@ -1015,10 +972,40 @@ func (b *Builder) writeProvenance(ctx context.Context, target *sql.DB) error {
 		}
 	}
 	for _, c := range b.plan.Collisions {
-		if err := writeCollisionRow(ctx, target, c, b.losingRow(c)); err != nil {
+		rec, err := buildCollisionRecord(ctx, b.source, b.plan, b.plans, b.mapper, c)
+		if err != nil {
+			return err
+		}
+		if err := writeCollisionRow(ctx, target, rec); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// writeConflictBeads inserts the rows the tool itself authors for every
+// conflict: the conflict bead, its label, and one dependency from it to each
+// copy. The copies' own rows were already written by the copy, under their
+// minted ids.
+func (b *Builder) writeConflictBeads(ctx context.Context, target *sql.DB, res *BuildResult) error {
+	conflicts := b.plan.Conflicts()
+	if len(conflicts) == 0 {
+		return nil
+	}
+	for _, tp := range b.plans {
+		cols, rows := tableConflictRows(tp, conflicts)
+		if len(rows) == 0 {
+			continue
+		}
+		if err := insertRows(ctx, target, tp.Target, cols, rows); err != nil {
+			return fmt.Errorf("writing the conflict beads' rows into %s: %w", tp.Target, err)
+		}
+		res.Stats = append(res.Stats, ImportStats{
+			Store: conflictStore, Table: tp.Target, ImportedRows: int64(len(rows)),
+			Note: "rows the tool authored for conflict beads; they come from no source",
+		})
+	}
+	b.log("wrote %d conflict bead(s) linking to %d minted cop(ies)", len(conflicts), b.plan.MintedCopies())
 	return nil
 }
 
@@ -1032,27 +1019,71 @@ func writePrefixRow(ctx context.Context, target sqlExecer, ns Namespace) error {
 	return nil
 }
 
-// writeCollisionRow records one collision decision together with the full row
-// of the copy that lost it. The build and a replay both write through here, so
-// a record means the same thing whichever of them wrote it.
-func writeCollisionRow(ctx context.Context, target sqlExecer, c Collision, losingRow map[string]any) error {
-	losers, _ := json.Marshal(c.Losers)
-	loserHashes, _ := json.Marshal(c.LoserHashes)
-	row, _ := json.Marshal(losingRow)
+// collisionRecord is one brain_unify_collisions row.
+type collisionRecord struct {
+	Collision Collision
+	// LosingRow is the full row of an identical duplicate's skipped copy. A
+	// conflict skips nothing, so its LosingRow is empty.
+	LosingRow map[string]any
+	// CopyHashes maps each copy of a conflict to a digest of the copy as it
+	// should be in the merged database: its row and all its child rows,
+	// under the minted id. Empty for identical copies.
+	CopyHashes map[string]string
+}
+
+// buildCollisionRecord assembles the record of one collision from the sources.
+// The build and a replay both write through here, so a record means the same
+// thing whichever of them wrote it.
+func buildCollisionRecord(ctx context.Context, source *readOnlySource, plan Plan, plans []TablePlan, mapper *rowMapper, c Collision) (collisionRecord, error) {
+	rec := collisionRecord{Collision: c, LosingRow: map[string]any{}, CopyHashes: map[string]string{}}
+	if !c.Divergent {
+		rec.LosingRow = readLosingRow(source, plan, c)
+		return rec, nil
+	}
+	for _, cp := range c.Copies {
+		src, ok := plan.SourceByNamespace(cp.Store)
+		if !ok {
+			return rec, fmt.Errorf("the copy of %s held by store %s has no participating source", c.ID, cp.Store)
+		}
+		read, err := copyRowsFromSource(ctx, source, plans, mapper, src, c.ID)
+		if err != nil {
+			return rec, err
+		}
+		rec.CopyHashes[cp.Store] = digestCopy(read.Rows)
+	}
+	return rec, nil
+}
+
+// writeCollisionRow records one collision decision. A conflict records the
+// minted id and the digest of each copy; an identical duplicate records the full
+// row of the copy that was skipped.
+func writeCollisionRow(ctx context.Context, target sqlExecer, rec collisionRecord) error {
+	c := rec.Collision
+	losers, _ := json.Marshal(nonNilStrings(c.Losers))
+	loserHashes, _ := json.Marshal(nonNilMap(c.LoserHashes))
+	row, _ := json.Marshal(rec.LosingRow)
+	copyIDs, _ := json.Marshal(nonNilMap(c.copyIDs()))
+	copyHashes, _ := json.Marshal(nonNilMap(rec.CopyHashes))
 	if _, err := target.ExecContext(ctx,
-		"replace into `brain_unify_collisions` (`id`,`prefix`,`owner`,`winner`,`losers`,`reason`,`divergent`,`winner_hash`,`loser_hashes`,`losing_row`) values "+
-			valueTuple([]any{c.ID, c.Prefix, c.Owner, c.Winner, string(losers), c.Reason, boolToInt(c.Divergent), c.WinnerHash, string(loserHashes), string(row)})); err != nil {
+		"replace into `brain_unify_collisions` (`id`,`prefix`,`owner`,`winner`,`losers`,`reason`,`divergent`,`winner_hash`,`loser_hashes`,`losing_row`,`resolution`,`copy_ids`,`copy_hashes`) values "+
+			valueTuple([]any{c.ID, c.Prefix, c.Owner, c.Winner, string(losers), c.Reason, boolToInt(c.Divergent), c.WinnerHash, string(loserHashes), string(row), c.Resolution, string(copyIDs), string(copyHashes)})); err != nil {
 		return fmt.Errorf("recording collision %s: %w", c.ID, err)
 	}
 	return nil
 }
 
-// losingRow reads the full row of a collision's losing copy, so nothing is lost
-// to the winner rule. A read failure is recorded in the row itself rather than
-// hidden: an unreadable losing row is exactly the case an operator needs to
-// see.
-func (b *Builder) losingRow(c Collision) map[string]any {
-	return readLosingRow(b.source, b.plan, c)
+func nonNilStrings(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+func nonNilMap(m map[string]string) map[string]string {
+	if m == nil {
+		return map[string]string{}
+	}
+	return m
 }
 
 // readLosingRow reads the full row of a collision's first losing copy. The

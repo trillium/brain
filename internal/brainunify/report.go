@@ -15,8 +15,9 @@ func WritePlan(w io.Writer, plan Plan, disc Discovery) error {
 	if _, err := fmt.Fprintf(w, "brain unify plan\n=================\n\n"); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(w, "participating sources: %d\nsource rows read:  %d\ndistinct beads:     %d\nduplicated ids:     %d (losing copies: %d)\n\n",
-		len(plan.Sources), plan.TotalBeads(), plan.DistinctBeads(), len(plan.Collisions), plan.DuplicateCopies()); err != nil {
+	if _, err := fmt.Fprintf(w, "participating sources: %d\nsource rows read:  %d\nbeads after merge:  %d\nduplicated ids:     %d (%d identical, merged into one bead: %d copies skipped; %d differ: conflict beads, %d minted copies)\n\n",
+		len(plan.Sources), plan.TotalBeads(), plan.DistinctBeads(), len(plan.Collisions),
+		len(plan.Collisions)-len(plan.Conflicts()), plan.DuplicateCopies(), len(plan.Conflicts()), plan.MintedCopies()); err != nil {
 		return err
 	}
 
@@ -89,41 +90,40 @@ func WritePlan(w io.Writer, plan Plan, disc Discovery) error {
 	}
 
 	if len(plan.Collisions) > 0 {
-		divergent := plan.DivergentCollisions()
 		if _, err := fmt.Fprintf(w, "\nCOLLISIONS (%d ids exist in more than one database; %d differ in any column, %d differ in content)\n",
-			len(plan.Collisions), len(divergent), len(plan.DataLossCollisions())); err != nil {
+			len(plan.Collisions), len(plan.Conflicts()), len(plan.DataLossCollisions())); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(w, "%-20s %-14s %-20s %-20s %-26s %-18s %s\n", "ID", "PREFIX", "WINNER", "LOSERS", "REASON", "DIFFERS", "DIFFERING COLUMNS"); err != nil {
+		if _, err := fmt.Fprintf(w, "%-20s %-14s %-13s %-44s %-26s %s\n", "ID", "PREFIX", "RESOLUTION", "KEPT AS", "REASON", "DIFFERING COLUMNS"); err != nil {
 			return err
 		}
 		for _, c := range plan.Collisions {
-			mark := "no"
+			var kept string
 			if c.Divergent {
-				mark = "yes"
+				parts := make([]string, 0, len(c.Copies))
+				for _, cp := range c.Copies {
+					parts = append(parts, cp.Store+"="+cp.ID)
+				}
+				kept = "conflict bead + " + strings.Join(parts, " ")
+			} else {
+				kept = "winner " + c.Winner + ", skipped " + strings.Join(c.Losers, ",")
 			}
-			if _, err := fmt.Fprintf(w, "%-20s %-14s %-20s %-20s %-26s %-18s %s\n",
-				c.ID, c.Prefix, c.Winner, strings.Join(c.Losers, ","), c.Reason, mark,
-				strings.Join(c.DifferingColumns, ",")); err != nil {
+			if _, err := fmt.Fprintf(w, "%-20s %-14s %-13s %-44s %-26s %s\n",
+				c.ID, c.Prefix, c.Resolution, kept, c.Reason, strings.Join(c.DifferingColumns, ",")); err != nil {
 				return err
 			}
 		}
-		if _, err := fmt.Fprintln(w, "\nEvery losing copy is preserved in full in brain_unify_collisions.losing_row."); err != nil {
+		if _, err := fmt.Fprintln(w, "\nIdentical copies merge into one bead; the skipped copy is preserved in full in brain_unify_collisions.losing_row.\nCopies that differ are all kept: each becomes a bead under a minted id with its own child rows, and the original id becomes an open conflict bead linking to them. Nothing is discarded."); err != nil {
 			return err
 		}
 	}
 
-	if reason, blocked := plan.Blocks(); blocked {
-		if _, err := fmt.Fprintf(w, "\nBUILD BLOCKED: %s\n", reason); err != nil {
+	if err := plan.Refusal(); err != nil {
+		if _, err := fmt.Fprintf(w, "\nBUILD REFUSED: %v\n", err); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintln(w, "A build stops here unless --allow-collisions is passed. Review the differing columns above first: keeping the winner's copy discards the other copy's values, which are preserved in full in brain_unify_collisions.losing_row."); err != nil {
-			return err
-		}
-	} else {
-		if _, err := fmt.Fprintln(w, "\nNo blocking condition: no duplicated id has copies that disagree on content."); err != nil {
-			return err
-		}
+	} else if _, err := fmt.Fprintln(w, "\nNo blocking condition."); err != nil {
+		return err
 	}
 	return nil
 }
@@ -158,7 +158,16 @@ func WriteBuild(w io.Writer, res BuildResult) error {
 	for _, s := range res.Stats {
 		skipped += s.SkippedRows
 	}
-	_, err := fmt.Fprintf(w, "\ntotal rows skipped: %d (all recorded in brain_unify_collisions)\n", skipped)
+	if _, err := fmt.Fprintf(w, "\ntotal rows skipped: %d (the skipped copies of identical duplicates, all recorded in brain_unify_collisions)\n", skipped); err != nil {
+		return err
+	}
+	conflicts := 0
+	for _, c := range res.Collisions {
+		if c.Divergent {
+			conflicts++
+		}
+	}
+	_, err := fmt.Fprintf(w, "conflict beads: %d (each links to its minted copies; see brain_unify_collisions.copy_ids)\n", conflicts)
 	return err
 }
 
@@ -174,8 +183,8 @@ func WriteVerify(w io.Writer, res VerifyResult) error {
 		}
 		failed++
 	}
-	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d\n\nreference: %s\n\n",
-		len(res.Checks), passed, failed, res.NamespacesChecked, res.CollisionsConfirmed, referenceDescription(res.Reference)); err != nil {
+	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d (conflict beads among them: %d)\n\nreference: %s\n\n",
+		len(res.Checks), passed, failed, res.NamespacesChecked, res.CollisionsConfirmed, res.ConflictsConfirmed, referenceDescription(res.Reference)); err != nil {
 		return err
 	}
 	if failed > 0 {

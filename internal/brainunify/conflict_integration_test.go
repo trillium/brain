@@ -1,0 +1,429 @@
+package brainunify
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+// These tests run the conflict-bead model against real Dolt servers, with the
+// verifier as the judge: build a merged database from sources with identical
+// and differing duplicates, change the sources, replay, verify.
+
+// mergedQuery runs a SELECT against the merged database and returns the rows as
+// text.
+func (f *replayFixture) mergedQuery(query string, args ...any) [][]string {
+	f.t.Helper()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+	db, err := srv.OpenTarget(f.ctx, fixtureMergedDB)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(f.ctx, query, args...)
+	if err != nil {
+		f.t.Fatalf("%s: %v", query, err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	var out [][]string
+	for rows.Next() {
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			f.t.Fatal(err)
+		}
+		row := make([]string, len(cols))
+		for i, v := range vals {
+			switch t := v.(type) {
+			case nil:
+				row[i] = "NULL"
+			case []byte:
+				row[i] = string(t)
+			default:
+				row[i] = fmt.Sprint(t)
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func (f *replayFixture) scalar(query string, args ...any) string {
+	f.t.Helper()
+	rows := f.mergedQuery(query, args...)
+	if len(rows) != 1 || len(rows[0]) != 1 {
+		f.t.Fatalf("%s: want one value, got %v", query, rows)
+	}
+	return rows[0][0]
+}
+
+// conflictOf returns the planned conflict for an id.
+func (f *replayFixture) conflictOf(id string) Collision {
+	f.t.Helper()
+	_, plan := f.discover()
+	for _, c := range plan.Collisions {
+		if c.ID == id {
+			return c
+		}
+	}
+	f.t.Fatalf("%s is not a duplicated id", id)
+	return Collision{}
+}
+
+// seedDuplicates gives alpha and beta two ids in common: shr-1, whose rows are
+// identical, and shr-2, whose copies differ in status and notes and carry
+// children that share their keys (the two stores' comments and dependency were
+// copied from one another, so they have the same uuids).
+func (f *replayFixture) seedDuplicates() {
+	f.t.Helper()
+	f.execIn("alpha", "insert into issues (id, title, status, created_at, updated_at) values ('shr-1', 'identical', 'open', '2026-01-01 00:00:00', '2026-01-02 00:00:00')")
+	f.execIn("alpha", "insert into labels values ('shr-1', 'only-alpha-keeps-this')")
+	f.execIn("beta", "insert into issues select * from alpha.issues where id = 'shr-1'")
+
+	f.execIn("alpha", "insert into issues (id, title, status, notes, created_at, updated_at) values ('shr-2', 'differs', 'open', '', '2026-01-01 00:00:00', '2026-01-02 00:00:00')")
+	f.execIn("beta", "insert into issues (id, title, status, notes, created_at, updated_at) values ('shr-2', 'differs', 'closed', 'verified fixed', '2026-01-01 00:00:00', '2026-03-04 05:06:07')")
+	for _, db := range []string{"alpha", "beta"} {
+		f.execIn(db, "insert into labels values ('shr-2', 'both')")
+		f.execIn(db, "insert into comments values ('11111111-1111-4111-8111-111111111111', 'shr-2', 'a shared comment')")
+		f.execIn(db, "insert into dependencies (id, issue_id, type, created_by, depends_on_issue_id) values ('22222222-2222-4222-8222-222222222222', 'shr-2', 'blocks', 'tester', ?)", db[:3]+"-1")
+	}
+	f.execIn("alpha", "insert into labels values ('shr-2', 'only-alpha')")
+	f.execIn("beta", "insert into comments values (uuid(), 'shr-2', 'only beta wrote this')")
+
+	// A bead in a third store that depends on the conflicted id: the link keeps
+	// pointing at the original id.
+	f.execIn("gamma", "insert into dependencies (id, issue_id, type, created_by, depends_on_issue_id) values ('33333333-3333-4333-8333-333333333333', 'gam-1', 'blocks', 'tester', 'shr-2')")
+	f.commit("alpha", "duplicates")
+	f.commit("beta", "duplicates")
+	f.commit("gamma", "a link to the conflicted id")
+}
+
+// TestConflictBeadsAreBuiltAndVerified is the build half of the behaviour: the
+// shape the captain asked for, checked row by row in the merged database, and
+// the verifier passing against both references.
+func TestConflictBeadsAreBuiltAndVerified(t *testing.T) {
+	f := newReplayFixture(t)
+	f.seedDuplicates()
+	f.build()
+
+	c := f.conflictOf("shr-2")
+	if len(c.Copies) != 2 {
+		t.Fatalf("conflict = %+v", c)
+	}
+	alphaID, betaID := c.copyIDs()["alpha"], c.copyIDs()["beta"]
+	if !strings.HasPrefix(alphaID, "alp-") || !strings.HasPrefix(betaID, "bet-") {
+		t.Fatalf("each copy is minted under its authoring store's prefix: %v", c.copyIDs())
+	}
+
+	// The conflict bead: the original id, open, saying what it is and naming both
+	// copies and where each came from.
+	if got := f.mergedQuery("select status, issue_type, created_by from issues where id='shr-2'"); fmt.Sprint(got) != "[[open task brain-unify]]" {
+		t.Errorf("conflict bead row = %v", got)
+	}
+	title := f.scalar("select title from issues where id='shr-2'")
+	desc := f.scalar("select description from issues where id='shr-2'")
+	if !strings.Contains(title, "conflict") {
+		t.Errorf("the title does not say it is a conflict: %q", title)
+	}
+	for _, want := range []string{alphaID, betaID, "store alpha", "store beta", "unresolved", "status, updated_at"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("the description lacks %q:\n%s", want, desc)
+		}
+	}
+	if got := f.scalar("select count(*) from labels where issue_id='shr-2' and label=?", ConflictLabel); got != "1" {
+		t.Errorf("the conflict bead carries the %s label: %s", ConflictLabel, got)
+	}
+	// A dependency of type tracks from the conflict bead to each copy.
+	deps := f.mergedQuery("select type, depends_on_issue_id from dependencies where issue_id='shr-2' order by depends_on_issue_id")
+	if fmt.Sprint(deps) != fmt.Sprint([][]string{{"tracks", alphaID}, {"tracks", betaID}}) {
+		t.Errorf("conflict dependencies = %v", deps)
+	}
+	// Nothing of the copies stayed at the original id.
+	for _, table := range []string{"comments"} {
+		if got := f.scalar("select count(*) from " + table + " where issue_id='shr-2'"); got != "0" {
+			t.Errorf("%s still holds %s row(s) at the original id", table, got)
+		}
+	}
+	// A link another bead held to the original id still points at it.
+	if got := f.scalar("select count(*) from dependencies where issue_id='gam-1' and depends_on_issue_id='shr-2'"); got != "1" {
+		t.Errorf("the link from gam-1 to shr-2 = %s row(s), want it to keep pointing at the conflict bead", got)
+	}
+
+	// Each copy is a bead of its own, with its own row and children.
+	if got := f.mergedQuery("select id, title, status, notes from issues where id in (?, ?) order by id", alphaID, betaID); fmt.Sprint(got) != fmt.Sprint([][]string{
+		{alphaID, "differs", "open", ""}, {betaID, "differs", "closed", "verified fixed"},
+	}) {
+		t.Errorf("copies = %v", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id=?", alphaID); got != "2" {
+		t.Errorf("alpha's copy has %s labels, want 2", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id=?", betaID); got != "1" {
+		t.Errorf("beta's copy has %s labels, want 1", got)
+	}
+	// The comment both stores held under one uuid exists once per copy, under two
+	// different keys; beta's own comment is only on beta's copy.
+	if got := f.scalar("select count(*) from comments where issue_id=?", alphaID); got != "1" {
+		t.Errorf("alpha's copy has %s comments, want 1", got)
+	}
+	if got := f.scalar("select count(*) from comments where issue_id=?", betaID); got != "2" {
+		t.Errorf("beta's copy has %s comments, want 2", got)
+	}
+	if got := f.scalar("select count(distinct id) from comments where body='a shared comment'"); got != "2" {
+		t.Errorf("the shared comment should now have two keys, has %s", got)
+	}
+	if got := f.scalar("select count(*) from dependencies where issue_id in (?, ?) and type='blocks'", alphaID, betaID); got != "2" {
+		t.Errorf("each copy keeps the dependency it authored: %s", got)
+	}
+
+	// The identical duplicate is one bead, as before.
+	if got := f.scalar("select count(*) from issues where id='shr-1'"); got != "1" {
+		t.Errorf("shr-1 = %s rows", got)
+	}
+	if got := f.scalar("select resolution from brain_unify_collisions where id='shr-1'"); got != ResolutionMergedIdentical {
+		t.Errorf("shr-1 resolution = %s", got)
+	}
+
+	// The record names the conflict and its copies.
+	rec := f.mergedQuery("select resolution, winner, copy_ids from brain_unify_collisions where id='shr-2'")
+	if len(rec) != 1 || rec[0][0] != ResolutionConflict || rec[0][1] != "" ||
+		!strings.Contains(rec[0][2], alphaID) || !strings.Contains(rec[0][2], betaID) {
+		t.Errorf("collision record = %v", rec)
+	}
+	// 2 identical source rows merged to 1; 2 conflicting rows became 2 copies and
+	// a conflict bead.
+	// 15 beads of their own + shr-1 and shr-2 in two stores each = 19 source rows.
+	if got := f.scalar("select count(*) from issues"); got != "19" {
+		t.Errorf("issues = %s, want 19", got)
+	}
+
+	requireNoFailures(t, "verify (live) after the build", f.verify(ReferenceLive))
+	requireNoFailures(t, "verify (recorded) after the build", f.verify(ReferenceRecorded))
+}
+
+// TestVerifierCatchesABrokenConflict corrupts the merged database in the ways a
+// wrong build could, one at a time, and requires verification to fail in both
+// modes.
+func TestVerifierCatchesABrokenConflict(t *testing.T) {
+	f := newReplayFixture(t)
+	f.seedDuplicates()
+	f.build()
+	c := f.conflictOf("shr-2")
+	alphaID, betaID := c.copyIDs()["alpha"], c.copyIDs()["beta"]
+	requireNoFailures(t, "baseline", f.verify(ReferenceLive))
+
+	breakages := []struct {
+		name string
+		sql  []string
+		undo []string
+	}{
+		{"a copy's title edited",
+			[]string{"update issues set title='tampered' where id='" + alphaID + "'"},
+			[]string{"update issues set title='differs' where id='" + alphaID + "'"}},
+		{"a copy's child row dropped",
+			[]string{"delete from labels where issue_id='" + alphaID + "' and label='only-alpha'"},
+			[]string{"insert into labels values ('" + alphaID + "', 'only-alpha')"}},
+		{"a copy missing",
+			[]string{"delete from issues where id='" + betaID + "'"},
+			nil},
+	}
+	for _, b := range breakages {
+		f.mergedSQL(b.sql...)
+		requireFailures(t, b.name+" (live)", f.verify(ReferenceLive))
+		requireFailures(t, b.name+" (recorded)", f.verify(ReferenceRecorded))
+		if b.undo == nil {
+			break
+		}
+		f.mergedSQL(b.undo...)
+		requireNoFailures(t, "after undoing: "+b.name, f.verify(ReferenceLive))
+	}
+}
+
+// TestConflictBeadIsCheckedToo breaks the conflict bead side: its status, its
+// link to a copy, an extra row at the id, and an extra bead in a copy's
+// namespace.
+func TestConflictBeadIsCheckedToo(t *testing.T) {
+	f := newReplayFixture(t)
+	f.seedDuplicates()
+	f.build()
+	c := f.conflictOf("shr-2")
+	alphaID := c.copyIDs()["alpha"]
+
+	for _, b := range []struct {
+		name      string
+		sql, undo string
+	}{
+		{"the conflict bead closed", "update issues set status='closed' where id='shr-2'", "update issues set status='open' where id='shr-2'"},
+		{"a link to a copy removed", "delete from dependencies where issue_id='shr-2' and depends_on_issue_id='" + alphaID + "'", ""},
+		{"a stray row left at the original id", "insert into comments values (uuid(), 'shr-2', 'stray')", "delete from comments where issue_id='shr-2'"},
+		{"an extra bead in a copy's namespace", "insert into issues (id, title) values ('alp-extra', 'not in any source')", "delete from issues where id='alp-extra'"},
+	} {
+		f.mergedSQL(b.sql)
+		requireFailures(t, b.name+" (live)", f.verify(ReferenceLive))
+		requireFailures(t, b.name+" (recorded)", f.verify(ReferenceRecorded))
+		if b.undo == "" {
+			break
+		}
+		f.mergedSQL(b.undo)
+		requireNoFailures(t, "after undoing: "+b.name, f.verify(ReferenceLive))
+	}
+}
+
+// TestReplayCreatesEditsAndRemovesConflicts is the replay half: every way a
+// source change can create, edit or remove a divergent duplicate, with
+// verification against the live sources failing before each replay and passing
+// after it.
+func TestReplayCreatesEditsAndRemovesConflicts(t *testing.T) {
+	f := newReplayFixture(t)
+	f.seedDuplicates()
+	f.build()
+	requireNoFailures(t, "right after the build", f.verify(ReferenceLive))
+
+	// 1. An identical duplicate stops being identical: it becomes a conflict.
+	f.execIn("beta", "update issues set status='closed', notes='done', updated_at='2026-05-05 05:05:05' where id='shr-1'")
+	f.commit("beta", "beta closes its copy of shr-1")
+	requireFailures(t, "a duplicate newly diverged, before the replay", f.verify(ReferenceLive))
+	res, err := f.replay()
+	if err != nil {
+		t.Fatalf("replay 1: %v", err)
+	}
+	if !contains(res.CollisionsWritten, "shr-1") {
+		t.Errorf("replay 1 did not rewrite the record of shr-1: %v", res.CollisionsWritten)
+	}
+	requireNoFailures(t, "after replay 1 (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after replay 1 (recorded)", f.verify(ReferenceRecorded))
+	c1 := f.conflictOf("shr-1")
+	if c1.Resolution != ResolutionConflict || len(c1.Copies) != 2 {
+		t.Fatalf("shr-1 is now %+v", c1)
+	}
+	if got := f.scalar("select status from issues where id='shr-1'"); got != "open" {
+		t.Errorf("the conflict bead at shr-1 has status %s", got)
+	}
+	if got := f.scalar("select count(*) from issues where id in (?, ?)", c1.copyIDs()["alpha"], c1.copyIDs()["beta"]); got != "2" {
+		t.Errorf("shr-1's minted copies = %s rows", got)
+	}
+	// The one label alpha kept travelled with alpha's copy.
+	if got := f.scalar("select count(*) from labels where issue_id=? and label='only-alpha-keeps-this'", c1.copyIDs()["alpha"]); got != "1" {
+		t.Errorf("alpha's label did not follow its copy: %s", got)
+	}
+
+	// 2. A copy of an existing conflict is edited and gains a child.
+	f.execIn("alpha", "update issues set title='differs, edited', updated_at='2026-06-06 06:06:06' where id='shr-2'")
+	f.execIn("alpha", "insert into labels values ('shr-2', 'added-later')")
+	f.commit("alpha", "edit a copy")
+	requireFailures(t, "a copy edited, before the replay", f.verify(ReferenceLive))
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay 2: %v", err)
+	}
+	requireNoFailures(t, "after replay 2 (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after replay 2 (recorded)", f.verify(ReferenceRecorded))
+	alpha2 := f.conflictOf("shr-2").copyIDs()["alpha"]
+	if got := f.scalar("select title from issues where id=?", alpha2); got != "differs, edited" {
+		t.Errorf("alpha's copy has title %q", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id=? and label='added-later'", alpha2); got != "1" {
+		t.Errorf("the new label is not on alpha's copy: %s", got)
+	}
+
+	// 3. A bead that exists only in alpha is copied into gamma with different
+	// content: a brand new conflict.
+	f.execIn("gamma", "insert into issues (id, title, status) values ('alp-2', 'gamma disagrees', 'closed')")
+	f.commit("gamma", "a differing copy of alp-2")
+	requireFailures(t, "a new conflict, before the replay", f.verify(ReferenceLive))
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay 3: %v", err)
+	}
+	requireNoFailures(t, "after replay 3 (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after replay 3 (recorded)", f.verify(ReferenceRecorded))
+	c3 := f.conflictOf("alp-2")
+	if got := f.scalar("select count(*) from issues where id in (?, ?)", c3.copyIDs()["alpha"], c3.copyIDs()["gamma"]); got != "2" {
+		t.Errorf("alp-2's minted copies = %s rows", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id=?", c3.copyIDs()["alpha"]); got != "1" {
+		t.Errorf("alpha's copy of alp-2 keeps its label: %s", got)
+	}
+
+	// 4. The other copy of a conflict is deleted: the survivor is a plain bead
+	// again and every minted id is gone.
+	gone := f.conflictOf("shr-2").copyIDs()
+	f.execIn("beta", "delete from labels where issue_id='shr-2'")
+	f.execIn("beta", "delete from comments where issue_id='shr-2'")
+	f.execIn("beta", "delete from dependencies where issue_id='shr-2'")
+	f.execIn("beta", "delete from issues where id='shr-2'")
+	f.commit("beta", "beta drops shr-2")
+	requireFailures(t, "a conflict resolved by deletion, before the replay", f.verify(ReferenceLive))
+	res, err = f.replay()
+	if err != nil {
+		t.Fatalf("replay 4: %v", err)
+	}
+	if !contains(res.CollisionsRemoved, "shr-2") {
+		t.Errorf("replay 4 did not remove the record of shr-2: %v", res.CollisionsRemoved)
+	}
+	requireNoFailures(t, "after replay 4 (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after replay 4 (recorded)", f.verify(ReferenceRecorded))
+	if got := f.scalar("select count(*) from issues where id in (?, ?)", gone["alpha"], gone["beta"]); got != "0" {
+		t.Errorf("the minted copies of shr-2 survived the end of the conflict: %s", got)
+	}
+	if got := f.mergedQuery("select title, status from issues where id='shr-2'"); fmt.Sprint(got) != "[[differs, edited open]]" {
+		t.Errorf("shr-2 is alpha's bead again: %v", got)
+	}
+	if got := f.scalar("select count(*) from dependencies where issue_id='shr-2' and type='tracks'"); got != "0" {
+		t.Errorf("the conflict links outlived the conflict: %s", got)
+	}
+	if got := f.scalar("select count(*) from brain_unify_collisions where id='shr-2'"); got != "0" {
+		t.Errorf("shr-2 is still recorded as a collision: %s", got)
+	}
+
+	// 5. Two differing copies are made identical again: they merge into one bead.
+	f.execIn("beta", "delete from issues where id='shr-1'")
+	f.execIn("beta", "insert into issues select * from alpha.issues where id = 'shr-1'")
+	f.commit("beta", "beta's copy equals alpha's again")
+	requireFailures(t, "a conflict made identical, before the replay", f.verify(ReferenceLive))
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay 5: %v", err)
+	}
+	requireNoFailures(t, "after replay 5 (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after replay 5 (recorded)", f.verify(ReferenceRecorded))
+	if got := f.scalar("select resolution from brain_unify_collisions where id='shr-1'"); got != ResolutionMergedIdentical {
+		t.Errorf("shr-1 resolution = %s", got)
+	}
+	if got := f.scalar("select count(*) from issues where id in (?, ?)", c1.copyIDs()["alpha"], c1.copyIDs()["beta"]); got != "0" {
+		t.Errorf("shr-1's minted copies survived: %s", got)
+	}
+
+	// One further edit fails the live verification again.
+	f.execIn("gamma", "update issues set title='gamma edit' where id='alp-2'")
+	f.commit("gamma", "one more edit")
+	requireFailures(t, "after one further edit", f.verify(ReferenceLive))
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay 6: %v", err)
+	}
+	requireNoFailures(t, "after the last replay", f.verify(ReferenceLive))
+}
+
+// TestBuildRefusesAMintedIDThatAlreadyExists derives a copy's id and plants a
+// bead with that id in another store: the primary key would be ambiguous, so
+// the build refuses and writes nothing.
+func TestBuildRefusesAMintedIDThatAlreadyExists(t *testing.T) {
+	f := newReplayFixture(t)
+	f.seedDuplicates()
+	minted := f.conflictOf("shr-2").copyIDs()["alpha"]
+	f.execIn("gamma", "insert into issues (id, title) values (?, 'squatter')", minted)
+	f.commit("gamma", "plant the id")
+
+	source, plan := f.discover()
+	_, err := NewBuilder(source, plan, BuildOptions{
+		DataDir: f.dataDir, Database: fixtureMergedDB, DoltBin: "dolt", Host: "127.0.0.1", Port: f.srcSrv.Port,
+	}).Build(f.ctx)
+	if err == nil || !strings.Contains(err.Error(), "refusing to build") || !strings.Contains(err.Error(), minted) {
+		t.Fatalf("want a refusal naming %s, got %v", minted, err)
+	}
+}

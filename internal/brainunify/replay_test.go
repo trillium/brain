@@ -46,11 +46,27 @@ func replayerWith(collisions ...Collision) *Replayer {
 	return &Replayer{plan: Plan{Collisions: collisions}, opts: ReplayOptions{}}
 }
 
+func identical(id, winner string, losers ...string) Collision {
+	return Collision{ID: id, Winner: winner, Losers: losers, Resolution: ResolutionMergedIdentical}
+}
+
+func conflict(id string, copies map[string]string, stores ...string) Collision {
+	c := Collision{ID: id, Divergent: true, Resolution: ResolutionConflict}
+	for _, s := range stores {
+		c.Copies = append(c.Copies, ConflictCopy{Store: s, ID: copies[s]})
+	}
+	return c
+}
+
+func recordedIdentical(winner string, losers ...string) recordedCollision {
+	return recordedCollision{Resolution: ResolutionMergedIdentical, Winner: winner, Losers: losers}
+}
+
 func TestReconcileCollisionsLeavesUnchangedDecisionsAlone(t *testing.T) {
-	c := Collision{ID: "alp-1", Winner: "alpha", Losers: []string{"gamma"}}
+	c := identical("alp-1", "alpha", "gamma")
 	w := newWork()
 	err := replayerWith(c).reconcileCollisions(w, map[string]recordedCollision{
-		"alp-1": {Winner: "alpha", Losers: []string{"gamma"}},
+		"alp-1": recordedIdentical("alpha", "gamma"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -61,11 +77,11 @@ func TestReconcileCollisionsLeavesUnchangedDecisionsAlone(t *testing.T) {
 }
 
 func TestReconcileCollisionsRewritesATouchedDuplicateWithoutWidening(t *testing.T) {
-	c := Collision{ID: "alp-1", Winner: "alpha", Losers: []string{"gamma"}}
+	c := identical("alp-1", "alpha", "gamma")
 	w := newWork()
 	w.touched["issues"] = map[string]bool{"alp-1": true}
 	if err := replayerWith(c).reconcileCollisions(w, map[string]recordedCollision{
-		"alp-1": {Winner: "alpha", Losers: []string{"gamma"}},
+		"alp-1": recordedIdentical("alpha", "gamma"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,10 +96,10 @@ func TestReconcileCollisionsRewritesATouchedDuplicateWithoutWidening(t *testing.
 func TestReconcileCollisionsWidensWhenTheDecisionChanges(t *testing.T) {
 	// The winner moved from gamma to alpha: both stores' rows for the id are
 	// stale in every bead-scoped table, and so are their fingerprints.
-	c := Collision{ID: "shr-1", Winner: "alpha", Losers: []string{"gamma"}}
+	c := identical("shr-1", "alpha", "gamma")
 	w := newWork()
 	if err := replayerWith(c).reconcileCollisions(w, map[string]recordedCollision{
-		"shr-1": {Winner: "gamma", Losers: []string{"alpha"}},
+		"shr-1": recordedIdentical("gamma", "alpha"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -98,15 +114,12 @@ func TestReconcileCollisionsWidensWhenTheDecisionChanges(t *testing.T) {
 	if !w.wide["alpha"] || !w.wide["gamma"] {
 		t.Errorf("both stores' fingerprints are stale: wide=%v", w.wide)
 	}
-	if !w.losers["shr-1"]["gamma"] || w.losers["shr-1"]["alpha"] {
-		t.Errorf("losers = %v", w.losers)
-	}
 }
 
 func TestReconcileCollisionsRemovesRecordsThatNoLongerDescribeAnything(t *testing.T) {
 	w := newWork()
 	if err := replayerWith().reconcileCollisions(w, map[string]recordedCollision{
-		"alp-1": {Winner: "alpha", Losers: []string{"gamma"}},
+		"alp-1": recordedIdentical("alpha", "gamma"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -115,28 +128,67 @@ func TestReconcileCollisionsRemovesRecordsThatNoLongerDescribeAnything(t *testin
 	}
 }
 
-func TestReconcileCollisionsRefusesContentDisagreementUnlessAllowed(t *testing.T) {
-	c := Collision{ID: "alp-2", Winner: "alpha", Losers: []string{"gamma"}, DataColumnsDiffer: true, DifferingColumns: []string{"title"}}
-	err := replayerWith(c).reconcileCollisions(newWork(), nil)
-	if err == nil {
-		t.Fatal("a new duplicate whose copies disagree must be refused")
+func TestReconcileCollisionsNeverRefusesACopyThatDiffers(t *testing.T) {
+	// A copy that differs used to need --allow-collisions because keeping one
+	// copy discarded the other's state. Both are kept now, so a new duplicate
+	// whose copies disagree is just reconciled.
+	c := conflict("alp-2", map[string]string{"alpha": "alp-aaaaaaaaaaaa", "gamma": "gam-bbbbbbbbbbbb"}, "alpha", "gamma")
+	c.DataColumnsDiffer, c.DifferingColumns = true, []string{"title"}
+	w := newWork()
+	if err := replayerWith(c).reconcileCollisions(w, nil); err != nil {
+		t.Fatalf("a conflict must not be refused: %v", err)
 	}
-	for _, want := range []string{"refusing to replay", "alp-2", "alpha", "gamma", "title", "table issues", "--allow-collisions"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("refusal does not mention %q: %v", want, err)
+	if !reflect.DeepEqual(w.collisionsToWrite, []string{"alp-2"}) || !w.touched["issues"]["alp-2"] {
+		t.Errorf("the new conflict was not reconciled: write=%v touched=%v", w.collisionsToWrite, w.touched)
+	}
+}
+
+func TestReconcileCollisionsWidensWhenIdenticalCopiesBecomeAConflict(t *testing.T) {
+	c := conflict("alp-2", map[string]string{"alpha": "alp-aaaaaaaaaaaa", "gamma": "gam-bbbbbbbbbbbb"}, "alpha", "gamma")
+	w := newWork()
+	if err := replayerWith(c).reconcileCollisions(w, map[string]recordedCollision{
+		"alp-2": recordedIdentical("alpha", "gamma"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"issues", "labels"} {
+		if !w.touched[table]["alp-2"] {
+			t.Errorf("alp-2 was not reconciled in %s", table)
 		}
 	}
-	r := replayerWith(c)
-	r.opts.AllowCollisions = true
-	if err := r.reconcileCollisions(newWork(), nil); err != nil {
-		t.Errorf("--allow-collisions must let it through: %v", err)
+	if !w.wide["alpha"] || !w.wide["gamma"] {
+		t.Errorf("both holders' fingerprints are stale: wide=%v", w.wide)
 	}
-	// A disagreement the build already accepted, on an id nothing touched, is
-	// not a new decision and does not block.
-	if err := replayerWith(c).reconcileCollisions(newWork(), map[string]recordedCollision{
-		"alp-2": {Winner: "alpha", Losers: []string{"gamma"}},
-	}); err != nil {
-		t.Errorf("an already-recorded, untouched duplicate must not block: %v", err)
+}
+
+func TestMergedIDsCoverEveryIDTheOldAndNewResolutionUsed(t *testing.T) {
+	// The id used to be a conflict whose copies were minted for stores alpha and
+	// gamma; now it is one for alpha and beta. Replaying it must delete the
+	// conflict bead, the minted ids of the old decision and those of the new.
+	live := conflict("alp-2", map[string]string{"alpha": "alp-aaaaaaaaaaaa", "beta": "bet-cccccccccccc"}, "alpha", "beta")
+	w := newWork()
+	w.live = map[string]Collision{"alp-2": live}
+	w.recorded = map[string]recordedCollision{
+		"alp-2": {Resolution: ResolutionConflict, CopyIDs: map[string]string{"alpha": "alp-aaaaaaaaaaaa", "gamma": "gam-bbbbbbbbbbbb"}},
+	}
+	got := w.mergedIDs([]string{"alp-2", "alp-3"})
+	want := []string{"alp-2", "alp-3", "alp-aaaaaaaaaaaa", "bet-cccccccccccc", "gam-bbbbbbbbbbbb"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("mergedIDs = %v, want %v", got, want)
+	}
+}
+
+func TestRecordedCollisionMatches(t *testing.T) {
+	ids := map[string]string{"alpha": "alp-aaaaaaaaaaaa", "gamma": "gam-bbbbbbbbbbbb"}
+	c := conflict("x-1", ids, "alpha", "gamma")
+	if !(recordedCollision{Resolution: ResolutionConflict, CopyIDs: ids}).matches(c) {
+		t.Error("a record naming the same copies matches")
+	}
+	if (recordedCollision{Resolution: ResolutionConflict, CopyIDs: map[string]string{"alpha": "alp-aaaaaaaaaaaa"}}).matches(c) {
+		t.Error("a record naming fewer copies does not match")
+	}
+	if recordedIdentical("alpha", "gamma").matches(c) {
+		t.Error("a record that merged the copies does not match a conflict")
 	}
 }
 
