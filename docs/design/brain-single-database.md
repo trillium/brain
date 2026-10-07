@@ -316,6 +316,13 @@ Steps 0–6 are reversible because every step leaves the source databases intact
 and unwritten. Step 7 is the only irreversible one, and it is the only one
 that is a separate, deliberate act.
 
+**Rehearsed.** The act itself — re-point a sandbox store wrapper at the
+unified database, use it, and roll back — has been run end to end on copies for
+`stories` (template, 7 beads) and `task`/`tasks` (non-template, 5,706 issues),
+with digests proving both own-databases unchanged outside bd's own per-open
+tip stamp. The command-level runbook that grew out of that rehearsal is
+[brain-cutover-runbook.md](brain-cutover-runbook.md); read it before step 3.
+
 ### What must be true before step 3
 
 1. `bd brain unify verify` reports `RESULT: PASS` on a database built from a
