@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-10-07
 updated: 2026-10-07
-commits: [] # replaced at commit time by the actual hash of this branch's commit
+commits: [4458eee88a04ef4af5a818892ff21c7d574703b3]
 touches: [docs/design/brain-cutover-runbook.md, docs/design/brain-single-database.md, divergence/0021-brain-cutover-rehearsal.md]
 upstream_rebase_notes: |
   Doc-only entry; no code changes. The rehearsal drove no new divergence — it
