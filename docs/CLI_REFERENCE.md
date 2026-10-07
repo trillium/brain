@@ -6155,7 +6155,7 @@ Phases:
 
   plan    read production and print the deterministic mapping: participating
           databases, namespace ownership, and every id that exists in more
-          than one database
+          than one database and what becomes of it
   build   construct the unified database in an isolated Dolt server started
           under --data-dir, reading production but never writing to it
   replay  apply the changes the sources made since the build into the unified
@@ -6163,6 +6163,14 @@ Phases:
   verify  compare the unified database against production mechanically, by
           row count, content size and an order-independent content digest;
           --reference live compares against the sources as they stand now
+
+Duplicated ids. An id that more than one store holds is merged into one bead
+when the copies are identical. When the copies differ, nothing is picked and
+nothing is discarded: each copy becomes a bead of its own under a new id
+(&lt;authoring store's prefix&gt;-&lt;12 hex of sha256(id NUL store)&gt;), carrying that
+copy's row and child rows, and the original id becomes an open conflict bead
+that says so and lists both copies. Links other beads hold to the original id
+still point at it, so they reach the conflict bead.
 
 Production safety: this command group opens production read-only. The builder
 writes only to a Dolt server it starts itself, so a build cannot modify a live
@@ -6183,7 +6191,6 @@ bd brain unify build [flags]
 **Flags:**
 
 ```
-      --allow-collisions   proceed even when a duplicated id has copies that disagree on content
       --data-dir string    scratch directory for the isolated dolt server holding the unified database (required)
       --database string    name of the unified database inside the isolated server (default "brain_unified")
       --dolt-bin string    dolt binary used to start the isolated server (default "dolt")
@@ -6223,9 +6230,12 @@ recorded (brain_unify_source_commits), finds the beads and the database-state
 tables that changed, and re-reads exactly those from the source as it stands
 now. Inserts, updates and deletes are one operation: the merged database's rows
 for a changed bead are made equal to what the sources hold for it. Duplicated
-ids follow the same winner rule the build uses, and are recorded in
-brain_unify_collisions. Tables Dolt keeps no history for (wisps) are reloaded
-whole. The next replay starts where this one read.
+ids are handled by the build's own functions: identical copies stay one bead;
+copies that differ become a conflict bead plus one minted bead per copy, so a
+change that creates, edits or removes such a duplicate re-derives the conflict
+bead and its copies. Every duplicate is recorded in brain_unify_collisions.
+Tables Dolt keeps no history for (wisps) are reloaded whole. The next replay
+starts where this one read.
 
 Anything it cannot resolve confidently is a refusal that names the store and the
 table, and a refused replay leaves the merged database untouched:
@@ -6235,8 +6245,8 @@ table, and a refused replay leaves the merged database untouched:
   - a source whose history no longer contains its recorded commit
   - a source table the build imported rows from that is gone
   - a table or column the merged schema does not have
-  - duplicated ids whose copies disagree on content (override with
-    --allow-collisions)
+  - a merged database built before differing copies became conflict beads
+  - a minted copy id that two copies derive, or that an existing bead has
 
 Prove a replay with 'unify verify --reference live', which compares the merged
 database against the sources as they stand. Sources are only ever read.
@@ -6248,7 +6258,6 @@ bd brain unify replay [flags]
 **Flags:**
 
 ```
-      --allow-collisions   proceed even when a duplicated id has copies that disagree on content
       --data-dir string    directory holding the merged database built by 'unify build' (required)
       --database string    name of the merged database (default "brain_unified")
       --dolt-bin string    dolt binary used to start the server over the merged database (default "dolt")

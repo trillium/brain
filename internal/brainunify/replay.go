@@ -770,7 +770,11 @@ func (r *Replayer) reconcileCollisions(w *replayWork, recorded map[string]record
 		c := w.live[id]
 		rec, had := recorded[id]
 		changed := !had || !rec.matches(c)
-		if !changed && !touchedAnywhere[id] {
+		// A table the sources keep no history for is reloaded whole on every
+		// replay, so a change there to a conflict's copy leaves no trace in any
+		// diff. The record's digest of each copy has to be re-taken either way.
+		reread := c.Divergent && len(w.full) > 0
+		if !changed && !touchedAnywhere[id] && !reread {
 			continue
 		}
 		w.collisionsToWrite = append(w.collisionsToWrite, id)

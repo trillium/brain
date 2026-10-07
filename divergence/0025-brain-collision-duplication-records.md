@@ -2,7 +2,7 @@
 id: 0025
 title: duplication-records design — the vision's collision model, designed not built
 isc: []
-status: proposed
+status: landed
 created: 2026-10-07
 updated: 2026-10-07
 commits: []
@@ -16,6 +16,14 @@ upstream_rebase_notes: |
   or verifier paragraph move on rebase, the references in
   docs/design/brain-collision-duplication-records.md need re-anchoring.
 ---
+
+> **Built as [0028](0028-brain-unify-conflict-beads.md), with one difference the
+> captain chose.** The original id is not a tombstone: it stays in `issues` as an
+> open conflict bead listing both copies. Where this entry or the design says
+> "tombstone", "re-pointed into the owner copy", or that `--allow-collisions`
+> still governs a divergent build, 0028 and the design's "Where the built model
+> differs from this design" section are what shipped. The bullets below are left
+> as written as the record of the proposal.
 
 # Why
 

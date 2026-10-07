@@ -64,7 +64,10 @@ not particular to one migration, so the answer is a general capability of the
   whole. It re-records the fingerprints it made stale and advances every store's
   starting commit (read before the diffs, so windows overlap rather than leave a
   gap), all in one transaction followed by a Dolt commit.
-- **Duplicated ids reuse the shipped rule.** The sources are planned by
+- **Duplicated ids reuse the build's rule.** *(Superseded in part by
+  [0028](0028-brain-unify-conflict-beads.md): copies that differ now become a
+  conflict bead plus one bead per copy, and `--allow-collisions` is retired; the
+  replay still maps through the build's functions, so it follows.)* The sources are planned by
   `Discover` exactly as for a build; the replay applies those collisions and
   writes `brain_unify_collisions` through the function the build writes it with.
   A duplicate that is new, whose decision changed, or whose copies were edited

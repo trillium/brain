@@ -1,17 +1,44 @@
 # Duplication records: when two stores hold the same id
 
-**Status:** design only — nothing is built, no behaviour changes, nothing is
-cut over, production is untouched. This document proposes; it does not land.
+**Status:** **built, with one deviation the captain chose** (conflict beads,
+[divergence/0028](../../divergence/0028-brain-unify-conflict-beads.md)). The
+rest of this document is the design as proposed; the section "Where the built
+model differs from this design" says where the code departs from it, and where
+the two disagree the code and that section win.
 
 **What this contradicts:** sections of
 [brain-single-database.md](brain-single-database.md) are superseded by the
-model here — the "Collisions: proven, not asserted" section (the winner rule
-and its three steps), the verifier paragraph **"each duplicated id appears
-exactly once"**, and row "What must be true before step 3" item 2 (the
-winner-rule acceptance). Those passages remain landed and are referenced where
-they diverge. This is a deliberate, recorded contradiction, not a silent
-rewrite; see the "Already landed" sentence in each superseded section of
-[divergence/0025](../divergence/0025-brain-collision-duplication-records.md).
+model here - the "Collisions: proven, not asserted" section (the winner rule
+and its three steps) **for copies that differ**, the verifier paragraph **"each
+duplicated id appears exactly once"** for the same ids, and row "What must be
+true before step 3" item 2 (the winner-rule acceptance). Identical copies still
+merge into one bead exactly as that section describes. The superseded passages
+remain in place and carry a pointer back here; see the "Already landed" sentence
+in each superseded section of
+[divergence/0025](../../divergence/0025-brain-collision-duplication-records.md).
+
+## Where the built model differs from this design
+
+The captain's decision, taken after this document was written: for a duplicated
+id whose copies differ, *the bead that contains the duplicate is a conflict
+bead* - create one new bead per copy and list their ids in it. Reading the design
+below against what shipped:
+
+| Design (below) | Built |
+|---|---|
+| The original id is a **tombstone**: not in `issues`, resolvable only as a record (section 1, "Recommendation: tombstone"). | The original id **stays a real bead in `issues`**: an open **conflict bead** with a title and description that name both copies and the store each came from, a `unify-conflict` label, and a `tracks` dependency to each copy. Verifier check 1 ("the original id does not appear in `issues`") is inverted: it must appear, exactly once, as that conflict bead. |
+| Cross-store links to the original id are re-pointed into "the owner-authored copy" (section 5, recommendation). | Links other beads hold to the original id **are not touched**; they now reach the conflict bead. (The owner's copy is not special any more; there is no owner-wins rule for these ids.) |
+| `losing_row` keeps the copy "not authored by the prefix owner" (section 1). | A conflict skips nothing, so it records no `losing_row`; both copies are live beads. `losing_row` still holds the skipped copy of an *identical* duplicate. |
+| `copy_ids`, `original_id_is_live`, `minted_at` (section 1). | `resolution` (`merged-identical` / `conflict-bead`), `copy_ids`, and `copy_hashes` (a digest per copy, so the recorded verification can check the copies without re-reading the sources). `original_id_is_live` is `resolution = 'conflict-bead'`; `minted_at` was not added. |
+| Child rows "move with their copy" by rewriting the scope column alone (section 5). | Also true, but **not sufficient**: the two copies' `events`, `comments` and `dependencies` rows share their uuid primary keys in the real data (108 shared keys across the 31 ids), so a table keyed by a single column of its own gets a deterministic new key per copy (derived from table, store, original id and old key; a uuid stays a uuid). A table keyed any other way is refused. |
+| The minted id keeps a hierarchical id's positional suffix (section 2). | The minted id is flat; none of the 31 ids is hierarchical, and `PrefixOf` parses a flat id to the right namespace. |
+| `--allow-collisions` "still governs" a divergent build (section 4); open question 2 asks whether a divergent build proceeds without it. | It does. Nothing is discarded, so nothing needs overriding: `--allow-collisions` is retired (still accepted as a deprecated no-op, hidden from help). |
+| Open question 3: does a hierarchy child keep its suffix? | Decided: no (flat), see above. |
+| Verifier checks 1-5 (section 4). | Replaced by `confirmConflict` for both references: record, conflict bead and its rows, exactly the named copies, each copy's rows against the source copy (live) or the recorded digest (recorded), plus the aggregate fingerprints with the conflicted and minted ids excluded from both sides so any extra bead in a minted namespace still fails them. |
+
+The minted-id scheme (authoring store's prefix, hyphen, first 12 hex of
+`sha256(original id NUL store)`), the refusal on a derived-id collision, and the
+"rebuild, don't patch in place" migration path are as designed.
 
 ---
 

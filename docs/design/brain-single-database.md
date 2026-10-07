@@ -189,6 +189,14 @@ separate database.
 
 ## Collisions: proven, not asserted
 
+> **Superseded for copies that differ.** The winner rule below now applies only
+> to *identical* copies, which merge into one bead. When the copies differ in any
+> column, nothing is picked: each copy becomes a bead under a minted id and the
+> original id becomes an open conflict bead - see
+> [brain-collision-duplication-records.md](brain-collision-duplication-records.md)
+> and [divergence/0028](../../divergence/0028-brain-unify-conflict-beads.md).
+> The text below is kept as the record of what the first build did.
+
 Unification makes one table hold what were N primary keys. The live federation
 already contains duplicates: **123 ids exist in more than one participating
 database**, because the brain store's `repos.additional` federation let it hold
@@ -293,7 +301,8 @@ one pass.
 
 On top of the fingerprints, the verifier re-reads `brain_unify_collisions` and
 confirms that each duplicated id appears **exactly once** in the unified
-database, that it is the recorded winner, and that every losing copy is on
+database (for identical copies; a conflict is checked as a conflict bead plus
+exactly the copies it names, see divergence/0028), that it is the recorded winner, and that every losing copy is on
 record. That is the check that would catch a migration which quietly dropped a
 relationship.
 
@@ -328,7 +337,9 @@ tip stamp. The command-level runbook that grew out of that rehearsal is
 1. `bd brain unify verify` reports `RESULT: PASS` on a database built from a
    fresh read of production. **Met** — 518/518 checks on a build from a proven
    frozen copy of production; see "Verification status" below.
-2. The 31 content-disagreeing collisions have been reviewed and the winner rule
+2. *(Superseded by divergence/0028: the 31 differing duplicates are conflict
+   beads and nothing is discarded, so this precondition no longer applies.)*
+   The 31 content-disagreeing collisions have been reviewed and the winner rule
    accepted, or the losing rows have been recovered from
    `brain_unify_collisions.losing_row`. **Met** — winner rule accepted per id
    (see the collision section above); the losing rows stay recoverable from

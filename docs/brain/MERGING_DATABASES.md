@@ -6,7 +6,10 @@ the databases it was built from are still being written to. This page is the
 workflow: which verb to run when, and what each one will refuse to do. The flag
 lists are in the [CLI reference](../CLI_REFERENCE.md#bd-brain-unify); the design
 of the merge itself (prefix namespaces, the collision model) is in
-[`../design/brain-single-database.md`](../design/brain-single-database.md).
+[`../design/brain-single-database.md`](../design/brain-single-database.md) and
+[`../design/brain-collision-duplication-records.md`](../design/brain-collision-duplication-records.md).
+What happens to an id that more than one source holds is the section
+[Duplicated ids](#duplicated-ids-identical-copies-merge-differing-copies-become-conflict-beads).
 
 Throughout, **sources** are the databases being merged and the **merged
 database** is what `build` produces (named `brain_unified` by default).
@@ -15,7 +18,7 @@ database** is what `build` produces (named `brain_unified` by default).
 
 | Verb | What it does | Writes to |
 |------|--------------|-----------|
-| `plan` | Reads the sources and prints the mapping: which databases take part, who owns each id prefix, and every id that exists in more than one source | nothing |
+| `plan` | Reads the sources and prints the mapping: which databases take part, who owns each id prefix, and every id that exists in more than one source with what becomes of it (merged, or a conflict bead and the ids of its copies) | nothing |
 | `build` | Copies every source into a new merged database, on a Dolt server it starts itself under `--data-dir` | the merged database only |
 | `replay` | Carries what the sources changed since the build (or the last replay) into the merged database | the merged database only |
 | `verify` | Compares the merged database with the sources by row count, content size and an order-independent content digest, per table, per store and per namespace | nothing |
@@ -87,7 +90,11 @@ than a build.
 - the schema the merged database was built with no longer matches the sources'
   (the template store gained a table or a column the merged schema does not
   have). The merged schema is fixed when it is built and a replay never alters
-  it.
+  it;
+- the merged database was built before differing copies became conflict beads
+  (its `brain_unify_collisions` has no `resolution`, `copy_ids` and
+  `copy_hashes` columns). Its duplicates follow the old winner rule, which a
+  replay will not mix with the new model.
 
 ## What a replay refuses to do
 
@@ -109,35 +116,71 @@ exactly as it found it.**
 | A source table has no column that addresses a bead | its rows cannot be attributed to a bead |
 | The template store has a table or column the merged schema lacks | the merged schema is fixed at build time |
 | The merged database records no (or several) template stores | the table classification cannot be re-derived |
-| Duplicated ids whose copies disagree on content | a decision for a human; see below |
+| The merged `brain_unify_collisions` lacks `resolution`, `copy_ids` or `copy_hashes` | built before conflict beads; rebuild |
+| A minted copy id that two copies derive, or that an existing bead already has | the primary key would be ambiguous |
+| Two copies of one id carrying the same non-empty `slug` | the merged database holds slugs unique |
+| A bead-scoped table keyed by several columns none of which is the bead id | a conflict's two copies could not be given distinct keys in it |
 | A row cannot be inserted (for example a primary-key clash between stores in a table that is not keyed by bead) | refused, naming the store and the merged table |
 
-## Duplicated ids: the behaviour a replay inherits
+## Duplicated ids: identical copies merge, differing copies become conflict beads
 
-When more than one source holds the same bead id, exactly one copy lives in the
-merged database. The replay does not have a second rule: the sources are planned
-the way `build` plans them, and the same winner rule applies — the store that
-owns the id's prefix wins; if none holds a copy, the most recently updated copy
-wins; an exact tie goes to the lexicographically smallest store name. Every
-decision is recorded in `brain_unify_collisions`, with the full row of the
-losing copy in `losing_row`. The rows of a losing copy in the child tables are
-left out, as in the build.
+`plan` lists every id that more than one source holds. What `build` does with it
+depends on one test: **do the copies differ in any column?** (The stored
+`content_hash` is not trusted; the rows are compared column by column.)
 
-What a replay adds is that the decision can change after the build:
+**Identical copies merge into one bead.** One copy stays, the others are
+skipped, and the child rows of a skipped copy are left out with it. Which copy
+stays does not change any content, but it is deterministic: the store that owns
+the id's prefix, else the most recently updated copy, else the lexicographically
+smallest store name. The skipped copy is preserved in full in
+`brain_unify_collisions.losing_row` (`resolution = merged-identical`).
+
+**Copies that differ are all kept; the id becomes a conflict bead.** Nothing is
+picked and nothing is discarded:
+
+- **Each copy becomes a bead of its own**, under a new id
+  `<prefix>-<12 hex>`: the prefix of the store that authored the copy, and the
+  first 12 hex digits of `sha256(original id, NUL, store)`. The same sources
+  always give the same ids. The new bead carries that copy's row and every child
+  row it authored (labels, comments, events, the dependencies it authored, ...)
+  under the new id. Where the two copies share child-row keys - the brain store's
+  copy of a bead was copied from the other store's, so their `events`,
+  `comments` and `dependencies` rows carry the same uuids - the moved rows get a
+  new deterministic key per copy.
+- **The original id stays a real bead: the conflict bead.** It is `open`, its
+  title says it is an unresolved duplicate-id conflict, its description lists
+  both minted ids with the store each came from (and each copy's status,
+  `updated_at` and title, and the columns that differ), it carries the
+  `unify-conflict` label, and it has a `tracks` dependency to each copy. `tracks`
+  is bd's existing non-blocking edge: the conflict neither blocks its copies nor
+  waits on them.
+- **Links other beads hold to the original id are not rewritten**, so they now
+  reach the conflict bead. A bead that *blocks on* a conflicted id therefore
+  blocks on an open conflict until it is resolved.
+- Each conflict is recorded in `brain_unify_collisions` with
+  `resolution = conflict-bead`, `copy_ids` (`{store: minted id}`) and
+  `copy_hashes` (a digest of each copy's rows as they should be in the merged
+  database). No `losing_row`: nothing was skipped.
+
+There is nothing left to override, so **`--allow-collisions` is retired**. It is
+still accepted by `build` and `replay` as a deprecated no-op so existing scripts
+keep running. A resolution command (fold the copies, close one, close the
+conflict bead) is not part of `unify`.
+
+What a replay adds is that the resolution can change after the build, and it
+re-derives it with the build's own functions, deleting every id the old and the
+new resolution used:
 
 - a **new** bead whose id another store already holds becomes a recorded
-  duplicate;
-- a duplicate whose copies are **edited** is re-decided, and when no store owns
-  the prefix the winner can move between stores — the replay then removes the
-  old winner's rows for that bead from every table and loads the new winner's;
-- a duplicate that **goes away** loses its collision record.
-
-If the copies of a duplicated id disagree on content, keeping one copy discards
-real state. `build` refuses that without `--allow-collisions`, and so does
-`replay` — for a duplicate that is new, whose decision changed, or whose copies
-were edited. A duplicate the build already accepted and nothing touched since
-does not stop a replay. Review the differing columns (`bd brain unify plan`
-prints them) before passing the flag.
+  duplicate - merged if the copies are identical, a conflict bead plus its
+  copies if they differ;
+- a duplicate whose copies are **edited** is re-derived: identical copies that
+  now differ become a conflict (the one bead is replaced by a conflict bead and
+  two copies), a conflict's copies pick up the edit, and a conflict whose copies
+  became identical again merges back into one bead (the minted ids are removed);
+- a duplicate that **goes away** loses its record, and the surviving copy is a
+  plain bead under the original id again, its minted siblings and the conflict
+  links gone.
 
 ## The verifier is the acceptance test
 
@@ -148,9 +191,20 @@ prints them) before passing the flag.
   build, and is deterministic against sources that were frozen when it ran.
 - `--reference live` recomputes the expected side from the sources **as they
   stand now**, with the same server-side expressions and the same exclusion of
-  collision losers, and compares that. It is the acceptance test for a replay: a
+  skipped copies and conflicted ids, and compares that. It is the acceptance test for a replay: a
   replay that missed a change fails it, naming the table and the namespace that
   differ, and so does any write a source makes after the replay.
+
+For conflicts both references do the same checks, one conflict at a time, on top
+of the fingerprints (which leave the conflicted and minted ids out of both sides,
+so a bead the plan does not name in a minted id's namespace is still a
+difference): the record names exactly the copies the sources call for; the
+original id is one `open` issue whose rows, label and `tracks` dependency to each
+copy are exactly the rows the tool authors, with nothing else at the id except
+rows of stores that hold no copy; and each copy is one issue whose rows in every
+bead-scoped table match, by a digest over rows read the same way on both sides,
+the source's copy put through the build's mapper - the live source, or the digest
+the build recorded.
 
 A replay is done when `verify --reference live` passes. If it fails, the report
 says where; run `replay` again (it picks up what moved since) and re-verify. On
@@ -165,8 +219,8 @@ and its own commit into the merged database's Dolt history, so the default
 
 ## A worked order of operations
 
-1. `plan` — read the mapping and the collisions; settle any duplicate whose
-   copies disagree.
+1. `plan` — read the mapping and the collisions: which duplicates merge, and
+   which become conflict beads (with the ids of their copies).
 2. `build` — once. Slow.
 3. `replay` — repeatedly, while the sources are in use. Fast.
 4. Stop writing to the sources.

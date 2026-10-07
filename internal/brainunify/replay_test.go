@@ -161,6 +161,29 @@ func TestReconcileCollisionsWidensWhenIdenticalCopiesBecomeAConflict(t *testing.
 	}
 }
 
+func TestReconcileCollisionsRereadsConflictsWhenATableIsReloadedWhole(t *testing.T) {
+	// A table the sources keep no history for (wisps) is reloaded whole, and a
+	// change there to a conflict's copy appears in no diff: the record's digest
+	// of the copy is taken again on every replay that reloads such a table.
+	c := conflict("alp-2", map[string]string{"alpha": "alp-aaaaaaaaaaaa", "gamma": "gam-bbbbbbbbbbbb"}, "alpha", "gamma")
+	rec := map[string]recordedCollision{"alp-2": {Resolution: ResolutionConflict, CopyIDs: c.copyIDs()}}
+	w := newWork()
+	if err := replayerWith(c).reconcileCollisions(w, rec); err != nil || len(w.collisionsToWrite) != 0 {
+		t.Fatalf("with every table versioned an untouched, unchanged conflict costs nothing: %v %v", err, w.collisionsToWrite)
+	}
+	w = newWork()
+	w.full["wisps"] = true
+	if err := replayerWith(c).reconcileCollisions(w, rec); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(w.collisionsToWrite, []string{"alp-2"}) {
+		t.Errorf("collisionsToWrite = %v", w.collisionsToWrite)
+	}
+	if len(w.wide) != 0 {
+		t.Errorf("the decision did not change, so no fingerprint is stale: %v", w.wide)
+	}
+}
+
 func TestMergedIDsCoverEveryIDTheOldAndNewResolutionUsed(t *testing.T) {
 	// The id used to be a conflict whose copies were minted for stores alpha and
 	// gamma; now it is one for alpha and beta. Replaying it must delete the
