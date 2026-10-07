@@ -2,10 +2,10 @@
 id: 0024
 title: external-store model — a store's command runs where its database lives (design only)
 isc: []
-status: proposed
+status: landed
 created: 2026-10-09
 updated: 2026-10-09
-commits: []
+commits: [ce6db774a]
 touches:
   - docs/design/brain-external-stores.md
   - divergence/0024-external-stores-design.md
