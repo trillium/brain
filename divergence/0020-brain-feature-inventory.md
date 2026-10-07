@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-10-07
 updated: 2026-10-07
-commits: [<sha>]
+commits: [a7ed20bdcf8856c5f00e4e1530d69952a2d2ebe5]
 touches: [docs/brain/WHAT_BRAIN_ADDS.md, docs/brain/README.md, divergence/0020-brain-feature-inventory.md]
 upstream_rebase_notes: |
   Doc-only entry; no code conflicts expected. The inventory pins upstream at
