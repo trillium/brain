@@ -206,7 +206,7 @@ func runStorePrefixAdd(cmd *cobra.Command, prefix string) error {
 		return HandleError("%v", fmt.Errorf("invalid prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-')", prefix))
 	}
 
-	out, err := runInStorePrefixTx(ctx, db, target, prefix)
+	out, err := runInStorePrefixTx(ctx, db, target, prefix, issueops.ReasonOperatorAdded)
 	if err != nil {
 		return HandleError("%v", err)
 	}
@@ -240,12 +240,12 @@ func runStorePrefixAdd(cmd *cobra.Command, prefix string) error {
 
 // runInStorePrefixTx runs the claim inside one transaction, so the ownership
 // row and the allowed_prefixes extension land together or not at all.
-func runInStorePrefixTx(ctx context.Context, db *sql.DB, target, prefix string) (issueops.RecordPrefixOutcome, error) {
+func runInStorePrefixTx(ctx context.Context, db *sql.DB, target, prefix, reason string) (issueops.RecordPrefixOutcome, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return issueops.RecordPrefixOutcome{}, fmt.Errorf("open transaction: %w", err)
 	}
-	out, err := issueops.RecordStorePrefix(ctx, tx, target, prefix)
+	out, err := issueops.RecordStorePrefix(ctx, tx, target, prefix, reason)
 	if err != nil {
 		_ = tx.Rollback()
 		return issueops.RecordPrefixOutcome{}, err

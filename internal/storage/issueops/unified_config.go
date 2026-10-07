@@ -290,7 +290,11 @@ func (sc UnifiedScope) metadataDeleteQuery() string {
 	return "DELETE FROM metadata WHERE `key` = ?"
 }
 
-// ResetUnifiedScopeCacheForTest clears the memoised probe answers. Test-only:
-// package-scoped tests must not inherit one database's cached answer in
-// another's expectations.
-func ResetUnifiedScopeCacheForTest() { unifiedScopeCache = sync.Map{} }
+// ResetUnifiedScopeCache clears the memoised probe answers for every database
+// in this process. Needed when a process deliberately changes which namespace
+// it addresses mid-life (the provisioning flow: the caller's store is opened
+// with its own scope, then the new store's open pins a different BD_NAME).
+// Callers after a reset must re-probe before their next scoped statement.
+func ResetUnifiedScopeCache() { unifiedScopeCache = sync.Map{} }
+
+func ResetUnifiedScopeCacheForTest() { ResetUnifiedScopeCache() }

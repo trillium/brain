@@ -165,8 +165,8 @@ func TestRecordStorePrefixFreshClaim(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT `store`, owner_reason FROM brain_store_prefixes WHERE prefix = ?")).
 		WithArgs("proto").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, 'operator-added', '', '', 0, 0)")).
-		WithArgs("proto", "task").
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, ?, '', '', 0, 0)")).
+		WithArgs("proto", "task", "operator-added").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	// allowed_prefixes read (no row) then scoped REPLACE for the store.
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT value FROM brain_unified_config WHERE `store` = ? AND `key` = ?")).
@@ -176,7 +176,7 @@ func TestRecordStorePrefixFreshClaim(t *testing.T) {
 		WithArgs("task", "allowed_prefixes", "proto").
 		WillReturnResult(sqlmock.NewResult(1, 1))
 
-	out, err := RecordStorePrefix(ctx, tx, "task", "proto")
+	out, err := RecordStorePrefix(ctx, tx, "task", "proto", "operator-added")
 	if err != nil {
 		t.Fatalf("fresh claim: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestRecordStorePrefixAlreadyOwned(t *testing.T) {
 		WithArgs("task").
 		WillReturnRows(rowsOf(t, "store,owner_reason", []string{"task", "store-name-matches-prefix"}))
 
-	out, err := RecordStorePrefix(ctx, tx, "task", "task")
+	out, err := RecordStorePrefix(ctx, tx, "task", "task", "operator-added")
 	if err != nil {
 		t.Fatalf("already-owned claim must be a silent no-op, got %v", err)
 	}
@@ -225,7 +225,7 @@ func TestRecordStorePrefixForeignOwnerRefuses(t *testing.T) {
 		WithArgs("brain").
 		WillReturnRows(rowsOf(t, "store,owner_reason", []string{"brain", "declared-by-store-config"}))
 
-	_, err := RecordStorePrefix(ctx, tx, "task", "brain")
+	_, err := RecordStorePrefix(ctx, tx, "task", "brain", "operator-added")
 	if err == nil {
 		t.Fatal("claiming another store's prefix must refuse")
 	}
@@ -243,7 +243,7 @@ func TestRecordStorePrefixRejectsBadShapes(t *testing.T) {
 	// Shape validation runs before any query, so a refused prefix issues
 	// nothing — the one tx-rolling assertion guards that for every shape.
 	for _, bad := range []string{"cross-store", "a-b", "has space", "", "-lead", "9digit"} {
-		if _, err := RecordStorePrefix(ctx, tx, "task", bad); err == nil {
+		if _, err := RecordStorePrefix(ctx, tx, "task", bad, "operator-added"); err == nil {
 			t.Fatalf("prefix %q: want refusal, got nil", bad)
 		}
 	}

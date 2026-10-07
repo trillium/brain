@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/ui"
 	"gopkg.in/yaml.v3"
 )
@@ -449,14 +453,21 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 
 	// Step 1: provision the Dolt store. In shared-server mode (the brain
 	// federation default — the brain wrapper exports BEADS_DOLT_SERVER_MODE=1
-	// and the server pins at create time) the store is a database in the running
-	// shared dolt sql-server, NOT an embedded .beads/.dolt repo. Only when those
-	// pins are absent do we fall back to an embedded 'dolt init'.
+	// and the server pins at create time) the store is either a namespace of
+	// the unified database (when the server hosts one — the post-cutover
+	// shape) or its own database in the running shared dolt sql-server (the
+	// pre-cutover shape), never an embedded .beads/.dolt repo unless those
+	// pins are absent. this is the one command an operator types to "make a
+	// boop store": afterwards 'boop list/ready/create' address the boop
+	// namespace, whatever the substrate is.
 	host, port, shared := resolveSharedServerCreate()
+	provisioned := ""
 	if shared {
-		if err := provisionServerStore(context.Background(), name, beadsDir, host, port); err != nil {
-			FatalError("provisioning server store at %s: %v", beadsDir, err)
+		pdb, perr := provisionServerStore(context.Background(), name, beadsDir, host, port)
+		if perr != nil {
+			FatalError("provisioning server store at %s: %v", beadsDir, perr)
 		}
+		provisioned = pdb
 	} else {
 		if err := initDoltStore(beadsDir); err != nil {
 			FatalError("dolt init at %s: %v", beadsDir, err)
@@ -473,17 +484,15 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	// BEADS_DIR/BD_NAME wrapper.
 	wrapperPath := ""
 	if !createStoreNoWrap {
-		var (
-			wp  string
-			err error
-		)
+		var wp string
+		var werr error
 		if shared {
-			wp, err = writeServerStoreWrapper(name, beadsDir, createStoreBinary, host, port)
+			wp, werr = writeServerStoreWrapper(name, beadsDir, createStoreBinary, host, port, provisioned)
 		} else {
-			wp, err = writeStoreWrapper(name, beadsDir, createStoreBinary)
+			wp, werr = writeStoreWrapper(name, beadsDir, createStoreBinary)
 		}
-		if err != nil {
-			FatalError("writing wrapper: %v", err)
+		if werr != nil {
+			FatalError("writing wrapper: %v", werr)
 		}
 		wrapperPath = wp
 	}
@@ -603,24 +612,37 @@ func buildServerStoreConfig(name, host string, port int, projectID string) *conf
 	return cfg
 }
 
-// provisionServerStore creates a connected store as a database in the running
-// shared Dolt sql-server. Order is load-bearing:
+// provisionServerStore creates a connected store on the running shared Dolt
+// sql-server, and returns the Dolt database it was provisioned into (the
+// unified database's name when the server hosts one, "" for the legacy
+// per-store database shape). On the unified database the new store is a
+// NAMESPACE of the one database — the post-cutover shape: a separate per-store
+// database would be a bead home the unified database's reads never see.
+//
+// Order is load-bearing:
 //
 //  1. Write metadata.json (server mode) + config.yaml FIRST, so the store open
 //     below resolves THIS store's own .beads dir. Without a metadata.json here,
 //     bd walks up and mis-resolves a parent .beads (e.g. ~/data/.beads) — the
 //     ancestor-discovery bug that left every 'brain stores create' store DOA.
-//  2. Open the store with CreateIfMissing, so bd runs CREATE DATABASE on the
-//     shared server and initializes the beads schema. This reuses bd's own
-//     verified provisioning path instead of hand-rolling SQL/DDL.
-//  3. Persist issue_prefix and _project_id into the database, so create/list
-//     work and cross-project verification matches metadata.json.
+//  2. Open the store: with CreateIfMissing on a legacy server (bd runs CREATE
+//     DATABASE on the shared server and initializes the beads schema, reusing
+//     bd's own verified provisioning path); without it on a unified server
+//     (the database already exists — the store pins its namespace onto it).
+//  3. Persist issue_prefix and _project_id into the store's namespace (scoped
+//     writes: BD_NAME is pinned for the open), so create/list/ready work and
+//     the metadata.json↔namespace identity matches.
+//  4. Record the store and its name prefix in the namespace record
+//     (brain_stores / brain_store_prefixes, reason "store-created"), so the
+//     ownership record stays the one place "which store is this bead in" is
+//     answered from, and a name that collides with another store's recorded
+//     prefix refuses loudly instead of slipping in silently.
 //
 // Idempotent: on re-run it preserves the existing project identity (minting a
 // new one would break the metadata.json↔database identity check on later opens).
-func provisionServerStore(ctx context.Context, name, beadsDir, host string, port int) error {
+func provisionServerStore(ctx context.Context, name, beadsDir, host string, port int) (string, error) {
 	if err := os.MkdirAll(beadsDir, 0o700); err != nil {
-		return fmt.Errorf("mkdir %s: %w", beadsDir, err)
+		return "", fmt.Errorf("mkdir %s: %w", beadsDir, err)
 	}
 
 	// Preserve an existing project identity across idempotent re-runs.
@@ -632,28 +654,153 @@ func provisionServerStore(ctx context.Context, name, beadsDir, host string, port
 		projectID = configfile.GenerateProjectID()
 	}
 
-	cfg := buildServerStoreConfig(name, host, port, projectID)
-	if err := cfg.Save(beadsDir); err != nil {
-		return fmt.Errorf("writing metadata.json: %w", err)
-	}
-	if err := writeStoreConfigYaml(beadsDir, name); err != nil {
-		return fmt.Errorf("writing config.yaml: %w", err)
+	// Which shape does this server host? A probe failure fails loudly rather
+	// than silently picking the wrong home for the store.
+	unifiedDatabase, unified, err := probeUnifiedDatabaseOnServer(ctx, host, port)
+	if err != nil {
+		return "", fmt.Errorf("probing the shared server for the unified database: %w", err)
 	}
 
-	store, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: true})
+	cfg := buildServerStoreConfig(name, host, port, projectID)
+	if unified {
+		cfg.DoltDatabase = unifiedDatabase
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		return "", fmt.Errorf("writing metadata.json: %w", err)
+	}
+	if err := writeStoreConfigYaml(beadsDir, name); err != nil {
+		return "", fmt.Errorf("writing config.yaml: %w", err)
+	}
+
+	// The unified shape seeds the NEW store's namespace rows directly through
+	// a raw connection, BEFORE the id-verified open: the open itself reads the
+	// namespace identity for verification, and this process may already hold a
+	// cached scope for the caller's own namespace (same database), so bd
+	// handle writes here could land in the caller's namespace rather than the
+	// new store's. The one seeded transaction below is deliberately
+	// namespace-named (store column) and carries the issue_prefix, the project
+	// identity, the brain_stores row and the name-prefix claim — a prefix
+	// collision with another store's recorded prefix refuses before anything
+	// is half-created.
+	if unified {
+		if err := seedNamespaceRows(ctx, host, port, unifiedDatabase, name, projectID); err != nil {
+			return unifiedDatabase, err
+		}
+	}
+
+	// BD_NAME is pinned for the open like a store wrapper would, so any probe
+	// the open performs resolves to the NEW namespace — and the cached scope
+	// from the caller's own open (same database, its namespace) is dropped, or
+	// the id-verified open would read the caller's identity row instead of
+	// the new store's.
+	restoreBDName, hadBDName := os.LookupEnv("BD_NAME")
+	_ = os.Setenv("BD_NAME", name)
+	issueops.ResetUnifiedScopeCache()
+	defer func() {
+		if hadBDName {
+			_ = os.Setenv("BD_NAME", restoreBDName)
+		} else {
+			_ = os.Unsetenv("BD_NAME")
+		}
+	}()
+
+	store, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: !unified})
 	if err != nil {
-		return fmt.Errorf("opening store (create database on shared server): %w", err)
+		return "", fmt.Errorf("opening store (provision on shared server): %w", err)
 	}
 	defer func() { _ = store.Close() }()
 
-	if err := store.SetConfig(ctx, "issue_prefix", name); err != nil {
-		return fmt.Errorf("setting issue_prefix in database: %w", err)
+	if !unified {
+		// Legacy per-store database: the plain config/metadata tables ARE this
+		// store's own keyspace, so bd's own writes are right.
+		if err := store.SetConfig(ctx, "issue_prefix", name); err != nil {
+			return "", fmt.Errorf("setting issue_prefix in database: %w", err)
+		}
+		if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
+			return "", fmt.Errorf("writing project identity to database: %w", err)
+		}
 	}
-	if err := store.SetMetadata(ctx, "_project_id", projectID); err != nil {
-		return fmt.Errorf("writing project identity to database: %w", err)
+	return unifiedDatabase, nil
+}
+
+// probeUnifiedDatabaseOnServer answers the name of the database on the shared
+// server that carries brain_unified_config (the unified shape's marker table),
+// and whether one exists at all. No such table = the server is not unified:
+// legacy provisioning applies.
+func probeUnifiedDatabaseOnServer(ctx context.Context, host string, port int) (string, bool, error) {
+	if port == 0 {
+		return "", false, fmt.Errorf("no shared server port resolved")
+	}
+	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(%s:%d)/", host, port)) //nolint:gosec,noctx // shared-server convention, bounded below
+	if err != nil {
+		return "", false, fmt.Errorf("opening probe connection to %s:%d: %w", host, port, err)
+	}
+	defer func() { _ = db.Close() }()
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(probeCtx); err != nil {
+		return "", false, fmt.Errorf("the shared server at %s:%d did not answer: %w", host, port, err)
+	}
+	var schema string
+	err = db.QueryRowContext(probeCtx,
+		"SELECT table_schema FROM information_schema.tables WHERE table_name = 'brain_unified_config' LIMIT 1").Scan(&schema)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("probing for the unified database: %w", err)
+	}
+	return schema, true, nil
+}
+
+// seedNamespaceRows writes the new store's rows on the unified database in
+// one transaction, through a direct connection whose default schema is the
+// unified database itself: the namespace's issue_prefix, its project identity
+// in the re-keyed metadata, the brain_stores register row, and the name-prefix
+// claim (reason "store-created"; a collision with another store's recorded
+// prefix rolls the whole seed back loudly).
+func seedNamespaceRows(ctx context.Context, host string, port int, unifiedDatabase, name, projectID string) error {
+	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(%s:%d)/%s", host, port, unifiedDatabase)) //nolint:gosec,noctx // shared-server convention; every statement is inside one bounded tx
+	if err != nil {
+		return fmt.Errorf("connecting to %s: %w", unifiedDatabase, err)
+	}
+	defer func() { _ = db.Close() }()
+	seedCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tx, err := db.BeginTx(seedCtx, nil)
+	if err != nil {
+		return fmt.Errorf("open transaction for the %s namespace seed: %w", name, err)
+	}
+	if _, err := issueops.RecordStorePrefix(seedCtx, tx, name, name, reasonStoreCreated); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("recording the name prefix for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(seedCtx,
+		"REPLACE INTO brain_unified_config (`store`,`key`,value) VALUES (?, 'issue_prefix', ?)", name, name); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("seeding issue_prefix for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(seedCtx,
+		"REPLACE INTO brain_unified_metadata (`store`,`key`,value) VALUES (?, '_project_id', ?)", name, projectID); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("seeding project identity for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(seedCtx,
+		"REPLACE INTO brain_stores (`store`,`registered`,`source_database`,`beads_dir`,`project_id`,`schema_version`,`template_source`,`imported_at`) VALUES (?, 1, ?, '', ?, '', 0, ?)",
+		name, unifiedDatabase, projectID, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+		_ = tx.Rollback()
+		return fmt.Errorf("recording store %q in brain_stores: %w", name, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing the %q namespace seed: %w", name, err)
 	}
 	return nil
 }
+
+// reasonStoreCreated is the owner_reason a store's own name prefix carries
+// when the prefix came from 'brain stores create' rather than a later
+// 'bd store-prefix add'.
+const reasonStoreCreated = "store-created"
 
 // writeStoreConfigYaml writes the minimal config.yaml every connected store
 // carries: issue-prefix and BD_NAME, both equal to the store name (matching the
@@ -680,8 +827,12 @@ BD_NAME: %q
 // pins (mirroring the review/brain wrappers) so bd resolves in server mode and
 // never falls back to embedded mode or mis-discovers a sibling database. It also
 // exports BRAIN_KNOWLEDGE_ROOT/BRAIN_EXFIL_FLAT to match the federation canon.
+// serverDatabase names the Dolt database the wrapper's metadata.json resolves
+// to (the store's own database pre-cutover, the unified database after); it
+// appears in the header comment only — bd reads the database from
+// metadata.json, never from the wrapper.
 // Returns the wrapper path.
-func writeServerStoreWrapper(name, beadsDir, bdBinary, host string, port int) (string, error) {
+func writeServerStoreWrapper(name, beadsDir, bdBinary, host string, port int, serverDatabase string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return "", fmt.Errorf("resolving home dir: %w", err)
@@ -717,7 +868,7 @@ export BEADS_DOLT_SERVER_HOST=%s
 export BEADS_DOLT_SERVER_PORT=%d
 export BEADS_DOLT_SHARED_SERVER=1
 exec %s "$@"
-`, name, host, port, name, beadsDir, name, knowledgeRoot, host, port, bdBinary)
+`, name, host, port, serverDatabase, beadsDir, name, knowledgeRoot, host, port, bdBinary)
 	if err := os.WriteFile(wrapperPath, []byte(body), 0o755); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing %s: %w", wrapperPath, err)
 	}

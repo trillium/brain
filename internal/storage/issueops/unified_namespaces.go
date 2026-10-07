@@ -36,6 +36,10 @@ var ErrStorelessNamespace = errors.New("refusing to create: unified database wit
 // prefixes recorded in brain_store_prefixes.
 var ErrPrefixOwnership = errors.New("refusing to create: id prefix is not owned by this store's namespace")
 
+// ReasonOperatorAdded is the owner_reason a prefix claim from `bd store-prefix
+// add` carries — an operator decision, recorded so the audit trail is intact.
+const ReasonOperatorAdded = "operator-added"
+
 // RefuseStorelessMint checks the unified scope's create boundary and returns
 // the storeless refusal error when the connected database is the unified one
 // and no namespace is pinned. Nil on everything else — a legacy database, or
@@ -155,7 +159,9 @@ func PrefixAlreadyRecorded(ctx context.Context, q DBTX, prefix string) (owner, r
 // RecordStorePrefix claims prefix for store in the connected database's
 // brain_store_prefixes record, as a runtime decision:
 //
-//   - unclaimed → recorded now with owner_reason "operator-added";
+//   - unclaimed → recorded now with the caller's owner_reason (default
+//     ReasonOperatorAdded; 'brain stores create' claims its name prefix
+//     under a "store-created" reason);
 //   - recorded for the same store → no write, AlreadyOwned=true;
 //   - recorded for a DIFFERENT store → refused: the row is not rewritten or
 //     deleted, the caller is told whose prefix it is and that the claiming
@@ -176,19 +182,25 @@ type RecordPrefixOutcome struct {
 	AllowedPrefixesUpdated bool
 }
 
-func RecordStorePrefix(ctx context.Context, q DBTX, store, prefix string) (RecordPrefixOutcome, error) {
+func RecordStorePrefix(ctx context.Context, q DBTX, store, prefix, reason string) (RecordPrefixOutcome, error) {
 	var out RecordPrefixOutcome
 	if !IsValidAddedPrefix(prefix) {
 		return out, fmt.Errorf("invalid prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-')", prefix)
 	}
+	if reason == "" {
+		reason = ReasonOperatorAdded
+	}
+	if len(reason) > 64 {
+		return out, fmt.Errorf("owner_reason %q exceeds brain_store_prefixes.owner_reason's 64 characters", reason)
+	}
 
-	owner, reason, found, err := PrefixAlreadyRecorded(ctx, q, prefix)
+	rowOwner, rowReason, found, err := PrefixAlreadyRecorded(ctx, q, prefix)
 	if err != nil {
 		return out, err
 	}
 	if found {
-		out.Owner, out.Reason = owner, reason
-		if owner == store {
+		out.Owner, out.Reason = rowOwner, rowReason
+		if rowOwner == store {
 			out.AlreadyOwned = true
 			if err := recordStorePrefixAllowedAdd(ctx, q, store, prefix); err == nil {
 				out.AllowedPrefixesUpdated = true
@@ -197,15 +209,15 @@ func RecordStorePrefix(ctx context.Context, q DBTX, store, prefix string) (Recor
 		}
 		return out, fmt.Errorf("prefix %q is already owned by store %q (decided by %q) — "+
 			"brain_store_prefixes is never rewritten silently: store %q can only take it after %q releases it",
-			prefix, owner, reason, store, owner)
+			prefix, rowOwner, rowReason, store, rowOwner)
 	}
 
 	if _, err := q.ExecContext(ctx,
 		"INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) "+
-			"VALUES (?, ?, 'operator-added', '', '', 0, 0)", prefix, store); err != nil {
+			"VALUES (?, ?, ?, '', '', 0, 0)", prefix, store, reason); err != nil {
 		return out, fmt.Errorf("recording prefix %q for store %q: %w", prefix, store, err)
 	}
-	out.Owner, out.Reason = store, "operator-added"
+	out.Owner, out.Reason = store, reason
 
 	if err := recordStorePrefixAllowedAdd(ctx, q, store, prefix); err == nil {
 		out.AllowedPrefixesUpdated = true
