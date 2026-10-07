@@ -1,3 +1,23 @@
+> **RETIRED 2026-10-07** — frozen historical record, version 1.0.0 (retirement).
+> The project ISA document is retired: per the captain-approved vision
+> ([`VISION.md`](../../../VISION.md), "The design record is maintained by the
+> agents doing the work"), "The ISA document is retired: an ISA is a store
+> type, not a document." ISA as a record type lives on in the store —
+> `kind=isa`, `brain new isa`, the `isa-*` verb family — not as a root-level
+> spec document. This file is a snapshot of brain v0.3 planning as of
+> 2026-05-31 and is no longer maintained. Two of its claims were outgrown
+> by later work and stand corrected by that work, not by edits here:
+> the Out of Scope section says federation is out (the store federation
+> shipped — see `docs/brain/WHAT_BRAIN_ADDS.md` §1), and several unbuilt
+> ISCs refer to features the fork has since shipped or dropped (the
+> reconciler, FTS5, the v0.2 migration, and the Pulse module remain
+> unbuilt — see `WHAT_BRAIN_ADDS.md` §8 for what is still missing).
+> The living truth is [`VISION.md`](../../../VISION.md), the primer
+> ([`WHAT_IS_BRAIN.md`](../WHAT_IS_BRAIN.md)), the inventory
+> ([`WHAT_BRAIN_ADDS.md`](../WHAT_BRAIN_ADDS.md)), and the divergence trail
+> ([`../../../divergence/`](../../../divergence/)). Retirement recorded in
+> `divergence/0024-isa-retirement.md`.
+
 ---
 task: brain v0.3 — merged knowledge + task tool on Dolt with Pulse ISR rendering
 project: brain

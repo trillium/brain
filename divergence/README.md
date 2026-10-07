@@ -1,6 +1,6 @@
 # divergence/
 
-This directory holds the **divergence trail** — the running record of how brain departs from upstream bd toward the brain spec (`../ISA.md`).
+This directory holds the **divergence trail** — the running record of how brain departs from upstream bd toward the brain vision ([`../VISION.md`](../VISION.md)). The retired v0.3 project ISA is kept as a frozen historical record at [`../docs/brain/archive/ISA-v03.md`](../docs/brain/archive/ISA-v03.md); it is no longer the spec.
 
 ## Purpose
 
@@ -25,7 +25,7 @@ Commits with the trailer `divergence:skip` in the commit message are exempt. Int
 
 Use the trailer sparingly. If in doubt, write the doc.
 
-A pre-commit hook will eventually enforce this pairing (tracked in `../ISA.md` — see `Decisions` 2026-05-31 and the deferred ISC-152 follow-up). Until then it's enforced by review.
+A pre-commit hook will eventually enforce this pairing (once tracked as deferred follow-up in the retired ISA — see its `Decisions` 2026-05-31, archived at [`../docs/brain/archive/ISA-v03.md`](../docs/brain/archive/ISA-v03.md)). Until then it's enforced by review.
 
 ## Naming
 
@@ -46,7 +46,7 @@ Every divergence doc starts with this YAML block:
 ---
 id: 0001
 title: short imperative phrase, lowercase
-isc: [ISC-100, ISC-101]           # which ISA criteria this commit moves
+isc: [ISC-100, ISC-101]           # historical ISA criteria (retired ISA: docs/brain/archive/ISA-v03.md)
 status: proposed                   # proposed | landed | superseded | reverted
 created: 2026-05-31
 updated: 2026-05-31
@@ -72,7 +72,7 @@ Three headings, in this order:
 
 ### `# Why`
 
-The fork-spec-driven reason for this change. Cite the ISA section, the ISC range, or the decision record that drives it. Plain English — readable on a phone.
+The fork-vision-driven reason for this change. Cite the vision section, the design doc, the ISC range (historical ISCs live in the retired ISA, `docs/brain/archive/ISA-v03.md`), or the decision record that drives it. Plain English — readable on a phone.
 
 ### `# What changed`
 
@@ -80,7 +80,7 @@ The minimal, factual list of code/schema/build/runtime changes. Not a diff dump 
 
 ### `# Brain-spec link`
 
-A relative markdown link back to the ISA section this commit advances. Always include `[ISA.md](../ISA.md)` at minimum.
+A relative markdown link back to the record this commit advances. Always include [`VISION.md`](../VISION.md) at minimum; design docs under `docs/design/` or `docs/brain/` are the usual second link. The retired ISA (`docs/brain/archive/ISA-v03.md`) may still be cited when a change responds to something only the historical record holds.
 
 ## How to add a new divergence doc
 
@@ -97,3 +97,24 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | ID | Title | Status |
 | --- | --- | --- |
 | [0001](0001-brain-repo-genesis.md) | brain repo genesis — fork from bd | landed |
+| [0002](0002-first-tranche-decisions.md) | first-tranche decisions | landed |
+| [0003](0003-modularity-first.md) | modularity-first architecture | landed |
+| [0004](0004-brain-verb-seam-and-parent.md) | brain verb seam and parent | landed |
+| [0005](0005-brain-vs-bd-vocabulary-doc.md) | brain-vs-bd vocabulary doc | landed |
+| [0006](0006-brain-primitives-reframe.md) | brain primitives reframe | landed |
+| [0007](0007-brain-new.md) | brain new | landed |
+| [0008](0008-brain-link.md) | brain link | landed |
+| [0009](0009-brain-related.md) | brain related | landed |
+| [0010](0010-brain-recast.md) | brain recast | landed |
+| [0011](0011-first-tranche-isc-marks.md) | first-tranche ISC marks | landed |
+| [0012](0012-exfiltration-decorator.md) | exfiltration decorator | landed |
+| [0014](0014-isa-show-json-drops-progress.md) | isa-show json drops progress | open |
+| [0015](0015-create-missing-slug-flag.md) | create missing slug flag | open |
+| [0016](0016-isa-by-slug-json-returns-text.md) | isa-by-slug json returns text | open |
+| [0017](0017-dep-add-silent-orphan-cross-store.md) | dep-add silent orphan cross-store | landed |
+| [0019](0019-create-edit-compose.md) | create/edit compose | proposed |
+| [0020](0020-brain-feature-inventory.md) | brain feature inventory | landed |
+| [0021](0021-brain-prefix-release-design.md) | brain prefix release design | proposed |
+| [0022](0022-brain-cutover-rehearsal.md) | brain cutover rehearsal | landed |
+| [0023](0023-vision-landing.md) | VISION.md landed — the captain-approved vision, verbatim | proposed |
+| [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |
