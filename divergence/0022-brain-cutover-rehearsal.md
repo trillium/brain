@@ -1,12 +1,12 @@
 ---
-id: 0021
+id: 0022
 title: cutover rehearsal — the runbook, and the unified-database behaviours it observed live
 isc: []
 status: landed
 created: 2026-10-07
 updated: 2026-10-07
-commits: [4458eee88a04ef4af5a818892ff21c7d574703b3]
-touches: [docs/design/brain-cutover-runbook.md, docs/design/brain-single-database.md, divergence/0021-brain-cutover-rehearsal.md]
+commits: [b0611394ae3ca60c8d8036f72287a9b236aadbae]
+touches: [docs/design/brain-cutover-runbook.md, docs/design/brain-single-database.md, divergence/0022-brain-cutover-rehearsal.md]
 upstream_rebase_notes: |
   Doc-only entry; no code changes. The rehearsal drove no new divergence — it
   exercised the previously landed namespace model (831ea8612, 15351ba82,
@@ -19,6 +19,12 @@ upstream_rebase_notes: |
 ---
 
 # Why
+
+(Number 0022: when this branch rebased onto `8bdc87001`, main had already issued
+`divergence/0021` to `0021-brain-prefix-release-design.md`; ids never get reissued,
+so this entry took the next free number. The rehearsal happened first; the prefix-
+release design commits were authored in parallel.)
+#g
 
 The unified database existed and was verified (518/518 checks), but the act of
 re-pointing one store's wrapper at it had never been exercised. The rehearsal
