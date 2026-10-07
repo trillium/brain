@@ -97,7 +97,6 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | ID | Title | Status |
 | --- | --- | --- |
 | [0001](0001-brain-repo-genesis.md) | brain repo genesis — fork from bd | landed |
-<<<<<<< HEAD
 | [0002](0002-first-tranche-decisions.md) | first-tranche decisions | landed |
 | [0003](0003-modularity-first.md) | modularity-first architecture | landed |
 | [0004](0004-brain-verb-seam-and-parent.md) | brain verb seam and parent | landed |
@@ -121,6 +120,3 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |
 | [0025](0025-brain-collision-duplication-records.md) | duplication-records design — the vision's collision model, designed not built | proposed |
 | [0026](0026-external-stores-design.md) | external-store model — a store's command runs where its database lives (design only) | landed |
-=======
-| [0024](0024-external-stores-design.md) | external-store model — a store's command runs where its database lives (design only) | landed |
->>>>>>> 2fe03fc83 (docs(divergence): mark 0024 landed with its commit sha)

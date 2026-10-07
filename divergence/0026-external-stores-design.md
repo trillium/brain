@@ -1,14 +1,14 @@
 ---
-id: 0024
+id: 0026
 title: external-store model — a store's command runs where its database lives (design only)
 isc: []
 status: landed
 created: 2026-10-09
 updated: 2026-10-09
-commits: [ce6db774a]
+commits: [854dc6894]
 touches:
   - docs/design/brain-external-stores.md
-  - divergence/0024-external-stores-design.md
+  - divergence/0026-external-stores-design.md
 upstream_rebase_notes: |
   Doc-only entry; no code conflicts expected. This design document is
   brain-only — on a rebase, resolve `ours`. Its facts about the serving
