@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/routing"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/timeparsing"
@@ -193,6 +194,15 @@ Examples:
 		}
 
 		explicitID, _ := cmd.Flags().GetString("id")
+		mintPrefix, _ := cmd.Flags().GetString("prefix")
+		if mintPrefix != "" {
+			if explicitID != "" {
+				return HandleError("cannot specify both --id and --prefix flags (--id is an explicit id, --prefix mints a fresh one under the named prefix)")
+			}
+			if !issueops.IsValidAddedPrefix(mintPrefix) {
+				return HandleError("invalid --prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-'); claim a prefix with 'bd store-prefix add' first if this store does not own it yet", mintPrefix)
+			}
+		}
 		parentID, _ := cmd.Flags().GetString("parent")
 		externalRef, _ := cmd.Flags().GetString("external-ref")
 		deps, _ := cmd.Flags().GetStringSlice("deps")
@@ -366,6 +376,7 @@ Examples:
 		renderDryRun := func() error {
 			previewIssue := buildCreateIssue(createIssueParams{
 				ID:                 explicitID,
+				PrefixOverride:     mintPrefix,
 				Title:              title,
 				Description:        description,
 				Design:             design,
@@ -547,6 +558,7 @@ Examples:
 			DueAt:              dueAt,
 			DeferUntil:         deferUntil,
 			Metadata:           metadata,
+			PrefixOverride:     mintPrefix,
 		})
 
 		ctx := createCtx
@@ -775,6 +787,7 @@ type createIssueParams struct {
 	DueAt              *time.Time
 	DeferUntil         *time.Time
 	Metadata           json.RawMessage
+	PrefixOverride     string
 }
 
 func buildCreateIssue(params createIssueParams) *types.Issue {
@@ -816,6 +829,7 @@ func buildCreateIssue(params createIssueParams) *types.Issue {
 		DueAt:              params.DueAt,
 		DeferUntil:         params.DeferUntil,
 		Metadata:           params.Metadata,
+		PrefixOverride:     params.PrefixOverride,
 	}
 }
 
@@ -910,6 +924,7 @@ func init() {
 	createCmd.Flags().StringSlice("label", []string{}, "Alias for --labels")
 	_ = createCmd.Flags().MarkHidden("label") // Only fails if flag missing (caught in tests)
 	createCmd.Flags().String("id", "", "Explicit issue ID (e.g., 'bd-42' for partitioning)")
+	createCmd.Flags().String("prefix", "", "Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')")
 	createCmd.Flags().String("parent", "", "Parent issue ID for hierarchical child (e.g., 'bd-a3f8e9')")
 	createCmd.Flags().Bool("no-inherit-labels", false, "Don't inherit labels from parent issue")
 	createCmd.Flags().StringSlice("deps", []string{}, "Dependencies in format 'type:id' or 'id' (e.g., 'discovered-from:bd-20,blocks:bd-15' or 'bd-20')")

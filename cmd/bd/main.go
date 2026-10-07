@@ -39,12 +39,18 @@ import (
 )
 
 var (
-	changeDir   string
-	dbPath      string
-	actor       string
-	store       storage.DoltStorage
-	uowProvider uow.UnitOfWorkProvider
-	jsonOutput  bool
+	changeDir    string
+	dbPath       string
+	actor        string
+	store        storage.DoltStorage
+	uowProvider  uow.UnitOfWorkProvider
+	jsonOutput   bool
+
+	// namespaceWide is the --wide persistent flag: the explicit operator
+	// switch for the unified database's read mode. Default narrow (only the
+	// wrapper's own namespaces); --wide reads every store. See
+	// internal/storage/dolt/unified_namespace.go for the mode itself.
+	namespaceWide bool
 
 	// Signal-aware context for graceful cancellation
 	rootCtx    context.Context
@@ -571,6 +577,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose/debug output")
 	rootCmd.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, "Suppress non-essential output (errors only)")
 	rootCmd.PersistentFlags().BoolVar(&ignoreSchemaSkew, "ignore-schema-skew", false, "Proceed despite forward schema drift (some queries may fail)")
+	rootCmd.PersistentFlags().BoolVar(&namespaceWide, "wide", false, "Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.")
 
 	// Add --version flag to root command (same behavior as version subcommand)
 	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
@@ -718,6 +725,14 @@ var rootCmd = &cobra.Command{
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
 		debug.SetQuiet(quietFlag)
+
+		// Pin the namespace read mode before any database access. The default
+		// is narrow and stays narrow unless the operator asked for wide, so a
+		// command is never silently re-scoped mid-flight. On a legacy (per-store)
+		// database the flag is accepted and inert: there is nothing to widen.
+		if namespaceWide {
+			dolt.SetNamespaceReadScope(dolt.NamespaceReadWide)
+		}
 
 		if err := applyChangeDirSelection(); err != nil {
 			return err

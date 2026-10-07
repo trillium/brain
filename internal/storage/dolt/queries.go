@@ -80,7 +80,10 @@ func (s *DoltStore) GetEpicsEligibleForClosure(ctx context.Context) ([]*types.Ep
 
 // GetStaleIssues returns issues that haven't been updated recently
 func (s *DoltStore) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
-	if prefixes, unified := s.namespacePrefixes(ctx); unified && len(prefixes) > 0 && filter.Namespaces == nil {
+	// Same narrow/wide rule as the issue reads: narrow pins the namespace's
+	// own prefixes, wide leaves the filter unscoped (all stores), and a
+	// caller-set Namespaces is never overridden.
+	if prefixes, unified := s.namespacePrefixes(ctx); !readScopeWide() && unified && len(prefixes) > 0 && filter.Namespaces == nil {
 		filter.Namespaces = prefixes
 	}
 	var result []*types.Issue

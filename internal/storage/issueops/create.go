@@ -23,7 +23,16 @@ type BatchContext struct {
 }
 
 // NewBatchContext reads config from the database and returns a BatchContext.
+//
+// On the unified database the namespace create rules run before anything is
+// read (unified_namespaces.go): a storeless caller is refused — the
+// template-seeded tables are for opening the database, never for minting a
+// bead into them — instead of silently borrowing whichever store's template
+// config happens to be seeded.
 func NewBatchContext(ctx context.Context, tx *sql.Tx, opts storage.BatchCreateOptions) (*BatchContext, error) {
+	if err := RefuseStorelessMint(ctx, tx); err != nil {
+		return nil, err
+	}
 	customStatuses, err := GetCustomStatusesTx(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get custom statuses: %w", err)
@@ -108,6 +117,14 @@ func CreateIssueInTxWithResult(ctx context.Context, tx *sql.Tx, bc *BatchContext
 	} else if !bc.Opts.SkipPrefixValidation {
 		if err := ValidateIssueIDPrefix(issue.ID, bc.ConfigPrefix, bc.AllowedPrefixes); err != nil {
 			return result, fmt.Errorf("prefix validation failed for %s: %w", issue.ID, err)
+		}
+	}
+
+	// The unified database's namespace invariant runs after the id exists, so
+	// it sees both minted and explicit ids in their final shape (unified_namespaces.go).
+	if sc := UnifiedScopeForTx(ctx, tx); sc.Unified && sc.Store != "" {
+		if err := ValidateNamespaceOwnership(ctx, tx, sc.Store, issue.ID); err != nil {
+			return result, fmt.Errorf("namespace ownership failed for %s: %w", issue.ID, err)
 		}
 	}
 

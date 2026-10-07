@@ -571,3 +571,61 @@ Per-source cost is a constant regardless of bead count (0 beads and 4312 beads
 both cost about the same), so the scaling axis is **the number of stores, not
 the amount of data** — and a timestamped per-table log is what makes a stall
 visible while it happens rather than an hour later.
+
+## The namespace model at runtime: narrow reads, wide reads, and prefixes on demand
+
+Unification's point is that every store can see every store while keeping its
+own view. Three rules make that hold for reads, creations and the namespace
+record itself; all three are behaviour on the merged database only, and every
+legacy store keeps its exact pre-cutover behaviour.
+
+### 1. Narrow and wide are both deliberate read modes
+
+A wrapper's read paths (`list`, `search`, `ready`, `count`, `statistics`,
+`render-all`, `blocked`, `stale`) always pick a mode explicitly:
+
+- **Narrow (default)** scopes the read to the wrapper's own namespaces — the
+  prefixes the build recorded for it in `brain_store_prefixes`. This is what a
+  steady-state store works in: `brain list` shows brain beads, not everyone's.
+- **Wide (`--wide`)** unscopes the read: the merged `issues` table without a
+  namespace restriction *is* the every-stores view, including beads whose
+  prefix no source ever claimed.
+
+The operator picks the mode per command with the `--wide` flag; nothing
+substitutes one mode for another inside a single command. `bd search
+--federated` is the wide view's precedent rather than a rival mechanism: on
+the unified database it walks the same unscoped rows and buckets the
+sections by owning store, so `--wide` is the flat form of the one wide read.
+
+### 2. Nothing mints a bead that does not fit a store
+
+The template-seeded single-valued tables (`config`, `metadata`, `local_metadata`)
+exist so the database opens at all; reading them as a degrade path is
+documented. Minting from them is not: a create command (`create`, `q`, import,
+bulk) that reaches the unified database without a store namespace pinned
+(BD_NAME unset) refuses with the reason and a non-zero exit instead of silently
+borrowing whichever store's template happened to be seeded.
+
+Under a wrapper, creation additionally validates ownership against the same
+record the reads scope by: an id — minted, explicit, overridden, hierarchical
+or wisp — whose id prefix the namespace does not own refuses, and `--force`
+cannot bypass it (on the unified database it would mint beads no store's
+narrow view owns). The refusal names the way out: claim the prefix and retry.
+
+### 3. Prefixes are additive at runtime
+
+Ownership lives in `brain_store_prefixes` as runtime state, not only in the
+build's output. `bd store-prefix add <prefix> [--store <store>]` records a
+claim immediately, with `owner_reason = 'operator-added'` so the audit trail
+stays unbroken, and extends the store's `allowed_prefixes` scoped config row
+so creation under the prefix works in the same breath. The added prefix is
+visible to narrow reads and wide reads at once, because both resolve from
+this one record.
+
+The conflict rule is deliberate and non-silent: the record is never rewritten.
+An unclaimed prefix goes to the first store that claims it; claiming a prefix
+an owner already recorded for your own store is a no-op; claiming a prefix
+recorded for a *different* store refuses with that owner's name and the
+reason its claim was decided. Two stores converging on the same fresh prefix
+therefore end with exactly one owner and every other claimant refused —
+never a silent takeover.

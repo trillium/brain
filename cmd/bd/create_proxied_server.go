@@ -189,6 +189,7 @@ func runCreateLintIssue(in createInput) {
 func buildCreateIssueFromInput(in createInput) *types.Issue {
 	return buildCreateIssue(createIssueParams{
 		ID:                 in.explicitID,
+		PrefixOverride:     in.mintPrefix,
 		Title:              in.title,
 		Description:        in.description,
 		Design:             in.design,

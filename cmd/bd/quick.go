@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/validation"
 )
@@ -42,18 +43,24 @@ Example:
 		priorityStr, _ := cmd.Flags().GetString("priority")
 		issueType, _ := cmd.Flags().GetString("type")
 		labels, _ := cmd.Flags().GetStringSlice("labels")
+		mintPrefix, _ := cmd.Flags().GetString("prefix")
 
 		priority, err := validation.ValidatePriority(priorityStr)
 		if err != nil {
 			return HandleError("%v", err)
 		}
 
+		if mintPrefix != "" && !issueops.IsValidAddedPrefix(mintPrefix) {
+			return HandleError("invalid --prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-'); claim a prefix with 'bd store-prefix add' first if this store does not own it yet", mintPrefix)
+		}
+
 		issue := &types.Issue{
-			Title:     title,
-			Status:    types.StatusOpen,
-			Priority:  priority,
-			IssueType: types.IssueType(issueType).Normalize(),
-			Labels:    mergeCreateLabels(labels, nil),
+			Title:          title,
+			Status:         types.StatusOpen,
+			Priority:       priority,
+			IssueType:      types.IssueType(issueType).Normalize(),
+			Labels:         mergeCreateLabels(labels, nil),
+			PrefixOverride: mintPrefix,
 		}
 
 		ctx := rootCtx
@@ -72,5 +79,6 @@ func init() {
 	quickCmd.Flags().StringP("priority", "p", "2", "Priority (0-4 or P0-P4)")
 	quickCmd.Flags().StringP("type", "t", "task", "Issue type")
 	quickCmd.Flags().StringSliceP("labels", "l", []string{}, "Labels")
+	quickCmd.Flags().String("prefix", "", "Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')")
 	rootCmd.AddCommand(quickCmd)
 }
