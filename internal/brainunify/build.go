@@ -26,6 +26,12 @@ type BuildOptions struct {
 	// build, because the winner rule then discards a real state difference
 	// and that is a decision for a human.
 	AllowCollisions bool
+	// Host and Port locate the Dolt server holding the sources. These are
+	// needed for the per-database history read that records every source's
+	// commit at the moment the build sees it, which is what a later replay
+	// takes as its starting point.
+	Host string
+	Port int
 	// Logf receives progress lines.
 	Logf func(format string, args ...any)
 }
@@ -372,6 +378,14 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 		b.jsonCols[tp.Table] = cols
 	}
 
+	// Record each source's committing point before anything is copied, so
+	// the window a later replay reads is a super-set of "everything the
+	// build did not measure". See readSourceHeads.
+	heads, err := b.readSourceHeads(ctx)
+	if err != nil {
+		return BuildResult{}, err
+	}
+
 	srv, err := StartIsolatedServer(ctx, b.opts.DoltBin, b.opts.DataDir)
 	if err != nil {
 		return BuildResult{}, err
@@ -418,6 +432,10 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	if err := WriteImportLog(ctx, target, res.Stats); err != nil {
 		return res, err
 	}
+	if err := b.writeSourceCommits(ctx, target, heads); err != nil {
+		return res, err
+	}
+	b.log("recorded %d source commit(s): every later change a source makes is inside a replay's window", len(heads))
 	// dolt 2.x exposes dolt_commit as a stored procedure ("call"), not a
 	// scalar function: the build's previous "select dolt_commit(...)" failed
 	// with "function: 'dolt_commit' not found" on every run, leaving the
@@ -992,21 +1010,39 @@ func (b *Builder) writeProvenance(ctx context.Context, target *sql.DB) error {
 		}
 	}
 	for _, ns := range SortedNamespaces(b.plan.Namespaces) {
-		if _, err := target.ExecContext(ctx,
-			"replace into `brain_store_prefixes` (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) values "+
-				valueTuple([]any{ns.Prefix, ns.Owner, ns.OwnerReason, strings.Join(ns.DeclaredBy, ","), strings.Join(ns.ObservedBy, ","), ns.BeadCount, boolToInt(ns.Ambiguous)})); err != nil {
-			return fmt.Errorf("recording prefix %s: %w", ns.Prefix, err)
+		if err := writePrefixRow(ctx, target, ns); err != nil {
+			return err
 		}
 	}
 	for _, c := range b.plan.Collisions {
-		losers, _ := json.Marshal(c.Losers)
-		loserHashes, _ := json.Marshal(c.LoserHashes)
-		losingRow, _ := json.Marshal(b.losingRow(c))
-		if _, err := target.ExecContext(ctx,
-			"replace into `brain_unify_collisions` (`id`,`prefix`,`owner`,`winner`,`losers`,`reason`,`divergent`,`winner_hash`,`loser_hashes`,`losing_row`) values "+
-				valueTuple([]any{c.ID, c.Prefix, c.Owner, c.Winner, string(losers), c.Reason, boolToInt(c.Divergent), c.WinnerHash, string(loserHashes), string(losingRow)})); err != nil {
-			return fmt.Errorf("recording collision %s: %w", c.ID, err)
+		if err := writeCollisionRow(ctx, target, c, b.losingRow(c)); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// writePrefixRow records one prefix's ownership.
+func writePrefixRow(ctx context.Context, target sqlExecer, ns Namespace) error {
+	if _, err := target.ExecContext(ctx,
+		"replace into `brain_store_prefixes` (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) values "+
+			valueTuple([]any{ns.Prefix, ns.Owner, ns.OwnerReason, strings.Join(ns.DeclaredBy, ","), strings.Join(ns.ObservedBy, ","), ns.BeadCount, boolToInt(ns.Ambiguous)})); err != nil {
+		return fmt.Errorf("recording prefix %s: %w", ns.Prefix, err)
+	}
+	return nil
+}
+
+// writeCollisionRow records one collision decision together with the full row
+// of the copy that lost it. The build and a replay both write through here, so
+// a record means the same thing whichever of them wrote it.
+func writeCollisionRow(ctx context.Context, target sqlExecer, c Collision, losingRow map[string]any) error {
+	losers, _ := json.Marshal(c.Losers)
+	loserHashes, _ := json.Marshal(c.LoserHashes)
+	row, _ := json.Marshal(losingRow)
+	if _, err := target.ExecContext(ctx,
+		"replace into `brain_unify_collisions` (`id`,`prefix`,`owner`,`winner`,`losers`,`reason`,`divergent`,`winner_hash`,`loser_hashes`,`losing_row`) values "+
+			valueTuple([]any{c.ID, c.Prefix, c.Owner, c.Winner, string(losers), c.Reason, boolToInt(c.Divergent), c.WinnerHash, string(loserHashes), string(row)})); err != nil {
+		return fmt.Errorf("recording collision %s: %w", c.ID, err)
 	}
 	return nil
 }
@@ -1016,17 +1052,24 @@ func (b *Builder) writeProvenance(ctx context.Context, target *sql.DB) error {
 // hidden: an unreadable losing row is exactly the case an operator needs to
 // see.
 func (b *Builder) losingRow(c Collision) map[string]any {
+	return readLosingRow(b.source, b.plan, c)
+}
+
+// readLosingRow reads the full row of a collision's first losing copy. The
+// build records it at copy time and a replay records it again when a
+// duplicated id appears or changes, so both write the same shape.
+func readLosingRow(source *readOnlySource, plan Plan, c Collision) map[string]any {
 	if len(c.Losers) == 0 {
 		return map[string]any{}
 	}
 	out := map[string]any{"note": "losing copy row was not captured"}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	src, ok := b.plan.SourceByNamespace(c.Losers[0])
+	src, ok := plan.SourceByNamespace(c.Losers[0])
 	if !ok {
 		return out
 	}
-	cols, err := b.source.Columns(ctx, src.Database, "issues")
+	cols, err := source.Columns(ctx, src.Database, "issues")
 	if err != nil {
 		out["note"] = err.Error()
 		return out
@@ -1036,7 +1079,7 @@ func (b *Builder) losingRow(c Collision) map[string]any {
 		quoted = append(quoted, "`"+col+"`")
 	}
 	stmt := fmt.Sprintf("select %s from `%s`.`issues` where `id` = ?", strings.Join(quoted, ", "), src.Database)
-	rows, err := b.source.query(ctx, stmt, c.ID)
+	rows, err := source.query(ctx, stmt, c.ID)
 	if err != nil {
 		out["note"] = err.Error()
 		return out
@@ -1066,6 +1109,79 @@ func (b *Builder) losingRow(c Collision) map[string]any {
 	row["_captured_from_store"] = src.Namespace
 	row["_captured_from_database"] = src.Database
 	return row
+}
+
+// recordedSourceCommit is one source's commit as the build read it. A
+// replay diffs each source from this commit to the working set to find the
+// rows the build never saw.
+type recordedSourceCommit struct {
+	Store    string
+	Database string
+	Hash     string
+}
+
+// readSourceHeads records, per source, the newest Dolt commit at the moment
+// the build is about to read it. Reading happens BEFORE the copy: any commit
+// a source makes after this read is later than every row the build measured,
+// so a replay's window (recorded commit -> working set) covers it with room
+// to spare. Fragment reads that happen after the head read can only overlap
+// the replay window, never escape it — a replay applies an overlapping row
+// a second time (an idempotent replace), so overlap is safe and underlap is
+// what would strand live changes.
+//
+// A source whose history head cannot be READ is a loud refusal, not a
+// build without a starting point: a merged database that looks replayable
+// and later refuses to replay is worse than one that refuses to build.
+func (b *Builder) readSourceHeads(ctx context.Context) ([]recordedSourceCommit, error) {
+	host := b.opts.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := b.opts.Port
+	if port == 0 {
+		port = 3307
+	}
+	// A source database backing TWO stores makes a replay's holder
+	// resolution ambiguous (two stores answer for one row set, and one
+	// store's delete would reach another store's copy). Refuse rather than
+	// build a merged database a replay could not attribute.
+	byDatabase := map[string][]string{}
+	for _, s := range b.plan.Sources {
+		byDatabase[s.Database] = append(byDatabase[s.Database], s.Namespace)
+	}
+	for db, stores := range byDatabase {
+		if len(stores) > 1 {
+			return nil, fmt.Errorf("refusing to build: stores %s share one source database %s; a replay could not attribute its rows", strings.Join(stores, ", "), db)
+		}
+	}
+	out := make([]recordedSourceCommit, 0, len(b.plan.Sources))
+	for _, s := range b.plan.Sources {
+		conn, err := OpenReadOnlyDatabase(ctx, host, port, s.Database)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to build: opening the history of store %s (database %s) to record the replay starting point: %w", s.Namespace, s.Database, err)
+		}
+		hash, err := conn.HeadCommit(ctx)
+		_ = conn.Close()
+		if err != nil {
+			return nil, fmt.Errorf("refusing to build: reading the dolt_log head of store %s (database %s): %w", s.Namespace, s.Database, err)
+		}
+		out = append(out, recordedSourceCommit{Store: s.Namespace, Database: s.Database, Hash: hash})
+	}
+	return out, nil
+}
+
+// writeSourceCommits stores the recorded heads in the unified database, so
+// a later replay knows where each source's diff starts.
+func (b *Builder) writeSourceCommits(ctx context.Context, target *sql.DB, heads []recordedSourceCommit) error {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	for _, h := range heads {
+		if _, err := target.ExecContext(ctx,
+			"replace into `brain_unify_source_commits` (`store`,`source_database`,`commit_hash`,`recorded_at`) values "+
+				valueTuple([]any{h.Store, h.Database, h.Hash, now})); err != nil {
+			return fmt.Errorf("recording the source commit for %s: %w", h.Store, err)
+		}
+	}
+	return nil
 }
 
 // record accumulates what one copy pass wrote, keyed by the unified table and
@@ -1105,8 +1221,14 @@ func (b *Builder) writeRecordedFingerprints(ctx context.Context, target *sql.DB)
 	return nil
 }
 
+// sqlExecer is the write surface shared by a connection and a transaction, so
+// the build and a replay record fingerprints through one function.
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // writeSourceFingerprint records one measured source group.
-func writeSourceFingerprint(ctx context.Context, target *sql.DB, gf GroupFingerprint) error {
+func writeSourceFingerprint(ctx context.Context, target sqlExecer, gf GroupFingerprint) error {
 	_, err := target.ExecContext(ctx,
 		"replace into `brain_unify_source_fingerprints` (`store`,`table_name`,`group_name`,`row_count`,`byte_count`,`hash_value`) values "+
 			valueTuple([]any{gf.Store, gf.Table, gf.Group, gf.Rows, gf.Bytes, gf.Hash}))

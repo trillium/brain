@@ -12,8 +12,8 @@ import (
 	"github.com/steveyegge/beads/internal/brainunify"
 )
 
-// brainUnifyCmd groups the three phases of the single-database migration:
-// plan, build, verify. They are separate verbs because they have different
+// brainUnifyCmd groups the phases of the single-database migration:
+// plan, build, replay, verify. They are separate verbs because they have different
 // safety properties and should be run at different times: plan is a read of
 // production, build writes only to an isolated scratch server, and verify
 // reads both sides and reports.
@@ -43,8 +43,11 @@ Phases:
           than one database
   build   construct the unified database in an isolated Dolt server started
           under --data-dir, reading production but never writing to it
+  replay  apply the changes the sources made since the build into the unified
+          database, so it can be kept current until it becomes the reference
   verify  compare the unified database against production mechanically, by
-          row count, content size and an order-independent content digest
+          row count, content size and an order-independent content digest;
+          --reference live compares against the sources as they stand now
 
 Production safety: this command group opens production read-only. The builder
 writes only to a Dolt server it starts itself, so a build cannot modify a live
@@ -61,6 +64,7 @@ var (
 	unifyAllowColl bool
 	unifyJSON      bool
 	unifyTimeout   time.Duration
+	unifyReference string
 )
 
 func init() {
@@ -79,6 +83,16 @@ func init() {
 	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "proceed even when a duplicated id has copies that disagree on content")
 	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
 
+	unifyReplayCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the source stores")
+	unifyReplayCmd.Flags().IntVar(&unifyPort, "port", 3307, "dolt sql-server port holding the source stores")
+	unifyReplayCmd.Flags().StringVar(&unifyDataDir, "data-dir", "", "directory holding the merged database built by 'unify build' (required)")
+	unifyReplayCmd.Flags().StringVar(&unifyDatabase, "database", "brain_unified", "name of the merged database")
+	unifyReplayCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the server over the merged database")
+	unifyReplayCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "proceed even when a duplicated id has copies that disagree on content")
+	unifyReplayCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the replay")
+
+	unifyVerifyCmd.Flags().StringVar(&unifyReference, "reference", brainunify.ReferenceRecorded,
+		"what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay)")
 	unifyVerifyCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the production stores")
 	unifyVerifyCmd.Flags().IntVar(&unifyPort, "port", 3307, "dolt sql-server port holding the production stores")
 	unifyVerifyCmd.Flags().StringVar(&unifyDataDir, "data-dir", "", "directory holding the unified database built by 'unify build' (required)")
@@ -88,7 +102,7 @@ func init() {
 	unifyVerifyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 3*time.Hour, "overall time budget for verification")
 
 	brainCmd.AddCommand(brainUnifyCmd)
-	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyVerifyCmd)
+	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd)
 }
 
 var unifyPlanCmd = &cobra.Command{
@@ -157,6 +171,8 @@ var unifyBuildCmd = &cobra.Command{
 			Database:        unifyDatabase,
 			DoltBin:         unifyDoltBin,
 			AllowCollisions: unifyAllowColl,
+			Host:            unifyHost,
+			Port:            unifyPort,
 			Logf: func(format string, args ...any) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
 			},
@@ -169,11 +185,85 @@ var unifyBuildCmd = &cobra.Command{
 	},
 }
 
+var unifyReplayCmd = &cobra.Command{
+	Use:   "replay",
+	Short: "Apply the changes the source stores made since the merged database was built",
+	Long: `A merged database is built from a moment in the past. Every bead written,
+edited or closed in a source store after that moment exists only in the source.
+'replay' carries those changes into the merged database, so it can be kept
+current until it becomes the reference.
+
+For every source it reads the Dolt history since the commit 'unify build'
+recorded (brain_unify_source_commits), finds the beads and the database-state
+tables that changed, and re-reads exactly those from the source as it stands
+now. Inserts, updates and deletes are one operation: the merged database's rows
+for a changed bead are made equal to what the sources hold for it. Duplicated
+ids follow the same winner rule the build uses, and are recorded in
+brain_unify_collisions. Tables Dolt keeps no history for (wisps) are reloaded
+whole. The next replay starts where this one read.
+
+Anything it cannot resolve confidently is a refusal that names the store and the
+table, and a refused replay leaves the merged database untouched:
+
+  - a merged database built before builds recorded their commits (rebuild it)
+  - a store that joined, left or moved to another database since the build
+  - a source whose history no longer contains its recorded commit
+  - a source table the build imported rows from that is gone
+  - a table or column the merged schema does not have
+  - duplicated ids whose copies disagree on content (override with
+    --allow-collisions)
+
+Prove a replay with 'unify verify --reference live', which compares the merged
+database against the sources as they stand. Sources are only ever read.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if unifyDataDir == "" {
+			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the merged database to")
+		}
+		ctx, cancel := context.WithTimeout(cmd.Context(), unifyTimeout)
+		defer cancel()
+
+		reg, source, err := openUnifySources(ctx, unifyHost, unifyPort)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = source.Close() }()
+
+		disc, err := brainunify.Discover(ctx, source, reg)
+		if err != nil {
+			return err
+		}
+		plan := disc.Plan()
+
+		started := time.Now()
+		replayer := brainunify.NewReplayer(source, plan, brainunify.ReplayOptions{
+			DataDir:         unifyDataDir,
+			Database:        unifyDatabase,
+			DoltBin:         unifyDoltBin,
+			Host:            unifyHost,
+			Port:            unifyPort,
+			AllowCollisions: unifyAllowColl,
+			Logf: func(format string, args ...any) {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[%7.1fs] %s\n",
+					time.Since(started).Seconds(), fmt.Sprintf(format, args...))
+			},
+		})
+		res, err := replayer.Replay(ctx)
+		if err != nil {
+			return err
+		}
+		return brainunify.WriteReplay(cmd.OutOrStdout(), res)
+	},
+}
+
 var unifyVerifyCmd = &cobra.Command{
 	Use:   "verify",
 	Short: "Compare the unified database against production by counts, size and content digest",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		if unifyReference != brainunify.ReferenceRecorded && unifyReference != brainunify.ReferenceLive {
+			return fmt.Errorf("--reference must be %q or %q, got %q", brainunify.ReferenceRecorded, brainunify.ReferenceLive, unifyReference)
+		}
 		if unifyDataDir == "" {
 			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the unified database to")
 		}
@@ -210,9 +300,10 @@ var unifyVerifyCmd = &cobra.Command{
 			return err
 		}
 		verifier, err := brainunify.NewVerifier(ctx, source, plan, plans, brainunify.VerifyOptions{
-			Database: unifyDatabase,
-			Host:     "127.0.0.1",
-			Port:     srv.Port,
+			Database:  unifyDatabase,
+			Host:      "127.0.0.1",
+			Port:      srv.Port,
+			Reference: unifyReference,
 			// Progress goes to stderr, flushed per line and stamped with the
 			// elapsed time. Verification reads every row of every table on
 			// both sides, so a stall must be visible while it happens rather

@@ -56,6 +56,7 @@ var brainTables = []string{
 	"brain_store_prefixes",
 	"brain_unify_collisions",
 	"brain_unify_import_log",
+	"brain_unify_source_commits",
 	"brain_unify_source_fingerprints",
 }
 
@@ -112,6 +113,19 @@ var BrainTableDDL = map[string]string{
   verified tinyint(1) NOT NULL DEFAULT 0,
   note text NOT NULL,
   PRIMARY KEY (store, table_name)
+)`,
+	// brain_unify_source_commits records, per source, the Dolt commit the
+	// build read at the moment it read it. A replay reads its starting point
+	// here: everything a source wrote after this commit is what the replay
+	// has to carry into the unified database. Without it a replay would have
+	// to re-diff the whole source — and a merged database built before this
+	// table exists (the first builds) is simply not replayable: rebuild it.
+	"brain_unify_source_commits": `CREATE TABLE brain_unify_source_commits (
+  store varchar(128) NOT NULL,
+  source_database varchar(255) NOT NULL,
+  commit_hash varchar(64) NOT NULL,
+  recorded_at datetime NOT NULL,
+  PRIMARY KEY (store)
 )`,
 	// brain_unify_source_fingerprints records what the build actually read
 	// from each source, per store, per table, per namespace. Verification

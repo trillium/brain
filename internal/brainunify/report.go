@@ -174,8 +174,8 @@ func WriteVerify(w io.Writer, res VerifyResult) error {
 		}
 		failed++
 	}
-	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d\n\nreference: what the build recorded it read from each source, compared against the unified database\n\n",
-		len(res.Checks), passed, failed, res.NamespacesChecked, res.CollisionsConfirmed); err != nil {
+	if _, err := fmt.Fprintf(w, "brain unify verification\n=======================\n\nchecks run:  %d\npassed:      %d\nfailed:      %d\nnamespaces:  %d\ncollisions confirmed: %d\n\nreference: %s\n\n",
+		len(res.Checks), passed, failed, res.NamespacesChecked, res.CollisionsConfirmed, referenceDescription(res.Reference)); err != nil {
 		return err
 	}
 	if failed > 0 {
@@ -195,4 +195,52 @@ func WriteVerify(w io.Writer, res VerifyResult) error {
 	}
 	_, err := fmt.Fprintln(w, "\nRESULT: PASS")
 	return err
+}
+
+// referenceDescription says, in the report, which side the unified database
+// was compared against.
+func referenceDescription(ref string) string {
+	if ref == ReferenceLive {
+		return "the sources as they stand now, read live and compared against the unified database"
+	}
+	return "what the build recorded it read from each source, compared against the unified database"
+}
+
+// WriteReplay renders what a replay did.
+func WriteReplay(w io.Writer, res ReplayResult) error {
+	if _, err := fmt.Fprintf(w, "brain unify replay\n==================\n\ndatabase: %s\ndata dir: %s\nelapsed: %s\nstores with changes: %s\nbeads reconciled: %d\n\n",
+		res.Database, res.DataDir, res.Elapsed.Round(1e6), joinOrNone(res.ChangedStores), len(res.Beads)); err != nil {
+		return err
+	}
+	if len(res.Tables) > 0 {
+		if _, err := fmt.Fprintf(w, "%-34s %9s %9s %9s %s\n", "TABLE", "DELETED", "INSERTED", "SKIPPED", ""); err != nil {
+			return err
+		}
+		for _, t := range res.Tables {
+			note := ""
+			if t.Full {
+				note = "(reloaded whole: the sources keep no history for this table)"
+			}
+			if _, err := fmt.Fprintf(w, "%-34s %9d %9d %9d %s\n", t.Table, t.Deleted, t.Inserted, t.Skipped, note); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := fmt.Fprintf(w, "\ncollision records written: %s\ncollision records removed: %s\n", joinOrNone(res.CollisionsWritten), joinOrNone(res.CollisionsRemoved)); err != nil {
+		return err
+	}
+	for _, c := range res.Commits {
+		if _, err := fmt.Fprintf(w, "next replay starts: %-24s %s\n", c.Store, c.Hash); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(w, "\nrun 'unify verify --reference live' to prove the merged database now equals the sources\n")
+	return err
+}
+
+func joinOrNone(values []string) string {
+	if len(values) == 0 {
+		return "none"
+	}
+	return strings.Join(values, ", ")
 }

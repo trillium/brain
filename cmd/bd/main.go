@@ -409,8 +409,8 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 
 // unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand
 // operates purely against the Dolt sql-server and therefore must run even when
-// the caller's working directory has no beads database. All three phases —
-// plan, build, verify — qualify: none of them reads or writes the caller's
+// the caller's working directory has no beads database. Every phase —
+// plan, build, replay, verify — qualifies: none of them reads or writes the caller's
 // store, and all of them are meaningless if they cannot be run from an
 // arbitrary directory.
 func unifyCommandCanRunWithoutStore(cmd *cobra.Command) bool {
@@ -418,7 +418,7 @@ func unifyCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 		return false
 	}
 	switch cmd.Name() {
-	case "plan", "build", "verify":
+	case "plan", "build", "replay", "verify":
 		return true
 	default:
 		return false

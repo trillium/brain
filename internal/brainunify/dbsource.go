@@ -38,6 +38,43 @@ func OpenReadOnlySource(_ context.Context, host string, port int) (*ReadOnlySour
 	return OpenSource(host, port)
 }
 
+// OpenReadOnlyDatabase opens a read-only connection to one named database on
+// a Dolt sql-server. Some Dolt history reads — dolt_log, dolt_diff — resolve
+// against the connection's default database, so they need this narrower
+// connection rather than the federation-wide one.
+func OpenReadOnlyDatabase(_ context.Context, host string, port int, database string) (*ReadOnlySource, error) {
+	if database == "" {
+		return nil, fmt.Errorf("opening a per-database read-only connection requires a database name")
+	}
+	return OpenSourceInDatabase(host, port, database)
+}
+
+// OpenSourceInDatabase connects to a Dolt sql-server with a default database.
+// The same statement guard applies: refusing writes is a property of the
+// connection, not of the statement the caller happened to send.
+func OpenSourceInDatabase(host string, port int, database string) (*readOnlySource, error) {
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if port == 0 {
+		port = 3307
+	}
+	dsn := fmt.Sprintf("root@tcp(%s:%d)/%s?parseTime=false&multiStatements=false", host, port, database)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("opening source database %s on dolt server %s:%d: %w", database, host, port, err)
+	}
+	db.SetMaxOpenConns(2)
+	db.SetMaxIdleConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("pinging source database %s on dolt server %s:%d: %w", database, host, port, err)
+	}
+	return &readOnlySource{db: db}, nil
+}
+
 // errNonQuery is returned when code tries to issue a non-SELECT through the
 // source connection. It exists to make the production-safety property
 // testable rather than a comment.
@@ -105,6 +142,112 @@ func OpenSource(host string, port int) (*readOnlySource, error) {
 		return nil, fmt.Errorf("pinging source dolt server %s:%d: %w", host, port, err)
 	}
 	return &readOnlySource{db: db}, nil
+}
+
+// HeadCommit returns the database's newest commit. It requires a connection
+// whose default database is the database being read: dolt_log is a
+// database-scoped system table.
+//
+// The commit is ordered by commit_order, which a Dolt commit chain carries as
+// a per-database monotonic counter, so "newest" is not a wall-clock
+// comparison — two commits can share a second but never a commit_order.
+func (s *readOnlySource) HeadCommit(ctx context.Context) (string, error) {
+	row := s.queryRow(ctx, "select commit_hash from dolt_log order by commit_order desc limit 1")
+	if row == nil {
+		return "", fmt.Errorf("refusing non-SELECT history read for the dolt_log head")
+	}
+	var raw any
+	if err := row.Scan(&raw); err != nil {
+		return "", fmt.Errorf("reading the dolt_log head: %w", err)
+	}
+	switch v := raw.(type) {
+	case []byte:
+		return string(v), nil
+	case string:
+		return v, nil
+	case nil:
+		return "", fmt.Errorf("dolt_log returned an empty commit hash")
+	default:
+		return "", fmt.Errorf("dolt_log head is an unexpected value of type %T", raw)
+	}
+}
+
+// HasCommit reports whether a commit hash exists in the database's history.
+// A replay's starting point must be verifiable: a history that no longer
+// contains its recorded base commit (rewritten, squashed, or garbage
+// collected) is refused loudly rather than diffed against a guess.
+func (s *readOnlySource) HasCommit(ctx context.Context, commit string) (bool, error) {
+	row := s.queryRow(ctx, "select count(*) from dolt_log where commit_hash = ?", commit)
+	if row == nil {
+		return false, fmt.Errorf("refusing non-SELECT history check in dolt_log")
+	}
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return false, fmt.Errorf("checking whether commit %s exists in dolt_log: %w", commit, err)
+	}
+	return n > 0, nil
+}
+
+// DiffScopeValues lists the distinct non-empty values the named column took
+// on either side of every changed row of a table, between the from commit and
+// the working set. For a bead-scoped table the column is the one that names a
+// bead, so the result is "every bead this table's changes touched" — inserts
+// and updates contribute the new value, deletes the old one, and an update
+// that moves a row between beads contributes both.
+//
+// It reads only WHICH beads changed. The rows a replay writes are re-read from
+// the source afterwards through the build's own column encoding, so a diff
+// result never becomes a second implementation of the row encoding.
+func (s *readOnlySource) DiffScopeValues(ctx context.Context, fromCommit, table, column string) ([]string, error) {
+	stmt := fmt.Sprintf("select `from_%s`, `to_%s` from dolt_diff(%s, 'WORKING', %s)",
+		column, column, quoteLiteral(fromCommit), quoteLiteral(table))
+	rows, err := s.query(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("diffing %s against commit %s: %w", table, fromCommit, err)
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	for rows.Next() {
+		var from, to any
+		if err := rows.Scan(&from, &to); err != nil {
+			return nil, fmt.Errorf("scanning the diff of %s: %w", table, err)
+		}
+		for _, v := range []any{from, to} {
+			if t := diffText(v); t != "" {
+				seen[t] = true
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading the diff of %s: %w", table, err)
+	}
+	return sortedKeys(seen), nil
+}
+
+// DiffChanged reports whether a table has any change between the from commit
+// and the working set.
+func (s *readOnlySource) DiffChanged(ctx context.Context, fromCommit, table string) (bool, error) {
+	stmt := fmt.Sprintf("select count(*) from dolt_diff(%s, 'WORKING', %s)", quoteLiteral(fromCommit), quoteLiteral(table))
+	row := s.queryRow(ctx, stmt)
+	if row == nil {
+		return false, fmt.Errorf("refusing non-SELECT diff of %s", table)
+	}
+	var n int64
+	if err := row.Scan(&n); err != nil {
+		return false, fmt.Errorf("diffing %s against commit %s: %w", table, fromCommit, err)
+	}
+	return n > 0, nil
+}
+
+func diffText(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case []byte:
+		return string(t)
+	default:
+		return fmt.Sprint(t)
+	}
 }
 
 // PingDatabase confirms a named database exists and answers a read. It is how
@@ -634,6 +777,45 @@ type CopyRowsResult struct {
 	// only that every row arrived but that it arrived in the namespace it
 	// belongs to.
 	Groups map[string]Fingerprint
+}
+
+// ReadRows reads the rows of a table that satisfy a where clause, through the
+// same column encoding the copy path uses (json columns as cast(col as char)),
+// preserving NULLs and empty json documents the way the build inserts them.
+// It is how a replay re-reads a changed bead's rows, so the bytes the replay
+// writes and the bytes the fingerprints digest come from one rendering of the
+// value.
+func (s *readOnlySource) ReadRows(ctx context.Context, database, table string, cols []string, where string, args ...any) ([][]any, error) {
+	if len(cols) == 0 {
+		return nil, fmt.Errorf("no columns to read from %s.%s", database, table)
+	}
+	jsonCols, err := s.JSONColumns(ctx, database, table)
+	if err != nil {
+		return nil, err
+	}
+	stmt := fmt.Sprintf("select %s from `%s`.`%s`", copySelectList(cols, jsonCols), database, table)
+	if where != "" {
+		stmt += " where " + where
+	}
+	rows, err := s.query(ctx, stmt, args...)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s.%s: %w", database, table, err)
+	}
+	defer rows.Close()
+	idx := jsonIdx(cols, jsonCols)
+	var out [][]any
+	for rows.Next() {
+		values := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range values {
+			ptrs[i] = &values[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("scanning %s.%s: %w", database, table, err)
+		}
+		out = append(out, normalizeRow(values, idx))
+	}
+	return out, rows.Err()
 }
 
 // copySelectList renders the column list of the SELECT a copy reads through.

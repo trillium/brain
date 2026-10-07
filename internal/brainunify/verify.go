@@ -2,8 +2,12 @@ package brainunify
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Check is one mechanical comparison between the source data and the unified
@@ -24,12 +28,18 @@ type Check struct {
 	Note string
 	// OK reports whether the comparison passed.
 	OK bool
+	// Detail replaces the fingerprint difference when the check is not a
+	// fingerprint comparison (a collision record, for one).
+	Detail string
 }
 
 // Difference renders the mismatch, or the empty string when the check passed.
 func (c Check) Difference() string {
 	if c.OK {
 		return ""
+	}
+	if c.Detail != "" {
+		return c.Detail
 	}
 	return fmt.Sprintf("rows %d vs %d, bytes %d vs %d, hash %d vs %d",
 		c.Expected.Rows, c.Actual.Rows, c.Expected.Bytes, c.Actual.Bytes, c.Expected.Hash, c.Actual.Hash)
@@ -46,6 +56,9 @@ type VerifyResult struct {
 	// CollisionsConfirmed counts collisions whose recorded decision was
 	// re-read from the unified database and matched.
 	CollisionsConfirmed int
+	// Reference is the side the unified database was compared against:
+	// ReferenceRecorded or ReferenceLive.
+	Reference string
 }
 
 // OK reports whether every check passed.
@@ -76,12 +89,41 @@ type VerifyOptions struct {
 	// Hosts locates the unified database's Dolt server.
 	Host string
 	Port int
+	// Reference chooses the side a comparison is made against.
+	//
+	// ReferenceRecorded (the default) compares the unified database against
+	// the fingerprints the build recorded as it copied. That is what makes
+	// a build-time verification deterministic: sources frozen into a copy
+	// can be re-read byte-identical, and the comparison measures the build,
+	// not the federation's live movement.
+	//
+	// ReferenceLive recomputes the expected side from the sources as they
+	// stand NOW, with the same fingerprints and the same collision-loser
+	// exclusions. That is the acceptance test for a replay: a replayed
+	// database must equal what its sources hold now, and any change a
+	// replay missed (or any write a source made after the replay) makes it
+	// fail, naming the table and the namespace that differ.
+	Reference string
 	// Logf receives a line as each table and each source is read. Verification
 	// compares every row of every table on both sides, so without progress
 	// output a stall is indistinguishable from a long run — and a full
 	// federation takes long enough that "wait longer" is not a debugging
 	// strategy.
 	Logf func(format string, args ...any)
+}
+
+// The two reference modes a verification can run in.
+const (
+	ReferenceRecorded = "recorded"
+	ReferenceLive     = "live"
+)
+
+// normalizeReference falls back to the default for an unset mode.
+func normalizeReference(ref string) string {
+	if ref == "" {
+		return ReferenceRecorded
+	}
+	return ref
 }
 
 // Verifier compares the source federation against a built unified database.
@@ -132,21 +174,37 @@ func (v *Verifier) Close() error { return v.unified.Close() }
 // proves both things at once — that every row arrived, and that it arrived in
 // the namespace it belongs to.
 func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
-	var res VerifyResult
+	res := VerifyResult{Reference: normalizeReference(v.opts.Reference)}
 
-	// The recorded source fingerprints are the reference. Reading them is
-	// also what makes a verification reproducible: the build measured the
-	// sources at a point in time, and the comparison is that measurement
-	// against the database it produced.
-	recorded, err := v.readRecordedFingerprints(ctx)
-	if err != nil {
-		return res, err
+	var recorded map[string]map[string]Fingerprint
+	if normalizeReference(v.opts.Reference) == ReferenceRecorded {
+		// The recorded source fingerprints are the reference. Reading them is
+		// also what makes a verification reproducible: the build measured the
+		// sources at a point in time, and the comparison is that measurement
+		// against the database it produced.
+		var err error
+		recorded, err = v.readRecordedFingerprints(ctx)
+		if err != nil {
+			return res, err
+		}
+		v.log("read %d recorded source fingerprint(s) from the build", countRecorded(recorded))
+	} else {
+		v.log("reference: live sources read directly, not the build's recorded fingerprints")
 	}
-	v.log("read %d recorded source fingerprint(s) from the build", countRecorded(recorded))
 
 	for _, tp := range v.plans {
 		v.log("table %-34s scope=%s", tp.Target, tp.Scope)
-		expectedByGroup := combineRecorded(recorded[tp.Target])
+		var expectedByGroup map[string]Fingerprint
+		if normalizeReference(v.opts.Reference) == ReferenceLive {
+			var err error
+			expectedByGroup, err = v.expectedFromLiveSources(ctx, tp)
+			if err != nil {
+				return res, err
+			}
+			v.log("  live %-31s %d group(s) expected from the sources as they stand now", tp.Target, len(expectedByGroup))
+		} else {
+			expectedByGroup = combineRecorded(recorded[tp.Target])
+		}
 
 		actualByGroup, err := v.unified.FingerprintByGroup(ctx, v.opts.Database, tp.Target,
 			tp.ScopeColumnName(), unifiedGroupColumn(tp.Scope), nil)
@@ -193,14 +251,60 @@ func (v *Verifier) Verify(ctx context.Context) (VerifyResult, error) {
 		})
 	}
 
-	confirmed, err := v.confirmCollisions(ctx)
+	confirmed, failed, err := v.confirmCollisions(ctx)
 	if err != nil {
 		return res, err
 	}
 	res.CollisionsConfirmed = confirmed
+	res.Checks = append(res.Checks, failed...)
 
 	sortChecks(res.Checks)
 	return res, nil
+}
+
+// expectedFromLiveSources computes what the unified database must hold for
+// one table, measured directly from the participating sources as they stand
+// now. It is the same measurement the builder took at copy time — same
+// server-side expressions, same exclusion of collision losers — shifted to
+// the present. This is the side a replay is judged against.
+func (v *Verifier) expectedFromLiveSources(ctx context.Context, tp TablePlan) (map[string]Fingerprint, error) {
+	out := map[string]Fingerprint{}
+	losing := losingIssueIDs(v.plan.Collisions)
+	for _, src := range v.plan.Sources {
+		if !src.Reachable {
+			continue
+		}
+		has, err := v.source.HasTable(ctx, src.Database, tp.Table)
+		if err != nil {
+			return nil, fmt.Errorf("checking %s.%s: %w", src.Database, tp.Table, err)
+		}
+		if !has {
+			continue
+		}
+		switch tp.Scope {
+		case ScopeDatabaseState:
+			fp, err := v.source.ReferenceDigest(ctx, src.Database, &tp, src.Namespace)
+			if err != nil {
+				return nil, fmt.Errorf("live digest of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+			}
+			if fp.Rows > 0 {
+				out[src.Namespace] = Combine(out[src.Namespace], fp)
+			}
+		default:
+			byGroup, err := v.source.FingerprintByGroup(ctx, src.Database, tp.Table,
+				tp.ScopeColumnName(), "", losingIDsFor(losing, src.Namespace))
+			if err != nil {
+				return nil, fmt.Errorf("live fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+			}
+			for g, fp := range byGroup {
+				if fp.Rows == 0 {
+					continue
+				}
+				out[g] = Combine(out[g], fp)
+			}
+		}
+	}
+	return out, nil
 }
 
 // readRecordedFingerprints reads what the build recorded it read, keyed by
@@ -260,36 +364,78 @@ func unifiedGroupColumn(scope Scope) string {
 // survived, that it is the recorded winner, and that every losing copy is on
 // record. This is the check that would catch a migration which quietly dropped
 // a relationship.
-func (v *Verifier) confirmCollisions(ctx context.Context) (int, error) {
-	confirmed := 0
+//
+// A collision that does not match is a failed check in the report, not an
+// aborted run: the table comparisons beside it still print, so a reader sees
+// everything that differs at once. Only a read that cannot be made at all
+// aborts.
+func (v *Verifier) confirmCollisions(ctx context.Context) (confirmed int, failed []Check, err error) {
+	fail := func(id, detail string) {
+		failed = append(failed, Check{Scope: "collision " + id, Table: "brain_unify_collisions", Detail: detail})
+	}
+	known := map[string]bool{}
 	for _, c := range v.plan.Collisions {
+		known[c.ID] = true
 		copies := 0
 		stmt := fmt.Sprintf("select count(*) from `%s`.`issues` where `id` = ?", v.opts.Database)
 		row := v.unified.queryRow(ctx, stmt, c.ID)
 		if row == nil {
-			return 0, fmt.Errorf("refusing non-SELECT collision check for %s", c.ID)
+			return confirmed, failed, fmt.Errorf("refusing non-SELECT collision check for %s", c.ID)
 		}
 		if err := row.Scan(&copies); err != nil {
-			return 0, fmt.Errorf("counting %s in the unified database: %w", c.ID, err)
+			return confirmed, failed, fmt.Errorf("counting %s in the unified database: %w", c.ID, err)
 		}
 		if copies != 1 {
-			return confirmed, fmt.Errorf("collision %s appears %d time(s) in the unified database, want exactly 1", c.ID, copies)
+			fail(c.ID, fmt.Sprintf("appears %d time(s) in the unified database, want exactly 1", copies))
+			continue
 		}
 		stmt = fmt.Sprintf("select `winner`, `losers` from `%s`.`brain_unify_collisions` where `id` = ?", v.opts.Database)
 		r := v.unified.queryRow(ctx, stmt, c.ID)
 		if r == nil {
-			return 0, fmt.Errorf("refusing non-SELECT collision lookup for %s", c.ID)
+			return confirmed, failed, fmt.Errorf("refusing non-SELECT collision lookup for %s", c.ID)
 		}
 		var winner, losers string
 		if err := r.Scan(&winner, &losers); err != nil {
-			return confirmed, fmt.Errorf("reading recorded collision %s: %w", c.ID, err)
+			if errors.Is(err, sql.ErrNoRows) {
+				fail(c.ID, fmt.Sprintf("is duplicated across %s (winner %s) but the unified database records no collision for it", strings.Join(append([]string{c.Winner}, c.Losers...), ", "), c.Winner))
+				continue
+			}
+			return confirmed, failed, fmt.Errorf("reading recorded collision %s: %w", c.ID, err)
 		}
 		if winner != c.Winner {
-			return confirmed, fmt.Errorf("collision %s recorded winner %q but the plan chose %q", c.ID, winner, c.Winner)
+			fail(c.ID, fmt.Sprintf("recorded winner %q but the sources' winner rule chooses %q", winner, c.Winner))
+			continue
+		}
+		var recordedLosers []string
+		if err := json.Unmarshal([]byte(losers), &recordedLosers); err != nil {
+			fail(c.ID, fmt.Sprintf("recorded losers %q are unreadable: %v", losers, err))
+			continue
+		}
+		sort.Strings(recordedLosers)
+		if !equalStrings(recordedLosers, c.Losers) {
+			fail(c.ID, fmt.Sprintf("recorded losers [%s] but the sources have [%s]", strings.Join(recordedLosers, ", "), strings.Join(c.Losers, ", ")))
+			continue
 		}
 		confirmed++
 	}
-	return confirmed, nil
+
+	// The reverse direction: a record that no duplicated id backs any more.
+	stmt := fmt.Sprintf("select `id` from `%s`.`brain_unify_collisions`", v.opts.Database)
+	rows, qerr := v.unified.query(ctx, stmt)
+	if qerr != nil {
+		return confirmed, failed, fmt.Errorf("reading recorded collisions: %w", qerr)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return confirmed, failed, err
+		}
+		if !known[id] {
+			fail(id, "the unified database records a collision for an id the sources no longer duplicate")
+		}
+	}
+	return confirmed, failed, rows.Err()
 }
 
 // Combine merges disjoint fingerprints. Counts and sizes sum; digests combine

@@ -12,6 +12,9 @@ func TestUnifyCommandCanRunWithoutStore(t *testing.T) {
 	if !unifyCommandCanRunWithoutStore(unifyBuildCmd) {
 		t.Error("unify build must be allowed to run without a local store")
 	}
+	if !unifyCommandCanRunWithoutStore(unifyReplayCmd) {
+		t.Error("unify replay must be allowed to run without a local store")
+	}
 	if !unifyCommandCanRunWithoutStore(unifyVerifyCmd) {
 		t.Error("unify verify must be allowed to run without a local store")
 	}
