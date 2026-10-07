@@ -84,5 +84,37 @@ genuine operational need for an override appears later, adding one is a
 small reversible addition, whereas shipping the override first and
 withdrawing it is not. This update is documentation-only: no code, no verb,
 no behaviour change, nothing implemented. The other three items the design
-left open (history surface, claim-event backfill, transfer urgency) are
-unchanged and stay open.
+left open (history surface, claim-event backfill, transfer urgency) were
+unchanged and stayed open at this point in the day — all three were decided
+later the same day; see the update below, and the design doc is now free of
+open questions.
+
+## Update 2026-10-07: the three remaining open items decided
+
+The design doc left three items open to the captain after the
+beads-carrying-release decision; all three are now **decided 2026-10-07**
+and recorded in `docs/design/brain-prefix-release.md` (§Decided by the
+captain items 2–4, §Decided items (formerly "Left to the captain"), and in
+the body of §Question c and §Question d), each with its rejected or
+deferred alternative kept visible:
+
+- **History surface:** the `bd store-prefix history <prefix>`
+  **subcommand**, not a `list --history` flag — clearer and discoverable,
+  and it sits with the other `store-prefix` verbs; the flag shape is
+  recorded in the design as the rejected alternative.
+- **Claim events:** recorded **from adoption onward**; existing runtime
+  rows are **not** backfilled with a synthetic `claim` event per row — an
+  honest boundary beats fabricated history. The resulting gap is stated
+  plainly in the design: pre-adoption claims have no event row.
+- **Transfer urgency:** keep the two-act release-then-claim (c1) now; the
+  atomic move (c2) is named as a deliberate **fast-follow** to be built if
+  contested transfers actually appear, not an indefinitely deferred
+  nice-to-have.
+
+With these, the design has no open questions left. This update is
+documentation-only: no code, no verb, no behaviour change, nothing
+implemented, and the absolute-refusal decision already recorded above is
+untouched and nowhere contradicted. One leftover repaired while editing:
+the design's test-list item still named "the override" after the previous
+revision had removed that surface; the stray mention now reads as the
+claim-event append test (and the absence of backfill rows) instead.

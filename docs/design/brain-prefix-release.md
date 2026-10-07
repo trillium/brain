@@ -2,10 +2,12 @@
 
 **Status:** design only — nothing is built, no behaviour changes, no verb is
 wired up. Production is untouched. This document proposes; it does not land.
-One question left open here — whether a beads-carrying prefix may be released
-under an override (question b) — has since been **decided (2026-10-07):
-absolute refusal, no `--with-beads` override**; see §Question b and refusal 4
-in §Question e.
+The questions it raised are now all decided as of 2026-10-07: the
+beads-carrying-release override question (question b) — **absolute refusal,
+no `--with-beads` override** — and the last three items (history surface,
+claim-event backfill, transfer urgency); see §Question b for the first and
+§Decided by the captain / §Decided items (formerly "Left to the captain")
+for the rest.
 **Companion material:** the namespace-model report
 (`/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md`,
 §Requirement 3), which records the runtime claim surface and the conflict rule
@@ -258,14 +260,16 @@ the operator's remedy is to do the two acts promptly and to check
 refused with "a transfer is in progress" (same-transaction serialisation on
 the row) — never silently accepted and never silently redirected.
 
-**Recommendation (not a decision): c1 for now, with c2 named as a deliberate
-follow-on.** The brief's own framing — the transfer must not reintroduce
-silent rewriting — argues for keeping each state transition a separate,
-individually refused/confirmed act until a real contested-transfer need
-appears. If the unclaimed window proves to be a live problem (two agents
-fighting over a prefix mid-transfer), c2 is the designed answer then, and the
-event table from (d) already carries the `transfer` event type so the audit
-vocabulary does not change when it lands.
+**Decided 2026-10-07: c1 for now, with c2 named as a deliberate
+fast-follow.** Release-then-claim is the decided path: the two acts are the
+shape that keeps every state transition separate, individually
+refused/confirmed, and non-silent. The atomic move is **not** an indefinitely
+deferred nice-to-have — it is a named **fast-follow** whose trigger is
+concrete: contested transfers actually appearing (two stores legitimately
+wanting the same prefix with intent on both sides). Until then c2 is not
+built; if the contested case materialises, it is the designed answer, and
+the event table from (d) already carries the `transfer` event type so the
+audit vocabulary does not change when it lands.
 
 ## Question d — what is recorded
 
@@ -309,9 +313,12 @@ Semantics:
 - The refusal messages gain a pointer to the trail: a rival claim on a prefix
   released ten minutes ago can be answered with "released by <owner> at <time>
   (event <id>), reason: <why>" instead of just "not yours".
-- `bd store-prefix list` grows a `--history` mode (or a `store-prefix history
-  <prefix>` subcommand — the implementation pick, left open) that prints the
-  event rows for a prefix, newest first.
+- `bd store-prefix history <prefix>` — a **subcommand**, decided
+  2026-10-07 — prints the event rows for a prefix, newest first. The
+  `list --history` flag shape proposed alongside it here was rejected
+  (decided 2026-10-07, see below): a subcommand is clearer and discoverable,
+  and it sits with the other `store-prefix` verbs rather than hiding the
+  surface behind a flag on `list`.
 
 Alternatives considered:
 
@@ -330,10 +337,28 @@ today writes one), and breaks the moment the store is copied or exported
 without history. Rejected as the *primary* record; it remains a free
 second copy of the same facts.
 
-**Recommendation (not a decision): the event table**, because it is the only
-option that keeps the audit trail inside the record the CLI itself reads, and
-because "claims are recorded too" means the day the transfer verb lands the
-history needs no backfill.
+**Recommendation (not a decision): the event table**, because it is the
+only option that keeps the audit trail inside the record the CLI
+itself reads, and because "claims are recorded too" means the day the
+transfer verb lands the history needs no backfill.
+
+**Decisions (2026-10-07)** on the two items this section left to the
+captain:
+
+1. **The history surface: `bd store-prefix history <prefix>` is the
+   subcommand.** A subcommand, not a `list --history` flag. Reason: clearer
+   and discoverable, and it sits with the other `store-prefix` verbs rather
+   than hiding the surface behind a flag on `list`. The flag shape remains
+   documented above as the **rejected alternative**, with the reason it
+   lost; body text lists and the build list (item 5) name the subcommand
+   only.
+2. **Claim events: recorded from adoption onward; existing runtime rows are
+   not backfilled.** There is no synthetic `claim` event per pre-adoption
+   row: an honest boundary beats fabricated history. Stated plainly, the
+   resulting gap is this: **claims that landed before the event table is
+   adopted have no event row** — the trail is complete only from adoption
+   onward. The backfill option is recorded here as the **rejected
+   alternative**, rejected for that reason.
 
 ## Question e — refusal semantics
 
@@ -447,16 +472,26 @@ reason).
    mirroring `add`'s reporting style (outcome, consequences printed, `--json`
    shape).
 4. Claim events: `RecordStorePrefix` gains the same-transaction event append,
-   so the trail is complete for claims too.
-5. `bd store-prefix history <prefix>` (or `list --history`).
+   so the trail is complete for claims too — from adoption onward;
+   pre-adoption runtime rows are not backfilled (§Question d, decision 2).
+5. `bd store-prefix history <prefix>` subcommand (decided 2026-10-07; the
+   `list --history` flag shape was proposed here and rejected — see
+   §Question d, decision 1).
 6. Tests colocated with the existing namespace tests
    (`unified_namespaces_test.go`, `store_prefix_test.go`): each refusal, the
-   override, the race, the event row shape, and the re-claim-after-release
-   path.
+   race, the event row shape, the claim-event append (and the absence of any
+   backfill row for pre-adoption claims), and the
+   re-claim-after-release path.
 
 ## What would deliberately NOT be built
 
-- **No atomic `move` verb** in this round (c2) — release-then-claim first.
+- **No atomic `move` verb** in this round (c2) — release-then-claim is the
+  decided path (2026-10-07), with the atomic move named as a deliberate
+  fast-follow built only if contested transfers actually appear.
+- **No synthetic backfill of claim events** for pre-adoption runtime rows
+  (decided 2026-10-07) — claim events are recorded from adoption onward and
+  the pre-adoption gap is left honest rather than fabricated (§Question d,
+  decision 2).
 - **No release of build-decided prefixes**, ever, through this verb — that is
   a re-unification act, not a namespace-maintenance act.
 - **No per-bead re-homing.** Beads keep their ids; ownership is per-prefix or
@@ -484,20 +519,53 @@ reason).
    ambiguity argument, with the later-need escape hatch (a small reversible
    addition if ever genuinely required) recorded on the record, not carried
    as a live option.
+2. **The history surface (d):** decided **2026-10-07** — the
+   `bd store-prefix history <prefix>` **subcommand**. Reason: clearer and
+   discoverable, and it sits with the other `store-prefix` verbs. The
+   `list --history` flag shape is recorded as the rejected alternative
+   (§Question d, decision 1).
+3. **Claim events (d):** decided **2026-10-07** — events are recorded from
+   adoption onward, and existing runtime rows are **not** backfilled with a
+   synthetic `claim` event each. Reason: an honest boundary beats fabricated
+   history. The gap this leaves is stated plainly in §Question d, decision 2:
+   pre-adoption claims have no event row.
+4. **Transfer urgency (c):** decided **2026-10-07** — release-then-claim
+   (c1) now; the atomic move (c2) is a deliberate **fast-follow** built if
+   contested transfers actually appear, not an indefinitely deferred
+   nice-to-have (§Question c).
 
-## Left to the captain
+## Decided items (formerly "Left to the captain")
 
-1. **The history surface (d):** subcommand vs flag on `list` — presentation,
-   not substance.
+Every question this section once listed is now decided, all on
+2026-10-07; the design has no open questions left. Each item, with its
+decision, its reason, and its date — so a reader can see when and how each
+was settled. Items left here earlier in the day were as follows, now all
+recorded in their decided shape.
+
+1. **The history surface (d): subcommand vs flag on `list`.** Decided
+   2026-10-07: the `bd store-prefix history <prefix>` **subcommand**, not a
+   `list --history` flag. Reason: clearer and discoverable, and it sits
+   with the other `store-prefix` verbs rather than hiding behind a flag on
+   `list`. The flag shape remains documented in §Question d as the rejected
+   alternative.
 2. **Whether claim events start being recorded now or only with the first
-   release.** Recording claims from adoption onward leaves pre-adoption
-   claims (already landed) without event rows; the design accepts that gap
-   and documents the boundary, but the captain may prefer to backfill one
-   synthetic `claim` event per existing runtime row.
-3. **Transfer urgency:** if contested transfers are expected soon (two stores
-   legitimately wanting the same prefix with intent on both sides), c2 should
-   be prioritised over c1; the design's read of current practice is that they
-   are not expected soon.
+   release.** Decided 2026-10-07: claim events are recorded **from adoption
+   onward**, and existing runtime rows are **not** backfilled with a
+   synthetic `claim` event per row. Reason: an honest boundary beats
+   fabricated history. Stated plainly, the resulting gap is that claims
+   already landed before the event table exists have no event row, and
+   none will be invented for them — the trail is complete from adoption
+   onward and honest about the boundary. The backfill option remains
+   documented in §Question d as the rejected alternative.
+3. **Transfer urgency.** Decided 2026-10-07: keep the two-act
+   release-then-claim path (c1) now; the atomic move (c2) is named as a
+   deliberate **fast-follow** to be built if contested transfers actually
+   appear, not an indefinitely deferred nice-to-have. Reason: the two-act
+   shape keeps every state transition separate, individually
+   refused/confirmed, and non-silent, and the event table already carries
+   the `transfer` event type so the audit vocabulary does not change if c2
+   lands. See §Question c, "What would deliberately NOT be built" in the
+   build list.
 
 ## Update 2026-10-07: the beads-carrying-release decision
 
@@ -516,7 +584,10 @@ in §Question e) with its original reasoning and the reason it was overruled,
 so the record shows the road not taken. If a genuine operational need for an
 override appears later, adding one is a small reversible addition, whereas
 shipping the override first and withdrawing it is not. The remaining three
-items in "Left to the captain" are unchanged and stay open.
+items in "Left to the captain" were unchanged and stayed open at this point
+in the day — all three were decided later the same day; the design now has
+no open questions left (see "Decided by the captain" items 2–4 and "Decided
+items (formerly Left to the captain)").
 
 ---
 
@@ -531,3 +602,25 @@ the test list updated to drop the `--with-beads` surface; (f) "What would
 deliberately NOT be built" updated; (g) a new "Decided by the captain"
 section, and the former item 1 of "Left to the captain" removed, with the
 remaining three items renumbered but otherwise unchanged.
+
+**Editing history (2026-10-07, second pass):** the last three decisions
+recorded; with them the design has no open questions left. Changes made in
+this revision: (a) §Question d — a "Decisions (2026-10-07)" block added:
+the history surface decided as the `bd store-prefix history <prefix>`
+subcommand with the `list --history` flag shape recorded as the rejected
+alternative, and claim events decided as recorded from adoption onward with
+no backfill of existing runtime rows, the resulting gap (pre-adoption
+claims have no event row) stated plainly; (b) §Question d list bullet and
+build item 5 name the subcommand only; (c) §Question c — the c1/c2
+recommendation converted to a decision: c1 now, c2 a deliberate
+fast-follow contingent on contested transfers actually appearing; (d) the
+"no atomic move" line of "What would deliberately NOT be built" updated;
+(e) header Status updated: every question the document raised is decided;
+(f) "Decided by the captain" extended with items 2–4; (g) "Left to the
+captain" replaced by "Decided items (formerly Left to the captain)"
+naming each question, its decision, its reason and its date — the chosen
+shape keeps the section rather than deleting it, so the record of what was
+once open stays visible; (h) the Update-2026-10-07 paragraph's closing
+note corrected to reflect the later decisions. Nothing in the design
+contradicts the absolute-refusal decision already recorded; it is
+untouched and no text re-opens it.
