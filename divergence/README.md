@@ -118,3 +118,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0022](0022-brain-cutover-rehearsal.md) | brain cutover rehearsal | landed |
 | [0023](0023-vision-landing.md) | VISION.md landed — the captain-approved vision, verbatim | proposed |
 | [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |
+| [0025](0025-brain-collision-duplication-records.md) | duplication-records design — the vision's collision model, designed not built | proposed |

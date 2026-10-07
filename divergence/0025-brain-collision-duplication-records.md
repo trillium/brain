@@ -1,5 +1,5 @@
 ---
-id: 0024
+id: 0025
 title: duplication-records design — the vision's collision model, designed not built
 isc: []
 status: proposed
@@ -9,7 +9,7 @@ commits: []
 touches:
   - docs/design/brain-collision-duplication-records.md
   - docs/design/brain-single-database.md
-  - divergence/0024-brain-collision-duplication-records.md
+  - divergence/0025-brain-collision-duplication-records.md
 upstream_rebase_notes: |
   Doc-only entry; no code changes expected on rebase. brain-single-database.md
   is the document the design superseded sections of; if its collision section

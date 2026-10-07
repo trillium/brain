@@ -11,7 +11,7 @@ exactly once"**, and row "What must be true before step 3" item 2 (the
 winner-rule acceptance). Those passages remain landed and are referenced where
 they diverge. This is a deliberate, recorded contradiction, not a silent
 rewrite; see the "Already landed" sentence in each superseded section of
-[divergence/0024](../divergence/0024-brain-collision-duplication-records.md).
+[divergence/0025](../divergence/0025-brain-collision-duplication-records.md).
 
 ---
 
