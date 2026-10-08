@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-10-07
 updated: 2026-10-08
-commits: [a6040bfe9, e97ce87da]
+commits: [a6040bfe9, cf478c6d8]
 touches:
   - docs/design/brain-prefix-release.md
   - divergence/0021-brain-prefix-release-design.md
