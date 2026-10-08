@@ -274,6 +274,27 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		defer func() { _ = mergedRO.Close() }()
 	}
 
+	// Two replays at once would apply the same changes twice and race on the pins;
+	// a replay of a hosted merged database takes a named lock on the server for
+	// its whole run and refuses to start while another holds it.
+	if !r.opts.DryRun {
+		lockConn, err := merged.Conn(ctx)
+		if err != nil {
+			return res, fmt.Errorf("opening a connection to the merged database: %w", err)
+		}
+		defer func() {
+			_, _ = lockConn.ExecContext(context.Background(), "select release_lock('brain_unify_replay')")
+			_ = lockConn.Close()
+		}()
+		var got sql.NullInt64
+		if err := lockConn.QueryRowContext(ctx, "select get_lock('brain_unify_replay', 0)").Scan(&got); err != nil {
+			return res, fmt.Errorf("taking the replay lock: %w", err)
+		}
+		if !got.Valid || got.Int64 != 1 {
+			return res, fmt.Errorf("refusing to replay: another replay of this merged database is running (it holds the lock brain_unify_replay)")
+		}
+	}
+
 	w := &replayWork{conns: conns}
 
 	// ---- validate: every premise is checked loudly before anything is read --

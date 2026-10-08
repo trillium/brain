@@ -751,3 +751,39 @@ func (f *replayFixture) hostedVerifyTitle(port int, id string) string {
 	}
 	return title
 }
+
+// TestTwoReplaysDoNotRunAtOnce: a second replay of a hosted merged database
+// refuses while the first holds the lock.
+func TestTwoReplaysDoNotRunAtOnce(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+	db, err := srv.OpenTarget(f.ctx, fixtureMergedDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	conn, err := db.Conn(f.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var got int
+	if err := conn.QueryRowContext(f.ctx, "select get_lock('brain_unify_replay', 0)").Scan(&got); err != nil || got != 1 {
+		t.Fatalf("taking the lock: %v %d", err, got)
+	}
+	if _, err := f.hostedReplay(srv.Port, ReplayOptions{}); err == nil || !strings.Contains(err.Error(), "another replay") {
+		t.Fatalf("a second replay must refuse: %v", err)
+	}
+	if _, err := f.hostedReplay(srv.Port, ReplayOptions{DryRun: true}); err != nil {
+		t.Fatalf("a dry run (the readiness check) does not need the lock: %v", err)
+	}
+	_, _ = conn.ExecContext(f.ctx, "select release_lock('brain_unify_replay')")
+	if _, err := f.hostedReplay(srv.Port, ReplayOptions{}); err != nil {
+		t.Fatalf("after the lock is released a replay runs: %v", err)
+	}
+}
