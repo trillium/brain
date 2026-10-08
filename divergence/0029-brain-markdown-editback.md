@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-10-09
 updated: 2026-10-09
-commits: [61e73ba76]
+commits: [cf608d374, a47b666e6, 2c7fb0788]
 touches:
   - internal/brain/editback/
   - internal/brain/exfiltrator/manifest.go
