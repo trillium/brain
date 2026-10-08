@@ -30,8 +30,9 @@ import (
 const outboxRescueNow = "9999-12-31T23:59:59Z"
 
 var outboxCmd = &cobra.Command{
-	Use:     "outbox",
-	GroupID: "sync",
+	Use:          "outbox",
+	GroupID:      "sync",
+	SilenceUsage: true,
 	Short:   "Durable event outbox: delivery state, retries, backlog",
 	Long: `Operator verbs for the durable event outbox.
 
@@ -75,15 +76,10 @@ func outboxOpen() (context.Context, *sql.DB, string, error) {
 	return ctx, db, scope, nil
 }
 
-// commitOutboxBookkeeping commits the working set through the open store when
-// embedded auto-commit applies, so ack/attempt bookkeeping written by these
-// verbs is part of store history. Server-mode stores own their own commit
-// lifecycle; there it no-ops.
-func commitOutboxBookkeeping(ctx context.Context, what string) error {
-	return commitPendingIfEmbedded(ctx, store, getActor(), doltAutoCommitParams{
-		Command:         "outbox",
-		MessageOverride: fmt.Sprintf("event outbox: %s", what),
-	})
+// commitOutboxBookkeeping commits ack/attempt/purge bookkeeping written by the
+// verbs so it is part of store history (one commit staging only event_outbox).
+func commitOutboxBookkeeping(ctx context.Context, db *sql.DB, what string) error {
+	return commitOutboxTable(ctx, db, fmt.Sprintf("event outbox: %s", what))
 }
 
 // ── outbox list ──────────────────────────────────────────────────────────
@@ -240,7 +236,7 @@ func runOutboxDeliver(cmd *cobra.Command, args []string) error {
 	for _, c := range res.Corrupt {
 		fmt.Fprintf(os.Stderr, "%v\n", c)
 	}
-	if cerr := commitOutboxBookkeeping(ctx, "deliver"); cerr != nil {
+	if cerr := commitOutboxBookkeeping(ctx, db, "deliver"); cerr != nil {
 		return HandleError("event outbox: commit delivery state: %v", cerr)
 	}
 	if jsonOutput {
@@ -302,7 +298,7 @@ func runOutboxAck(cmd *cobra.Command, args []string) error {
 			if err := forceRetireOutboxRow(ctx, db, scope, seq, now); err != nil {
 				return HandleError("event outbox: %v", err)
 			}
-			if cerr := commitOutboxBookkeeping(ctx, fmt.Sprintf("ack %d (force)", seq)); cerr != nil {
+			if cerr := commitOutboxBookkeeping(ctx, db, fmt.Sprintf("ack %d (force)", seq)); cerr != nil {
 				return HandleError("event outbox: commit ack: %v", cerr)
 			}
 			fmt.Printf("acknowledged event seq=%d with --force (row could not be read normally: %v)\n", seq, err)
@@ -322,10 +318,15 @@ func runOutboxAck(cmd *cobra.Command, args []string) error {
 			"event outbox: subscriber %q is not frozen on event seq=%d (frozen: [%s]); pass --force to record it anyway",
 			outboxAckSubscriber, seq, strings.Join(row.Subscribers, ", "))
 	}
+	if first, dup := row.Acks[outboxAckSubscriber]; dup {
+		fmt.Printf("event seq=%d was already acknowledged by %s at %s; unchanged (a second acknowledgement is idempotent, the first timestamp stands)\n",
+			seq, outboxAckSubscriber, first)
+		return nil
+	}
 	if err := recordOutboxAck(ctx, db, scope, seq, outboxAckSubscriber, outboxNow()); err != nil {
 		return HandleError("event outbox: %v", err)
 	}
-	if cerr := commitOutboxBookkeeping(ctx, fmt.Sprintf("ack %d (subscriber %s)", seq, outboxAckSubscriber)); cerr != nil {
+	if cerr := commitOutboxBookkeeping(ctx, db, fmt.Sprintf("ack %d (subscriber %s)", seq, outboxAckSubscriber)); cerr != nil {
 		return HandleError("event outbox: commit ack: %v", cerr)
 	}
 	fmt.Printf("acknowledged event seq=%d for subscriber %s\n", seq, outboxAckSubscriber)
@@ -370,7 +371,7 @@ func runOutboxPurge(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	if cerr := commitOutboxBookkeeping(ctx, fmt.Sprintf("purge before %s (%d rows)", before.UTC().Format(time.RFC3339), n)); cerr != nil {
+	if cerr := commitOutboxBookkeeping(ctx, db, fmt.Sprintf("purge before %s (%d rows)", before.UTC().Format(time.RFC3339), n)); cerr != nil {
 		return HandleError("event outbox: commit purge: %v", cerr)
 	}
 	if jsonOutput {

@@ -2,8 +2,7 @@
 //
 // Durable event outbox. When change-events.outbox.enabled is set, every write
 // command records one event per mutated issue in the event_outbox table inside
-// the store's own database — in the same Dolt commit as the mutation — and
-// delivery retries each event with bounded backoff until every configured
+// the store's own database, and delivery retries each event with bounded backoff until every configured
 // subscriber acknowledges it.
 //
 // The outbox is the event log and it is part of the record: it lives in the
@@ -22,13 +21,18 @@
 //     backlog is bounded by change-events.outbox.max-pending and reaching the
 //     bound refuses new writes loudly rather than dropping events.
 //
-// "In the same transaction as the mutation": mutation writes happen during the
-// command; the outbox rows are inserted at PersistentPostRun time BEFORE the
-// Dolt auto-commit, so the auto-commit contains the mutation and its events
-// together. Commands that committed explicitly get a follow-up outbox-only
-// commit so the events share history with the record. A crash before the
-// auto-commit leaves both the mutation and the events uncommitted-but-durable
-// in the same working set — neither can exist without the other.
+// Atomicity, stated exactly (see docs/brain/event-outbox.md "What is atomic"):
+//   - All events of one command are inserted in ONE database transaction: a
+//     command's events exist together or not at all.
+//   - A failure to record them fails the command loudly (non-zero exit, named
+//     error) — never a silent eventless mutation.
+//   - The insert happens in the command's post-run, a second transaction after
+//     the store's own mutation transaction. A process killed in the window
+//     between the two leaves a committed mutation without an event. That window
+//     is not closed by this feature; it is documented, not hidden.
+//   - The preflight (subscriber definitions readable, backlog under the bound,
+//     table present) runs BEFORE the mutation, so every foreseeable refusal
+//     happens while nothing has been written.
 package main
 
 import (
@@ -42,6 +46,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
@@ -227,12 +232,18 @@ func outboxStoreArgs(store string, args ...interface{}) []interface{} {
 	return args
 }
 
+// outboxExecer is the write surface shared by *sql.DB and *sql.Tx.
+type outboxExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 // insertOutboxEvent inserts one event and returns its sequence number.
-func insertOutboxEvent(ctx context.Context, db *sql.DB, store string, ev outboxEvent, payload, subscribersJSON, acksJSON, now string) (int64, error) {
-	res, err := db.ExecContext(ctx, `INSERT INTO `+outboxTable+`
+// deliveredAt non-empty inserts the row already retired (no subscribers).
+func insertOutboxEvent(ctx context.Context, ex outboxExecer, store string, ev outboxEvent, payload, subscribersJSON, acksJSON, now, deliveredAt string) (int64, error) {
+	res, err := ex.ExecContext(ctx, `INSERT INTO `+outboxTable+`
 		(created_at, store, command, issue_id, payload, subscribers, acks, attempts, next_attempt_after, last_error, delivered_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '', '')`,
-		now, store, ev.Command, ev.ID, payload, subscribersJSON, acksJSON, now)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, '', ?)`,
+		now, store, ev.Command, ev.ID, payload, subscribersJSON, acksJSON, now, deliveredAt)
 	if err != nil {
 		return 0, fmt.Errorf("insert outbox event: %w", err)
 	}
@@ -420,7 +431,7 @@ func outboxDB() (*sql.DB, error) {
 	}
 	acc, ok := storage.UnwrapStore(store).(storage.RawDBAccessor)
 	if !ok {
-		return nil, fmt.Errorf("event outbox: the open store backend does not expose raw database access; the outbox requires a dolt store (refusing to emit an event that is not part of the record)")
+		return nil, fmt.Errorf("event outbox: the open store does not expose raw database access (embedded mode); the durable outbox requires a dolt sql-server store, so no event can be recorded — refusing rather than emitting an event that is not part of the record")
 	}
 	return acc.DB(), nil
 }
@@ -430,15 +441,61 @@ func outboxDB() (*sql.DB, error) {
 // it is a named refusal — never a silent drop or a silent throttle.
 func outboxBoundError(pending, adding, bound int) error {
 	if bound > 0 && pending+adding > bound {
-		return fmt.Errorf("event outbox full: %d pending events (%d more queued by this command) exceed the bound change-events.outbox.max-pending=%d — run 'bd outbox deliver', fix or 'bd outbox ack' the subscriber, or raise the bound; refusing the write rather than recording an event that will never be delivered",
+		return fmt.Errorf("event outbox full: %d pending events (%d more queued by this command) exceed the bound change-events.outbox.max-pending=%d — run 'bd outbox deliver', fix or 'bd outbox ack' the subscriber, or raise the bound; refusing the command before it writes rather than recording an event that may never be delivered",
 			pending, adding, bound)
 	}
 	return nil
 }
 
+// outboxExemptCommands never trip the preflight: the verbs an operator needs to
+// drain or reconfigure a full outbox, and commands that never mutate issues.
+var outboxExemptCommands = map[string]bool{
+	"outbox": true, "config": true, "vc": true, "dolt": true, "doctor": true,
+	"help": true, "version": true, "prime": true, "init": true, "bootstrap": true,
+	"completion": true, "where": true, "info": true, "status": true, "query": true,
+}
+
+// outboxPreflight runs before every command once the store is open. For a
+// command that may write (not read-only, not exempt) with the outbox enabled it
+// refuses — loudly, before any mutation — when the subscriber definitions are
+// unreadable or the unretired backlog has reached
+// change-events.outbox.max-pending. Exempt: the 'outbox' verbs and 'config'
+// (so an operator can always drain or reconfigure), plus read-only commands.
+func outboxPreflight(ctx context.Context, cmd *cobra.Command) error {
+	if !config.GetBool("change-events.outbox.enabled") {
+		return nil
+	}
+	if isReadOnlyCommand(cmd.Name()) || outboxExemptCommands[cmd.Name()] {
+		return nil
+	}
+	for c := cmd; c != nil; c = c.Parent() {
+		if outboxExemptCommands[c.Name()] {
+			return nil
+		}
+	}
+	if _, err := readOutboxConfig(); err != nil {
+		return err
+	}
+	db, err := outboxDB()
+	if err != nil {
+		return err
+	}
+	if err := ensureOutboxTable(ctx, db); err != nil {
+		return fmt.Errorf("event outbox: %w", err)
+	}
+	scope, err := outboxScopeKey(ctx, db)
+	if err != nil {
+		return fmt.Errorf("event outbox: scope probe failed: %w", err)
+	}
+	pending, err := countPendingOutbox(ctx, db, scope)
+	if err != nil {
+		return fmt.Errorf("event outbox: %w", err)
+	}
+	return outboxBoundError(pending, 1, config.GetInt("change-events.outbox.max-pending"))
+}
+
 // maybeRecordOutboxEvents records the current command's mutated issues as
-// durable outbox events, before the mutation's Dolt auto-commit runs, so the
-// events share the mutation's commit. Called from PersistentPostRunE only
+// durable outbox events in one transaction. Called from PersistentPostRunE only
 // when a real write happened.
 //
 // Failure modes are loud, never silent: a missing table, an unreachable
@@ -476,18 +533,10 @@ func maybeRecordOutboxEvents(ctx context.Context, commandName string) (int, erro
 		return 0, fmt.Errorf("event outbox: scope probe failed: %w", err)
 	}
 
-	// Bound: refuse loudly rather than drop or throttle silently. The bound
-	// counts events that are not yet retired (delivered to every subscriber
-	// and acknowledged). A full outbox is an operator-resolvable condition:
-	// deliver, fix or acknowledge the subscriber, or raise the bound.
-	bound := config.GetInt("change-events.outbox.max-pending")
-	pending, err := countPendingOutbox(ctx, db, scope)
-	if err != nil {
-		return 0, fmt.Errorf("event outbox: %w", err)
-	}
-	if err := outboxBoundError(pending, len(ids), bound); err != nil {
-		return 0, err
-	}
+	// The bound is enforced by outboxPreflight BEFORE the command mutates; the
+	// mutation has already happened here, so the event is always recorded —
+	// a command that mutates several issues may overshoot the bound by its own
+	// mutation count, and an event is never dropped to enforce it.
 
 	// An unreadable subscriber definition is a named refusal, never a guess:
 	// emitting under it would freeze an empty snapshot and retire the event
@@ -513,25 +562,71 @@ func maybeRecordOutboxEvents(ctx context.Context, commandName string) (int, erro
 		deliveredAt = now
 	}
 
-	recorded := 0
+	// One transaction for every event of this command: all or nothing.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("event outbox: begin: %w", err)
+	}
 	for _, id := range ids {
 		ev := outboxEvent{TS: now, Store: eventStore, Command: commandName, ID: id}
 		payload, err := json.Marshal(ev)
 		if err != nil {
-			return recorded, fmt.Errorf("event outbox: marshal event for %s: %w", id, err)
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("event outbox: marshal event for %s: %w", id, err)
 		}
-		seq, err := insertOutboxEvent(ctx, db, scope, ev, string(payload), string(subsJSON), acksJSON, now)
-		if err != nil {
-			return recorded, fmt.Errorf("event outbox: %w", err)
+		if _, err := insertOutboxEvent(ctx, tx, scope, ev, string(payload), string(subsJSON), acksJSON, now, deliveredAt); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("event outbox: %w", err)
 		}
-		if deliveredAt != "" {
-			if err := markOutboxDelivered(ctx, db, scope, seq, deliveredAt); err != nil {
-				return recorded, fmt.Errorf("event outbox: retire empty-subscriber event: %w", err)
-			}
-		}
-		recorded++
 	}
-	return recorded, nil
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("event outbox: commit: %w", err)
+	}
+	outboxDirty = true
+	return len(ids), nil
+}
+
+// outboxDirty is set when this process changed outbox rows; commitOutboxWork
+// turns it into one Dolt commit.
+var outboxDirty bool
+
+// commitOutboxWork makes this process's outbox changes (new events plus
+// delivery bookkeeping) part of Dolt history with one commit that stages only
+// the event_outbox table. The rows are already durable in the working set the
+// moment they are inserted; this commit is what puts them in history (and so in
+// push/pull/backup). A no-op when nothing changed or the outbox is off.
+func commitOutboxWork(ctx context.Context, message string) error {
+	if !outboxDirty || !config.GetBool("change-events.outbox.enabled") {
+		return nil
+	}
+	db, err := outboxDB()
+	if err != nil {
+		return err
+	}
+	if err := commitOutboxTable(ctx, db, message); err != nil {
+		return err
+	}
+	outboxDirty = false
+	return nil
+}
+
+// commitOutboxTable stages only event_outbox and commits it on one pinned
+// connection (stage and commit must share a Dolt session). "Nothing to commit"
+// is benign.
+func commitOutboxTable(ctx context.Context, db *sql.DB, message string) error {
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "CALL DOLT_ADD(?)", outboxTable); err != nil {
+		return fmt.Errorf("dolt add %s: %w", outboxTable, err)
+	}
+	author := fmt.Sprintf("%s <%s@beads.local>", getActor(), "outbox")
+	if _, err := conn.ExecContext(ctx, "CALL DOLT_COMMIT('-m', ?, '--author', ?)", message, author); err != nil && !issueops.IsNothingToCommitError(err) {
+		return fmt.Errorf("dolt commit: %w", err)
+	}
+	return nil
 }
 
 // forceRetireOutboxRow marks a row delivered without reading its JSON columns:
@@ -549,23 +644,8 @@ func forceRetireOutboxRow(ctx context.Context, db *sql.DB, store string, seq int
 	return nil
 }
 
-// outboxCommitIDsHint is the mutated-id list used to label the Dolt
-// auto-commit that carries the mutation and its events. Mirrors the ids the
-// outbox just recorded so `${_prefix}`-style labels name the same issues.
-func outboxCommitIDsHint() []string {
-	ids := commandChangedIDs
-	if len(ids) == 0 {
-		id := GetLastTouchedID()
-		if id != "" {
-			return []string{id}
-		}
-		return nil
-	}
-	return ids
-}
-
-// markOutboxDelivered sets delivered_at without touching acks (used for the
-// no-subscribers retire-at-emission path).
+// markOutboxDelivered sets delivered_at without touching acks (used to finish
+// retiring a row whose acknowledgements were all recorded before a crash).
 func markOutboxDelivered(ctx context.Context, db *sql.DB, store string, seq int64, at string) error {
 	q := `UPDATE ` + outboxTable + ` SET delivered_at = ? WHERE seq = ?` + suffixStore(store)
 	if _, err := db.ExecContext(ctx, q, outboxStoreArgs(store, at, seq)...); err != nil {
@@ -603,6 +683,9 @@ func maybeDeliverOutboxDue(ctx context.Context) {
 		budget = outboxDefaultEffort
 	}
 	res := runOutboxDeliveryPass(ctx, db, scope, cfg, budget, "", "")
+	if res.Delivered > 0 || res.Failed > 0 {
+		outboxDirty = true
+	}
 	if res.Delivered > 0 {
 		fmt.Fprintf(os.Stderr, "Event outbox: delivered %d event(s) this pass (%d failed attempts remain pending)\n", res.Delivered, res.Failed)
 	}

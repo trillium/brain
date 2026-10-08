@@ -1310,6 +1310,16 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Durable event outbox preflight: refuse a possibly-writing command
+		// BEFORE it mutates when the outbox cannot take its event (unreadable
+		// subscriber definition, backlog at the bound). Refusing after the
+		// mutation would strand an eventless change in the working set.
+		if store != nil {
+			if err := outboxPreflight(rootCtx, cmd); err != nil {
+				return HandleError("%v", err)
+			}
+		}
+
 		// Sync all state to CommandContext for unified access.
 		syncCommandContext()
 
@@ -1327,35 +1337,20 @@ var rootCmd = &cobra.Command{
 			}
 		} else {
 			// Durable event outbox (brain): record this command's mutated issues
-			// as outbox events BEFORE the Dolt auto-commit, so the mutation and
-			// its events share one commit — an event cannot exist without its
-			// record and a record cannot exist without its event. Failure is
-			// loud: an eventless mutation is exactly the silent failure the
-			// outbox exists to prevent.
-			recorded := 0
+			// as outbox events right after the mutation. Failure is loud: an
+			// eventless mutation is exactly the silent failure the outbox exists
+			// to prevent. (The commit that makes the rows part of Dolt history
+			// happens once, after the opportunistic delivery pass below.)
 			if commandDidWrite.Load() {
-				var err error
-				recorded, err = maybeRecordOutboxEvents(rootCtx, cmd.Name())
-				if err != nil {
+				if _, err := maybeRecordOutboxEvents(rootCtx, cmd.Name()); err != nil {
 					return HandleError("%v", err)
-				}
-				if recorded > 0 && commandDidExplicitDoltCommit {
-					// The command already made its own Dolt commit; give the outbox
-					// rows their own commit so the events still share history with
-					// the record instead of lingering uncommitted.
-					if err := commitPendingIfEmbedded(rootCtx, store, getActor(), doltAutoCommitParams{
-						Command:         "outbox",
-						MessageOverride: fmt.Sprintf("event outbox: %s records %d events", cmd.Name(), recorded),
-					}); err != nil {
-						return HandleError("event outbox commit failed: %v", err)
-					}
 				}
 			}
 
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
 			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
-				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name(), IssueIDs: outboxCommitIDsHint()}); err != nil {
+				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
 					return HandleError("dolt auto-commit failed: %v", err)
 				}
 			}
@@ -1414,6 +1409,9 @@ var rootCmd = &cobra.Command{
 			// in the command that triggered the pass (warnings only).
 			if commandDidWrite.Load() {
 				maybeDeliverOutboxDue(rootCtx)
+				if err := commitOutboxWork(rootCtx, fmt.Sprintf("event outbox: %s", cmd.Name())); err != nil {
+					return HandleError("event outbox commit failed: %v", err)
+				}
 			}
 
 			// Auto-push: push to Dolt remote if enabled and due.

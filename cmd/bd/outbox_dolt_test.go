@@ -101,7 +101,7 @@ func insertTestEvent(t *testing.T, db *sql.DB, store, id, subsJSON string) int64
 	ctx := context.Background()
 	ev := outboxEvent{TS: outboxNow(), Store: store, Command: "create", ID: id}
 	payload, _ := json.Marshal(ev)
-	seq, err := insertOutboxEvent(ctx, db, store, ev, string(payload), subsJSON, "{}", outboxNow())
+	seq, err := insertOutboxEvent(ctx, db, store, ev, string(payload), subsJSON, "{}", outboxNow(), "")
 	if err != nil {
 		t.Fatalf("insertOutboxEvent: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestOutboxBoundRefusesWhenReached(t *testing.T) {
 	if err == nil {
 		t.Fatal("exceeding the bound must be refused")
 	}
-	for _, want := range []string{"event outbox full", "max-pending=2", "bd outbox deliver", "refusing the write"} {
+	for _, want := range []string{"event outbox full", "max-pending=2", "bd outbox deliver", "refusing the command before it writes"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("refusal %q must mention %q", err, want)
 		}
