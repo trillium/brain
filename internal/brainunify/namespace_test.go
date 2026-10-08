@@ -83,20 +83,38 @@ func TestBuildNamespacesNameMatch(t *testing.T) {
 	}
 }
 
-func TestBuildNamespacesUnattributed(t *testing.T) {
-	// A prefix no store claims and no source is named after — the real
-	// "fe-" prefix in the feedtack database.
+func TestBuildNamespacesSoleObserverOfAnUnregisteredDatabaseOwnsItsPrefix(t *testing.T) {
+	// The "fe-" prefix of the feedtack database, and "commitment-" of the
+	// commitments one: no store declares them and the database name does not
+	// equal the prefix, but exactly one unregistered database holds them. A
+	// wrapper pinned to that database must still see its beads, so it owns them.
 	got := BuildNamespaces(
-		map[string][]string{"db:feedtack": {"fe"}},
+		map[string][]string{"db:feedtack": {"fe"}, "db:commitments": {"commitment"}},
 		nil,
-		map[string]int64{"fe": 24},
+		map[string]int64{"fe": 24, "commitment": 14},
+		map[string][]string{"db:commitments": {"commitments"}},
+	)
+	for prefix, owner := range map[string]string{"fe": "db:feedtack", "commitment": "db:commitments"} {
+		if got[prefix].Owner != owner || got[prefix].OwnerReason != ReasonSoleObserver {
+			t.Errorf("%s: owner %q reason %q, want %q / %q", prefix, got[prefix].Owner, got[prefix].OwnerReason, owner, ReasonSoleObserver)
+		}
+	}
+}
+
+func TestBuildNamespacesUnattributed(t *testing.T) {
+	// A prefix no store claims, no source is named after, and more than one
+	// source holds stays with no owner; so does one held only by a registered
+	// store that does not declare it.
+	got := BuildNamespaces(
+		map[string][]string{"db:one": {"zz"}, "db:two": {"zz"}, "projects": {"yy"}},
+		nil,
+		map[string]int64{"zz": 3, "yy": 1},
 		nil,
 	)
-	if got["fe"].Owner != UnattributedNamespace {
-		t.Errorf("fe prefix owner = %q, want %q", got["fe"].Owner, UnattributedNamespace)
-	}
-	if got["fe"].OwnerReason != ReasonUnattributed {
-		t.Errorf("fe owner reason = %q, want %q", got["fe"].OwnerReason, ReasonUnattributed)
+	for _, prefix := range []string{"zz", "yy"} {
+		if got[prefix].Owner != UnattributedNamespace || got[prefix].OwnerReason != ReasonUnattributed {
+			t.Errorf("%s: owner %q reason %q, want unattributed", prefix, got[prefix].Owner, got[prefix].OwnerReason)
+		}
 	}
 }
 

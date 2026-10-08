@@ -53,6 +53,7 @@ const NamespacedPrefix = "brain_unified_"
 // implicitly through their physical location.
 var brainTables = []string{
 	"brain_stores",
+	"brain_store_aliases",
 	"brain_store_prefixes",
 	"brain_unify_collisions",
 	"brain_unify_import_log",
@@ -74,6 +75,16 @@ var BrainTableDDL = map[string]string{
   template_source tinyint(1) NOT NULL DEFAULT 0,
   imported_at datetime NOT NULL,
   PRIMARY KEY (store)
+)`,
+	// brain_store_aliases maps the name a store wrapper pins (BD_NAME) to the
+	// store it is recorded under in brain_stores, for the wrappers whose name
+	// differs from the store's: decide and decisions are two wrappers of one
+	// store, and an unregistered database is a store named "db:<name>". The
+	// runtime resolves BD_NAME through it (issueops.canonicalStoreName).
+	"brain_store_aliases": `CREATE TABLE brain_store_aliases (
+  alias varchar(128) NOT NULL,
+  store varchar(128) NOT NULL,
+  PRIMARY KEY (alias)
 )`,
 	"brain_store_prefixes": `CREATE TABLE brain_store_prefixes (
   prefix varchar(255) NOT NULL,

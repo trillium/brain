@@ -83,6 +83,7 @@ var (
 	unifyTimeout   time.Duration
 	unifyReference string
 	unifyProjectID []string
+	unifyAliases   string
 )
 
 // projectIDMap parses repeated --project-id <store>=<uuid> values.
@@ -115,6 +116,7 @@ func init() {
 	_ = unifyBuildCmd.Flags().MarkDeprecated("allow-collisions", allowCollisionsRetired)
 	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
 	unifyBuildCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build")
+	unifyBuildCmd.Flags().StringVar(&unifyAliases, "aliases", "", "JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store")
 	unifyPlanCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)")
 
 	unifyReplayCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the source stores")
@@ -211,12 +213,24 @@ var unifyBuildCmd = &cobra.Command{
 			return err
 		}
 
+		var aliases map[string]string
+		if unifyAliases != "" {
+			raw, err := os.ReadFile(unifyAliases)
+			if err != nil {
+				return fmt.Errorf("reading --aliases: %w", err)
+			}
+			if err := json.Unmarshal(raw, &aliases); err != nil {
+				return fmt.Errorf("parsing --aliases %s: %w", unifyAliases, err)
+			}
+		}
+
 		builder := brainunify.NewBuilder(source, plan, brainunify.BuildOptions{
 			DataDir:  unifyDataDir,
 			Database: unifyDatabase,
 			DoltBin:  unifyDoltBin,
 			Host:     unifyHost,
 			Port:     unifyPort,
+			Aliases:  aliases,
 			Logf: func(format string, args ...any) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), format+"\n", args...)
 			},

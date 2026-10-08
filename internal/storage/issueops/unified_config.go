@@ -84,8 +84,29 @@ func probeUnifiedScope(ctx context.Context, q DBTX) UnifiedScope {
 		"select count(*) from information_schema.tables where table_schema = ? and table_name = 'brain_unified_config'",
 		dbname).Scan(&unified)
 	sc := UnifiedScope{Unified: unified > 0, Store: storeNamespace()}
+	if sc.Unified && sc.Store != "" {
+		sc.Store = canonicalStoreName(ctx, q, dbname, sc.Store)
+	}
 	unifiedScopeCache.Store(dbname, sc)
 	return sc
+}
+
+// canonicalStoreName resolves a wrapper's BD_NAME to the store the unified
+// database records it under. Several wrappers can address one store under
+// different names (decide and decisions, assert and assertions), and a wrapper's
+// name is not always the store's name in the merged database (an unregistered
+// database is recorded as "db:<name>"). The merge records these in
+// brain_store_aliases (alias, store); a database without the table, or a name it
+// does not list, resolves to itself, which is the behaviour before the table
+// existed.
+func canonicalStoreName(ctx context.Context, q DBTX, dbname, name string) string {
+	var store string
+	err := q.QueryRowContext(ctx,
+		"select `store` from brain_store_aliases where `alias` = ?", name).Scan(&store)
+	if err != nil || strings.TrimSpace(store) == "" {
+		return name
+	}
+	return store
 }
 
 // UnifiedScopeForTx answers the scope for the connected database behind a

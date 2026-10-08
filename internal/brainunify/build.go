@@ -21,6 +21,10 @@ type BuildOptions struct {
 	Database string
 	// DoltBin is the dolt binary used to start the isolated server.
 	DoltBin string
+	// Aliases maps a wrapper name (BD_NAME) to the store it addresses, for the
+	// wrappers whose name is not the store's. It is written to
+	// brain_store_aliases.
+	Aliases map[string]string
 	// Host and Port locate the Dolt server holding the sources. These are
 	// needed for the per-database history read that records every source's
 	// commit at the moment the build sees it, which is what a later replay
@@ -384,6 +388,11 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 	start := time.Now()
 	if err := b.plan.Refusal(); err != nil {
 		return BuildResult{}, fmt.Errorf("refusing to build: %w", err)
+	}
+	for _, alias := range sortedKeys(b.opts.Aliases) {
+		if _, ok := b.plan.SourceByNamespace(b.opts.Aliases[alias]); !ok {
+			return BuildResult{}, fmt.Errorf("refusing to build: alias %q names store %q, which is not a participating source", alias, b.opts.Aliases[alias])
+		}
 	}
 	if len(b.plan.Sources) == 0 {
 		return BuildResult{}, fmt.Errorf("nothing to migrate: no source database was reachable")
@@ -1008,6 +1017,12 @@ func (b *Builder) writeProvenance(ctx context.Context, target *sql.DB) error {
 	for _, ns := range SortedNamespaces(b.plan.Namespaces) {
 		if err := writePrefixRow(ctx, target, ns); err != nil {
 			return err
+		}
+	}
+	for _, alias := range sortedKeys(b.opts.Aliases) {
+		if _, err := target.ExecContext(ctx,
+			"replace into `brain_store_aliases` (`alias`,`store`) values "+valueTuple([]any{alias, b.opts.Aliases[alias]})); err != nil {
+			return fmt.Errorf("recording alias %s: %w", alias, err)
 		}
 	}
 	for _, c := range b.plan.Collisions {
