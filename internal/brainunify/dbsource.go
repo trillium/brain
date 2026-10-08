@@ -224,6 +224,54 @@ func (s *readOnlySource) DiffScopeValues(ctx context.Context, fromCommit, table,
 	return sortedKeys(seen), nil
 }
 
+// diffAdded is the diff_type of a table created since the from commit.
+const diffAdded = "added"
+
+// DiffSummaryTables lists, in one query, the tables that differ between the from
+// commit and the working set, mapped to their diff type ("added", "dropped",
+// "modified", "renamed"). A table not listed is identical to its state at the
+// commit. Tables Dolt does not version never appear here.
+func (s *readOnlySource) DiffSummaryTables(ctx context.Context, fromCommit string) (map[string]string, error) {
+	stmt := fmt.Sprintf("select ifnull(from_table_name,''), ifnull(to_table_name,''), diff_type from dolt_diff_summary(%s, 'WORKING')", quoteLiteral(fromCommit))
+	rows, err := s.query(ctx, stmt)
+	if err != nil {
+		return nil, fmt.Errorf("summarising the changes since commit %s: %w", fromCommit, err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var from, to, kind string
+		if err := rows.Scan(&from, &to, &kind); err != nil {
+			return nil, err
+		}
+		for _, t := range []string{from, to} {
+			if t != "" {
+				out[t] = kind
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// IgnoredTables lists the tables that exist in the database and that Dolt does
+// not version (matched by dolt_ignore).
+func (s *readOnlySource) IgnoredTables(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.query(ctx, "select table_name from dolt_status_ignored where ignored = 1")
+	if err != nil {
+		return nil, fmt.Errorf("listing the tables Dolt does not version: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err != nil {
+			return nil, err
+		}
+		out[t] = true
+	}
+	return out, rows.Err()
+}
+
 // DiffChanged reports whether a table has any change between the from commit
 // and the working set.
 func (s *readOnlySource) DiffChanged(ctx context.Context, fromCommit, table string) (bool, error) {

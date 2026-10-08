@@ -548,3 +548,41 @@ func TestRecordedVerifyAfterReplayWhenStoresShareAPrefix(t *testing.T) {
 	}
 	requireNoFailures(t, "recorded after the second replay", f.verify(ReferenceRecorded))
 }
+
+// TestReplayWithNothingNewTouchesNothing: a replay over unchanged sources writes
+// no table, and a change in a table Dolt does not version (wisps) is found by its
+// fingerprint, reloads that table alone, and leaves verification passing.
+func TestReplayWithNothingNewTouchesNothing(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	res, err := f.replay()
+	if err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if len(res.Tables) != 0 || len(res.Beads) != 0 || len(res.ChangedStores) != 0 {
+		t.Errorf("a replay over unchanged sources must touch nothing: tables %v beads %v stores %v", res.Tables, res.Beads, res.ChangedStores)
+	}
+	requireNoFailures(t, "live after a no-change replay", f.verify(ReferenceLive))
+	requireNoFailures(t, "recorded after a no-change replay", f.verify(ReferenceRecorded))
+
+	// only an unversioned table changes: no commit, nothing in dolt_diff
+	f.execIn("beta", "insert into wisps values ('bet-wisp-9', 'a new wisp')")
+	requireFailures(t, "an unversioned change, before the replay", f.verify(ReferenceLive))
+	res, err = f.replay()
+	if err != nil {
+		t.Fatalf("replay 2: %v", err)
+	}
+	reloaded := map[string]bool{}
+	for _, tb := range res.Tables {
+		reloaded[tb.Table] = true
+	}
+	if !reloaded["wisps"] || reloaded["issues"] || reloaded["labels"] {
+		t.Errorf("only the wisps table should have been reloaded: %v", res.Tables)
+	}
+	requireNoFailures(t, "live after the unversioned change", f.verify(ReferenceLive))
+	requireNoFailures(t, "recorded after the unversioned change", f.verify(ReferenceRecorded))
+	// and the next replay is a no-op again
+	if res, err = f.replay(); err != nil || len(res.Tables) != 0 {
+		t.Errorf("the next replay must be a no-op again: %v %v", res.Tables, err)
+	}
+}

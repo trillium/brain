@@ -4,14 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/go-sql-driver/mysql"
 )
 
 // A merged database is built from a moment in the past, and every change a
@@ -554,6 +551,16 @@ func (r *Replayer) sharedColumns(ctx context.Context, src SourceFacts, tp TableP
 
 // collectChanges reads every source's history since its recorded commit and
 // settles which beads and which state tables the replay must reconcile.
+//
+// It asks each source a handful of questions rather than one per table: its
+// table list, which tables changed between the recorded commit and the working
+// set (dolt_diff_summary, one query), and which tables Dolt does not version
+// (dolt_status_ignored). Only a table that changed is diffed for the beads it
+// touched. A table Dolt does not version has no history at all, so its current
+// content is fingerprinted and compared with the fingerprint the build or the
+// last replay recorded for it; only a difference reloads it. A store whose head
+// is the recorded commit, whose working set is clean and whose unversioned
+// tables match costs a few queries, however many tables it has.
 func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource, database string, w *replayWork, imported map[string]int64) error {
 	w.heads = map[string]string{}
 	w.touched = map[string]map[string]bool{}
@@ -561,6 +568,11 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 	w.stateChanged = map[string]map[string]bool{}
 	w.changedTables = map[string]map[string]bool{}
 	w.changedStores = map[string]bool{}
+
+	recorded, err := readRecordedByStore(ctx, mergedRO, database)
+	if err != nil {
+		return err
+	}
 
 	for _, src := range r.plan.Sources {
 		conn := w.conns[src.Database]
@@ -576,16 +588,47 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 		}
 		w.heads[src.Namespace] = head
 
+		tables, err := r.source.BaseTables(ctx, src.Database)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: listing the tables of store %s (database %s): %w", src.Namespace, src.Database, err)
+		}
+		have := map[string]bool{}
+		for _, t := range tables {
+			have[t] = true
+		}
+		summary, err := conn.DiffSummaryTables(ctx, base.Hash)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+		}
+		ignored, err := conn.IgnoredTables(ctx)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+		}
+
 		for _, tp := range w.plans {
-			has, err := r.source.HasTable(ctx, src.Database, tp.Table)
-			if err != nil {
-				return fmt.Errorf("refusing to replay: checking store %s (database %s) for table %s: %w", src.Namespace, src.Database, tp.Table, err)
-			}
-			if !has {
+			if !have[tp.Table] {
 				if n := imported[src.Namespace+"\x00"+tp.Table]; n > 0 {
 					return fmt.Errorf("refusing to replay: the build imported %d row(s) of table %s from store %s, but that table no longer exists in database %s; what became of those rows is unknowable; rebuild", n, tp.Table, src.Namespace, src.Database)
 				}
 				continue
+			}
+
+			// Dolt does not version this table, so there is no history to diff:
+			// compare what it holds now with what was recorded for it.
+			if ignored[tp.Table] {
+				changed, err := r.unversionedChanged(ctx, src, tp, recorded[src.Namespace][tp.Target])
+				if err != nil {
+					return err
+				}
+				if changed {
+					r.markReload(w, src, tp, false)
+				}
+				continue
+			}
+
+			kind, inSummary := summary[tp.Table]
+			if !inSummary {
+				continue // identical to the recorded commit
 			}
 			if tp.Scope != ScopeDatabaseState {
 				cols, err := r.sourceColumns(ctx, src, tp.Table)
@@ -596,37 +639,21 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 					return fmt.Errorf("refusing to replay: store %s table %s has no %s column, so its rows cannot be attributed to a bead", src.Namespace, tp.Table, tp.ScopeColumn)
 				}
 			}
-
-			// A table the source did not hold at the recorded commit has no
-			// history to diff: either Dolt does not version it (dolt_ignore,
-			// as for wisps) or it was created since. Both are reloaded whole,
-			// which is correct for either and needs no history at all.
-			versioned, err := conn.TableExistsAt(ctx, base.Hash, tp.Table)
-			if err != nil {
-				return fmt.Errorf("refusing to replay: checking whether store %s (database %s) held table %s at commit %s: %w", src.Namespace, src.Database, tp.Table, base.Hash, err)
+			if kind == diffAdded {
+				// Created since the recorded commit: no history to diff, reload whole.
+				r.markReload(w, src, tp, false)
+				continue
 			}
 			switch tp.Scope {
 			case ScopeDatabaseState:
-				changed := !versioned
-				if versioned {
-					if changed, err = conn.DiffChanged(ctx, base.Hash, tp.Table); err != nil {
-						return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
-					}
+				changed, err := conn.DiffChanged(ctx, base.Hash, tp.Table)
+				if err != nil {
+					return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
 				}
 				if changed {
-					if w.stateChanged[src.Namespace] == nil {
-						w.stateChanged[src.Namespace] = map[string]bool{}
-					}
-					w.stateChanged[src.Namespace][tp.Table] = true
-					if versioned {
-						w.changedStores[src.Namespace] = true
-					}
+					r.markReload(w, src, tp, true)
 				}
 			default:
-				if !versioned {
-					w.full[tp.Table] = true
-					continue
-				}
 				ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
 				if err != nil {
 					return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
@@ -649,6 +676,98 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 		}
 	}
 	return nil
+}
+
+// markReload records that a source table has to be taken again whole: a state
+// table is replaced for its store; a bead-scoped table is reloaded for every
+// store. history reports that the change was seen in the source's history (as
+// opposed to a table Dolt does not version, which does not make the store
+// "changed" in the report).
+func (r *Replayer) markReload(w *replayWork, src SourceFacts, tp TablePlan, history bool) {
+	if tp.Scope == ScopeDatabaseState {
+		if w.stateChanged[src.Namespace] == nil {
+			w.stateChanged[src.Namespace] = map[string]bool{}
+		}
+		w.stateChanged[src.Namespace][tp.Table] = true
+		if history {
+			w.changedStores[src.Namespace] = true
+		}
+		return
+	}
+	w.full[tp.Table] = true
+}
+
+// unversionedChanged reports whether a table Dolt keeps no history for holds
+// something other than what was recorded: the same server-side fingerprints the
+// build took, excluding what the build excluded, against the recorded rows.
+func (r *Replayer) unversionedChanged(ctx context.Context, src SourceFacts, tp TablePlan, recorded map[string]Fingerprint) (bool, error) {
+	now := map[string]Fingerprint{}
+	if tp.Scope == ScopeDatabaseState {
+		fp, err := r.source.ReferenceDigest(ctx, src.Database, &tp, src.Namespace)
+		if err != nil {
+			return false, fmt.Errorf("refusing to replay: digest of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+		}
+		if fp.Rows > 0 {
+			now[src.Namespace] = fp
+		}
+	} else {
+		byGroup, err := r.source.FingerprintByGroup(ctx, src.Database, tp.Table, tp.ScopeColumnName(), "", r.plan.sourceExclusions(src.Namespace))
+		if err != nil {
+			return false, fmt.Errorf("refusing to replay: fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+		}
+		for g, fp := range byGroup {
+			if fp.Rows > 0 {
+				now[g] = fp
+			}
+		}
+	}
+	nonEmpty := map[string]Fingerprint{}
+	for g, fp := range recorded {
+		if fp.Rows > 0 {
+			nonEmpty[g] = fp
+		}
+	}
+	return !equalFingerprints(now, nonEmpty), nil
+}
+
+func equalFingerprints(a, b map[string]Fingerprint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for g, fp := range a {
+		if other, ok := b[g]; !ok || other != fp {
+			return false
+		}
+	}
+	return true
+}
+
+// readRecordedByStore reads the fingerprints the build or the last replay
+// recorded, keyed by store, merged table and group.
+func readRecordedByStore(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]map[string]map[string]Fingerprint, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `store`, `table_name`, `group_name`, `row_count`, `byte_count`, `hash_value` from `%s`.`brain_unify_source_fingerprints`", database))
+	if err != nil {
+		return nil, fmt.Errorf("refusing to replay: reading the recorded fingerprints: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]map[string]map[string]Fingerprint{}
+	for rows.Next() {
+		var store, table, group string
+		var n int64
+		var b, h float64
+		if err := rows.Scan(&store, &table, &group, &n, &b, &h); err != nil {
+			return nil, err
+		}
+		if out[store] == nil {
+			out[store] = map[string]map[string]Fingerprint{}
+		}
+		if out[store][table] == nil {
+			out[store][table] = map[string]Fingerprint{}
+		}
+		out[store][table][group] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
+	}
+	return out, rows.Err()
 }
 
 // recordedCollision is the part of a brain_unify_collisions row a replay
@@ -1178,23 +1297,6 @@ func (r *Replayer) advanceCommits(ctx context.Context, tx *sql.Tx, w *replayWork
 // ---------------------------------------------------------------------------
 // small helpers
 // ---------------------------------------------------------------------------
-
-// TableExistsAt reports whether the database held the table at the commit.
-func (s *readOnlySource) TableExistsAt(ctx context.Context, commit, table string) (bool, error) {
-	stmt := fmt.Sprintf("select 1 from `%s` as of %s limit 1", table, quoteLiteral(commit))
-	rows, err := s.query(ctx, stmt)
-	if err != nil {
-		var me *mysql.MySQLError
-		if errors.As(err, &me) && me.Number == 1146 {
-			return false, nil
-		}
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-	}
-	return true, rows.Err()
-}
 
 func inClause(col string, values []string) (string, []any) {
 	marks := make([]string, len(values))
