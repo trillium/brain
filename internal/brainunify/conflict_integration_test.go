@@ -687,6 +687,9 @@ func TestReplayUpdatesAHostedMergedDatabaseInPlace(t *testing.T) {
 		"update issues set title='written in the merged database', updated_at=utc_timestamp() where id='alp-2'",
 		"insert into comments values (uuid(), 'alp-4', 'a comment written after the repoint')",
 		"update issues set updated_at=utc_timestamp() where id='alp-4'",
+		// a bead whose merged row is untouched but gained a comment: an older
+		// write to the old database must still reach the row without losing it
+		"insert into comments values (uuid(), 'alp-5', 'merged-only comment on alp-5')",
 	} {
 		if _, err := db.ExecContext(f.ctx, stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
@@ -696,6 +699,8 @@ func TestReplayUpdatesAHostedMergedDatabaseInPlace(t *testing.T) {
 	f.execIn("alpha", "update issues set title='straggler wrote alp-2', updated_at=now() where id='alp-2'")
 	f.execIn("alpha", "update issues set title='straggler wrote alp-3', updated_at=now() where id='alp-3'")
 	f.execIn("alpha", "update issues set title='straggler wrote alp-4', updated_at=now() where id='alp-4'")
+	f.execIn("alpha", "update issues set title='straggler wrote alp-5', updated_at=now() where id='alp-5'")
+	f.execIn("alpha", "insert into labels values ('alp-3', 'straggler-label')")
 	f.commit("alpha", "stragglers")
 	res, err = f.hostedReplay(srv.Port, ReplayOptions{NoCommit: true, ProtectAfter: repointed})
 	if err != nil {
@@ -713,7 +718,16 @@ func TestReplayUpdatesAHostedMergedDatabaseInPlace(t *testing.T) {
 	if got := f.hostedVerifyTitle(srv.Port, "alp-3"); got != "straggler wrote alp-3" {
 		t.Errorf("alp-3 = %q: the straggler write to the old database was not carried over", got)
 	}
+	if got := f.hostedVerifyTitle(srv.Port, "alp-5"); got != "straggler wrote alp-5" {
+		t.Errorf("alp-5 = %q: the older write to the old database was not carried over", got)
+	}
 	var n int
+	if err := db.QueryRowContext(f.ctx, "select count(*) from comments where issue_id='alp-5' and body like 'merged-only%'").Scan(&n); err != nil || n != 1 {
+		t.Errorf("the merged-only comment on alp-5 = %d rows (%v): a catch-up deleted what the merged database wrote", n, err)
+	}
+	if err := db.QueryRowContext(f.ctx, "select count(*) from labels where issue_id='alp-3' and label='straggler-label'").Scan(&n); err != nil || n != 1 {
+		t.Errorf("the straggler's new label on alp-3 = %d rows (%v), want it added", n, err)
+	}
 	if err := db.QueryRowContext(f.ctx, "select count(*) from comments where issue_id='alp-4' and body like 'a comment written after%'").Scan(&n); err != nil || n != 1 {
 		t.Errorf("the post-repoint comment on alp-4 = %d rows (%v), want 1", n, err)
 	}

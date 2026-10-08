@@ -186,6 +186,11 @@ type replayWork struct {
 	// are recorded ids that are no longer duplicated.
 	collisionsToWrite  []string
 	collisionsToDelete []string
+	// postRepoint marks a replay that runs after the stores were repointed to
+	// the merged database (ReplayOptions.ProtectAfter): the merged database is
+	// being written to, so the replay only adds what the old databases have and
+	// the merged one lacks.
+	postRepoint bool
 	// wide are the stores whose fingerprints are re-recorded for every table
 	// because a collision they take part in changed.
 	wide map[string]bool
@@ -383,14 +388,16 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	if err := r.applyChanges(ctx, tx, mergedRO, database, w, stats); err != nil {
 		return res, err
 	}
-	if err := r.writeCollisionRecords(ctx, tx, w); err != nil {
-		return res, err
-	}
-	if err := r.refreshPrefixes(ctx, tx); err != nil {
-		return res, err
-	}
-	if err := r.rerecordFingerprints(ctx, tx, w); err != nil {
-		return res, err
+	if !w.postRepoint {
+		if err := r.writeCollisionRecords(ctx, tx, w); err != nil {
+			return res, err
+		}
+		if err := r.refreshPrefixes(ctx, tx); err != nil {
+			return res, err
+		}
+		if err := r.rerecordFingerprints(ctx, tx, w); err != nil {
+			return res, err
+		}
 	}
 	if res.Commits, err = r.advanceCommits(ctx, tx, w); err != nil {
 		return res, err
@@ -1139,6 +1146,7 @@ func (r *Replayer) applyChanges(ctx context.Context, tx *sql.Tx, mergedRO *readO
 // moved under their minted ids), and then writes the rows the tool authors for
 // the conflicts among them.
 func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWork, tp TablePlan, ids []string, full bool, st *ReplayTableStats) error {
+	mergeOnly := w.postRepoint && tp.Scope != ScopeIssues
 	if full {
 		res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"`")
 		if err != nil {
@@ -1146,7 +1154,7 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 		}
 		n, _ := res.RowsAffected()
 		st.Deleted += n
-	} else {
+	} else if !mergeOnly {
 		for _, chunk := range chunks(w.mergedIDs(ids), 200) {
 			clause, args := inClause(tp.ScopeColumn, chunk)
 			res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"` where "+clause, args...)
@@ -1180,7 +1188,7 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 				return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
 			}
 			st.Skipped += skipped
-			if err := insertRows(ctx, tx, tp.Target, cols, kept); err != nil {
+			if err := insertRowsMode(ctx, tx, tp.Target, cols, kept, mergeOnly); err != nil {
 				return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", src.Namespace, tp.Table, tp.Target, err)
 			}
 			st.Inserted += int64(len(kept))
@@ -1287,11 +1295,20 @@ func (r *Replayer) reloadStateTable(ctx context.Context, tx *sql.Tx, mergedRO *r
 
 // insertRows writes rows in size-bounded batches.
 func insertRows(ctx context.Context, ex sqlExecer, table string, cols []string, rows [][]any) error {
+	return insertRowsMode(ctx, ex, table, cols, rows, false)
+}
+
+// insertRowsMode writes rows in size-bounded batches; with ignore, a row whose
+// key already exists is left as it is (insert ignore).
+func insertRowsMode(ctx context.Context, ex sqlExecer, table string, cols []string, rows [][]any, ignore bool) error {
 	const (
 		batchRows  = 100
 		batchBytes = 4 << 20
 	)
 	stmt := insertPrefix(table, cols)
+	if ignore {
+		stmt = strings.Replace(stmt, "insert into", "insert ignore into", 1)
+	}
 	var batch []string
 	size := 0
 	flush := func() error {
@@ -1493,83 +1510,69 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// protectNewer removes from the work every bead the merged database changed
-// after ProtectAfter: its updated_at, or an event or comment on it, is newer.
-// The old databases' version of such a bead is older than the merged one, so
-// reloading it would undo a write; the bead stays as the merged database has it
-// and is returned for the report. The check covers a bead's minted copies too.
+// protectNewer prepares a replay that runs after the stores were repointed to
+// the merged database, which is now being written to. It must add what the old
+// databases hold (writes that landed there between the last replay and the
+// repoint, and from stragglers) without undoing anything the merged database
+// did since, so:
+//
+//   - a bead's issue row is reloaded from the old databases unless the merged
+//     database changed it after ProtectAfter (its updated_at is newer), in which
+//     case the merged row stays and the bead is returned for the report;
+//   - every other bead table (labels, comments, events, dependencies, ...) only
+//     gains the rows the merged database lacks (insert ignore); nothing the
+//     merged database wrote is deleted, because the old databases' version of it
+//     is older;
+//   - tables reloaded whole, database-state tables, collision records, prefix
+//     counts and recorded fingerprints are left alone (the merged database's own
+//     writes have moved past them);
+//   - conflict beads and their minted copies are left alone.
 func (r *Replayer) protectNewer(ctx context.Context, mergedRO *readOnlySource, database string, w *replayWork) ([]string, error) {
-	ids := map[string]bool{}
-	for id := range unionSet(w.touched) {
-		ids[id] = true
-	}
-	for _, id := range w.collisionsToWrite {
-		ids[id] = true
-	}
-	for _, id := range w.collisionsToDelete {
-		ids[id] = true
-	}
-	owner := map[string]string{}
-	var all []string
-	for _, id := range sortedKeys(ids) {
-		for _, m := range w.mergedIDs([]string{id}) {
-			owner[m] = id
-			all = append(all, m)
+	w.postRepoint = true
+	w.full = map[string]bool{}
+	w.stateChanged = map[string]map[string]bool{}
+	w.collisionsToWrite, w.collisionsToDelete = nil, nil
+	conflicted := map[string]bool{}
+	for id, c := range w.live {
+		if c.Divergent {
+			conflicted[id] = true
 		}
 	}
-	protected := map[string]bool{}
-	checks := []struct{ table, idCol, timeCol string }{
-		{"issues", "id", "updated_at"}, {"events", "issue_id", "created_at"}, {"comments", "issue_id", "created_at"},
-	}
-	for _, chunk := range chunks(all, 200) {
-		for _, c := range checks {
-			if has, err := mergedRO.HasTable(ctx, database, c.table); err != nil || !has {
-				continue
-			}
-			if cols, err := mergedRO.Columns(ctx, database, c.table); err != nil || !contains(cols, c.timeCol) {
-				continue
-			}
-			clause, args := inClause(c.idCol, chunk)
-			stmt := fmt.Sprintf("select distinct `%s` from `%s`.`%s` where %s and `%s` > ?", c.idCol, database, c.table, clause, c.timeCol)
-			rows, err := mergedRO.query(ctx, stmt, append(args, r.opts.ProtectAfter)...)
-			if err != nil {
-				return nil, fmt.Errorf("refusing to replay: looking for beads the merged database changed after %s: %w", r.opts.ProtectAfter, err)
-			}
-			for rows.Next() {
-				var m string
-				if err := rows.Scan(&m); err != nil {
-					_ = rows.Close()
-					return nil, err
-				}
-				if o, ok := owner[m]; ok {
-					protected[o] = true
-				}
-			}
-			err = rows.Err()
-			_ = rows.Close()
-			if err != nil {
-				return nil, err
-			}
+	for id, rec := range w.recorded {
+		if rec.Resolution == ResolutionConflict {
+			conflicted[id] = true
 		}
-	}
-	if len(protected) == 0 {
-		return nil, nil
 	}
 	for _, tbl := range w.touched {
-		for id := range protected {
+		for id := range conflicted {
 			delete(tbl, id)
 		}
 	}
-	keep := func(in []string) []string {
-		var out []string
-		for _, id := range in {
-			if !protected[id] {
-				out = append(out, id)
-			}
+
+	ids := sortedKeys(w.touched["issues"])
+	var kept []string
+	for _, chunk := range chunks(ids, 200) {
+		clause, args := inClause("id", chunk)
+		stmt := fmt.Sprintf("select distinct `id` from `%s`.`issues` where %s and `updated_at` > ?", database, clause)
+		rows, err := mergedRO.query(ctx, stmt, append(args, r.opts.ProtectAfter)...)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to replay: looking for beads the merged database changed after %s: %w", r.opts.ProtectAfter, err)
 		}
-		return out
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			kept = append(kept, id)
+			delete(w.touched["issues"], id)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
-	w.collisionsToWrite = keep(w.collisionsToWrite)
-	w.collisionsToDelete = keep(w.collisionsToDelete)
-	return sortedKeys(protected), nil
+	sort.Strings(kept)
+	return kept, nil
 }
