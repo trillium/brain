@@ -6191,15 +6191,17 @@ bd brain unify build [flags]
 **Flags:**
 
 ```
-      --aliases string       JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store
-      --data-dir string      scratch directory for the isolated dolt server holding the unified database (required)
-      --database string      name of the unified database inside the isolated server (default "brain_unified")
-      --dolt-bin string      dolt binary used to start the isolated server (default "dolt")
-      --host string          dolt sql-server host holding the production stores (default "127.0.0.1")
-      --port int             dolt sql-server port holding the production stores (default 3307)
-      --project-id strings   project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build
-      --template string      store whose schema the unified database inherits (default: the store with the most beads)
-      --timeout duration     overall time budget for the build (default 4h0m0s)
+      --aliases string                JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store
+      --data-dir string               scratch directory for the isolated dolt server holding the unified database (required)
+      --database string               name of the unified database inside the isolated server (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the isolated server (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the build (default 4h0m0s)
 ```
 
 ##### bd brain unify plan
@@ -6213,12 +6215,14 @@ bd brain unify plan [flags]
 **Flags:**
 
 ```
-      --host string          dolt sql-server host holding the production stores (default "127.0.0.1")
-      --json                 emit the plan as JSON
-      --port int             dolt sql-server port holding the production stores (default 3307)
-      --project-id strings   project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)
-      --template string      store whose schema the unified database inherits (default: the store with the most beads)
-      --timeout duration     overall time budget for the plan (default 20m0s)
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --json                          emit the plan as JSON
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the plan (default 20m0s)
 ```
 
 ##### bd brain unify replay
@@ -6261,12 +6265,14 @@ bd brain unify replay [flags]
 **Flags:**
 
 ```
-      --data-dir string    directory holding the merged database built by 'unify build' (required)
-      --database string    name of the merged database (default "brain_unified")
-      --dolt-bin string    dolt binary used to start the server over the merged database (default "dolt")
-      --host string        dolt sql-server host holding the source stores (default "127.0.0.1")
-      --port int           dolt sql-server port holding the source stores (default 3307)
-      --timeout duration   overall time budget for the replay (default 4h0m0s)
+      --data-dir string               directory holding the merged database built by 'unify build' (required)
+      --database string               name of the merged database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the merged database (default "dolt")
+      --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the source stores (default 3307)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --timeout duration              overall time budget for the replay (default 4h0m0s)
 ```
 
 ##### bd brain unify verify
@@ -6280,14 +6286,16 @@ bd brain unify verify [flags]
 **Flags:**
 
 ```
-      --data-dir string    directory holding the unified database built by 'unify build' (required)
-      --database string    name of the unified database (default "brain_unified")
-      --dolt-bin string    dolt binary used to start the server over the unified database (default "dolt")
-      --host string        dolt sql-server host holding the production stores (default "127.0.0.1")
-      --port int           dolt sql-server port holding the production stores (default 3307)
-      --reference string   what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
-      --template string    store whose schema the unified database inherited
-      --timeout duration   overall time budget for verification (default 3h0m0s)
+      --data-dir string               directory holding the unified database built by 'unify build' (required)
+      --database string               name of the unified database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the unified database (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --reference string              what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherited
+      --timeout duration              overall time budget for verification (default 3h0m0s)
 ```
 
 ### bd completion

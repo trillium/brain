@@ -71,6 +71,24 @@ Database-state tables (`config`, `metadata`, …) are stored once per store in
 the merged database, keyed by a `store` column. A changed one is replaced for
 that store as a whole slice.
 
+## Databases that are not plain stores
+
+By default an unregistered database holding several id prefixes is treated as a
+cross-store replica (an index of other stores' beads) and left out. Two flags
+change that where the operator knows better; give the same values to `plan`,
+`build`, `replay` and `verify`, since each discovers the sources again:
+
+- `--include-database NAME` — the database is a real store with several
+  prefixes; it takes part as `db:NAME`.
+- `--rescue-orphans-from NAME` — the database stays a replica, but the beads no
+  participating store holds are brought in as the store `db:NAME` (so nothing is
+  left only in the replica). Its other beads, and any child rows it holds for
+  beads it has no row for, are skipped.
+
+Wrappers whose `BD_NAME` is not their store's name in the merged database are
+described by `build --aliases <json>` (`{wrapper name: store}`), recorded in
+`brain_store_aliases`, which the runtime consults to resolve `BD_NAME`.
+
 ## Rebuild or replay?
 
 **Replay** when the merged database was built by a build that recorded its

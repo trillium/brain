@@ -153,6 +153,26 @@ id is not retired as a tombstone, it stays a real bead.
   original database's except the explained conflict/namespace differences, and a
   create/update/close per store type lands correctly.
 
+- **Nothing of the originals is left behind** (cutover parity, 14 beads). The
+  build classifies an unregistered database with several prefixes as a
+  cross-store replica and excludes it, which dropped `TinyKeyboard` (13 beads, a
+  real project with prefixes `TinyKeyboard` and `tk`) and left one bead,
+  `global-bxz`, that exists only in the `beads_global` replica. Two operator
+  flags, accepted by `plan`, `build`, `replay` and `verify` (give the same
+  values to all four, because each re-discovers the sources):
+  `--include-database NAME` makes such a database an ordinary `db:NAME` store;
+  `--rescue-orphans-from NAME` keeps the replica excluded as a store but brings
+  in, as the store `db:NAME`, the beads no participating store holds. The
+  replica's other beads (copies of beads that live in their own stores) and the
+  child rows it holds for beads it has no issue row for are listed in the
+  source's `SkipIDs` and skipped through the same mapper and the same fingerprint
+  exclusion that skip an identical duplicate's second copy. The sole observer of
+  a prefix owns it, so `TinyKeyboard`/`tk` belong to `db:TinyKeyboard` and
+  `global` to `db:beads_global`. A bead that stops being an orphan (a store
+  gains it) is skipped on the next replay; one that becomes an orphan (its only
+  holder deletes it) is not picked up by a replay, because the replica did not
+  change; `verify --reference live` catches it.
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**
