@@ -521,3 +521,30 @@ func TestIncludedDatabaseAndRescuedOrphans(t *testing.T) {
 		t.Errorf("new beads in the rescued/included databases = %s, want 2", got)
 	}
 }
+
+// TestRecordedVerifyAfterReplayWhenStoresShareAPrefix: two stores each hold beads
+// of one prefix that nobody declares. The recorded fingerprints are per store, the
+// verifier's reference is their combination, and a replay that changes one
+// store's share must leave the recorded verification passing.
+func TestRecordedVerifyAfterReplayWhenStoresShareAPrefix(t *testing.T) {
+	f := newReplayFixture(t)
+	f.execIn("alpha", "insert into issues (id, title) values ('zzz-1', 'alpha holds zzz-1'), ('zzz-2', 'alpha holds zzz-2')")
+	f.execIn("beta", "insert into issues (id, title) values ('zzz-3', 'beta holds zzz-3')")
+	f.commit("alpha", "zzz")
+	f.commit("beta", "zzz")
+	f.build()
+	requireNoFailures(t, "recorded after the build", f.verify(ReferenceRecorded))
+	f.execIn("alpha", "update issues set title='alpha edited zzz-1' where id='zzz-1'")
+	f.commit("alpha", "edit")
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	requireNoFailures(t, "recorded after the replay", f.verify(ReferenceRecorded))
+	requireNoFailures(t, "live after the replay", f.verify(ReferenceLive))
+	f.execIn("beta", "insert into issues (id, title) values ('zzz-4', 'beta adds zzz-4')")
+	f.commit("beta", "add")
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("second replay: %v", err)
+	}
+	requireNoFailures(t, "recorded after the second replay", f.verify(ReferenceRecorded))
+}

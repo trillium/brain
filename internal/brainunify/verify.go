@@ -338,7 +338,9 @@ func (v *Verifier) readRecordedFingerprints(ctx context.Context) (map[string]map
 		if out[table] == nil {
 			out[table] = map[string]Fingerprint{}
 		}
-		out[table][group] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
+		// Rows are recorded per (store, table, group); a group several stores share
+		// is the combination of their rows.
+		out[table][group] = Combine(out[table][group], Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)})
 	}
 	return out, rows.Err()
 }

@@ -1382,7 +1382,12 @@ func (b *Builder) record(copied brainunifyCopy, target, source string) {
 	if copied.Group == "" {
 		return
 	}
-	key := target + "\x00" + copied.Group
+	// One row per (store, table, group), as a replay re-records them. The build
+	// used to fold every store's share of a group into one row labelled with the
+	// last store; a replay then deleted that row for the last store alone and
+	// re-recorded only its own share, and the verifier's recorded reference no
+	// longer matched after any replay that touched a group two stores share.
+	key := target + "\x00" + source + "\x00" + copied.Group
 	gf := b.recorded[key]
 	gf.Store = source
 	gf.Table = target
