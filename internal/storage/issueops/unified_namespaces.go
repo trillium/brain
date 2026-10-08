@@ -724,13 +724,13 @@ func isMissingTableError(err error) bool {
 // what to which prefix, when, and why. Append-only: these rows are never
 // updated or deleted.
 type StorePrefixEvent struct {
-	ID        string
-	EventType string
-	Prefix    string
-	Actor     string
-	OldStore  string
-	NewStore  string
-	Reason    string
-	BeadCount int64
-	EventAt   string // RFC3339 UTC, from the event's event_at
+	ID        string `json:"id"`
+	EventType string `json:"event_type"`
+	Prefix    string `json:"prefix"`
+	Actor     string `json:"actor"`
+	OldStore  string `json:"old_store"`
+	NewStore  string `json:"new_store"`
+	Reason    string `json:"reason"`
+	BeadCount int64  `json:"bead_count"`
+	EventAt   string `json:"event_at"` // RFC3339 UTC, from the event's event_at
 }

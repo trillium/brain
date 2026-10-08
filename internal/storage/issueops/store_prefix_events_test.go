@@ -426,3 +426,33 @@ func TestListStorePrefixEventsMissingTableIsEmptyTrail(t *testing.T) {
 		t.Fatalf("events = %d, want none", len(events))
 	}
 }
+
+// No silent path: if the event cannot be written, the ownership row is never
+// touched — the DELETE is not even attempted (sqlmock would fail an
+// unexpected exec), so the two land together or not at all.
+func TestReleaseStorePrefixEventFailureLeavesOwnershipUntouched(t *testing.T) {
+	pinScope(t, UnifiedScope{Unified: true, Store: "tool"})
+	ctx := context.Background()
+	mock, db := newMock(t)
+	tx := txOf(ctx, t, mock, db)
+	defer func() { _ = tx.Rollback() }()
+
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT `store`, owner_reason FROM brain_store_prefixes WHERE prefix = ?")).
+		WithArgs("tool").
+		WillReturnRows(rowsOf(t, "store,owner_reason", []string{"tool", "operator-added"}))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM issues WHERE id = ? OR id LIKE CONCAT(?, '-%')")).
+		WithArgs("tool", "tool").
+		WillReturnRows(rowsOf(t, "COUNT(*)", []string{"0"}))
+	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefix_events")).
+		WillReturnError(fmt.Errorf("disk full"))
+
+	_, err := ReleaseStorePrefix(ctx, tx, "tool", ReleaseStorePrefixOpts{Actor: "tool"})
+	if err == nil || !strings.Contains(err.Error(), "appending release event") {
+		t.Fatalf("want the event-append failure, got %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
+	}
+}

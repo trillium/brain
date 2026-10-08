@@ -114,7 +114,7 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | [0017](0017-dep-add-silent-orphan-cross-store.md) | dep-add silent orphan cross-store | landed |
 | [0019](0019-create-edit-compose.md) | create/edit compose | proposed |
 | [0020](0020-brain-feature-inventory.md) | brain feature inventory | landed |
-| [0021](0021-brain-prefix-release-design.md) | brain prefix release design | proposed |
+| [0021](0021-brain-prefix-release-design.md) | brain prefix release and history (design + implementation) | landed |
 | [0022](0022-brain-cutover-rehearsal.md) | brain cutover rehearsal | landed |
 | [0023](0023-vision-landing.md) | VISION.md landed — the captain-approved vision, verbatim | proposed |
 | [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |

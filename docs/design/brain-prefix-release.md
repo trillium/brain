@@ -1,13 +1,15 @@
-# Releasing and transferring a prefix claim
-
-**Status:** design only — nothing is built, no behaviour changes, no verb is
-wired up. Production is untouched. This document proposes; it does not land.
-The questions it raised are now all decided as of 2026-10-07: the
-beads-carrying-release override question (question b) — **absolute refusal,
-no `--with-beads` override** — and the last three items (history surface,
-claim-event backfill, transfer urgency); see §Question b for the first and
-§Decided by the captain / §Decided items (formerly "Left to the captain")
-for the rest.
+**Status:** implemented — `bd store-prefix release` and `bd store-prefix history`
+are built (`divergence/0021`), together with the append-only
+`brain_store_prefix_events` table and the claim-event append. Built and proven
+on scratch copies of the unified database; nothing is cut over and no live
+database was written to. The questions this design raised were all decided on
+2026-10-07: the beads-carrying-release override question (question b) —
+**absolute refusal, no `--with-beads` override** — and the last three items
+(history surface, claim-event backfill, transfer urgency); see §Question b for
+the first and §Decided by the captain / §Decided items (formerly "Left to the
+captain") for the rest. Where the implementation chose a shape the design left
+open, §Implementation notes says so. User-facing page:
+[`docs/brain/PREFIX_RELEASE.md`](../brain/PREFIX_RELEASE.md).
 **Companion material:** the namespace-model report
 (`/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md`,
 §Requirement 3), which records the runtime claim surface and the conflict rule
@@ -458,7 +460,7 @@ reason).
   ordering.** It may be built before, during, or after; it is exercisable only
   on the unified database; nothing in the cutover runbook depends on it.
 
-## What would be built (if this design is accepted)
+## What was built (this design, as accepted)
 
 1. `brain_store_prefix_events` table added to the unified schema
    (`internal/brainunify/schema.go`, additive — new builds get it; existing
@@ -483,7 +485,7 @@ reason).
    backfill row for pre-adoption claims), and the
    re-claim-after-release path.
 
-## What would deliberately NOT be built
+## What is deliberately NOT built
 
 - **No atomic `move` verb** in this round (c2) — release-then-claim is the
   decided path (2026-10-07), with the atomic move named as a deliberate
@@ -624,3 +626,38 @@ once open stays visible; (h) the Update-2026-10-07 paragraph's closing
 note corrected to reflect the later decisions. Nothing in the design
 contradicts the absolute-refusal decision already recorded; it is
 untouched and no text re-opens it.
+
+## Implementation notes
+
+Where the design left a mechanism open, the smallest consistent shape was
+chosen:
+
+- **Authority (question a) is a3.** `release` runs under the owner's wrapper
+  (`BD_NAME` must equal the row's owner), requires `--confirm`, and has no
+  `--store` escape. The confirmation is recorded by existence: an event row
+  of type `release` can only be written by a confirmed release, so no
+  separate `confirmed` column was added to the table.
+- **Reason.** `--reason` (optional, ≤ 64 characters, the column's limit) is
+  recorded verbatim in the release event; `released` is recorded when none is
+  given. A reason over 64 characters refuses before anything is written.
+- **The row is deleted (b-row-1).** The owner's `allowed_prefixes` config row
+  loses the prefix in the same transaction.
+- **The table is provisioned idempotently inside the first transaction that
+  changes ownership** on a unified database that predates it
+  (`CREATE TABLE IF NOT EXISTS`); new builds create it from
+  `internal/brainunify/schema.go`. `history` never creates it: a database
+  without the table answers with the empty trail and the stated gap.
+- **Claim events** are appended by `RecordStorePrefix`, so both `bd store-prefix
+  add` and `brain stores create` (reason `store-created`) are covered; the
+  event's `actor` on a claim is the claiming store. An already-owned no-op
+  appends nothing. Pre-adoption rows are not backfilled (decided).
+- **Refusal order** in `ReleaseStorePrefix`: shape → not recorded → not the
+  owner → build-decided → live beads (counted from `issues`, absolute). The
+  own-name mint assertion (refusal 6) runs after the delete inside the same
+  transaction, so a failure rolls the release back.
+- **Not built from the design's prose:** the refusal-message pointer to the
+  trail ("released by <owner> at <time>, event <id>") — a claim over a
+  released prefix succeeds (the row is gone), and a rival claim over a
+  re-claimed prefix still names the current owner and its reason; the trail is
+  reachable with `history`. Left as a possible follow-up.
+
