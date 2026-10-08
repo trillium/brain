@@ -10,8 +10,10 @@ import (
 	"strings"
 )
 
-// RunningPrefix names the marker files a bd process keeps in the store's
-// .beads directory for as long as it has a hook running: hooks-running.<pid>.
+// RunningPrefix and RunningSuffix name the marker files a bd process keeps in
+// the store's .beads directory for as long as it has a hook running:
+// hooks-running.<pid>.lock. The .lock suffix keeps them under the .beads
+// .gitignore's existing "*.lock" rule.
 //
 // The marker exists because an environment variable alone is a courtesy a
 // hook can scrub (`env -u BD_INSIDE_HOOK`). The store directory is not: any bd
@@ -19,7 +21,10 @@ import (
 // if one of its own ancestors is a bd process with a hook running. A hook
 // cannot reach the store without going through such a check, and cannot
 // pretend its way out of its own ancestry.
-const RunningPrefix = "hooks-running."
+const (
+	RunningPrefix = "hooks-running."
+	RunningSuffix = ".lock"
+)
 
 // markRunning records that this process has a hook running against the store
 // whose hooks.d holds def. The returned function removes the marker. A hook
@@ -29,7 +34,7 @@ func markRunning(def Definition) (release func(), err error) {
 		return func() {}, nil
 	}
 	beadsDir := filepath.Dir(filepath.Dir(def.Path))
-	path := filepath.Join(beadsDir, RunningPrefix+strconv.Itoa(os.Getpid()))
+	path := filepath.Join(beadsDir, RunningPrefix+strconv.Itoa(os.Getpid())+RunningSuffix)
 	if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
 		return nil, fmt.Errorf("marking the store as running a hook: %w", err)
 	}
@@ -45,13 +50,13 @@ func AncestorRunningHook(beadsDir string) bool {
 	if beadsDir == "" || runtime.GOOS == "windows" {
 		return false
 	}
-	markers, _ := filepath.Glob(filepath.Join(beadsDir, RunningPrefix+"*"))
+	markers, _ := filepath.Glob(filepath.Join(beadsDir, RunningPrefix+"*"+RunningSuffix))
 	if len(markers) == 0 {
 		return false
 	}
 	var ancestors map[int]bool
 	for _, m := range markers {
-		pid, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(m), RunningPrefix))
+		pid, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), RunningPrefix), RunningSuffix))
 		if err != nil {
 			continue
 		}

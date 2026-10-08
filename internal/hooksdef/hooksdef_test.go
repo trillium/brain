@@ -228,7 +228,7 @@ func TestRunMarksStoreWhileHookRunsAndAncestorCheckSeesIt(t *testing.T) {
 		t.Fatalf("store dir should hold a %s marker while the hook runs, saw %q", RunningPrefix, res.Stdout)
 	}
 	// ...and it is gone afterwards.
-	if m, _ := filepath.Glob(filepath.Join(beadsDir, RunningPrefix+"*")); len(m) != 0 {
+	if m, _ := filepath.Glob(filepath.Join(beadsDir, RunningPrefix+"*"+RunningSuffix)); len(m) != 0 {
 		t.Fatalf("marker not released: %v", m)
 	}
 	if AncestorRunningHook(beadsDir) {
@@ -236,7 +236,7 @@ func TestRunMarksStoreWhileHookRunsAndAncestorCheckSeesIt(t *testing.T) {
 	}
 
 	// A marker naming one of this process's ancestors means "a hook is running above me".
-	marker := filepath.Join(beadsDir, RunningPrefix+strconv.Itoa(os.Getppid()))
+	marker := filepath.Join(beadsDir, RunningPrefix+strconv.Itoa(os.Getppid())+RunningSuffix)
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestRunMarksStoreWhileHookRunsAndAncestorCheckSeesIt(t *testing.T) {
 	if err := os.Remove(marker); err != nil {
 		t.Fatal(err)
 	}
-	other := filepath.Join(beadsDir, RunningPrefix+"1")
+	other := filepath.Join(beadsDir, RunningPrefix+"1"+RunningSuffix)
 	if err := os.WriteFile(other, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestRunMarksStoreWhileHookRunsAndAncestorCheckSeesIt(t *testing.T) {
 		t.Fatal("an unrelated process's marker must not block this one")
 	}
 	// A stale marker (dead pid) is swept.
-	stale := filepath.Join(beadsDir, RunningPrefix+"999999")
+	stale := filepath.Join(beadsDir, RunningPrefix+"999999"+RunningSuffix)
 	if err := os.WriteFile(stale, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
