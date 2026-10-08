@@ -38,6 +38,12 @@ func WritePlan(w io.Writer, plan Plan, disc Discovery) error {
 		return err
 	}
 
+	if un := plan.Unidentified(); len(un) > 0 {
+		if _, err := fmt.Fprintf(w, "NO PROJECT ID (a cutover cannot repoint a wrapper to these by identity; give one with --project-id <store>=<uuid>)\n--------------------------------------------------------------------------------------------\n%s\n\n", strings.Join(un, ", ")); err != nil {
+			return err
+		}
+	}
+
 	if len(plan.Excluded) > 0 {
 		if _, err := fmt.Fprintf(w, "EXCLUDED (nothing is dropped without a line here)\n-------------------------------------\n"); err != nil {
 			return err

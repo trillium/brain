@@ -127,6 +127,17 @@ id is not retired as a tombstone, it stays a real bead.
   `copy_hashes`. `exclusionClause` is now NULL-safe (`NULL not in (...)` is
   NULL, which dropped nullable-scope rows from one side of a comparison).
 
+- **Store identity is no longer dropped** (cutover-coverage fix). `Discover`
+  overwrote a store's project id, which the registry's `metadata.json` supplied,
+  with the answer from the database's own `_project_id` row even when that row
+  was absent, so nine stores (`external_llm_tasks`, `grandma_queue`, `job`,
+  `lifespan`, `pomodoros`, `talon`, `travel`, `vrms`, and the unregistered
+  `guard`) were recorded in `brain_stores` with an empty `project_id`. The
+  database's id now wins only when it has one. `build`/`plan` take
+  `--project-id <store>=<uuid>` (repeatable) for a store neither source can
+  identify, and report any store still without one (the build warns; the plan
+  lists them).
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**

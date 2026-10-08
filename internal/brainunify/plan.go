@@ -467,3 +467,18 @@ func tiebreakReason(sorted []IDCopy, best IDCopy) string {
 	}
 	return ""
 }
+
+// Unidentified lists the participating stores that have no project id. The
+// cutover repoints each store's wrapper by it, so a store with a wrapper and no
+// id would be skipped: the build and the plan report them rather than leave the
+// empty value to be found at cutover.
+func (p Plan) Unidentified() []string {
+	var out []string
+	for _, s := range p.Sources {
+		if s.ProjectID == "" {
+			out = append(out, s.Namespace)
+		}
+	}
+	sort.Strings(out)
+	return out
+}

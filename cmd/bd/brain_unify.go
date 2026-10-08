@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -81,7 +82,21 @@ var (
 	unifyJSON      bool
 	unifyTimeout   time.Duration
 	unifyReference string
+	unifyProjectID []string
 )
+
+// projectIDMap parses repeated --project-id <store>=<uuid> values.
+func projectIDMap() (map[string]string, error) {
+	out := map[string]string{}
+	for _, kv := range unifyProjectID {
+		i := strings.Index(kv, "=")
+		if i <= 0 || i == len(kv)-1 {
+			return nil, fmt.Errorf("--project-id wants <store>=<uuid>, got %q", kv)
+		}
+		out[strings.TrimSpace(kv[:i])] = strings.TrimSpace(kv[i+1:])
+	}
+	return out, nil
+}
 
 func init() {
 	unifyPlanCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the production stores")
@@ -99,6 +114,8 @@ func init() {
 	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "no longer has any effect")
 	_ = unifyBuildCmd.Flags().MarkDeprecated("allow-collisions", allowCollisionsRetired)
 	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
+	unifyBuildCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build")
+	unifyPlanCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)")
 
 	unifyReplayCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the source stores")
 	unifyReplayCmd.Flags().IntVar(&unifyPort, "port", 3307, "dolt sql-server port holding the source stores")
@@ -141,6 +158,11 @@ var unifyPlanCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		ids, err := projectIDMap()
+		if err != nil {
+			return err
+		}
+		disc.ApplyProjectIDs(ids)
 		plan := disc.Plan()
 		plan.TemplateNamespace = unifyTemplate
 
@@ -172,6 +194,11 @@ var unifyBuildCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		ids, err := projectIDMap()
+		if err != nil {
+			return err
+		}
+		disc.ApplyProjectIDs(ids)
 		plan := disc.Plan()
 		plan.TemplateNamespace = unifyTemplate
 

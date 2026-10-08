@@ -238,7 +238,11 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 		facts.BeadCount = beads
 		facts.Prefixes = prefixes
 		facts.Tables = tables
-		if v, err := source.MetadataValue(ctx, dbName, "_project_id"); err == nil {
+		// The database's own identity wins when it has one. A database that does
+		// not (job, lifespan and others carry no _project_id row) keeps the
+		// identity its store's metadata.json gave it; overwriting that with the
+		// empty answer is what left nine stores unidentified in the first build.
+		if v, err := source.MetadataValue(ctx, dbName, "_project_id"); err == nil && v != "" {
 			facts.ProjectID = v
 		}
 		if !facts.Registered {
@@ -297,6 +301,38 @@ func unreadable(f SourceFacts, reason string) SourceFacts {
 	f.Reachable = false
 	f.SkipReason = reason
 	return f
+}
+
+// Plan builds the deterministic mapping from the discovery.
+// ApplyProjectIDs supplies the project identity of stores that neither their
+// database nor the registry can: ids maps a store's namespace (or its source
+// database name) to its project id. An id already known is not replaced.
+func (d *Discovery) ApplyProjectIDs(ids map[string]string) {
+	for i := range d.Facts {
+		f := &d.Facts[i]
+		if !f.Reachable || f.ProjectID != "" {
+			continue
+		}
+		if id := ids[f.Namespace]; id != "" {
+			f.ProjectID = id
+		} else if id := ids[f.Database]; id != "" {
+			f.ProjectID = id
+		}
+	}
+}
+
+// Unidentified lists the participating stores that have no project id: the
+// cutover repoints each store's wrapper by it, so a store without one would be
+// skipped silently.
+func (d Discovery) Unidentified() []string {
+	var out []string
+	for _, f := range d.Facts {
+		if f.Reachable && f.ProjectID == "" {
+			out = append(out, f.Namespace+" (database "+f.Database+")")
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Plan builds the deterministic mapping from the discovery.
@@ -397,6 +433,9 @@ func (b *Builder) Build(ctx context.Context) (BuildResult, error) {
 		return BuildResult{}, err
 	}
 
+	if un := b.plan.Unidentified(); len(un) > 0 {
+		b.log("warning: store(s) %s have no project id from their database, the registry or --project-id; they are recorded with an empty identity and a cutover cannot repoint a wrapper to them by it", strings.Join(un, ", "))
+	}
 	srv, err := StartIsolatedServer(ctx, b.opts.DoltBin, b.opts.DataDir)
 	if err != nil {
 		return BuildResult{}, err

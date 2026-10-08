@@ -350,3 +350,22 @@ func TestDigestCopyIsOrderIndependentAndSeesEveryCell(t *testing.T) {
 		t.Errorf("differingTables = %v", got)
 	}
 }
+
+func TestProjectIdentityIsKeptAndAppliedAndNeverLeftEmpty(t *testing.T) {
+	d := Discovery{Facts: []SourceFacts{
+		{Namespace: "job", Database: "job", Reachable: true, ProjectID: "from-registry"},
+		{Namespace: "db:guard", Database: "guard", Reachable: true},
+		{Namespace: "db:other", Database: "other", Reachable: true},
+		{Namespace: "gone", Database: "gone", Reachable: false},
+	}}
+	d.ApplyProjectIDs(map[string]string{"job": "ignored", "guard": "2a77", "gone": "x"})
+	if d.Facts[0].ProjectID != "from-registry" {
+		t.Errorf("an identity already known is not replaced: %q", d.Facts[0].ProjectID)
+	}
+	if d.Facts[1].ProjectID != "2a77" {
+		t.Errorf("an identity given by database name is applied: %q", d.Facts[1].ProjectID)
+	}
+	if got := d.Unidentified(); len(got) != 1 || !strings.Contains(got[0], "db:other") {
+		t.Errorf("Unidentified = %v, want only db:other (an unreachable source does not participate)", got)
+	}
+}
