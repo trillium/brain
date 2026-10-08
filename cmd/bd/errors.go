@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/steveyegge/beads/internal/hooksdef"
 	"github.com/steveyegge/beads/internal/metrics"
 )
 
@@ -194,7 +195,11 @@ func WarnError(format string, args ...interface{}) {
 // than stranded until the next clean exit.
 func CheckReadonly(operation string) {
 	if readonlyMode {
-		fmt.Fprintf(os.Stderr, "Error: operation '%s' is not allowed in read-only mode\n", operation)
+		if hooksdef.InsideHook() {
+			fmt.Fprintf(os.Stderr, "Error: operation '%s' refused: this process was started by a hook, and hooks observe and may refuse but never write — the store is the only writer\n", operation)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: operation '%s' is not allowed in read-only mode\n", operation)
+		}
 		metrics.CloseAndFlush()
 		os.Exit(1)
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/hooks"
+	"github.com/steveyegge/beads/internal/hooksdef"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/molecules"
 	"github.com/steveyegge/beads/internal/storage"
@@ -779,6 +780,11 @@ var rootCmd = &cobra.Command{
 				WasSet bool
 			}{readonlyMode, true}
 		}
+		// A process started by a hook is read-only, whatever flags it was given:
+		// hooks observe and may refuse, but the store is the only writer.
+		if hooksdef.InsideHook() {
+			readonlyMode = true
+		}
 		if !cmd.Root().PersistentFlags().Changed("db") && dbPath == "" &&
 			os.Getenv("BEADS_DB") == "" && os.Getenv("BD_DB") == "" && os.Getenv("BEADS_DIR") == "" {
 			dbPath = config.GetString("db")
@@ -1040,7 +1046,18 @@ var rootCmd = &cobra.Command{
 		// Check if this is a read-only command (GH#804)
 		// Read-only commands open the store in read-only mode to avoid modifying
 		// the database (which breaks file watchers).
-		useReadOnly := isReadOnlyCommand(cmd.Name())
+		useReadOnly := isReadOnlyCommand(cmd.Name()) || hooksdef.InsideHook()
+
+		// Declared hooks (hooks.d/*.toml). Unusable definitions refuse the
+		// command here, before anything can be written.
+		hookDefs, hookErr := loadHookDefs(cmd, beadsDir, useReadOnly)
+		if hookErr != nil {
+			return HandleError("%v", hookErr)
+		}
+		if proxiedServerMode && len(hookDefs) > 0 && !useReadOnly {
+			return HandleError("refusing to write: %d hook(s) are declared in %s but proxied-server mode does not run them, so the write path cannot be guarded",
+				len(hookDefs), hooksdef.HooksDir(beadsDir))
+		}
 
 		// Auto-migrate database on version bump (bd-jgxi).
 		// Runs for ALL commands (including read-only ones) because the migration
@@ -1249,6 +1266,15 @@ var rootCmd = &cobra.Command{
 		if dbPath != "" {
 			beadsDir := filepath.Dir(dbPath)
 			hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
+		}
+
+		// Declared guard/observer hooks sit closest to the raw store, so a
+		// refusal happens before anything above can react to the write.
+		if store != nil && len(hookDefs) > 0 && !useReadOnly {
+			store = storage.NewHookGuardStore(store, hookDefs, storage.HookGuardOptions{
+				Command: cmd.Name(),
+				Store:   filepath.Base(filepath.Dir(beadsDir)),
+			})
 		}
 
 		// Wrap store with hook-firing decorator so ALL mutations
