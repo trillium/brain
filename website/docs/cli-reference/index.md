@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --docs-root`.
 
-This reference covers all 124 live top-level `bd` commands. Regenerate it with:
+This reference covers all 125 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -92,6 +92,7 @@ This reference covers all 124 live top-level `bd` commands. Regenerate it with:
 - [`bd notion`](./notion.md)
 - [`bd onboard`](./onboard.md)
 - [`bd orphans`](./orphans.md)
+- [`bd outbox`](./outbox.md)
 - [`bd patch`](./patch.md)
 - [`bd ping`](./ping.md)
 - [`bd preflight`](./preflight.md)
