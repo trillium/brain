@@ -53,6 +53,10 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd query](#bd-query) — Query issues using a simple query language
 - [bd render](#bd-render) — Re-render an issue's markdown to the store's exfiltration root
 - [bd render-all](#bd-render-all) — Re-render every issue's markdown (useful after corruption or root change)
+- [bd render-import](#bd-render-import) — Import edits from the store's rendered markdown into their beads (opt-in per store), and mark beads whose rendered file was deleted
+- [bd render-marks](#bd-render-marks) — Show or clear the "marked-for-deletion" label beads carry when their rendered file was deleted
+  - [bd render-marks clear](#bd-render-marks-clear) — Clear the deletion mark on the named beads (renders resume; the files are re-created)
+  - [bd render-marks list](#bd-render-marks-list) — List every bead carrying the deletion mark
 - [bd reopen](#bd-reopen) — Reopen one or more closed issues
 - [bd search](#bd-search) — Search issues by text query
 - [bd set-state](#bd-set-state) — Set operational state (creates event + updates label)
@@ -314,6 +318,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores alias](#bd-stores-alias) — Make a second CLI name resolve to an existing store
   - [bd stores create](#bd-stores-create) — Provision a new connected store (dolt init + entries dir + wrapper + registry)
   - [bd stores doctor](#bd-stores-doctor) — Assert every store in the registry answers a read
+  - [bd stores edit-back](#bd-stores-edit-back) — Declare whether a store accepts edits from its rendered markdown files
   - [bd stores env](#bd-stores-env) — Write ~/.config/brain/stores.env from the registry (for shell wrappers)
   - [bd stores list](#bd-stores-list) — List all registered stores
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
@@ -1517,6 +1522,11 @@ Use this when the on-disk markdown has been deleted, corrupted, or written by
 an older version of bd. The substrate row is authoritative; the markdown is a
 derived view.
 
+A bead carrying the "marked-for-deletion" label (its rendered file was
+deleted and the deletion has not been cleared by 'bd render-marks clear')
+skips the render and says so: a re-render never silently clears the mark,
+and nothing resurrects the deleted file without a human.
+
 The path of the rendered file is printed to stdout. Exit 0 on success.
 
 Examples:
@@ -1531,6 +1541,10 @@ bd render <id>
 
 Walk every issue in the substrate and render its markdown to the
 configured exfil root.
+
+Beads carrying the "marked-for-deletion" label (their rendered file was
+deleted, not yet reviewed) are skipped with a named status line — a
+re-render never silently clears the mark.
 
 For each issue, one tab-separated line is printed to stdout:
   &lt;id&gt;\t&lt;path&gt;\t&lt;status&gt;
@@ -1548,6 +1562,111 @@ With --json, stdout is a single JSON object instead of per-line text:
 
 ```
 bd render-all
+```
+
+### bd render-import
+
+Import edits made to this store's rendered markdown files back into the
+beads they name, and mark beads whose rendered file has been deleted.
+
+The pass is opt-in per store and refuses to guess:
+
+  - A store accepts edit-back only when its registry entry declares it:
+      bd stores edit-back &lt;name&gt; on
+    Where the declaration lives: ~/.config/brain/stores.yaml, per store.
+    'bd stores list' shows which stores accept edits (one-way is the
+    default). A store that does not accept edit-back keeps today's one-way
+    rendering: this run reports the file-vs-row differences and writes
+    nothing to the substrate.
+  - WHAT AN EDIT MEANS: the fields the import defines are title, status,
+    priority, labels (the frontmatter's labels/tags), and description (the
+    body after the "# &#123;title&#125;" H1). Everything else on the bead — id, kind,
+    render-key slug, created/updated timestamps, metadata — stays
+    substrate-owned; the file's disagreement there is never a change. The
+    substrate stays the authority: the database keeps the durable record,
+    and the render-import run is the one place the field is allowed to win,
+    with every change printed as old → new.
+  - DELETION MARKS, NEVER DELETES: a rendered file that has disappeared
+    (recorded by the render manifest, entries/.render-manifest.json) marks
+    its bead with the "marked-for-deletion" label. The bead is never
+    removed and its label is visible on every read. A bead wearing the
+    mark is skipped by every render — a re-render never silently clears
+    the mark, and an unmarked render never resurrects the deleted file —
+    so an accident in the synced folder cannot destroy the record, and
+    nothing resurrects it without a human. The mark is cleared only by
+      bd render-marks clear &lt;id&gt;
+    after which the normal render path re-creates the file.
+
+Refusals are loud and named — each is a different refusal with its own
+code, spelled out by the run: a file that cannot be read; frontmatter
+that names no bead (no id); a file naming a bead whose id prefix belongs
+to another store's namespace; a file naming a bead that does not exist in
+this store (refused by name); a file whose slug disagrees with the bead it
+names; a file at a path the render manifest never recorded for that bead;
+tags and labels disagreeing; a body whose H1 disagrees with both the
+file's and the bead's title; a priority that is not an integer 0-4; an
+edit to a bead that is already marked for deletion.
+
+Behavioral contract (see divergence/0027): each refused file names its
+reason; each applied edit names old → new; each mark names the missing
+file. Exit 0 only when nothing was refused.
+
+Examples:
+  bd render-import
+  bd render-import --json
+
+```
+bd render-import
+```
+
+### bd render-marks
+
+Dealing with deletion marks.
+
+When a rendered markdown file (entries/&lt;kind&gt;/&lt;slug&gt;.md) disappears — an
+operator intended it, or an accident in the synced folder — 'bd
+render-import' marks the bead with the "marked-for-deletion" label instead
+of deleting anything. The bead stays; the mark is visible on every read
+('bd show', 'bd list'); and, while the mark stands, renders skip the bead
+(the file is not silently re-created), so the deletion intent gets a
+human's review rather than a background undo.
+
+  bd render-marks list          every bead carrying the mark
+  bd render-marks clear &lt;id&gt;…   acknowledge the review, clear the mark
+
+Clearing the mark is an explicit act and the only way a mark leaves a bead:
+it removes the label through the normal store surface, after which the
+post-write render path re-creates the file. Deleting the SUBSTRATE bead
+itself, if the deletion intent is confirmed after all, is deliberately a
+separate decision ('bd delete &lt;id&gt;') and never automatic.
+
+```
+bd render-marks
+```
+
+#### bd render-marks clear
+
+Clear the "marked-for-deletion" label on the named beads. This is the ONLY
+way a mark leaves a bead — no render path clears it by itself.
+
+After a clear, the normal render path re-creates each bead's rendered file
+(the label change itself triggers the post-write render). To acknowledge
+the deletion intent by actually deleting the substrate bead, use
+'bd delete &lt;id&gt;' separately; this verb only unmarks, it never deletes.
+
+```
+bd render-marks clear <id>...
+```
+
+#### bd render-marks list
+
+List the beads whose rendered file was deleted and whose deletion has not
+been reviewed yet. Each bead carries the "marked-for-deletion" label.
+
+With --json, stdout is a JSON array of &#123;id, title, status&#125; objects.
+
+```
+bd render-marks list
 ```
 
 ### bd reopen
@@ -6029,6 +6148,31 @@ bd stores doctor [flags]
       --timeout duration   Per-store read timeout (default 20s)
 ```
 
+##### bd brain stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off
+```
+
 ##### bd brain stores env
 
 Write ~/.config/brain/stores.env from the registry (for shell wrappers)
@@ -8093,6 +8237,31 @@ bd stores doctor [flags]
       --json               Emit a structured JSON object instead of per-store text lines
       --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
       --timeout duration   Per-store read timeout (default 20s)
+```
+
+#### bd stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off [flags]
 ```
 
 #### bd stores env

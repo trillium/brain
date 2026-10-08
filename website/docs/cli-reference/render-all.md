@@ -13,6 +13,10 @@ Generated from `bd help --doc render-all`
 Walk every issue in the substrate and render its markdown to the
 configured exfil root.
 
+Beads carrying the "marked-for-deletion" label (their rendered file was
+deleted, not yet reviewed) are skipped with a named status line — a
+re-render never silently clears the mark.
+
 For each issue, one tab-separated line is printed to stdout:
   &lt;id&gt;\t&lt;path&gt;\t&lt;status&gt;
 

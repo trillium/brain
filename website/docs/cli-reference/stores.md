@@ -148,6 +148,31 @@ bd stores doctor [flags]
       --timeout duration   Per-store read timeout (default 20s)
 ```
 
+### bd stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off [flags]
+```
+
 ### bd stores env
 
 Write ~/.config/brain/stores.env from the registry (for shell wrappers)

@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --docs-root`.
 
-This reference covers all 121 live top-level `bd` commands. Regenerate it with:
+This reference covers all 123 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -110,6 +110,8 @@ This reference covers all 121 live top-level `bd` commands. Regenerate it with:
 - [`bd rename-prefix`](./rename-prefix.md)
 - [`bd render`](./render.md)
 - [`bd render-all`](./render-all.md)
+- [`bd render-import`](./render-import.md)
+- [`bd render-marks`](./render-marks.md)
 - [`bd reopen`](./reopen.md)
 - [`bd repo`](./repo.md)
 - [`bd restore`](./restore.md)

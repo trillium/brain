@@ -21,6 +21,11 @@ Use this when the on-disk markdown has been deleted, corrupted, or written by
 an older version of bd. The substrate row is authoritative; the markdown is a
 derived view.
 
+A bead carrying the "marked-for-deletion" label (its rendered file was
+deleted and the deletion has not been cleared by 'bd render-marks clear')
+skips the render and says so: a re-render never silently clears the mark,
+and nothing resurrects the deleted file without a human.
+
 The path of the rendered file is printed to stdout. Exit 0 on success.
 
 Examples:
