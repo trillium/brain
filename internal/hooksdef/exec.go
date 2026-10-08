@@ -77,6 +77,12 @@ func Run(ctx context.Context, def Definition, payload Payload) RunResult {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
+	release, err := markRunning(def)
+	if err != nil {
+		return RunResult{StartErr: err}
+	}
+	defer release()
+
 	cctx, cancel := context.WithTimeout(ctx, def.Timeout)
 	defer cancel()
 
@@ -133,7 +139,7 @@ func Decide(def Definition, event string, res RunResult) Decision {
 			return Decision{}
 		case !res.TimedOut && res.StartErr == nil && res.ExitCode == def.RefusalExit:
 			return Decision{Refusal: &Refusal{Hook: def.Name, Path: def.Path, Event: event,
-				Detail: strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout)), Cause: CauseRefused}}
+				Detail: condense(firstNonEmpty(res.Stderr, res.Stdout)), Cause: CauseRefused}}
 		default:
 			cause := CauseFailed
 			if res.TimedOut {
@@ -174,7 +180,7 @@ func describeFailure(def Definition, res RunResult) (string, bool) {
 		return "", false
 	}
 	msg := fmt.Sprintf("hook exited %d", res.ExitCode)
-	if d := firstLine(strings.TrimSpace(firstNonEmpty(res.Stderr, res.Stdout))); d != "" {
+	if d := condense(firstNonEmpty(res.Stderr, res.Stdout)); d != "" {
 		msg += ": " + d
 	}
 	if def.IsGuard() {
@@ -188,4 +194,25 @@ func firstNonEmpty(a, b string) string {
 		return a
 	}
 	return b
+}
+
+// maxDetail bounds how much of a hook's output is carried into a refusal or a
+// stored warning.
+const maxDetail = 600
+
+// condense folds a hook's output to one bounded line: non-empty lines joined
+// with " / ". A hook that explains itself over several lines is quoted whole
+// rather than cut to its first line, which is often the least informative.
+func condense(s string) string {
+	var parts []string
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	out := strings.Join(parts, " / ")
+	if len(out) > maxDetail {
+		out = out[:maxDetail] + "…"
+	}
+	return out
 }

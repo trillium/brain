@@ -780,11 +780,6 @@ var rootCmd = &cobra.Command{
 				WasSet bool
 			}{readonlyMode, true}
 		}
-		// A process started by a hook is read-only, whatever flags it was given:
-		// hooks observe and may refuse, but the store is the only writer.
-		if hooksdef.InsideHook() {
-			readonlyMode = true
-		}
 		if !cmd.Root().PersistentFlags().Changed("db") && dbPath == "" &&
 			os.Getenv("BEADS_DB") == "" && os.Getenv("BD_DB") == "" && os.Getenv("BEADS_DIR") == "" {
 			dbPath = config.GetString("db")
@@ -1046,7 +1041,8 @@ var rootCmd = &cobra.Command{
 		// Check if this is a read-only command (GH#804)
 		// Read-only commands open the store in read-only mode to avoid modifying
 		// the database (which breaks file watchers).
-		useReadOnly := isReadOnlyCommand(cmd.Name()) || hooksdef.InsideHook()
+		hookAncestry = hooksdef.AncestorRunningHook(beadsDir)
+		useReadOnly := isReadOnlyCommand(cmd.Name()) || insideHook()
 
 		// Declared hooks (hooks.d/*.toml). Unusable definitions refuse the
 		// command here, before anything can be written.

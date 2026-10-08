@@ -189,7 +189,7 @@ func (r *Refusal) Error() string {
 	}
 	detail := ""
 	if r.Detail != "" {
-		detail = ": " + firstLine(r.Detail)
+		detail = ": " + r.Detail
 	}
 	switch r.Cause {
 	case CauseRefused:
@@ -197,22 +197,6 @@ func (r *Refusal) Error() string {
 	default:
 		return fmt.Sprintf("%s: guard hook %q (%s) failed closed [%s]%s", consequence, r.Hook, r.Path, r.Cause, detail)
 	}
-}
-
-func firstLine(s string) string {
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			return trimCR(s[:i])
-		}
-	}
-	return trimCR(s)
-}
-
-func trimCR(s string) string {
-	if len(s) > 0 && s[len(s)-1] == '\r' {
-		return s[:len(s)-1]
-	}
-	return s
 }
 
 // Warning is one durable, addressable hook_failure or unset-policy record.

@@ -30,6 +30,15 @@ record in the store. Hooks never write: the store is the only writer.
 See docs/brain/HOOKS.md.`,
 }
 
+// hookAncestry is set when an ancestor of this process is a bd process with a
+// hook running against this store (see hooksdef.AncestorRunningHook).
+var hookAncestry bool
+
+// insideHook reports whether this process is the work of a hook: either the
+// hook marker is in its environment or a hook-running bd is its ancestor.
+// Such a process may read the store and may never write it.
+func insideHook() bool { return hooksdef.InsideHook() || hookAncestry }
+
 // isHookCommand reports whether cmd is one of the hook verbs, which must keep
 // working when hooks.d is broken (that is when they are needed).
 func isHookCommand(cmd *cobra.Command) bool {
