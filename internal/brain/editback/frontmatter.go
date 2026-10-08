@@ -6,7 +6,7 @@
 // and is deliberately tolerant of hand edits *within* that shape. Anything
 // outside it — unclosed frontmatter, two id lines that disagree, an H1 that
 // matches neither the file's nor the bead's title — is a named refusal, never
-// a guess. See divergence/0027 for the full conflict rule.
+// a guess. See divergence/0029 for the full conflict rule.
 
 package editback
 

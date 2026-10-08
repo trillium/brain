@@ -44,7 +44,7 @@ const storesEnvLegacyPath = ".config/pai/stores.env"
 // points at the store's .beads directory; About is an optional human blurb
 // describing what the store is for (set via 'brain stores set-about').
 //
-// EditBack is the store's edit-back declaration (divergence/0027): when
+// EditBack is the store's edit-back declaration (divergence/0029): when
 // true, 'bd render-import' may write edits made to the store's rendered
 // markdown files back into the beads they name. It is OFF by default — a
 // store that does not declare edit-back keeps the one-way render behaviour,

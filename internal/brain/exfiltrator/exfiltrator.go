@@ -217,7 +217,7 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 
 	// Record the file in the render manifest so the edit-back run can
 	// later distinguish "this bead's render was deleted" from "this bead
-	// was never rendered". New code (edit-back, divergence/0027); without
+	// was never rendered". New code (edit-back, divergence/0029); without
 	// it the manifest simply does not exist and deletion detection reports
 	// itself as unavailable.
 	if err := m.recordManifest(issue.ID, string(issue.IssueType), slug); err != nil {

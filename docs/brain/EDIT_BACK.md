@@ -63,7 +63,7 @@ Once files are an input there are two writers. The rule:
 2. **When the store accepts edit-back, the file wins over the row on those five fields, but only if the file was edited from the current record.** The file's `updated:` stamp is the row's updated time at the render it came from. If the row has changed since, the file is **stale**. It is a late copy delivered by the synced folder, and importing it would silently revert newer data. It is refused (`stale-file`) with both stamps named. Re-render (`bd render <id>`) and redo the edit on the fresh file.
 3. **The losing side is always visible**: old → new on every applied or ignored edit, a named refusal on every stale or ambiguous one, and Dolt history for the replaced values.
 
-The stale guard compares stamps to the second; a row changed in the same second as the render it is compared against is not detectable.
+The stale guard compares stamps to the second and allows 2 seconds of slack, because a bead's first render persists its slug just after writing the file and that write bumps the row's stamp. A real change within 2 seconds of the render a file came from is not detectable.
 
 ## Deleting a file marks the bead, never deletes it
 

@@ -1,5 +1,5 @@
 ---
-id: 0027
+id: 0029
 title: opt-in edit-back from rendered markdown, and mark-for-deletion
 isc: []
 status: landed
@@ -18,7 +18,7 @@ touches:
   - docs/brain/EDIT_BACK.md
   - docs/brain/README.md
   - docs/CLI_REFERENCE.md
-  - divergence/0027-brain-markdown-editback.md
+  - divergence/0029-brain-markdown-editback.md
 upstream_rebase_notes: |
   Brain-only feature; upstream bd has no rendered-markdown view to edit.
   Conflict hotspots: cmd/bd/render.go (two `IsSkipMarked` branches added
@@ -93,7 +93,9 @@ optional, per-store *input* without letting it become a second authority.
 
 # Known limits
 
-- The stale guard compares stamps to the second.
+- The stale guard compares stamps to the second with 2 seconds of slack (a
+  bead's first render persists its slug after writing the file, bumping the
+  row's stamp); a real change within that window is not detectable.
 - On the embedded engine the namespace check cannot read the prefix-ownership
   record and falls back to the store's own prefix only (stricter, so it refuses
   more, never less).

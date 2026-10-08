@@ -2,7 +2,7 @@
 // markdown file back into its bead, and the run that marks a bead whose
 // rendered file was deleted.
 //
-// The captain's two verdicts (VISION.md, landed as divergence/0027) govern
+// The captain's two verdicts (VISION.md, landed as divergence/0029) govern
 // every choice here:
 //
 //   - "Editing a rendered file can be made to pass back into its bead, per
@@ -326,10 +326,17 @@ func (o Options) oneFile(ctx context.Context, path string, mf *exfiltrator.Manif
 	})
 }
 
+// staleSlack is how far past the file's stamp a row may sit before the file
+// counts as stale. The renderer persists a bead's derived slug AFTER it
+// writes the file, and that write bumps the row's updated time, so on a
+// bead's first render the file is stamped up to a second older than its own
+// row. Anything inside the slack is the render racing itself, not a newer
+// record. The cost: a real change within the slack of the render it is
+// compared against is not detected — the documented limit of this guard.
+const staleSlack = 2 * time.Second
+
 // staleCheck compares the file's "updated" stamp with the row's. Stamps are
-// RFC 3339 to the second, so both sides are truncated to the second; a row
-// changed within the same second as the render it is compared against is
-// not detectable and is the documented limit of this guard.
+// RFC 3339 to the second, so both sides are truncated to the second.
 func staleCheck(id string, row *types.Issue, fm *Frontmatter) (code, detail string) {
 	raw, present := StringOf(fm, "updated")
 	raw = strings.TrimSpace(raw)
@@ -341,7 +348,7 @@ func staleCheck(id string, row *types.Issue, fm *Frontmatter) (code, detail stri
 		return RefUnversionedFile, fmt.Sprintf("frontmatter updated stamp %q is not RFC 3339, so the file's version cannot be established; refusing rather than guessing — re-render with 'bd render %s' and redo the edit", raw, id)
 	}
 	rowUpdated := row.UpdatedAt.UTC().Truncate(time.Second)
-	if rowUpdated.After(fileUpdated.UTC().Truncate(time.Second)) {
+	if rowUpdated.After(fileUpdated.UTC().Truncate(time.Second).Add(staleSlack)) {
 		return RefStaleFile, fmt.Sprintf("file was rendered at updated=%s but %s has changed since (updated=%s) — importing would revert the newer record; the substrate wins. Re-render with 'bd render %s' and redo the edit on the fresh file",
 			fileUpdated.UTC().Format(time.RFC3339), id, rowUpdated.Format(time.RFC3339), id)
 	}

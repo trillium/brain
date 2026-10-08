@@ -3,7 +3,7 @@
 // The opt-in per-store pass that lets an edit made to a rendered markdown
 // file pass back into its bead, and a deletion of a rendered file mark its
 // bead instead of destroying it. Two verdicts from the captain's approved
-// vision (VISION.md, divergence/0027):
+// vision (VISION.md, divergence/0029):
 //
 //   - "Editing a rendered file can be made to pass back into its bead, per
 //     store, when that store wants it." The declaration lives in
@@ -92,7 +92,7 @@ tags and labels disagreeing; a body whose H1 disagrees with both the
 file's and the bead's title; a priority that is not an integer 0-4; an
 edit to a bead that is already marked for deletion.
 
-Behavioral contract (see divergence/0027): each refused file names its
+Behavioral contract (see divergence/0029): each refused file names its
 reason; each applied edit names old → new; each mark names the missing
 file. Exit 0 only when nothing was refused.
 

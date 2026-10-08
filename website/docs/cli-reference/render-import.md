@@ -51,7 +51,7 @@ tags and labels disagreeing; a body whose H1 disagrees with both the
 file's and the bead's title; a priority that is not an integer 0-4; an
 edit to a bead that is already marked for deletion.
 
-Behavioral contract (see divergence/0027): each refused file names its
+Behavioral contract (see divergence/0029): each refused file names its
 reason; each applied edit names old → new; each mark names the missing
 file. Exit 0 only when nothing was refused.
 

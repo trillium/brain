@@ -599,3 +599,23 @@ func replaceLinePrefix(s, prefix, with string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// TestStaleSlack_SlugPersistRaceIsNotStale — the renderer persists the slug
+// after writing the file, bumping the row's stamp by up to a second; that
+// must not read as a newer record.
+func TestStaleSlack_SlugPersistRaceIsNotStale(t *testing.T) {
+	st := newTStore()
+	o := baseOptions(t, st, true)
+	path := renderFile(t, st, o.Root, "brain-k000a", func(got string) string {
+		return strings.Replace(got, "title: \"Accepted subject\"", "title: \"Edited\"", 1)
+	})
+	seedManifest(t, o.Root, "brain-k000a", relEntry(t, o.Root, path))
+	st.mu.Lock()
+	st.issues["brain-k000a"].UpdatedAt = st.issues["brain-k000a"].UpdatedAt.Add(time.Second)
+	st.mu.Unlock()
+	rep, err := Run(context.Background(), o)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	singleOutcome(t, rep, "applied")
+}
