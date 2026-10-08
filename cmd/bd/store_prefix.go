@@ -46,6 +46,12 @@ var storePrefixCmd = &cobra.Command{
   bd store-prefix add <prefix>      claim a new id prefix for this store
                                     (defaults to the wrapper's BD_NAME;
                                     claim for another store with --store)
+  bd store-prefix release <prefix>  free this store's own id prefix (requires
+                                    --confirm; refuses while it carries beads
+                                    or the build decided it)
+  bd store-prefix history <prefix>  show the ownership trail — claims and
+                                    releases, newest first, with the reason
+                                    each act carried
 
 Prefixes are the mechanism "which store is this bead in" rides on: a bead's
 namespace is the segment of its id before the first '-'. The command refuses
@@ -55,6 +61,15 @@ and is idempotent for the claiming store's own prefixes. A claimed prefix is
 usable immediately: beads mint under it ("create --prefix <prefix>"), explicit
 ids carry it, and every read (narrow or wide) resolves ownership from this
 same record.
+
+Release and history are the deliberate ownership-change edge
+(docs/design/brain-prefix-release.md): release deletes the row only through
+an explicit, confirmed act by the owner's own namespace, and every ownership
+change — a claim and a release alike — appends a row to the append-only
+brain_store_prefix_events audit table in the same transaction, so ownership
+is never changed silently. A release is refused while the prefix still
+carries any bead (absolute refusal, no --with-beads override) and for any
+prefix the build decided; a transfer is release-then-claim.
 
 On a legacy (per-store) database there is no namespace record to extend; the
 command refuses instead of pretending.`,
@@ -67,8 +82,8 @@ command refuses instead of pretending.`,
 }
 
 var storePrefixListCmd = &cobra.Command{
-	Use: "list",
-	Short:   "Show the unified database's prefix-ownership record",
+	Use:   "list",
+	Short: "Show the unified database's prefix-ownership record",
 	Long: `List every id prefix the unified database's brain_store_prefixes record
 knows: the prefix, the store that owns it, the reason the ownership was
 decided (build-time "declared-by-store-config"/"store-name-matches-prefix" or
@@ -107,13 +122,83 @@ Refusals are loud and non-silent:
 	SilenceErrors: true,
 }
 
-var storePrefixTargetStore string
+var storePrefixReleaseCmd = &cobra.Command{
+	Use:   "release <prefix>",
+	Short: "Free this store's own id prefix (deliberate, confirmed, event-recorded)",
+	Long: `Free a prefix this namespace owns on the unified database's
+brain_store_prefixes record, as a deliberate act by the owning store's own
+wrapper (BD_NAME): there is no --store escape on the releasing side.
+
+The act never happens as a side effect: it refuses unless --confirm is given,
+and the confirmation is recorded in the append-only event row, so "deliberate"
+is stored, not asserted. On success the ownership row is deleted — the prefix
+returns to exactly its pre-claim state, re-claimable by anyone through the
+ordinary 'bd store-prefix add' — and a 'release' event lands in
+brain_store_prefix_events inside the same transaction, naming who released,
+when, and why (--reason, recorded verbatim; optional).
+
+Refusals are loud and none is bypassable:
+  - without --confirm: release is the one namespace verb whose mistake is
+    subtractive, so intent must be explicit;
+  - the prefix still carries beads: ABSOLUTE refusal (no --with-beads
+    override) — a prefix frees only when it carries no beads; migrate the
+    beads off it first, which is the explicit, auditable path;
+  - the prefix is build-decided ("declared-by-store-config",
+    "store-name-matches-prefix", "first-observing-source",
+    "no-source-declares-or-matches"): retracting the build's mapping decision
+    is a re-unification act, not this verb;
+  - the act is not performed as the owner's namespace;
+  - the prefix is not recorded at all — nothing to release, an error, not a
+    success-shaped no-op.
+
+To transfer a prefix to another store, release it here and claim it there.
+That unclaimed window is real — the next claim wins it — so do the two acts
+promptly and check 'bd store-prefix list' between them.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStorePrefixRelease(cmd, args[0])
+	},
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
+var storePrefixHistoryCmd = &cobra.Command{
+	Use:   "history <prefix>",
+	Short: "Show a prefix's ownership trail (claims and releases, newest first)",
+	Long: `Print the ownership trail of one id prefix from the append-only
+brain_store_prefix_events table: every claim and every release recorded from
+that table's adoption onward, newest first, with the reason each act carried.
+
+Claims are recorded from the event table's adoption onward. Runtime rows that
+existed before it have no event, and none is invented for them — the gap is
+stated where you are looking, rather than filled with a fabricated row.
+Every ownership change lands with its event in the same transaction, so no
+path changes ownership silently.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStorePrefixHistory(cmd, args[0])
+	},
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
+var (
+	storePrefixTargetStore    string
+	storePrefixConfirmRelease bool
+	storePrefixReleaseReason  string
+)
 
 func init() {
 	storePrefixCmd.AddCommand(storePrefixListCmd)
 	storePrefixCmd.AddCommand(storePrefixAddCmd)
+	storePrefixCmd.AddCommand(storePrefixReleaseCmd)
+	storePrefixCmd.AddCommand(storePrefixHistoryCmd)
 	storePrefixAddCmd.Flags().StringVar(&storePrefixTargetStore, "store", "",
 		"Store whose namespace claims the prefix (default: the wrapper's BD_NAME)")
+	storePrefixReleaseCmd.Flags().BoolVar(&storePrefixConfirmRelease, "confirm", false,
+		"Confirm the release: the act never happens without it, and the confirmation is recorded in the event row")
+	storePrefixReleaseCmd.Flags().StringVar(&storePrefixReleaseReason, "reason", "",
+		"Why the prefix is being released (recorded verbatim in the event row; optional, max 64 characters)")
 	rootCmd.AddCommand(storePrefixCmd)
 }
 
@@ -236,6 +321,128 @@ func runStorePrefixAdd(cmd *cobra.Command, prefix string) error {
 		})
 	}
 	return nil
+}
+
+// runStorePrefixRelease frees the prefix as this wrapper's own namespace —
+// the owner must be the one releasing — and reports the outcome in the
+// record's own vocabulary. Everything else the event refuses loudly; the
+// reason the operator gives lands verbatim in the audit trail.
+func runStorePrefixRelease(cmd *cobra.Command, prefix string) error {
+	db, err := storePrefixDB()
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	ctx := rootCtx
+
+	sc := issueops.UnifiedScopeForTx(ctx, db)
+	if !sc.Unified {
+		return HandleError("%v", fmt.Errorf("this store's database is not the unified database: prefix ownership is runtime state there only (run this against 'brain_unified', e.g. through a unified wrapper)"))
+	}
+
+	// Release proves authority by namespace identity: the wrapper's own
+	// BD_NAME. Deliberately unlike 'add', there is no --store flag here —
+	// release is subtractive, so only the owner's namespace performs it.
+	actor := strings.TrimSpace(os.Getenv("BD_NAME"))
+	if actor == "" {
+		return HandleError("%v", fmt.Errorf("no namespace to release as: run this under the owning store's wrapper (BD_NAME) — release proves authority the same way a claim does"))
+	}
+
+	if !storePrefixConfirmRelease {
+		// Refusal before the shape check: without --confirm nothing about the
+		// prefix matters, because nothing may happen.
+		return HandleError("%v", fmt.Errorf("release refused: pass --confirm to release prefix %q from namespace %q — release is deliberate, never a side effect (the confirmation is recorded in the event row)", prefix, actor))
+	}
+
+	if !issueops.IsValidAddedPrefix(prefix) {
+		return HandleError("%v", fmt.Errorf("invalid prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-')", prefix))
+	}
+
+	reason := strings.TrimSpace(storePrefixReleaseReason)
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return HandleError("%v", fmt.Errorf("open transaction: %w", err))
+	}
+	out, err := issueops.ReleaseStorePrefix(ctx, tx, prefix, issueops.ReleaseStorePrefixOpts{Actor: actor, Reason: reason})
+	if err != nil {
+		_ = tx.Rollback()
+		return HandleError("%v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return HandleError("%v", fmt.Errorf("commit: %w", err))
+	}
+
+	fmt.Printf("%s released by namespace %s (event %s, live beads at release: %d)\n", prefix, actor, out.EventID, out.LiveBeadCount)
+	if out.AllowedPrefixesUpdated {
+		fmt.Printf("allowed_prefixes for %s no longer carries %s\n", actor, prefix)
+	}
+	fmt.Printf("the prefix is unclaimed: re-claim it with 'bd store-prefix add %s' (the next claim wins it)\n", prefix)
+	if jsonOutput {
+		outputJSON(map[string]any{
+			"prefix": prefix, "actor": actor, "released": true,
+			"event_id": out.EventID, "owner": out.Owner,
+			"live_bead_count":          out.LiveBeadCount,
+			"allowed_prefixes_updated": out.AllowedPrefixesUpdated,
+		})
+	}
+	return nil
+}
+
+// runStorePrefixHistory prints the ownership trail, newest first, and states
+// the pre-adoption gap where you are looking at it rather than filling it.
+func runStorePrefixHistory(cmd *cobra.Command, prefix string) error {
+	db, err := storePrefixDB()
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	ctx := rootCtx
+
+	sc := issueops.UnifiedScopeForTx(ctx, db)
+	if !sc.Unified {
+		return HandleError("%v", fmt.Errorf("this store's database is not the unified database: prefix ownership is runtime state there only (run this against 'brain_unified', e.g. through a unified wrapper)"))
+	}
+
+	if !issueops.IsValidAddedPrefix(prefix) {
+		return HandleError("%v", fmt.Errorf("invalid prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-')", prefix))
+	}
+
+	events, err := issueops.ListStorePrefixEvents(ctx, db, prefix)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+
+	if jsonOutput {
+		outputJSON(events)
+		return nil
+	}
+	if len(events) == 0 {
+		fmt.Printf("no events recorded for prefix %s\n", prefix)
+		// State the gap, don't fill it: a runtime row claimed before the
+		// event table's adoption has no event row, and no synthetic one is
+		// invented for it (decided 2026-10-07).
+		if owner, reason, found, ferr := issueops.PrefixAlreadyRecorded(ctx, db, prefix); ferr == nil && found {
+			fmt.Printf("the prefix is currently owned by store %s\n", owner)
+			fmt.Printf("claims recorded before the event table's adoption have NO event row and none is invented for them — the trail starts at adoption\n")
+			if reason != "" {
+				fmt.Printf("the current ownership row carries its decision reason: %s\n", reason)
+			}
+		}
+		return nil
+	}
+	for _, ev := range events {
+		fmt.Printf("%s  %-8s actor=%-20s owner %s -> %s  reason=%s  beads=%d  event=%s\n",
+			ev.EventAt, ev.EventType, ev.Actor, orNone(ev.OldStore), orNone(ev.NewStore), ev.Reason, ev.BeadCount, ev.ID)
+	}
+	return nil
+}
+
+// orNone renders an empty store value as the readable marker the trail uses
+// for "no owner" (the events table stores empty strings there).
+func orNone(s string) string {
+	if s == "" {
+		return "''"
+	}
+	return s
 }
 
 // runInStorePrefixTx runs the claim inside one transaction, so the ownership

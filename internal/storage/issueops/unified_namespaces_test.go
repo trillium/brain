@@ -168,6 +168,17 @@ func TestRecordStorePrefixFreshClaim(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, ?, '', '', 0, 0)")).
 		WithArgs("proto", "task", "operator-added").
 		WillReturnResult(sqlmock.NewResult(1, 1))
+	// The claim appends its event in the SAME transaction: the event table
+	// is provisioned idempotently, the live bead count is observed now, and
+	// the 'claim' event lands — before the allowed_prefixes smoothing.
+	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM issues WHERE id = ? OR id LIKE CONCAT(?, '-%')")).
+		WithArgs("proto", "proto").
+		WillReturnRows(rowsOf(t, "COUNT(*)", []string{"2"}))
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefix_events (id, event_type, prefix, actor, old_store, new_store, reason, bead_count, event_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")).
+		WithArgs(sqlmock.AnyArg(), "claim", "proto", "task", "", "task", "operator-added", sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 	// allowed_prefixes read (no row) then scoped REPLACE for the store.
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT value FROM brain_unified_config WHERE `store` = ? AND `key` = ?")).
 		WithArgs("task", "allowed_prefixes").

@@ -55,6 +55,7 @@ var brainTables = []string{
 	"brain_stores",
 	"brain_store_aliases",
 	"brain_store_prefixes",
+	"brain_store_prefix_events",
 	"brain_unify_collisions",
 	"brain_unify_import_log",
 	"brain_unify_source_commits",
@@ -96,6 +97,26 @@ var BrainTableDDL = map[string]string{
   ambiguous tinyint(1) NOT NULL DEFAULT 0,
   PRIMARY KEY (prefix),
   KEY idx_brain_prefix_store (store)
+)`,
+	// brain_store_prefix_events is the append-only audit trail for the
+	// prefix-ownership record (docs/design/brain-prefix-release.md §Question d).
+	// Every ownership change — a runtime claim and a runtime release alike —
+	// appends one row inside the same transaction that changes
+	// brain_store_prefixes, so no ownership change can ever be silent. Claims
+	// are recorded from this table's adoption onward; pre-adoption runtime rows
+	// are NOT backfilled (an honest boundary beats fabricated history).
+	"brain_store_prefix_events": `CREATE TABLE brain_store_prefix_events (
+  id varchar(64) NOT NULL,
+  event_type varchar(32) NOT NULL,
+  prefix varchar(255) NOT NULL,
+  actor varchar(128) NOT NULL,
+  old_store varchar(128) NOT NULL,
+  new_store varchar(128) NOT NULL,
+  reason varchar(64) NOT NULL,
+  bead_count bigint NOT NULL DEFAULT 0,
+  event_at datetime NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_brain_prefix_events (prefix)
 )`,
 	// brain_unify_collisions has one row per duplicated id. resolution says what
 	// became of it. 'merged-identical': the copies were identical, winner and
