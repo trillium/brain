@@ -198,6 +198,21 @@ id is not retired as a tombstone, it stays a real bead.
   served by a dolt at least as new as the one that wrote it. The cutover script
   passes the serving machine's launchd dolt explicitly.
 
+- **No-downtime cutover** (live redo). `replay` can update a merged database a
+  running server hosts (`--merged-host/--merged-port`), `--dry-run` and
+  `bd brain unify ready` report what differs without writing, `--no-commit`
+  leaves the merged database's Dolt history alone, a server-side lock keeps two
+  replays from running at once, and after the stores are repointed
+  `--protect-after <UTC time>` makes a catch-up from the old databases merge
+  instead of reload: an issue row is reloaded only if the merged one is not
+  newer than the repoint, every other bead table only gains missing rows, and
+  whole-table reloads, state tables, collision records, prefixes and recorded
+  fingerprints are left alone. Not propagated after the repoint: deletions made
+  in an old database, and a change to the same issue row made in both places
+  (the merged version wins and is listed). `cutover-stores.py` skips files over
+  64 KB (reading every binary in `~/.local/bin` took 95 s). Rehearsed with
+  concurrent writers: ~590 acknowledged writes across the repoint, 0 lost.
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**
