@@ -55,11 +55,12 @@ const (
 	ReasonNameMatch    = "store-name-matches-prefix"
 	ReasonUnattributed = "no-source-declares-or-matches"
 	ReasonObserved     = "first-observing-source"
-	// ReasonSoleObserver: no store declares the prefix, but exactly one source
-	// holds ids in it and that source is an unregistered database. The prefix
-	// is that database's own, so it owns it; otherwise a wrapper pinned to that
-	// database would see none of its beads in the merged database.
-	ReasonSoleObserver = "sole-observer-unregistered-source"
+	// ReasonSoleObserver: no store declares the prefix and no source is named
+	// after it, but exactly one source holds ids in it. The prefix is that
+	// source's own, so it owns it; otherwise a wrapper pinned to that source
+	// (commitments, nightshift-tasks) would see none of its beads in the merged
+	// database and could not mint under it.
+	ReasonSoleObserver = "sole-observer"
 )
 
 // BuildNamespaces computes prefix ownership from the observed prefixes per
@@ -82,8 +83,7 @@ const (
 //  2. otherwise, a source whose own name equals the prefix owns it — a
 //     database named "question" is the natural owner of "question-" ids even
 //     though its config.yaml never says so.
-//  3. otherwise, a prefix that exactly one source holds, when that source is an
-//     unregistered database ("db:<name>"), belongs to that source;
+//  3. otherwise, a prefix that exactly one source holds belongs to that source;
 //  4. otherwise the prefix is UNATTRIBUTED: it still migrates, still keeps
 //     its ids, and is recorded as belonging to no store.
 //  5. observed sources are recorded on the Namespace either way, so a prefix
@@ -125,7 +125,7 @@ func BuildNamespaces(observed, declared map[string][]string, counts map[string]i
 		case nameMatch != "":
 			ns.Owner = nameMatch
 			ns.OwnerReason = ReasonNameMatch
-		case len(ns.ObservedBy) == 1 && strings.HasPrefix(ns.ObservedBy[0], "db:"):
+		case len(ns.ObservedBy) == 1:
 			ns.Owner = ns.ObservedBy[0]
 			ns.OwnerReason = ReasonSoleObserver
 		default:
