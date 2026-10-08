@@ -138,6 +138,21 @@ id is not retired as a tombstone, it stays a real bead.
   identify, and report any store still without one (the build warns; the plan
   lists them).
 
+- **A wrapper's name need not be its store's name** (cutover parity rehearsal).
+  The runtime scopes reads and reads config by `BD_NAME` exactly, but the merged
+  database names stores by registry name (`assertions`, `decisions`) or
+  `db:<name>`, and several wrappers pin another name (`assert`, `decide` and
+  `decision` for one store, `commitments`). Rehearsed on a copy, `commitments`
+  went 14 → 0 beads, `decide` 101 → 0, and ten wrappers could not create
+  ("issue_prefix config is missing"). `build --aliases <json>` now records
+  `brain_store_aliases (alias, store)` and the runtime resolves BD_NAME through it
+  (`canonicalStoreName`; no table or no row = unchanged behaviour), and a prefix
+  that exactly one source holds and nobody declares belongs to that source
+  (`ReasonSoleObserver`). The installed bd must be replaced by this build before
+  the wrappers are repointed. After the fix every wrapper's reads equal the
+  original database's except the explained conflict/namespace differences, and a
+  create/update/close per store type lands correctly.
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**
