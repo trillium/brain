@@ -2,10 +2,10 @@
 id: 0027
 title: durable event outbox — events are rows in the store, delivered with retries until acknowledged
 isc: []
-status: proposed
+status: landed
 created: 2026-10-09
 updated: 2026-10-09
-commits: []
+commits: [89e1d3aeb, 5af862c76, 4b0e91078, 43a0e0106]
 touches:
   - cmd/bd/outbox.go
   - cmd/bd/outbox_cmd.go
