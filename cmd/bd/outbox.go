@@ -41,6 +41,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -51,6 +52,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"gopkg.in/yaml.v3"
 )
 
 // outboxTable is the outbox table inside the store's database. It always carries
@@ -462,16 +464,16 @@ var outboxExemptCommands = map[string]bool{
 // change-events.outbox.max-pending. Exempt: the 'outbox' verbs and 'config'
 // (so an operator can always drain or reconfigure), plus read-only commands.
 func outboxPreflight(ctx context.Context, cmd *cobra.Command) error {
-	if !config.GetBool("change-events.outbox.enabled") {
-		return nil
-	}
-	if isReadOnlyCommand(cmd.Name()) || outboxExemptCommands[cmd.Name()] {
+	if isReadOnlyCommand(cmd.Name()) {
 		return nil
 	}
 	for c := cmd; c != nil; c = c.Parent() {
 		if outboxExemptCommands[c.Name()] {
 			return nil
 		}
+	}
+	if !config.GetBool("change-events.outbox.enabled") {
+		return outboxConfigTripwire(ctx)
 	}
 	if _, err := readOutboxConfig(); err != nil {
 		return err
@@ -494,6 +496,38 @@ func outboxPreflight(ctx context.Context, cmd *cobra.Command) error {
 	return outboxBoundError(pending, 1, config.GetInt("change-events.outbox.max-pending"))
 }
 
+// outboxConfigTripwire guards against the one way the outbox can be switched
+// off by accident: an unparseable .beads/config.yaml makes bd fall back to
+// defaults (outbox disabled) with only a warning. If the config file cannot be
+// parsed AND this store already has an event_outbox table (the feature is in
+// use here), refuse the write instead of silently emitting nothing.
+func outboxConfigTripwire(ctx context.Context) error {
+	beadsDir := beads.FindBeadsDir()
+	if beadsDir == "" {
+		return nil
+	}
+	path := filepath.Join(beadsDir, "config.yaml")
+	data, err := os.ReadFile(path) //nolint:gosec // path is the store's own config file
+	if err != nil {
+		return nil
+	}
+	var probe map[string]interface{}
+	if yamlErr := yaml.Unmarshal(data, &probe); yamlErr == nil {
+		return nil
+	} else {
+		db, dbErr := outboxDB()
+		if dbErr != nil {
+			return nil
+		}
+		var n int
+		if qErr := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?`, outboxTable).Scan(&n); qErr != nil || n == 0 {
+			return nil
+		}
+		return fmt.Errorf("event outbox: %s cannot be parsed (%v) and this store already has an %s table; refusing to write with the outbox silently disabled — fix the config file",
+			path, yamlErr, outboxTable)
+	}
+}
+
 // maybeRecordOutboxEvents records the current command's mutated issues as
 // durable outbox events in one transaction. Called from PersistentPostRunE only
 // when a real write happened.
@@ -509,14 +543,19 @@ func maybeRecordOutboxEvents(ctx context.Context, commandName string) (int, erro
 	if !config.GetBool("change-events.outbox.enabled") {
 		return 0, nil
 	}
-	beadsDir := beads.FindBeadsDir()
-	if beadsDir == "" {
-		return 0, fmt.Errorf("event outbox: no .beads directory found; refusing to emit an event that is not part of the record")
-	}
-
 	ids := commandChangedIDs
 	if len(ids) == 0 {
 		ids = []string{GetLastTouchedID()}
+	}
+	return recordOutboxEvents(ctx, commandName, ids)
+}
+
+// recordOutboxEvents inserts one event per id, all in one transaction. Shared
+// by the post-run emission and the 'bd outbox record' repair verb.
+func recordOutboxEvents(ctx context.Context, commandName string, ids []string) (int, error) {
+	beadsDir := beads.FindBeadsDir()
+	if beadsDir == "" {
+		return 0, fmt.Errorf("event outbox: no .beads directory found; refusing to emit an event that is not part of the record")
 	}
 	eventStore := changeEventStoreName(beadsDir)
 	now := outboxNow()

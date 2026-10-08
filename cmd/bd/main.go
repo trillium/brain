@@ -1343,7 +1343,7 @@ var rootCmd = &cobra.Command{
 			// happens once, after the opportunistic delivery pass below.)
 			if commandDidWrite.Load() {
 				if _, err := maybeRecordOutboxEvents(rootCtx, cmd.Name()); err != nil {
-					return HandleError("%v", err)
+					return HandleError("%v — the mutation itself may already be committed but its event was NOT recorded; once the cause is fixed, record it with: bd outbox record <issue-id> --command %s", err, cmd.Name())
 				}
 			}
 

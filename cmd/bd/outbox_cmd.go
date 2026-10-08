@@ -5,6 +5,7 @@
 //	bd outbox list                     the backlog: pending rows, attempts, errors, bound
 //	bd outbox deliver                  one delivery pass: due events, acknowledged or backed off
 //	bd outbox ack <seq> --subscriber   record an acknowledgement by hand (operator escape hatch)
+//	bd outbox record <id>... --command repair: record the event of a mutation that has none
 //	bd outbox purge --before           delete retired events older than a timestamp
 //
 // See docs/brain/event-outbox.md for the full delivery contract.
@@ -33,7 +34,7 @@ var outboxCmd = &cobra.Command{
 	Use:          "outbox",
 	GroupID:      "sync",
 	SilenceUsage: true,
-	Short:   "Durable event outbox: delivery state, retries, backlog",
+	Short:        "Durable event outbox: delivery state, retries, backlog",
 	Long: `Operator verbs for the durable event outbox.
 
 Every write command records one event per mutated issue in the event_outbox
@@ -45,6 +46,7 @@ down delays an event; it never loses one.
   bd outbox list                      the backlog: pending rows, attempts, errors, bound
   bd outbox deliver                   one delivery pass over due events
   bd outbox ack <seq> --subscriber X  record an acknowledgement by hand
+  bd outbox record <id>... --command C  record the event of a mutation that has none
   bd outbox purge --before <RFC3339>  delete retired events older than this
 
 Configuration (config.yaml):
@@ -341,6 +343,47 @@ func parseOutboxSeq(s string) (int64, error) {
 	return seq, nil
 }
 
+// ── outbox record ────────────────────────────────────────────────────────
+
+var outboxRecordCommand string
+
+var outboxRecordCmd = &cobra.Command{
+	Use:   "record <issue-id>... --command <name>",
+	Short: "Record the event for a mutation whose event was not recorded",
+	Long: `Record outbox events by hand for issues whose mutation committed but whose
+event was not recorded — the repair for the one window the outbox cannot close
+(a process killed between the store's mutation commit and the event insert) and
+for a command that failed with "its event was NOT recorded".
+
+The events are subject to the same rules as automatic ones: subscribers are
+frozen from the current configuration and the events are delivered like any
+other. Requires change-events.outbox.enabled.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runOutboxRecord,
+}
+
+func runOutboxRecord(cmd *cobra.Command, args []string) error {
+	if strings.TrimSpace(outboxRecordCommand) == "" {
+		return HandleErrorRespectJSON("event outbox: record requires --command <name> (which command's mutation is being recorded?): missing --command")
+	}
+	if !config.GetBool("change-events.outbox.enabled") {
+		return HandleErrorRespectJSON("event outbox: change-events.outbox.enabled is not set; refusing to record an event the outbox will not deliver")
+	}
+	ctx, db, _, err := outboxOpen()
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	n, err := recordOutboxEvents(ctx, outboxRecordCommand, args)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if cerr := commitOutboxBookkeeping(ctx, db, fmt.Sprintf("record %d event(s) for %s", n, outboxRecordCommand)); cerr != nil {
+		return HandleError("event outbox: commit record: %v", cerr)
+	}
+	fmt.Printf("recorded %d event(s) for %s: %s\n", n, outboxRecordCommand, strings.Join(args, ", "))
+	return nil
+}
+
 // ── outbox purge ─────────────────────────────────────────────────────────
 
 var outboxPurgeBefore string
@@ -393,11 +436,15 @@ func errStrings(errs []error) []string {
 }
 
 func init() {
-	outboxCmd.AddCommand(outboxListCmd, outboxDeliverCmd, outboxAckCmd, outboxPurgeCmd)
+	outboxCmd.AddCommand(outboxListCmd, outboxDeliverCmd, outboxAckCmd, outboxRecordCmd, outboxPurgeCmd)
+	for _, c := range outboxCmd.Commands() {
+		c.SilenceUsage = true
+	}
 	outboxListCmd.Flags().BoolVar(&outboxListPendingOnly, "pending-only", false, "Only unretired events")
 	outboxDeliverCmd.Flags().BoolVar(&outboxDeliverAll, "all", false, "Attempt every pending event, ignoring the backoff schedule")
 	outboxAckCmd.Flags().StringVar(&outboxAckSubscriber, "subscriber", "", "Subscriber that acknowledged (required)")
 	outboxAckCmd.Flags().BoolVar(&outboxAckForce, "force", false, "Acknowledge even when the subscriber is not frozen on the row, or the row is corrupt")
+	outboxRecordCmd.Flags().StringVar(&outboxRecordCommand, "command", "", "Command whose mutation is being recorded (required)")
 	outboxPurgeCmd.Flags().StringVar(&outboxPurgeBefore, "before", "", "Delete retired events delivered before this RFC3339 timestamp (required)")
 	rootCmd.AddCommand(outboxCmd)
 }
