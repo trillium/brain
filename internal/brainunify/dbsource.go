@@ -417,6 +417,50 @@ func (s *readOnlySource) Columns(ctx context.Context, database, table string) ([
 	return out, nil
 }
 
+// PrimeSchema reads the column names and types of every table of a database in
+// one query and fills the per-table caches Columns and ColumnTypes use. On a
+// server with dozens of databases each information_schema lookup is slow (about
+// a second under load), and a replay needs them for every table of every
+// source; one lookup per database instead of two per table is the difference
+// between seconds and minutes.
+func (s *readOnlySource) PrimeSchema(ctx context.Context, database string) error {
+	rows, err := s.query(ctx, `select table_name, column_name, data_type from information_schema.columns
+	        where table_schema = ? order by table_name, ordinal_position`, database)
+	if err != nil {
+		return fmt.Errorf("listing the columns of %s: %w", database, err)
+	}
+	defer rows.Close()
+	cols := map[string][]string{}
+	types := map[string]map[string]string{}
+	for rows.Next() {
+		var table, col, typ string
+		if err := rows.Scan(&table, &col, &typ); err != nil {
+			return err
+		}
+		cols[table] = append(cols[table], col)
+		if types[table] == nil {
+			types[table] = map[string]string{}
+		}
+		types[table][col] = strings.ToLower(typ)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	s.schemaMu.Lock()
+	defer s.schemaMu.Unlock()
+	if s.colOnce == nil {
+		s.colOnce = map[string][]string{}
+	}
+	if s.typOnce == nil {
+		s.typOnce = map[string]map[string]string{}
+	}
+	for table, c := range cols {
+		s.colOnce[database+"."+table] = c
+		s.typOnce[database+"."+table] = types[table]
+	}
+	return nil
+}
+
 // ReferenceDigest is the source-side measurement the verifier compares the
 // unified table against: an order-independent content digest of one source
 // table, over the column set the unified table will actually hold.

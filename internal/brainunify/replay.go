@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -107,7 +108,8 @@ type Replayer struct {
 	opts   ReplayOptions
 	log    func(format string, args ...any)
 
-	cols map[string][]string
+	cols   map[string][]string
+	colsMu sync.Mutex
 }
 
 // NewReplayer returns a replayer reading the sources through source and
@@ -227,6 +229,14 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	if w.template, err = r.readTemplateStore(ctx, mergedRO, database); err != nil {
 		return res, err
 	}
+	if tmpl, ok := r.plan.SourceByNamespace(w.template); ok {
+		if err := r.source.PrimeSchema(ctx, tmpl.Database); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	if err := mergedRO.PrimeSchema(ctx, database); err != nil {
+		return res, fmt.Errorf("refusing to replay: %w", err)
+	}
 	if w.plans, err = TablePlansFor(ctx, r.source, r.plan, w.template); err != nil {
 		return res, err
 	}
@@ -254,10 +264,13 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	}
 	w.mapper = newRowMapper(r.plan)
 
+	r.log("validated the merged database and the starting points of %d source(s)", len(r.plan.Sources))
+
 	// ---- decide ------------------------------------------------------------
 	if err := r.collectChanges(ctx, mergedRO, database, w, imported); err != nil {
 		return res, err
 	}
+	r.log("read what changed in the sources: %d store(s) with history changes, %d bead-scoped table(s) to reload whole", len(w.changedStores), len(w.full))
 	if err := r.reconcileCollisions(w, recorded); err != nil {
 		return res, err
 	}
@@ -515,14 +528,19 @@ func (r *Replayer) validateSchema(ctx context.Context, mergedRO *readOnlySource,
 // sourceColumns returns a source table's columns, cached for the run.
 func (r *Replayer) sourceColumns(ctx context.Context, src SourceFacts, table string) ([]string, error) {
 	key := src.Database + "\x00" + table
-	if cols, ok := r.cols[key]; ok {
+	r.colsMu.Lock()
+	cols, ok := r.cols[key]
+	r.colsMu.Unlock()
+	if ok {
 		return cols, nil
 	}
 	cols, err := r.source.Columns(ctx, src.Database, table)
 	if err != nil {
 		return nil, err
 	}
+	r.colsMu.Lock()
 	r.cols[key] = cols
+	r.colsMu.Unlock()
 	return cols, nil
 }
 
@@ -574,127 +592,177 @@ func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource,
 		return err
 	}
 
-	for _, src := range r.plan.Sources {
-		conn := w.conns[src.Database]
-		base := w.bases[src.Namespace]
-
-		// The next window's starting point is read BEFORE any diff: a commit a
-		// source makes after this read is later than everything this replay
-		// reads, so the next window overlaps this one and cannot miss it. An
-		// overlap only re-applies a row, which is idempotent.
-		head, err := conn.HeadCommit(ctx)
-		if err != nil {
-			return fmt.Errorf("refusing to replay: reading the dolt_log head of store %s (database %s): %w", src.Namespace, src.Database, err)
+	// Each source has its own connection, so the stores are asked at the same
+	// time: the questions are many small reads on a server that answers each in
+	// tens of milliseconds, and asking them one after another was the cost.
+	results := make([]storeChanges, len(r.plan.Sources))
+	errs := make([]error, len(r.plan.Sources))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, src := range r.plan.Sources {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, src SourceFacts) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i], errs[i] = r.collectStore(ctx, src, w, recorded[src.Namespace], imported)
+		}(i, src)
+	}
+	wg.Wait()
+	for i, src := range r.plan.Sources {
+		if errs[i] != nil {
+			return errs[i]
 		}
-		w.heads[src.Namespace] = head
-
-		tables, err := r.source.BaseTables(ctx, src.Database)
-		if err != nil {
-			return fmt.Errorf("refusing to replay: listing the tables of store %s (database %s): %w", src.Namespace, src.Database, err)
+		sc := results[i]
+		w.heads[src.Namespace] = sc.head
+		if sc.changed {
+			w.changedStores[src.Namespace] = true
 		}
-		have := map[string]bool{}
-		for _, t := range tables {
-			have[t] = true
+		if len(sc.changedTables) > 0 {
+			w.changedTables[src.Namespace] = sc.changedTables
 		}
-		summary, err := conn.DiffSummaryTables(ctx, base.Hash)
-		if err != nil {
-			return fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+		if len(sc.stateChanged) > 0 {
+			w.stateChanged[src.Namespace] = sc.stateChanged
 		}
-		ignored, err := conn.IgnoredTables(ctx)
-		if err != nil {
-			return fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+		for t := range sc.full {
+			w.full[t] = true
 		}
-
-		for _, tp := range w.plans {
-			if !have[tp.Table] {
-				if n := imported[src.Namespace+"\x00"+tp.Table]; n > 0 {
-					return fmt.Errorf("refusing to replay: the build imported %d row(s) of table %s from store %s, but that table no longer exists in database %s; what became of those rows is unknowable; rebuild", n, tp.Table, src.Namespace, src.Database)
-				}
-				continue
+		for t, ids := range sc.touched {
+			if w.touched[t] == nil {
+				w.touched[t] = map[string]bool{}
 			}
-
-			// Dolt does not version this table, so there is no history to diff:
-			// compare what it holds now with what was recorded for it.
-			if ignored[tp.Table] {
-				changed, err := r.unversionedChanged(ctx, src, tp, recorded[src.Namespace][tp.Target])
-				if err != nil {
-					return err
-				}
-				if changed {
-					r.markReload(w, src, tp, false)
-				}
-				continue
-			}
-
-			kind, inSummary := summary[tp.Table]
-			if !inSummary {
-				continue // identical to the recorded commit
-			}
-			if tp.Scope != ScopeDatabaseState {
-				cols, err := r.sourceColumns(ctx, src, tp.Table)
-				if err != nil {
-					return fmt.Errorf("refusing to replay: listing the columns of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
-				}
-				if !contains(cols, tp.ScopeColumn) {
-					return fmt.Errorf("refusing to replay: store %s table %s has no %s column, so its rows cannot be attributed to a bead", src.Namespace, tp.Table, tp.ScopeColumn)
-				}
-			}
-			if kind == diffAdded {
-				// Created since the recorded commit: no history to diff, reload whole.
-				r.markReload(w, src, tp, false)
-				continue
-			}
-			switch tp.Scope {
-			case ScopeDatabaseState:
-				changed, err := conn.DiffChanged(ctx, base.Hash, tp.Table)
-				if err != nil {
-					return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
-				}
-				if changed {
-					r.markReload(w, src, tp, true)
-				}
-			default:
-				ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
-				if err != nil {
-					return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
-				}
-				if len(ids) == 0 {
-					continue
-				}
-				w.changedStores[src.Namespace] = true
-				if w.changedTables[src.Namespace] == nil {
-					w.changedTables[src.Namespace] = map[string]bool{}
-				}
-				w.changedTables[src.Namespace][tp.Table] = true
-				if w.touched[tp.Table] == nil {
-					w.touched[tp.Table] = map[string]bool{}
-				}
-				for _, id := range ids {
-					w.touched[tp.Table][id] = true
-				}
+			for id := range ids {
+				w.touched[t][id] = true
 			}
 		}
 	}
 	return nil
 }
 
-// markReload records that a source table has to be taken again whole: a state
-// table is replaced for its store; a bead-scoped table is reloaded for every
-// store. history reports that the change was seen in the source's history (as
-// opposed to a table Dolt does not version, which does not make the store
-// "changed" in the report).
-func (r *Replayer) markReload(w *replayWork, src SourceFacts, tp TablePlan, history bool) {
+// storeChanges is what one source's questions settled.
+type storeChanges struct {
+	head          string
+	changed       bool
+	touched       map[string]map[string]bool // bead-scoped table -> ids
+	changedTables map[string]bool
+	stateChanged  map[string]bool
+	full          map[string]bool
+}
+
+func (sc *storeChanges) reload(tp TablePlan, history bool) {
 	if tp.Scope == ScopeDatabaseState {
-		if w.stateChanged[src.Namespace] == nil {
-			w.stateChanged[src.Namespace] = map[string]bool{}
-		}
-		w.stateChanged[src.Namespace][tp.Table] = true
+		sc.stateChanged[tp.Table] = true
 		if history {
-			w.changedStores[src.Namespace] = true
+			sc.changed = true
 		}
 		return
 	}
-	w.full[tp.Table] = true
+	sc.full[tp.Table] = true
+}
+
+// collectStore settles one source: see collectChanges.
+func (r *Replayer) collectStore(ctx context.Context, src SourceFacts, w *replayWork, recorded map[string]map[string]Fingerprint, imported map[string]int64) (storeChanges, error) {
+	sc := storeChanges{touched: map[string]map[string]bool{}, changedTables: map[string]bool{}, stateChanged: map[string]bool{}, full: map[string]bool{}}
+	conn := w.conns[src.Database]
+	base := w.bases[src.Namespace]
+
+	// The next window's starting point is read BEFORE any diff: a commit a
+	// source makes after this read is later than everything this replay reads,
+	// so the next window overlaps this one and cannot miss it. An overlap only
+	// re-applies a row, which is idempotent.
+	head, err := conn.HeadCommit(ctx)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: reading the dolt_log head of store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	sc.head = head
+
+	tables, err := r.source.BaseTables(ctx, src.Database)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: listing the tables of store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	have := map[string]bool{}
+	for _, t := range tables {
+		have[t] = true
+	}
+	if err := r.source.PrimeSchema(ctx, src.Database); err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	summary, err := conn.DiffSummaryTables(ctx, base.Hash)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	ignored, err := conn.IgnoredTables(ctx)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+
+	for _, tp := range w.plans {
+		if !have[tp.Table] {
+			if n := imported[src.Namespace+"\x00"+tp.Table]; n > 0 {
+				return sc, fmt.Errorf("refusing to replay: the build imported %d row(s) of table %s from store %s, but that table no longer exists in database %s; what became of those rows is unknowable; rebuild", n, tp.Table, src.Namespace, src.Database)
+			}
+			continue
+		}
+
+		// Dolt does not version this table, so there is no history to diff:
+		// compare what it holds now with what was recorded for it.
+		if ignored[tp.Table] {
+			changed, err := r.unversionedChanged(ctx, src, tp, recorded[tp.Target])
+			if err != nil {
+				return sc, err
+			}
+			if changed {
+				sc.reload(tp, false)
+			}
+			continue
+		}
+
+		kind, inSummary := summary[tp.Table]
+		if !inSummary {
+			continue // identical to the recorded commit
+		}
+		if tp.Scope != ScopeDatabaseState {
+			cols, err := r.sourceColumns(ctx, src, tp.Table)
+			if err != nil {
+				return sc, fmt.Errorf("refusing to replay: listing the columns of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+			}
+			if !contains(cols, tp.ScopeColumn) {
+				return sc, fmt.Errorf("refusing to replay: store %s table %s has no %s column, so its rows cannot be attributed to a bead", src.Namespace, tp.Table, tp.ScopeColumn)
+			}
+		}
+		if kind == diffAdded {
+			// Created since the recorded commit: no history to diff, reload whole.
+			sc.reload(tp, false)
+			continue
+		}
+		switch tp.Scope {
+		case ScopeDatabaseState:
+			changed, err := conn.DiffChanged(ctx, base.Hash, tp.Table)
+			if err != nil {
+				return sc, fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if changed {
+				sc.reload(tp, true)
+			}
+		default:
+			ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
+			if err != nil {
+				return sc, fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			sc.changed = true
+			sc.changedTables[tp.Table] = true
+			if sc.touched[tp.Table] == nil {
+				sc.touched[tp.Table] = map[string]bool{}
+			}
+			for _, id := range ids {
+				sc.touched[tp.Table][id] = true
+			}
+		}
+	}
+	return sc, nil
 }
 
 // unversionedChanged reports whether a table Dolt keeps no history for holds
