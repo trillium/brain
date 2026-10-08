@@ -84,6 +84,8 @@ var (
 	unifyReference string
 	unifyProjectID []string
 	unifyAliases   string
+	unifyInclude   []string
+	unifyRescue    []string
 )
 
 // projectIDMap parses repeated --project-id <store>=<uuid> values.
@@ -137,6 +139,11 @@ func init() {
 	unifyVerifyCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary used to start the server over the unified database")
 	unifyVerifyCmd.Flags().StringVar(&unifyTemplate, "template", "", "store whose schema the unified database inherited")
 	unifyVerifyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 3*time.Hour, "overall time budget for verification")
+
+	for _, c := range []*cobra.Command{unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd} {
+		c.Flags().StringSliceVar(&unifyInclude, "include-database", nil, "unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)")
+		c.Flags().StringSliceVar(&unifyRescue, "rescue-orphans-from", nil, "replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)")
+	}
 
 	brainCmd.AddCommand(brainUnifyCmd)
 	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd)
@@ -521,6 +528,8 @@ func openUnifySources(ctx context.Context, host string, port int) (brainunify.Re
 	if err != nil {
 		return brainunify.Registry{}, nil, err
 	}
+	reg.IncludeDatabases = unifyInclude
+	reg.RescueOrphansFrom = unifyRescue
 	source, err := brainunify.OpenReadOnlySource(ctx, host, port)
 	if err != nil {
 		return brainunify.Registry{}, nil, err

@@ -196,6 +196,9 @@ func (p Plan) Refusal() error {
 // minted copies, or are verified one id at a time).
 func (p Plan) sourceExclusions(store string) []string {
 	var out []string
+	if src, ok := p.SourceByNamespace(store); ok {
+		out = append(out, src.SkipIDs...)
+	}
 	for _, c := range p.Collisions {
 		if c.Divergent {
 			out = append(out, c.ID)
@@ -208,6 +211,16 @@ func (p Plan) sourceExclusions(store string) []string {
 		}
 	}
 	sort.Strings(out)
+	return uniqueSorted(out)
+}
+
+func uniqueSorted(in []string) []string {
+	out := in[:0]
+	for i, v := range in {
+		if i == 0 || v != in[i-1] {
+			out = append(out, v)
+		}
+	}
 	return out
 }
 
@@ -285,6 +298,14 @@ func newRowMapper(p Plan) *rowMapper {
 		skip:      map[string]map[string]bool{},
 		moved:     map[string]map[string]ConflictCopy{},
 		conflicts: map[string]Collision{},
+	}
+	for _, src := range p.Sources {
+		for _, id := range src.SkipIDs {
+			if m.skip[src.Namespace] == nil {
+				m.skip[src.Namespace] = map[string]bool{}
+			}
+			m.skip[src.Namespace][id] = true
+		}
 	}
 	for _, c := range p.Collisions {
 		if c.Divergent {

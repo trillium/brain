@@ -146,6 +146,9 @@ type Discovery struct {
 	Replicas []string
 	// Unregistered lists participating databases claimed by no store.
 	Unregistered []string
+	// Rescued lists replica databases from which the beads no store holds were
+	// brought in (see Registry.RescueOrphansFrom).
+	Rescued []string
 	// IDs holds every bead id of every participating source, so an id minted
 	// for a conflict's copy can be checked against the ids that exist.
 	IDs map[string]bool
@@ -178,6 +181,7 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 
 	d := Discovery{Copies: map[string][]IDCopy{}, IDs: map[string]bool{}}
 	idOwners := map[string][]IDCopy{}
+	var rescue []string
 
 	for _, dbName := range dbs {
 		facts := SourceFacts{Database: dbName, Fingerprints: map[string]Fingerprint{}}
@@ -217,7 +221,10 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 			beads += n
 		}
 
-		if !facts.Registered && len(prefixes) > 1 {
+		if !facts.Registered && len(prefixes) > 1 && !contains(reg.IncludeDatabases, dbName) {
+			if contains(reg.RescueOrphansFrom, dbName) {
+				rescue = append(rescue, dbName)
+			}
 			d.Replicas = append(d.Replicas, dbName)
 			facts.Reachable = false
 			facts.SkipReason = ExcludeReplica
@@ -268,8 +275,23 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 		d.Facts = append(d.Facts, facts)
 	}
 
+	for _, dbName := range rescue {
+		f, err := rescueOrphans(ctx, source, dbName, d.IDs)
+		if err != nil {
+			return Discovery{}, err
+		}
+		for i := range d.Facts {
+			if d.Facts[i].Database == dbName {
+				d.Facts[i] = f
+			}
+		}
+		d.Unregistered = append(d.Unregistered, dbName)
+		d.Rescued = append(d.Rescued, dbName)
+	}
+
 	sort.Strings(d.Replicas)
 	sort.Strings(d.Unregistered)
+	sort.Strings(d.Rescued)
 	for id, group := range idOwners {
 		if len(group) < 2 {
 			continue
@@ -299,6 +321,41 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 	}
 	sort.Slice(d.Facts, func(i, j int) bool { return d.Facts[i].Namespace < d.Facts[j].Namespace })
 	return d, nil
+}
+
+// rescueOrphans makes a replica database a participating source that carries
+// only the beads no other participating source holds. Every other bead of the
+// replica is a copy of a bead that lives in its own store; those are listed in
+// SkipIDs so the build, the fingerprints, the replay and the verifier all leave
+// them alone, through the same exclusion that skips an identical duplicate's
+// second copy.
+func rescueOrphans(ctx context.Context, source *readOnlySource, dbName string, held map[string]bool) (SourceFacts, error) {
+	ids, err := source.IssueIdentities(ctx, dbName)
+	if err != nil {
+		return SourceFacts{}, fmt.Errorf("reading the beads of replica %s: %w", dbName, err)
+	}
+	tables, err := source.BaseTables(ctx, dbName)
+	if err != nil {
+		return SourceFacts{}, fmt.Errorf("listing the tables of replica %s: %w", dbName, err)
+	}
+	f := SourceFacts{
+		Namespace: "db:" + dbName, Database: dbName, Reachable: true, Tables: tables,
+		Prefixes: map[string]int64{}, Fingerprints: map[string]Fingerprint{},
+	}
+	for _, r := range ids {
+		if held[r.ID] {
+			f.SkipIDs = append(f.SkipIDs, r.ID)
+			continue
+		}
+		f.BeadCount++
+		f.Prefixes[PrefixOf(r.ID)]++
+		held[r.ID] = true
+	}
+	sort.Strings(f.SkipIDs)
+	if v, err := source.MetadataValue(ctx, dbName, "_project_id"); err == nil {
+		f.ProjectID = v
+	}
+	return f, nil
 }
 
 func unreadable(f SourceFacts, reason string) SourceFacts {

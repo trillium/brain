@@ -165,6 +165,17 @@ type Registry struct {
 	ReplicaNames []string
 	// RegistryPath is the file the registry was read from.
 	RegistryPath string
+	// IncludeDatabases names unregistered databases that hold several prefixes
+	// but are stores, not cross-store replicas (a project with two prefixes).
+	// Each participates as an ordinary "db:<name>" store instead of being
+	// excluded. The operator says so; the tool cannot tell the two apart.
+	IncludeDatabases []string
+	// RescueOrphansFrom names replica databases (a cross-store index such as
+	// beads_global) that stay excluded as stores but from which every bead held
+	// by no participating store is brought in, as the store "db:<name>". The
+	// replica's other beads are copies of beads that live in their own stores
+	// and are not read.
+	RescueOrphansFrom []string
 }
 
 // ByDatabase returns the stores that read from the named Dolt database.

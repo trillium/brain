@@ -34,6 +34,10 @@ type SourceFacts struct {
 	ProjectID string
 	// DeclaredPrefixes are the prefixes the store's config.yaml claims.
 	DeclaredPrefixes []string
+	// SkipIDs are beads of this source that are not carried: a rescued replica
+	// holds copies of beads that live in their own stores, and only the beads
+	// no store holds are brought in. Sorted. Empty for an ordinary store.
+	SkipIDs []string
 }
 
 // Fingerprint is an order-independent content digest of one table, cheap

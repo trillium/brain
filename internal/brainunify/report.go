@@ -34,6 +34,13 @@ func WritePlan(w io.Writer, plan Plan, disc Discovery) error {
 			return err
 		}
 	}
+	for _, s := range plan.Sources {
+		if len(s.SkipIDs) > 0 {
+			if _, err := fmt.Fprintf(w, "%s is a replica: only its %d bead(s) no other store holds are carried; its other %d are copies of beads that live in their own stores and are left alone\n", s.Namespace, s.BeadCount, len(s.SkipIDs)); err != nil {
+				return err
+			}
+		}
+	}
 	if _, err := fmt.Fprintln(w); err != nil {
 		return err
 	}

@@ -427,3 +427,92 @@ func TestBuildRefusesAMintedIDThatAlreadyExists(t *testing.T) {
 		t.Fatalf("want a refusal naming %s, got %v", minted, err)
 	}
 }
+
+// makeDB gives the scratch source server a database with the fixture schema.
+func (f *replayFixture) makeDB(name, prefix string) {
+	f.t.Helper()
+	f.exec("create database `" + name + "`")
+	for _, stmt := range []string{
+		"create table issues (id varchar(255) primary key, title varchar(500) not null, description varchar(2000) not null default '', notes varchar(2000) not null default '', status varchar(32) not null default 'open', priority int not null default 2, issue_type varchar(32) not null default 'task', content_hash varchar(64), created_at datetime not null default current_timestamp, created_by varchar(255) default '', updated_at datetime not null default current_timestamp)",
+		"create table labels (issue_id varchar(255) not null, label varchar(255) not null, primary key (issue_id, label))",
+		"create table comments (id char(36) primary key, issue_id varchar(255) not null, body text not null)",
+		"create table dependencies (id char(36) primary key, issue_id varchar(255) not null, type varchar(32) not null default 'blocks', created_at datetime not null default current_timestamp, created_by varchar(255) not null default '', thread_id varchar(255) default '', depends_on_issue_id varchar(255))",
+		"create table config (`key` varchar(255) primary key, value text not null)",
+		"create table metadata (`key` varchar(255) primary key, value text not null)",
+		"replace into dolt_ignore values ('wisps', true)",
+		"create table wisps (id varchar(255) primary key, title varchar(500) not null)",
+	} {
+		f.execIn(name, stmt)
+	}
+	f.execIn(name, "replace into config values ('issue_prefix', '"+prefix+"')")
+	f.execIn(name, "replace into metadata values ('_project_id', 'proj-"+name+"')")
+}
+
+// TestIncludedDatabaseAndRescuedOrphans: an unregistered database with two
+// prefixes is a store when the operator says so, and a replica contributes only
+// the beads no store holds. Everything verifies, and the replay keeps both
+// current.
+func TestIncludedDatabaseAndRescuedOrphans(t *testing.T) {
+	f := newReplayFixture(t)
+	f.makeDB("multi", "xa")
+	f.execIn("multi", "insert into issues (id, title) values ('xa-1', 'first prefix'), ('xb-1', 'second prefix')")
+	f.execIn("multi", "insert into labels values ('xb-1', 'child')")
+	f.commit("multi", "seed")
+
+	f.makeDB("repl", "alp")
+	// copies of two beads that live in alpha, plus two that live nowhere else
+	f.execIn("repl", "insert into issues select * from alpha.issues where id in ('alp-1', 'alp-2')")
+	f.execIn("repl", "insert into labels select * from alpha.labels where issue_id in ('alp-1', 'alp-2')")
+	f.execIn("repl", "insert into issues (id, title) values ('orp-1', 'orphan one'), ('orp-2', 'orphan two')")
+	f.execIn("repl", "insert into labels values ('orp-1', 'only-here')")
+	f.commit("repl", "seed")
+
+	// Without the flags both databases are replicas and nothing of them is carried.
+	f.build()
+	if got := f.scalar("select count(*) from issues where id in ('xa-1','xb-1','orp-1')"); got != "0" {
+		t.Fatalf("without the flags the replicas must stay out, found %s", got)
+	}
+
+	f.reg.IncludeDatabases = []string{"multi"}
+	f.reg.RescueOrphansFrom = []string{"repl"}
+	f.dataDir += "-2"
+	f.build()
+	for _, id := range []string{"xa-1", "xb-1", "orp-1", "orp-2"} {
+		if got := f.scalar("select count(*) from issues where id=?", id); got != "1" {
+			t.Errorf("%s: %s rows in the merged database, want 1", id, got)
+		}
+	}
+	if got := f.scalar("select count(*) from issues where id='alp-1'"); got != "1" {
+		t.Errorf("alp-1 lives in alpha and the replica copy must not add a second: %s", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id='orp-1' and label='only-here'"); got != "1" {
+		t.Errorf("an orphan's children come with it: %s", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id='alp-1'"); got != "1" {
+		t.Errorf("the replica's copy of alp-1's label must not be added to alpha's: %s", got)
+	}
+	if got := f.scalar("select owner_reason from brain_store_prefixes where prefix='orp'"); got != ReasonSoleObserver {
+		t.Errorf("the orphans' prefix is owned by the replica's store as sole observer: %s", got)
+	}
+	requireNoFailures(t, "verify live", f.verify(ReferenceLive))
+	requireNoFailures(t, "verify recorded", f.verify(ReferenceRecorded))
+
+	// The replica gains an orphan and one is edited; the included store gains a bead.
+	f.execIn("repl", "insert into issues (id, title) values ('orp-3', 'orphan three')")
+	f.execIn("repl", "update issues set title='orphan one, edited' where id='orp-1'")
+	f.commit("repl", "changes")
+	f.execIn("multi", "insert into issues (id, title) values ('xb-2', 'new in multi')")
+	f.commit("multi", "new bead")
+	requireFailures(t, "before the replay", f.verify(ReferenceLive))
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	requireNoFailures(t, "after the replay (live)", f.verify(ReferenceLive))
+	requireNoFailures(t, "after the replay (recorded)", f.verify(ReferenceRecorded))
+	if got := f.scalar("select title from issues where id='orp-1'"); got != "orphan one, edited" {
+		t.Errorf("orp-1 = %q", got)
+	}
+	if got := f.scalar("select count(*) from issues where id in ('orp-3','xb-2')"); got != "2" {
+		t.Errorf("new beads in the rescued/included databases = %s, want 2", got)
+	}
+}

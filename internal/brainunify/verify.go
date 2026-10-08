@@ -509,7 +509,7 @@ func (v *Verifier) orphanCounts(ctx context.Context) (map[string]map[string]int6
 					return nil, err
 				}
 				id := cellText(raw)
-				if contains(byID[id].holders(), src.Namespace) {
+				if contains(byID[id].holders(), src.Namespace) || v.mapper.skip[src.Namespace][id] {
 					continue
 				}
 				if out[tp.Target] == nil {
