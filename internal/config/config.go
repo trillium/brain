@@ -214,6 +214,17 @@ func Initialize() error {
 	// default.
 	v.SetDefault("change-events.enabled", false)
 
+	// Durable event outbox (brain). When change-events.outbox.enabled is true,
+	// every write command records one event per mutated issue in the event_outbox
+	// table inside the store's own database, in the same Dolt commit as the
+	// mutation, and outbox delivery retries it with bounded backoff until every
+	// configured subscriber acknowledges. See docs/brain/event-outbox.md.
+	v.SetDefault("change-events.outbox.enabled", false)
+	v.SetDefault("change-events.outbox.subscribers", []string{})
+	v.SetDefault("change-events.outbox.max-pending", 10000)
+	v.SetDefault("change-events.outbox.timeout", "10s")
+	v.SetDefault("change-events.outbox.delivery-budget", "5s")
+
 	// Validation configuration defaults (bd-t7jq)
 	// Values: "warn" | "error" | "none"
 	// - "none": no validation (default, backwards compatible)

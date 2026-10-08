@@ -1326,10 +1326,36 @@ var rootCmd = &cobra.Command{
 				uowProvider = nil
 			}
 		} else {
+			// Durable event outbox (brain): record this command's mutated issues
+			// as outbox events BEFORE the Dolt auto-commit, so the mutation and
+			// its events share one commit — an event cannot exist without its
+			// record and a record cannot exist without its event. Failure is
+			// loud: an eventless mutation is exactly the silent failure the
+			// outbox exists to prevent.
+			recorded := 0
+			if commandDidWrite.Load() {
+				var err error
+				recorded, err = maybeRecordOutboxEvents(rootCtx, cmd.Name())
+				if err != nil {
+					return HandleError("%v", err)
+				}
+				if recorded > 0 && commandDidExplicitDoltCommit {
+					// The command already made its own Dolt commit; give the outbox
+					// rows their own commit so the events still share history with
+					// the record instead of lingering uncommitted.
+					if err := commitPendingIfEmbedded(rootCtx, store, getActor(), doltAutoCommitParams{
+						Command:         "outbox",
+						MessageOverride: fmt.Sprintf("event outbox: %s records %d events", cmd.Name(), recorded),
+					}); err != nil {
+						return HandleError("event outbox commit failed: %v", err)
+					}
+				}
+			}
+
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
 			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
-				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
+				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name(), IssueIDs: outboxCommitIDsHint()}); err != nil {
 					return HandleError("dolt auto-commit failed: %v", err)
 				}
 			}
@@ -1375,9 +1401,19 @@ var rootCmd = &cobra.Command{
 
 			// Change-event emission: append a JSONL line describing this write
 			// if change-events.enabled. Best-effort; only fires after a real
-			// write so read-only commands produce no events.
+			// write so read-only commands produce no events. Convenience tail
+			// target only: the durable event_outbox table in the store's own
+			// database is the authoritative event log, recorded above.
 			if commandDidWrite.Load() {
 				maybeEmitChangeEvent(cmd.Name())
+			}
+
+			// Opportunistic outbox delivery: attempt due pending events right
+			// after the write's event commit. A down subscriber delays an event;
+			// it never loses one, and delivery failure is normal, not a defect
+			// in the command that triggered the pass (warnings only).
+			if commandDidWrite.Load() {
+				maybeDeliverOutboxDue(rootCtx)
 			}
 
 			// Auto-push: push to Dolt remote if enabled and due.
