@@ -182,6 +182,22 @@ id is not retired as a tombstone, it stays a real bead.
   now records one row per store, the verifier combines them, and a regression
   test replays stores that share a prefix.
 
+- **The replay no longer walks every table** (live prep failed after 20 minutes
+  on a loaded server). One `dolt_diff_summary(recorded commit, 'WORKING')` per
+  source names the versioned tables that changed, `dolt_status_ignored` names the
+  tables Dolt does not version, and those are compared by fingerprint with what
+  was recorded instead of being reloaded whole on every run; sources are asked
+  concurrently and each database's schema is read in one query. A replay over
+  unchanged sources went from ~10 minutes to well under a minute locally; a
+  fingerprint mismatch in an unversioned table (or a table created since) still
+  reloads it whole, and a merged database whose recorded rows do not match simply
+  reloads more, never less.
+- **dolt version.** The unify commands start their own dolt server with
+  `--dolt-bin` (default `dolt`). On a machine with several dolt binaries the
+  default can be one that cannot read the database; a merged database must be
+  served by a dolt at least as new as the one that wrote it. The cutover script
+  passes the serving machine's launchd dolt explicitly.
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**
