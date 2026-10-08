@@ -465,6 +465,8 @@ func TestIncludedDatabaseAndRescuedOrphans(t *testing.T) {
 	f.execIn("repl", "insert into labels select * from alpha.labels where issue_id in ('alp-1', 'alp-2')")
 	f.execIn("repl", "insert into issues (id, title) values ('orp-1', 'orphan one'), ('orp-2', 'orphan two')")
 	f.execIn("repl", "insert into labels values ('orp-1', 'only-here')")
+	// a child row of a bead the replica holds no issue row for (it lives in alpha)
+	f.execIn("repl", "insert into labels values ('alp-3', 'stray-in-replica')")
 	f.commit("repl", "seed")
 
 	// Without the flags both databases are replicas and nothing of them is carried.
@@ -487,6 +489,9 @@ func TestIncludedDatabaseAndRescuedOrphans(t *testing.T) {
 	}
 	if got := f.scalar("select count(*) from labels where issue_id='orp-1' and label='only-here'"); got != "1" {
 		t.Errorf("an orphan's children come with it: %s", got)
+	}
+	if got := f.scalar("select count(*) from labels where issue_id='alp-3' and label='stray-in-replica'"); got != "0" {
+		t.Errorf("a child row the replica holds for a bead that lives in alpha must not be carried: %s", got)
 	}
 	if got := f.scalar("select count(*) from labels where issue_id='alp-1'"); got != "1" {
 		t.Errorf("the replica's copy of alp-1's label must not be added to alpha's: %s", got)

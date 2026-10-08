@@ -342,14 +342,55 @@ func rescueOrphans(ctx context.Context, source *readOnlySource, dbName string, h
 		Namespace: "db:" + dbName, Database: dbName, Reachable: true, Tables: tables,
 		Prefixes: map[string]int64{}, Fingerprints: map[string]Fingerprint{},
 	}
+	orphan := map[string]bool{}
 	for _, r := range ids {
 		if held[r.ID] {
 			f.SkipIDs = append(f.SkipIDs, r.ID)
 			continue
 		}
+		orphan[r.ID] = true
 		f.BeadCount++
 		f.Prefixes[PrefixOf(r.ID)]++
 		held[r.ID] = true
+	}
+	// A replica also carries child rows (isa_sections, labels, ...) of beads
+	// whose own row is not in it; those belong to the stores that hold the bead,
+	// so every id a bead-scoped table of the replica names, other than the
+	// orphans', is skipped.
+	skip := map[string]bool{}
+	for _, id := range f.SkipIDs {
+		skip[id] = true
+	}
+	for _, table := range tables {
+		cols, err := source.Columns(ctx, dbName, table)
+		if err != nil {
+			return SourceFacts{}, fmt.Errorf("listing the columns of replica %s.%s: %w", dbName, table, err)
+		}
+		for _, col := range []string{"issue_id", "parent_id"} {
+			if !contains(cols, col) || strings.HasPrefix(table, NamespacedPrefix) || contains(brainTables, table) {
+				continue
+			}
+			rows, err := source.query(ctx, fmt.Sprintf("select distinct `%s` from `%s`.`%s`", col, dbName, table))
+			if err != nil {
+				return SourceFacts{}, fmt.Errorf("reading the beads replica %s.%s names: %w", dbName, table, err)
+			}
+			for rows.Next() {
+				var raw any
+				if err := rows.Scan(&raw); err != nil {
+					_ = rows.Close()
+					return SourceFacts{}, err
+				}
+				if id := cellText(raw); id != "" && !orphan[id] && !skip[id] {
+					skip[id] = true
+					f.SkipIDs = append(f.SkipIDs, id)
+				}
+			}
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return SourceFacts{}, err
+			}
+		}
 	}
 	sort.Strings(f.SkipIDs)
 	if v, err := source.MetadataValue(ctx, dbName, "_project_id"); err == nil {
