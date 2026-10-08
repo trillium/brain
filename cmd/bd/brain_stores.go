@@ -43,9 +43,17 @@ const storesEnvLegacyPath = ".config/pai/stores.env"
 // storeEntry is the registry value for a single federated store. The Path
 // points at the store's .beads directory; About is an optional human blurb
 // describing what the store is for (set via 'brain stores set-about').
+//
+// EditBack is the store's edit-back declaration (divergence/0027): when
+// true, 'bd render-import' may write edits made to the store's rendered
+// markdown files back into the beads they name. It is OFF by default — a
+// store that does not declare edit-back keeps the one-way render behaviour,
+// with the difference reported rather than applied. Set it with
+// 'brain stores edit-back <name> on|off'.
 type storeEntry struct {
-	Path  string `yaml:"path"`
-	About string `yaml:"about,omitempty"`
+	Path     string `yaml:"path"`
+	About    string `yaml:"about,omitempty"`
+	EditBack bool   `yaml:"edit_back,omitempty"`
 }
 
 // UnmarshalYAML accepts both the legacy scalar form (value is the bare path
@@ -367,12 +375,13 @@ var brainStoresListCmd = &cobra.Command{
 		names := sortedKeys(stores)
 
 		if jsonOutput {
-			result := make([]map[string]string, 0, len(names))
+			result := make([]map[string]any, 0, len(names))
 			for _, n := range names {
-				result = append(result, map[string]string{
-					"name":  n,
-					"path":  stores[n].Path,
-					"about": stores[n].About,
+				result = append(result, map[string]any{
+					"name":      n,
+					"path":      stores[n].Path,
+					"about":     stores[n].About,
+					"edit_back": stores[n].EditBack,
 				})
 			}
 			outputJSON(result)
@@ -384,11 +393,68 @@ var brainStoresListCmd = &cobra.Command{
 				if about == "" {
 					about = "—"
 				}
-				fmt.Printf("  %-16s %-48s %s\n", n, stores[n].Path, about)
+				mode := "one-way"
+				if stores[n].EditBack {
+					mode = "edit-back"
+				}
+				fmt.Printf("  %-16s %-48s %-9s %s\n", n, stores[n].Path, mode, about)
+			} else if stores[n].EditBack {
+				fmt.Printf("  %-16s %s (edit-back)\n", n, stores[n].Path)
 			} else {
 				fmt.Printf("  %-16s %s\n", n, stores[n].Path)
 			}
 		}
+	},
+}
+
+var brainStoresEditBackCmd = &cobra.Command{
+	Use:   "edit-back <name> on|off",
+	Short: "Declare whether a store accepts edits from its rendered markdown files",
+	Long: `Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/<kind>/<slug>.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose`,
+	Args: cobra.ExactArgs(2),
+	Run: func(cmd *cobra.Command, args []string) {
+		name := strings.ToLower(strings.TrimSpace(args[0]))
+		option := strings.TrimSpace(args[1])
+		if option != "on" && option != "off" {
+			FatalError("edit-back takes on or off, not %q", option)
+		}
+
+		stores, err := loadStoresRegistry()
+		if err != nil {
+			FatalError("loading registry: %v", err)
+		}
+		if _, ok := stores[name]; !ok {
+			FatalError("store %q is not registered — 'brain stores add %s <beads-dir>' first", name, name)
+		}
+		entry := stores[name]
+		entry.EditBack = option == "on"
+		stores[name] = entry
+		if err := saveStoresRegistry(stores); err != nil {
+			FatalError("saving registry: %v", err)
+		}
+
+		if jsonOutput {
+			outputJSON(map[string]any{"name": name, "edit_back": entry.EditBack})
+			return
+		}
+		fmt.Printf("%s store %s: edit-back %s\n", ui.RenderPass("✓"), name, option)
 	},
 }
 
@@ -1435,6 +1501,7 @@ func init() {
 	brainStoresCmd.AddCommand(brainStoresRenameCmd)
 	brainStoresCmd.AddCommand(brainStoresSetAboutCmd)
 	brainStoresCmd.AddCommand(brainStoresRenderAllCmd)
+	brainStoresCmd.AddCommand(brainStoresEditBackCmd)
 	brainStoresCmd.AddCommand(brainStoresEnvCmd)
 	brainCmd.AddCommand(brainStoresCmd)
 	rootCmd.AddCommand(brainStoresCmd)

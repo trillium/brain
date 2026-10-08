@@ -11,6 +11,12 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+// markedDeletionSkip is the status an explicit render reports for a bead
+// whose "marked-for-deletion" label stands. Not a failure: the render is
+// deliberately skipped so the file stays gone until the mark is cleared
+// ('bd render-marks clear').
+const markedDeletionSkip = "skipped: marked-for-deletion"
+
 var renderCmd = &cobra.Command{
 	Use:     "render <id>",
 	GroupID: "issues",
@@ -25,6 +31,11 @@ etc. — there is no kind gate.
 Use this when the on-disk markdown has been deleted, corrupted, or written by
 an older version of bd. The substrate row is authoritative; the markdown is a
 derived view.
+
+A bead carrying the "marked-for-deletion" label (its rendered file was
+deleted and the deletion has not been cleared by 'bd render-marks clear')
+skips the render and says so: a re-render never silently clears the mark,
+and nothing resurrects the deleted file without a human.
 
 The path of the rendered file is printed to stdout. Exit 0 on success.
 
@@ -41,6 +52,10 @@ var renderAllCmd = &cobra.Command{
 	Short:   "Re-render every issue's markdown (useful after corruption or root change)",
 	Long: `Walk every issue in the substrate and render its markdown to the
 configured exfil root.
+
+Beads carrying the "marked-for-deletion" label (their rendered file was
+deleted, not yet reviewed) are skipped with a named status line — a
+re-render never silently clears the mark.
 
 For each issue, one tab-separated line is printed to stdout:
   <id>\t<path>\t<status>
@@ -87,6 +102,22 @@ func runRender(_ *cobra.Command, args []string) {
 	}
 
 	if err := exf.Render(ctx, issue); err != nil {
+		// A bead whose deletion mark stands is a deliberate skip, not a
+		// failure: the render must not resurrect the file the mark
+		// protects, and the mark only leaves the bead via 'bd
+		// render-marks clear' — never a re-render.
+		if exfiltrator.IsSkipMarked(err) {
+			if jsonOutput {
+				outputJSON(map[string]interface{}{
+					"id":     id,
+					"path":   "",
+					"status": markedDeletionSkip,
+				})
+			} else {
+				fmt.Printf("skipped: %v\n", err)
+			}
+			return
+		}
 		FatalErrorRespectJSON("%v", err)
 	}
 
@@ -131,6 +162,19 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 		}
 		path := renderTargetPath(exf, issue)
 		if err := exf.Render(ctx, issue); err != nil {
+			// Marked-for-deletion beads skip rather than fail — the mark
+			// is a pending human review, not corruption.
+			if exfiltrator.IsSkipMarked(err) {
+				results = append(results, renderAllResult{
+					ID:     issue.ID,
+					Path:   path,
+					Status: markedDeletionSkip,
+				})
+				if !jsonOutput {
+					fmt.Printf("%s\t%s\tskipped: marked-for-deletion (clear with 'bd render-marks clear %s')\n", issue.ID, path, issue.ID)
+				}
+				continue
+			}
 			failed++
 			results = append(results, renderAllResult{
 				ID:     issue.ID,
