@@ -173,6 +173,15 @@ id is not retired as a tombstone, it stays a real bead.
   holder deletes it) is not picked up by a replay, because the replica did not
   change; `verify --reference live` catches it.
 
+- **Recorded fingerprints are per (store, table, group)** (found rehearsing a
+  replay on the real stores). The build folded every store's share of a group
+  into one row labelled with the last store, the verifier's recorded read
+  overwrote rows that shared a group, and a replay deleted one store's row and
+  re-recorded only its own share, so `verify` (recorded) failed after any replay
+  that touched a group two stores share (live verify was unaffected). The build
+  now records one row per store, the verifier combines them, and a regression
+  test replays stores that share a prefix.
+
 # Acknowledged caveats
 
 - **Beads that block on a conflicted id now block on an open conflict bead.**
