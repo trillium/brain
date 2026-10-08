@@ -418,7 +418,7 @@ func unifyCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 		return false
 	}
 	switch cmd.Name() {
-	case "plan", "build", "replay", "verify":
+	case "plan", "build", "replay", "verify", "ready":
 		return true
 	default:
 		return false

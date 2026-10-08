@@ -86,6 +86,14 @@ var (
 	unifyAliases   string
 	unifyInclude   []string
 	unifyRescue    []string
+
+	unifyMergedHost   string
+	unifyMergedPort   int
+	unifyNoCommit     bool
+	unifyDryRun       bool
+	unifyProtectAfter string
+	unifyReadyVerify  bool
+	unifyReadyMaxLag  int
 )
 
 // projectIDMap parses repeated --project-id <store>=<uuid> values.
@@ -140,13 +148,29 @@ func init() {
 	unifyVerifyCmd.Flags().StringVar(&unifyTemplate, "template", "", "store whose schema the unified database inherited")
 	unifyVerifyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 3*time.Hour, "overall time budget for verification")
 
-	for _, c := range []*cobra.Command{unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd} {
+	// A merged database a running server hosts (usually the one holding the
+	// sources) is updated and checked in place: nothing is stopped.
+	for _, c := range []*cobra.Command{unifyReplayCmd, unifyVerifyCmd, unifyReadyCmd} {
+		c.Flags().StringVar(&unifyMergedHost, "merged-host", "127.0.0.1", "host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir)")
+		c.Flags().IntVar(&unifyMergedPort, "merged-port", 0, "port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped")
+	}
+	unifyReplayCmd.Flags().BoolVar(&unifyNoCommit, "no-commit", false, "do not make a Dolt commit of the merged database (use once stores write to it)")
+	unifyReplayCmd.Flags().BoolVar(&unifyDryRun, "dry-run", false, "decide and report what would be reloaded; apply nothing")
+	unifyReplayCmd.Flags().StringVar(&unifyProtectAfter, "protect-after", "", "UTC time (2006-01-02 15:04:05) the stores were repointed to the merged database: a bead the merged database changed after it is not reloaded from the older databases")
+	unifyReadyCmd.Flags().StringVar(&unifyDatabase, "database", "brain_unified", "name of the merged database")
+	unifyReadyCmd.Flags().StringVar(&unifyHost, "host", "127.0.0.1", "dolt sql-server host holding the source stores")
+	unifyReadyCmd.Flags().IntVar(&unifyPort, "port", 3307, "dolt sql-server port holding the source stores")
+	unifyReadyCmd.Flags().BoolVar(&unifyReadyVerify, "verify", false, "also run the recorded verification of the merged database (a few minutes)")
+	unifyReadyCmd.Flags().IntVar(&unifyReadyMaxLag, "max-pending", 0, "ready when at most this many items (beads, tables, state tables, collision records) differ")
+	unifyReadyCmd.Flags().StringVar(&unifyDoltBin, "dolt-bin", "dolt", "dolt binary (unused with --merged-port; kept for symmetry)")
+	unifyReadyCmd.Flags().DurationVar(&unifyTimeout, "timeout", 30*time.Minute, "overall time budget")
+	for _, c := range []*cobra.Command{unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd, unifyReadyCmd} {
 		c.Flags().StringSliceVar(&unifyInclude, "include-database", nil, "unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)")
 		c.Flags().StringSliceVar(&unifyRescue, "rescue-orphans-from", nil, "replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)")
 	}
 
 	brainCmd.AddCommand(brainUnifyCmd)
-	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd)
+	brainUnifyCmd.AddCommand(unifyPlanCmd, unifyBuildCmd, unifyReplayCmd, unifyVerifyCmd, unifyReadyCmd)
 }
 
 var unifyPlanCmd = &cobra.Command{
@@ -285,8 +309,8 @@ Prove a replay with 'unify verify --reference live', which compares the merged
 database against the sources as they stand. Sources are only ever read.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		if unifyDataDir == "" {
-			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the merged database to")
+		if unifyDataDir == "" && unifyMergedPort == 0 {
+			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the merged database to (or --merged-port for a database a running server hosts)")
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), unifyTimeout)
 		defer cancel()
@@ -305,11 +329,16 @@ database against the sources as they stand. Sources are only ever read.`,
 
 		started := time.Now()
 		replayer := brainunify.NewReplayer(source, plan, brainunify.ReplayOptions{
-			DataDir:  unifyDataDir,
-			Database: unifyDatabase,
-			DoltBin:  unifyDoltBin,
-			Host:     unifyHost,
-			Port:     unifyPort,
+			MergedHost:   unifyMergedHost,
+			MergedPort:   unifyMergedPort,
+			NoCommit:     unifyNoCommit,
+			DryRun:       unifyDryRun,
+			ProtectAfter: unifyProtectAfter,
+			DataDir:      unifyDataDir,
+			Database:     unifyDatabase,
+			DoltBin:      unifyDoltBin,
+			Host:         unifyHost,
+			Port:         unifyPort,
 			Logf: func(format string, args ...any) {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[%7.1fs] %s\n",
 					time.Since(started).Seconds(), fmt.Sprintf(format, args...))
@@ -331,8 +360,8 @@ var unifyVerifyCmd = &cobra.Command{
 		if unifyReference != brainunify.ReferenceRecorded && unifyReference != brainunify.ReferenceLive {
 			return fmt.Errorf("--reference must be %q or %q, got %q", brainunify.ReferenceRecorded, brainunify.ReferenceLive, unifyReference)
 		}
-		if unifyDataDir == "" {
-			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the unified database to")
+		if unifyDataDir == "" && unifyMergedPort == 0 {
+			return fmt.Errorf("--data-dir is required: name the directory 'unify build' wrote the unified database to (or --merged-port for a database a running server hosts)")
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), unifyTimeout)
 		defer cancel()
@@ -354,11 +383,17 @@ var unifyVerifyCmd = &cobra.Command{
 		// over the data dir the build wrote. Starting a second server over
 		// the same directory is safe because the build's server is stopped
 		// when the build returns.
-		srv, err := brainunify.StartIsolatedServer(ctx, unifyDoltBin, unifyDataDir)
-		if err != nil {
-			return err
+		vhost, vport := "127.0.0.1", unifyMergedPort
+		if unifyMergedPort != 0 {
+			vhost = unifyMergedHost
+		} else {
+			srv, err := brainunify.StartIsolatedServer(ctx, unifyDoltBin, unifyDataDir)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = srv.Stop() }()
+			vport = srv.Port
 		}
-		defer func() { _ = srv.Stop() }()
 
 		started := time.Now()
 
@@ -368,8 +403,8 @@ var unifyVerifyCmd = &cobra.Command{
 		}
 		verifier, err := brainunify.NewVerifier(ctx, source, plan, plans, brainunify.VerifyOptions{
 			Database:  unifyDatabase,
-			Host:      "127.0.0.1",
-			Port:      srv.Port,
+			Host:      vhost,
+			Port:      vport,
 			Reference: unifyReference,
 			// Progress goes to stderr, flushed per line and stamped with the
 			// elapsed time. Verification reads every row of every table on
@@ -394,6 +429,86 @@ var unifyVerifyCmd = &cobra.Command{
 		}
 		if !res.OK() {
 			return fmt.Errorf("verification failed: %d check(s) did not match", len(res.Failures()))
+		}
+		return nil
+	},
+}
+
+var unifyReadyCmd = &cobra.Command{
+	Use:   "ready",
+	Short: "Say whether the merged database is ready to be cut over to: identical to the sources, or exactly what differs",
+	Long: `ready asks the running server that hosts the merged database whether it holds
+everything the sources hold. It is a replay that decides everything and applies
+nothing, so it is change-driven and fast: per source it compares the Dolt head
+with the recorded starting point, lists the tables that changed since it
+(dolt_diff_summary), and compares the tables Dolt does not version, and the small
+state tables, by fingerprint with what was recorded. It prints READY, or what a
+replay would reload, and exits non-zero when more than --max-pending items
+differ. Sources that are being written to are never identical for long; what
+matters is how small the difference is at the moment you repoint, because the
+post-repoint catch-up ('replay --protect-after') closes the rest.
+
+With --verify it also runs the recorded verification of the merged database
+(every table's count, size and digest against what the build and the replays
+recorded), which proves the merged database itself is intact.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		if unifyMergedPort == 0 {
+			return fmt.Errorf("--merged-port is required: ready asks a running server that hosts the merged database")
+		}
+		ctx, cancel := context.WithTimeout(cmd.Context(), unifyTimeout)
+		defer cancel()
+
+		reg, source, err := openUnifySources(ctx, unifyHost, unifyPort)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = source.Close() }()
+		disc, err := brainunify.Discover(ctx, source, reg)
+		if err != nil {
+			return err
+		}
+		plan := disc.Plan()
+
+		started := time.Now()
+		logf := func(format string, args ...any) {
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "[%7.1fs] %s\n", time.Since(started).Seconds(), fmt.Sprintf(format, args...))
+		}
+		res, err := brainunify.NewReplayer(source, plan, brainunify.ReplayOptions{
+			Database: unifyDatabase, Host: unifyHost, Port: unifyPort,
+			MergedHost: unifyMergedHost, MergedPort: unifyMergedPort, DryRun: true, Logf: logf,
+		}).Replay(ctx)
+		if err != nil {
+			return err
+		}
+		if err := brainunify.WriteReplay(cmd.OutOrStdout(), res); err != nil {
+			return err
+		}
+		if unifyReadyVerify {
+			plans, err := brainunify.TablePlansFor(ctx, source, plan, "")
+			if err != nil {
+				return err
+			}
+			verifier, err := brainunify.NewVerifier(ctx, source, plan, plans, brainunify.VerifyOptions{
+				Database: unifyDatabase, Host: unifyMergedHost, Port: unifyMergedPort, Reference: brainunify.ReferenceRecorded, Logf: logf,
+			})
+			if err != nil {
+				return err
+			}
+			defer func() { _ = verifier.Close() }()
+			vres, err := verifier.Verify(ctx)
+			if err != nil {
+				return err
+			}
+			if err := brainunify.WriteVerify(cmd.OutOrStdout(), vres); err != nil {
+				return err
+			}
+			if !vres.OK() {
+				return fmt.Errorf("not ready: the merged database fails its own recorded verification (%d check(s))", len(vres.Failures()))
+			}
+		}
+		if res.Pending() > unifyReadyMaxLag {
+			return fmt.Errorf("not ready: %d item(s) differ (--max-pending %d)", res.Pending(), unifyReadyMaxLag)
 		}
 		return nil
 	},

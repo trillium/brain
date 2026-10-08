@@ -228,36 +228,97 @@ func referenceDescription(ref string) string {
 	return "what the build recorded it read from each source, compared against the unified database"
 }
 
-// WriteReplay renders what a replay did.
+// WriteReplay renders what a replay did, or, for a dry run, what it would do.
 func WriteReplay(w io.Writer, res ReplayResult) error {
-	if _, err := fmt.Fprintf(w, "brain unify replay\n==================\n\ndatabase: %s\ndata dir: %s\nelapsed: %s\nstores with changes in their history: %s\nbeads reconciled: %d\n\n",
-		res.Database, res.DataDir, res.Elapsed.Round(1e6), joinOrNone(res.ChangedStores), len(res.Beads)); err != nil {
+	title := "brain unify replay"
+	if res.DryRun {
+		title = "brain unify replay (dry run: nothing was applied)"
+	}
+	where := res.DataDir
+	if where == "" {
+		where = "(hosted by a running server)"
+	}
+	if _, err := fmt.Fprintf(w, "%s\n%s\n\ndatabase: %s\ndata dir: %s\nelapsed: %s\nstores with changes in their history: %s\nbeads %s: %d\n\n",
+		title, strings.Repeat("=", len(title)), res.Database, where, res.Elapsed.Round(1e6), joinOrNone(res.ChangedStores),
+		map[bool]string{true: "that would be reconciled", false: "reconciled"}[res.DryRun], len(res.Beads)); err != nil {
 		return err
 	}
-	if len(res.Tables) > 0 {
-		if _, err := fmt.Fprintf(w, "%-34s %9s %9s %9s %s\n", "TABLE", "DELETED", "INSERTED", "SKIPPED", ""); err != nil {
+	if res.DryRun {
+		if len(res.TouchedByTable) > 0 {
+			if _, err := fmt.Fprintf(w, "%-34s %s\n", "TABLE", "BEADS TO RELOAD"); err != nil {
+				return err
+			}
+			for _, t := range sortedKeys(res.TouchedByTable) {
+				if _, err := fmt.Fprintf(w, "%-34s %d\n", t, res.TouchedByTable[t]); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := fmt.Fprintf(w, "tables to reload whole: %s\nstate tables to replace: %s\ncollision records to write: %s\ncollision records to remove: %s\n",
+			joinOrNone(res.FullTables), joinStateChanged(res.StateChanged), joinOrNone(res.CollisionsWritten), joinOrNone(res.CollisionsRemoved)); err != nil {
 			return err
 		}
-		for _, t := range res.Tables {
-			note := ""
-			if t.Full {
-				note = "(reloaded whole: the sources keep no history for this table)"
+	} else {
+		if len(res.Tables) > 0 {
+			if _, err := fmt.Fprintf(w, "%-34s %9s %9s %9s %s\n", "TABLE", "DELETED", "INSERTED", "SKIPPED", ""); err != nil {
+				return err
 			}
-			if _, err := fmt.Fprintf(w, "%-34s %9d %9d %9d %s\n", t.Table, t.Deleted, t.Inserted, t.Skipped, note); err != nil {
+			for _, t := range res.Tables {
+				note := ""
+				if t.Full {
+					note = "(reloaded whole)"
+				}
+				if _, err := fmt.Fprintf(w, "%-34s %9d %9d %9d %s\n", t.Table, t.Deleted, t.Inserted, t.Skipped, note); err != nil {
+					return err
+				}
+			}
+		}
+		if _, err := fmt.Fprintf(w, "\ncollision records written: %s\ncollision records removed: %s\n", joinOrNone(res.CollisionsWritten), joinOrNone(res.CollisionsRemoved)); err != nil {
+			return err
+		}
+		for _, c := range res.Commits {
+			if _, err := fmt.Fprintf(w, "next replay starts: %-24s %s\n", c.Store, c.Hash); err != nil {
 				return err
 			}
 		}
 	}
-	if _, err := fmt.Fprintf(w, "\ncollision records written: %s\ncollision records removed: %s\n", joinOrNone(res.CollisionsWritten), joinOrNone(res.CollisionsRemoved)); err != nil {
-		return err
-	}
-	for _, c := range res.Commits {
-		if _, err := fmt.Fprintf(w, "next replay starts: %-24s %s\n", c.Store, c.Hash); err != nil {
+	if len(res.KeptMerged) > 0 {
+		if _, err := fmt.Fprintf(w, "\nkept the merged version of %d bead(s) changed there after the repoint (the old databases' version is older): %s\n", len(res.KeptMerged), strings.Join(res.KeptMerged, ", ")); err != nil {
 			return err
 		}
 	}
+	if res.DryRun {
+		_, err := fmt.Fprintf(w, "\n%s\n", readinessVerdict(res))
+		return err
+	}
 	_, err := fmt.Fprintf(w, "\nrun 'unify verify --reference live' to prove the merged database now equals the sources\n")
 	return err
+}
+
+func joinStateChanged(m map[string][]string) string {
+	if len(m) == 0 {
+		return "none"
+	}
+	var parts []string
+	for _, st := range sortedKeys(m) {
+		parts = append(parts, st+": "+strings.Join(m[st], ","))
+	}
+	return strings.Join(parts, "; ")
+}
+
+// Pending is the amount of work a dry-run result says a replay would do: zero
+// means the merged database already holds everything the sources hold.
+func (res ReplayResult) Pending() int {
+	return len(res.Beads) + len(res.FullTables) + len(res.StateChanged) + len(res.CollisionsWritten) + len(res.CollisionsRemoved)
+}
+
+// readinessVerdict is the one-line answer of the cutover readiness check.
+func readinessVerdict(res ReplayResult) string {
+	if res.Pending() == 0 {
+		return "READY: the merged database holds everything the sources hold (nothing to replay)"
+	}
+	return fmt.Sprintf("NOT YET IDENTICAL: a replay would reload %d bead(s), %d table(s) whole, state tables of %d store(s); run the replay again (sources that are written to are never identical for long; what matters is how small this is when you repoint)",
+		len(res.Beads), len(res.FullTables), len(res.StateChanged))
 }
 
 func joinOrNone(values []string) string {

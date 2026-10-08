@@ -50,8 +50,29 @@ import (
 // ReplayOptions configures a replay.
 type ReplayOptions struct {
 	// DataDir is the directory holding the merged database. The replay starts
-	// its own Dolt server over it, as verify does.
+	// its own Dolt server over it, as verify does. Not used when MergedPort is
+	// set.
 	DataDir string
+	// MergedHost and MergedPort name a RUNNING Dolt server that hosts the merged
+	// database (usually the same server that holds the sources). The replay then
+	// updates it in place, one transaction at a time, while the server stays up
+	// and the sources stay live: nothing is stopped and no data directory is
+	// touched. MergedHost defaults to 127.0.0.1.
+	MergedHost string
+	MergedPort int
+	// NoCommit skips the Dolt commit the replay otherwise makes of the merged
+	// database. A hosted merged database that stores are already writing to must
+	// not have their uncommitted work committed under a replay's message.
+	NoCommit bool
+	// DryRun decides everything and applies nothing: the result lists what a
+	// replay would reload. It is the cutover readiness check.
+	DryRun bool
+	// ProtectAfter, a UTC timestamp ("2006-01-02 15:04:05"), is set for a replay
+	// that runs after the stores were repointed to the merged database. A bead
+	// the merged database changed after that moment (its updated_at, or an event
+	// or comment newer than it) is NOT reloaded from the old databases, whose
+	// version is older; it is reported in KeptMerged instead.
+	ProtectAfter string
 	// Database is the merged database's name inside that server.
 	Database string
 	// DoltBin is the dolt binary used to start the server.
@@ -96,7 +117,16 @@ type ReplayResult struct {
 	Commits []recordedSourceCommit
 	// Committed reports whether the result was committed to the merged
 	// database's own Dolt history.
-	Committed     bool
+	Committed bool
+	// DryRun reports that nothing was applied; FullTables, StateChanged and
+	// TouchedByTable then say what a replay would do.
+	DryRun         bool
+	FullTables     []string
+	StateChanged   map[string][]string
+	TouchedByTable map[string]int
+	// KeptMerged are beads the old databases changed but the merged database
+	// changed later (see ReplayOptions.ProtectAfter); the merged version stays.
+	KeptMerged    []string
 	Elapsed       time.Duration
 	ServerLogPath string
 }
@@ -166,8 +196,9 @@ type replayWork struct {
 //nolint:gocyclo // one linear pipeline: validate, decide, apply, re-record
 func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	start := time.Now()
-	if r.opts.DataDir == "" {
-		return ReplayResult{}, fmt.Errorf("--data-dir is required: name the directory that holds the merged database")
+	hosted := r.opts.MergedPort != 0
+	if r.opts.DataDir == "" && !hosted {
+		return ReplayResult{}, fmt.Errorf("--data-dir is required (or --merged-port to update a merged database a running server hosts)")
 	}
 	database := r.opts.Database
 	if database == "" {
@@ -181,7 +212,7 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	if port == 0 {
 		port = 3307
 	}
-	res := ReplayResult{Database: database, DataDir: r.opts.DataDir}
+	res := ReplayResult{Database: database, DataDir: r.opts.DataDir, DryRun: r.opts.DryRun}
 
 	// One read-only connection per source database: dolt_log and dolt_diff
 	// resolve against the connection's default database.
@@ -195,24 +226,48 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		}
 	}()
 
-	srv, err := StartIsolatedServer(ctx, r.opts.DoltBin, r.opts.DataDir)
-	if err != nil {
-		return res, err
+	var merged *sql.DB
+	var mergedRO *readOnlySource
+	if hosted {
+		mh := r.opts.MergedHost
+		if mh == "" {
+			mh = "127.0.0.1"
+		}
+		dsn := fmt.Sprintf("root@tcp(%s:%d)/%s?parseTime=false&multiStatements=false&maxAllowedPacket=0", mh, r.opts.MergedPort, database)
+		merged, err = sql.Open("mysql", dsn)
+		if err != nil {
+			return res, fmt.Errorf("opening the merged database %s on %s:%d: %w", database, mh, r.opts.MergedPort, err)
+		}
+		merged.SetMaxOpenConns(4)
+		defer func() { _ = merged.Close() }()
+		pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		err = merged.PingContext(pingCtx)
+		cancel()
+		if err != nil {
+			return res, fmt.Errorf("pinging the merged database %s on %s:%d: %w", database, mh, r.opts.MergedPort, err)
+		}
+		if mergedRO, err = OpenSource(mh, r.opts.MergedPort); err != nil {
+			return res, err
+		}
+		defer func() { _ = mergedRO.Close() }()
+		r.log("merged database %s hosted on %s:%d (updated in place; the server stays up)", database, mh, r.opts.MergedPort)
+	} else {
+		srv, err := StartIsolatedServer(ctx, r.opts.DoltBin, r.opts.DataDir)
+		if err != nil {
+			return res, err
+		}
+		defer func() { _ = srv.Stop() }()
+		res.ServerLogPath = filepath.Join(r.opts.DataDir, "unified-server.log")
+		r.log("isolated dolt server over %s on 127.0.0.1:%d", r.opts.DataDir, srv.Port)
+		if merged, err = srv.OpenTarget(ctx, database); err != nil {
+			return res, err
+		}
+		defer func() { _ = merged.Close() }()
+		if mergedRO, err = OpenSource("127.0.0.1", srv.Port); err != nil {
+			return res, err
+		}
+		defer func() { _ = mergedRO.Close() }()
 	}
-	defer func() { _ = srv.Stop() }()
-	res.ServerLogPath = filepath.Join(r.opts.DataDir, "unified-server.log")
-	r.log("isolated dolt server over %s on 127.0.0.1:%d", r.opts.DataDir, srv.Port)
-
-	merged, err := srv.OpenTarget(ctx, database)
-	if err != nil {
-		return res, err
-	}
-	defer func() { _ = merged.Close() }()
-	mergedRO, err := OpenSource("127.0.0.1", srv.Port)
-	if err != nil {
-		return res, err
-	}
-	defer func() { _ = mergedRO.Close() }()
 
 	w := &replayWork{conns: conns}
 
@@ -275,6 +330,35 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		return res, err
 	}
 
+	if r.opts.ProtectAfter != "" {
+		kept, err := r.protectNewer(ctx, mergedRO, database, w)
+		if err != nil {
+			return res, err
+		}
+		res.KeptMerged = kept
+		if len(kept) > 0 {
+			r.log("kept the merged version of %d bead(s) the stores changed after %s", len(kept), r.opts.ProtectAfter)
+		}
+	}
+
+	if r.opts.DryRun {
+		res.Beads = unionIDs(w.touched)
+		res.CollisionsWritten = append(res.CollisionsWritten, w.collisionsToWrite...)
+		res.CollisionsRemoved = append(res.CollisionsRemoved, w.collisionsToDelete...)
+		res.ChangedStores = sortedKeys(w.changedStores)
+		res.FullTables = sortedKeys(w.full)
+		res.StateChanged = map[string][]string{}
+		for st, tbs := range w.stateChanged {
+			res.StateChanged[st] = sortedKeys(tbs)
+		}
+		res.TouchedByTable = map[string]int{}
+		for t, ids := range w.touched {
+			res.TouchedByTable[t] = len(ids)
+		}
+		res.Elapsed = time.Since(start)
+		return res, nil
+	}
+
 	// ---- apply: one transaction, so a failure leaves the database as found --
 	conn, err := merged.Conn(ctx)
 	if err != nil {
@@ -318,7 +402,9 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 
 	// The rows are durable once the transaction commits; the Dolt commit
 	// makes the replay a point in the merged database's own history.
-	if rows, err := merged.QueryContext(ctx, "call dolt_commit('-Am', 'brain unify replay: apply source changes since the recorded commits')"); err != nil {
+	if r.opts.NoCommit {
+		r.log("not committing to the merged database's Dolt history (--no-commit)")
+	} else if rows, err := merged.QueryContext(ctx, "call dolt_commit('-Am', 'brain unify replay: apply source changes since the recorded commits')"); err != nil {
 		r.log("warning: could not create a dolt commit: %v", err)
 	} else {
 		for rows.Next() {
@@ -704,20 +790,23 @@ func (r *Replayer) collectStore(ctx context.Context, src SourceFacts, w *replayW
 			continue
 		}
 
-		// Dolt does not version this table, so there is no history to diff:
-		// compare what it holds now with what was recorded for it.
-		if ignored[tp.Table] {
+		kind, inSummary := summary[tp.Table]
+
+		// A table Dolt does not version has no history to diff, and a state table
+		// (config, metadata, ...) is small and often left with uncommitted
+		// bookkeeping changes that say nothing: compare what the table holds now
+		// with what was recorded for it, and reload it only when it differs.
+		if ignored[tp.Table] || (tp.Scope == ScopeDatabaseState && inSummary) {
 			changed, err := r.unversionedChanged(ctx, src, tp, recorded[tp.Target])
 			if err != nil {
 				return sc, err
 			}
 			if changed {
-				sc.reload(tp, false)
+				sc.reload(tp, !ignored[tp.Table])
 			}
 			continue
 		}
 
-		kind, inSummary := summary[tp.Table]
 		if !inSummary {
 			continue // identical to the recorded commit
 		}
@@ -736,14 +825,6 @@ func (r *Replayer) collectStore(ctx context.Context, src SourceFacts, w *replayW
 			continue
 		}
 		switch tp.Scope {
-		case ScopeDatabaseState:
-			changed, err := conn.DiffChanged(ctx, base.Hash, tp.Table)
-			if err != nil {
-				return sc, fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
-			}
-			if changed {
-				sc.reload(tp, true)
-			}
 		default:
 			ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
 			if err != nil {
@@ -1410,4 +1491,85 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// protectNewer removes from the work every bead the merged database changed
+// after ProtectAfter: its updated_at, or an event or comment on it, is newer.
+// The old databases' version of such a bead is older than the merged one, so
+// reloading it would undo a write; the bead stays as the merged database has it
+// and is returned for the report. The check covers a bead's minted copies too.
+func (r *Replayer) protectNewer(ctx context.Context, mergedRO *readOnlySource, database string, w *replayWork) ([]string, error) {
+	ids := map[string]bool{}
+	for id := range unionSet(w.touched) {
+		ids[id] = true
+	}
+	for _, id := range w.collisionsToWrite {
+		ids[id] = true
+	}
+	for _, id := range w.collisionsToDelete {
+		ids[id] = true
+	}
+	owner := map[string]string{}
+	var all []string
+	for _, id := range sortedKeys(ids) {
+		for _, m := range w.mergedIDs([]string{id}) {
+			owner[m] = id
+			all = append(all, m)
+		}
+	}
+	protected := map[string]bool{}
+	checks := []struct{ table, idCol, timeCol string }{
+		{"issues", "id", "updated_at"}, {"events", "issue_id", "created_at"}, {"comments", "issue_id", "created_at"},
+	}
+	for _, chunk := range chunks(all, 200) {
+		for _, c := range checks {
+			if has, err := mergedRO.HasTable(ctx, database, c.table); err != nil || !has {
+				continue
+			}
+			if cols, err := mergedRO.Columns(ctx, database, c.table); err != nil || !contains(cols, c.timeCol) {
+				continue
+			}
+			clause, args := inClause(c.idCol, chunk)
+			stmt := fmt.Sprintf("select distinct `%s` from `%s`.`%s` where %s and `%s` > ?", c.idCol, database, c.table, clause, c.timeCol)
+			rows, err := mergedRO.query(ctx, stmt, append(args, r.opts.ProtectAfter)...)
+			if err != nil {
+				return nil, fmt.Errorf("refusing to replay: looking for beads the merged database changed after %s: %w", r.opts.ProtectAfter, err)
+			}
+			for rows.Next() {
+				var m string
+				if err := rows.Scan(&m); err != nil {
+					_ = rows.Close()
+					return nil, err
+				}
+				if o, ok := owner[m]; ok {
+					protected[o] = true
+				}
+			}
+			err = rows.Err()
+			_ = rows.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if len(protected) == 0 {
+		return nil, nil
+	}
+	for _, tbl := range w.touched {
+		for id := range protected {
+			delete(tbl, id)
+		}
+	}
+	keep := func(in []string) []string {
+		var out []string
+		for _, id := range in {
+			if !protected[id] {
+				out = append(out, id)
+			}
+		}
+		return out
+	}
+	w.collisionsToWrite = keep(w.collisionsToWrite)
+	w.collisionsToDelete = keep(w.collisionsToDelete)
+	return sortedKeys(protected), nil
 }

@@ -2,8 +2,10 @@ package brainunify
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // These tests run the conflict-bead model against real Dolt servers, with the
@@ -585,4 +587,153 @@ func TestReplayWithNothingNewTouchesNothing(t *testing.T) {
 	if res, err = f.replay(); err != nil || len(res.Tables) != 0 {
 		t.Errorf("the next replay must be a no-op again: %v %v", res.Tables, err)
 	}
+}
+
+// hostedReplayer runs a replay against a merged database a RUNNING server hosts.
+func (f *replayFixture) hostedReplay(port int, opts ReplayOptions) (ReplayResult, error) {
+	f.t.Helper()
+	source, plan := f.discover()
+	opts.Database, opts.Host, opts.Port = fixtureMergedDB, "127.0.0.1", f.srcSrv.Port
+	opts.MergedHost, opts.MergedPort = "127.0.0.1", port
+	return NewReplayer(source, plan, opts).Replay(f.ctx)
+}
+
+func (f *replayFixture) hostedVerify(port int, reference string) []Check {
+	f.t.Helper()
+	source, plan := f.discover()
+	plans, err := TablePlansFor(f.ctx, source, plan, "")
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	v, err := NewVerifier(f.ctx, source, plan, plans, VerifyOptions{Database: fixtureMergedDB, Host: "127.0.0.1", Port: port, Reference: reference})
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() { _ = v.Close() }()
+	res, err := v.Verify(f.ctx)
+	if err != nil {
+		f.t.Fatalf("verify: %v", err)
+	}
+	return res.Failures()
+}
+
+// TestReplayUpdatesAHostedMergedDatabaseInPlace is the no-downtime shape: the
+// merged database stays on a running server, the sources keep changing, the
+// replay (and the readiness check, a dry-run replay) work against that server,
+// and a replay run after the stores were repointed does not undo what the merged
+// database changed since.
+func TestReplayUpdatesAHostedMergedDatabaseInPlace(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+
+	// ready: nothing differs yet
+	res, err := f.hostedReplay(srv.Port, ReplayOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if res.Pending() != 0 || !res.DryRun {
+		t.Fatalf("a fresh build must be ready: %+v", res)
+	}
+	if !strings.Contains(readinessVerdict(res), "READY") {
+		t.Errorf("verdict = %q", readinessVerdict(res))
+	}
+
+	// the sources move while the server stays up
+	f.execIn("alpha", "update issues set title='alpha 2 edited', updated_at=now() where id='alp-2'")
+	f.execIn("alpha", "update issues set title='alpha 3 edited', updated_at=now() where id='alp-3'")
+	f.bead("beta", "bet-7", "beta new")
+	f.commit("alpha", "edits")
+	f.commit("beta", "new bead")
+	res, err = f.hostedReplay(srv.Port, ReplayOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("dry run 2: %v", err)
+	}
+	if res.Pending() == 0 || len(res.Beads) < 3 || !strings.Contains(readinessVerdict(res), "NOT YET") {
+		t.Fatalf("the readiness check must list the differences: %+v", res)
+	}
+	if got := f.hostedVerifyTitle(srv.Port, "alp-2"); got == "alpha 2 edited" {
+		t.Fatal("a dry run must apply nothing")
+	}
+
+	res, err = f.hostedReplay(srv.Port, ReplayOptions{})
+	if err != nil {
+		t.Fatalf("hosted replay: %v", err)
+	}
+	if !res.Committed {
+		t.Errorf("a hosted replay commits unless asked not to")
+	}
+	requireNoFailures(t, "live after the hosted replay", f.hostedVerify(srv.Port, ReferenceLive))
+	requireNoFailures(t, "recorded after the hosted replay", f.hostedVerify(srv.Port, ReferenceRecorded))
+	res, err = f.hostedReplay(srv.Port, ReplayOptions{DryRun: true})
+	if err != nil || res.Pending() != 0 {
+		t.Fatalf("after the replay the readiness check must say READY: %v %+v", err, res)
+	}
+
+	// the stores are repointed: from here the merged database is written to.
+	time.Sleep(1200 * time.Millisecond)
+	repointed := time.Now().UTC().Format("2006-01-02 15:04:05")
+	time.Sleep(1200 * time.Millisecond)
+	db, err := srv.OpenTarget(f.ctx, fixtureMergedDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, stmt := range []string{
+		"update issues set title='written in the merged database', updated_at=utc_timestamp() where id='alp-2'",
+		"insert into comments values (uuid(), 'alp-4', 'a comment written after the repoint')",
+		"update issues set updated_at=utc_timestamp() where id='alp-4'",
+	} {
+		if _, err := db.ExecContext(f.ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	// stragglers: the old databases change after the repoint too
+	f.execIn("alpha", "update issues set title='straggler wrote alp-2', updated_at=now() where id='alp-2'")
+	f.execIn("alpha", "update issues set title='straggler wrote alp-3', updated_at=now() where id='alp-3'")
+	f.execIn("alpha", "update issues set title='straggler wrote alp-4', updated_at=now() where id='alp-4'")
+	f.commit("alpha", "stragglers")
+	res, err = f.hostedReplay(srv.Port, ReplayOptions{NoCommit: true, ProtectAfter: repointed})
+	if err != nil {
+		t.Fatalf("post-repoint replay: %v", err)
+	}
+	if !reflect.DeepEqual(res.KeptMerged, []string{"alp-2", "alp-4"}) {
+		t.Errorf("KeptMerged = %v, want alp-2 and alp-4 (changed in the merged database after the repoint)", res.KeptMerged)
+	}
+	if res.Committed {
+		t.Error("--no-commit must not commit")
+	}
+	if got := f.hostedVerifyTitle(srv.Port, "alp-2"); got != "written in the merged database" {
+		t.Errorf("alp-2 = %q: the merged write was undone", got)
+	}
+	if got := f.hostedVerifyTitle(srv.Port, "alp-3"); got != "straggler wrote alp-3" {
+		t.Errorf("alp-3 = %q: the straggler write to the old database was not carried over", got)
+	}
+	var n int
+	if err := db.QueryRowContext(f.ctx, "select count(*) from comments where issue_id='alp-4' and body like 'a comment written after%'").Scan(&n); err != nil || n != 1 {
+		t.Errorf("the post-repoint comment on alp-4 = %d rows (%v), want 1", n, err)
+	}
+}
+
+func (f *replayFixture) hostedVerifyTitle(port int, id string) string {
+	f.t.Helper()
+	db, err := OpenSource("127.0.0.1", port)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.query(f.ctx, "select title from `"+fixtureMergedDB+"`.issues where id = ?", id)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer rows.Close()
+	var title string
+	if rows.Next() {
+		_ = rows.Scan(&title)
+	}
+	return title
 }
