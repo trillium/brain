@@ -165,6 +165,15 @@ type Registry struct {
 	ReplicaNames []string
 	// RegistryPath is the file the registry was read from.
 	RegistryPath string
+	// MergedDatabase is the name of the merged database on the sources' server.
+	// It is never a source, and (with SourceDatabases) it is how the registry is
+	// read after the stores were repointed to it.
+	MergedDatabase string
+	// SourceDatabases maps a store's name to the database it was merged FROM, as
+	// the merged database recorded it (brain_stores.source_database). After the
+	// cutover every store's metadata.json names the merged database, so the
+	// registry can no longer say where a store's own database is; this does.
+	SourceDatabases map[string]string
 	// IncludeDatabases names unregistered databases that hold several prefixes
 	// but are stores, not cross-store replicas (a project with two prefixes).
 	// Each participates as an ordinary "db:<name>" store instead of being

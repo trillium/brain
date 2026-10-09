@@ -245,9 +245,7 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		}
 		merged.SetMaxOpenConns(4)
 		defer func() { _ = merged.Close() }()
-		pingCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err = merged.PingContext(pingCtx)
-		cancel()
+		err = pingPatiently(merged)
 		if err != nil {
 			return res, fmt.Errorf("pinging the merged database %s on %s:%d: %w", database, mh, r.opts.MergedPort, err)
 		}

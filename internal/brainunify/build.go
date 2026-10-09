@@ -174,9 +174,29 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 		return Discovery{}, fmt.Errorf("listing databases on the source server: %w", err)
 	}
 
+	// After the cutover a store's metadata.json names the merged database, not its
+	// own: read where each store was merged FROM from the merged database's record,
+	// and never treat the merged database itself as a source.
 	claimedBy := map[string][]string{}
 	for _, s := range reg.Stores {
-		claimedBy[s.Database] = append(claimedBy[s.Database], s.Namespace)
+		db := s.Database
+		if len(reg.SourceDatabases) > 0 {
+			if recorded, ok := reg.SourceDatabases[s.Namespace]; ok {
+				db = recorded
+			} else if reg.MergedDatabase != "" && db == reg.MergedDatabase {
+				continue // a store created after the merge: nothing of it in the old databases
+			}
+		}
+		claimedBy[db] = append(claimedBy[db], s.Namespace)
+	}
+	if reg.MergedDatabase != "" {
+		kept := dbs[:0:0]
+		for _, name := range dbs {
+			if name != reg.MergedDatabase {
+				kept = append(kept, name)
+			}
+		}
+		dbs = kept
 	}
 
 	d := Discovery{Copies: map[string][]IDCopy{}, IDs: map[string]bool{}}

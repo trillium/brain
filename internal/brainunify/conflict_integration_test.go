@@ -787,3 +787,62 @@ func TestTwoReplaysDoNotRunAtOnce(t *testing.T) {
 		t.Fatalf("after the lock is released a replay runs: %v", err)
 	}
 }
+
+// TestPostRepointCatchUpReadsTheOldDatabases: once the stores are repointed, every
+// store's metadata names the merged database, so the registry no longer says where
+// a store's own database is. The catch-up takes that from the merged database's
+// own record (brain_stores.source_database), never treats the merged database as a
+// source, and carries a write made to an old database after the last sync.
+func TestPostRepointCatchUpReadsTheOldDatabases(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+	if _, err := f.hostedReplay(srv.Port, ReplayOptions{}); err != nil {
+		t.Fatalf("pre-repoint sync: %v", err)
+	}
+
+	// the repoint: every store's metadata now names the merged database
+	for i := range f.reg.Stores {
+		f.reg.Stores[i].Database = fixtureMergedDB
+	}
+	time.Sleep(1200 * time.Millisecond)
+	repointed := time.Now().UTC().Format("2006-01-02 15:04:05")
+	time.Sleep(1200 * time.Millisecond)
+
+	// a write reaches an OLD database after the last pre-repoint sync
+	f.execIn("beta", "update issues set title='written to the old database after the last sync', updated_at=now() where id='bet-2'")
+	f.bead("gamma", "gam-9", "created in an old database after the last sync")
+	f.commit("beta", "straggler")
+	f.commit("gamma", "straggler")
+
+	// the bug: with the registry as the metadata now describes it, the stores are
+	// "built from X but now read from brain_unified" and the replay refuses
+	if _, err := f.hostedReplay(srv.Port, ReplayOptions{NoCommit: true, ProtectAfter: repointed}); err == nil || !strings.Contains(err.Error(), "refusing to replay") {
+		t.Fatalf("without the merged database's record the repointed registry must be refused as before: %v", err)
+	}
+
+	mapping, err := LoadMergedMapping(f.ctx, "127.0.0.1", srv.Port, fixtureMergedDB)
+	if err != nil || mapping["beta"] != "beta" {
+		t.Fatalf("the merged database records where each store came from: %v %v", mapping, err)
+	}
+	f.reg.ApplyMergedMapping(fixtureMergedDB, mapping)
+	res, err := f.hostedReplay(srv.Port, ReplayOptions{NoCommit: true, ProtectAfter: repointed})
+	if err != nil {
+		t.Fatalf("post-repoint catch-up: %v", err)
+	}
+	if got := f.hostedVerifyTitle(srv.Port, "bet-2"); got != "written to the old database after the last sync" {
+		t.Errorf("bet-2 = %q: the write to the old database was not carried over (kept %v)", got, res.KeptMerged)
+	}
+	if got := f.hostedVerifyTitle(srv.Port, "gam-9"); got != "created in an old database after the last sync" {
+		t.Errorf("gam-9 = %q: the bead created in an old database was not carried over", got)
+	}
+	// and the next one is quiet, with the pins advanced
+	res, err = f.hostedReplay(srv.Port, ReplayOptions{DryRun: true})
+	if err != nil || res.Pending() != 0 {
+		t.Errorf("after the catch-up nothing is pending: %v %+v", err, res)
+	}
+}

@@ -66,13 +66,29 @@ func OpenSourceInDatabase(host string, port int, database string) (*readOnlySour
 	}
 	db.SetMaxOpenConns(2)
 	db.SetMaxIdleConns(1)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := pingPatiently(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("pinging source database %s on dolt server %s:%d: %w", database, host, port, err)
 	}
 	return &readOnlySource{db: db}, nil
+}
+
+// pingPatiently confirms a server answers, tolerating a busy one: a server under
+// load (a load average of 60 was seen) can take longer than a few seconds to
+// accept a connection, and a replay that gives up at 20 s fails for nothing.
+// Three attempts of up to 60 s each.
+func pingPatiently(db *sql.DB) error {
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		err = db.PingContext(ctx)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		time.Sleep(time.Duration(attempt) * 2 * time.Second)
+	}
+	return err
 }
 
 // errNonQuery is returned when code tries to issue a non-SELECT through the
@@ -135,9 +151,7 @@ func OpenSource(host string, port int) (*readOnlySource, error) {
 	}
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(2)
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := pingPatiently(db); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("pinging source dolt server %s:%d: %w", host, port, err)
 	}

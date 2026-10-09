@@ -645,6 +645,16 @@ func openUnifySources(ctx context.Context, host string, port int) (brainunify.Re
 	}
 	reg.IncludeDatabases = unifyInclude
 	reg.RescueOrphansFrom = unifyRescue
+	if unifyMergedPort != 0 {
+		// The merged database is hosted on the sources' server. After the cutover
+		// every store's metadata.json names it, so where each store's own database
+		// is comes from the merged database's record, and it is never a source.
+		mapping, err := brainunify.LoadMergedMapping(ctx, unifyMergedHost, unifyMergedPort, unifyDatabase)
+		if err != nil {
+			return brainunify.Registry{}, nil, err
+		}
+		reg.ApplyMergedMapping(unifyDatabase, mapping)
+	}
 	source, err := brainunify.OpenReadOnlySource(ctx, host, port)
 	if err != nil {
 		return brainunify.Registry{}, nil, err
