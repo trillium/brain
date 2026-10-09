@@ -23,6 +23,13 @@ All notable changes to the beads project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## brain v0.5.0
+
+Built on beads 1.1.0-rc.1 (`1.1.0-rc.1+brain.0.5.0`). Unified database with
+replay and conflict beads, prefix release and history, guard/observer hooks,
+durable event outbox, markdown edit-back, shared-database backup. See
+[docs/brain/releases/v0.5.0.md](docs/brain/releases/v0.5.0.md).
+
 ## [Unreleased]
 
 ### Added
