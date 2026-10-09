@@ -1,11 +1,11 @@
 ---
-id: 0029
+id: 0031
 title: durable event outbox — events are rows in the store, delivered with retries until acknowledged
 isc: []
 status: landed
 created: 2026-10-09
 updated: 2026-10-09
-commits: [8a631749e, f81d5739e, 55a8f100d, 5f204dc78]
+commits: [f6f3467cd, bb63573f9, fa29b54c3, 0c280865f]
 touches:
   - cmd/bd/outbox.go
   - cmd/bd/outbox_cmd.go
@@ -18,7 +18,7 @@ touches:
   - docs/CLI_REFERENCE.md
   - website/docs/cli-reference/outbox.md
   - website/docs/cli-reference/index.md
-  - divergence/0029-durable-event-outbox.md
+  - divergence/0031-durable-event-outbox.md
 upstream_rebase_notes: |
   Brain-only feature, opt-in (`change-events.outbox.enabled`, default off);
   with it off the only behavioural change is one config read per write

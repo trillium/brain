@@ -184,4 +184,4 @@ Each is loud and named; none is a warning that lets the write proceed.
 - It does not replace the federated-event webhook wrapper; a webhook can be an
   outbox `url=` subscriber, which is how it becomes durable.
 
-Design record: [`../../divergence/0029-durable-event-outbox.md`](../../divergence/0029-durable-event-outbox.md).
+Design record: [`../../divergence/0031-durable-event-outbox.md`](../../divergence/0031-durable-event-outbox.md).
