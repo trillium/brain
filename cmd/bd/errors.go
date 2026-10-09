@@ -192,9 +192,18 @@ func WarnError(format string, args ...interface{}) {
 // own (it never actually ran). It does flush metrics first, so events already
 // queued earlier in this run are still written and scheduled for upload rather
 // than stranded until the next clean exit.
+//
+// A process started by a hook is always read-only, whatever its flags or
+// config say: hooks observe and may refuse but never write, so this check
+// consults the hook marker itself rather than the flag, which config reloads
+// reset.
 func CheckReadonly(operation string) {
-	if readonlyMode {
-		fmt.Fprintf(os.Stderr, "Error: operation '%s' is not allowed in read-only mode\n", operation)
+	if readonlyMode || insideHook() {
+		if insideHook() {
+			fmt.Fprintf(os.Stderr, "Error: operation '%s' refused: this process was started by a hook, and hooks observe and may refuse but never write — the store is the only writer\n", operation)
+		} else {
+			fmt.Fprintf(os.Stderr, "Error: operation '%s' is not allowed in read-only mode\n", operation)
+		}
 		metrics.CloseAndFlush()
 		os.Exit(1)
 	}

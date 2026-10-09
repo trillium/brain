@@ -44,6 +44,14 @@ var backupStatusCmd = &cobra.Command{
 			}
 		}()
 
+		// A shared database keeps one backup record for all its stores, in the
+		// database; the per-store folder is not consulted (or created).
+		if db, shared, err := sharedBackupTarget(rootCtx); err != nil {
+			return fmt.Errorf("cannot tell whether this database is shared by several stores: %w", err)
+		} else if shared {
+			return printSharedBackupStatus(rootCtx, db)
+		}
+
 		dir, err := backupDir()
 		if err != nil {
 			return err

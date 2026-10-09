@@ -25,7 +25,8 @@ func getCompactDaysInTx(ctx context.Context, tx *sql.Tx, tier int) int {
 		def = defaultTier2Days
 	}
 	var val string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", key).Scan(&val)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), key)...).Scan(&val)
 	if err != nil || val == "" {
 		return def
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/hooks"
+	"github.com/steveyegge/beads/internal/hooksdef"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/molecules"
 	"github.com/steveyegge/beads/internal/storage"
@@ -39,12 +40,18 @@ import (
 )
 
 var (
-	changeDir   string
-	dbPath      string
-	actor       string
-	store       storage.DoltStorage
-	uowProvider uow.UnitOfWorkProvider
-	jsonOutput  bool
+	changeDir    string
+	dbPath       string
+	actor        string
+	store        storage.DoltStorage
+	uowProvider  uow.UnitOfWorkProvider
+	jsonOutput   bool
+
+	// namespaceWide is the --wide persistent flag: the explicit operator
+	// switch for the unified database's read mode. Default narrow (only the
+	// wrapper's own namespaces); --wide reads every store. See
+	// internal/storage/dolt/unified_namespace.go for the mode itself.
+	namespaceWide bool
 
 	// Signal-aware context for graceful cancellation
 	rootCtx    context.Context
@@ -350,6 +357,13 @@ func isSelectedNoDBCommand(cmd *cobra.Command) bool {
 // path can execute without an opened Dolt store. This lets no-workspace calls
 // fail or degrade in the command itself instead of tripping low-level DB init.
 func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
+	// 'brain unify' reads and writes databases on the Dolt server directly
+	// and never touches the caller's own store, so requiring a local store
+	// here would only stop the one command whose whole job is to run when
+	// there is no local store at all.
+	if unifyCommandCanRunWithoutStore(cmd) {
+		return true
+	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "config" {
 		return false
 	}
@@ -392,6 +406,24 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 		return false
 	}
 	return cmd.Name() == "doctor"
+}
+
+// unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand
+// operates purely against the Dolt sql-server and therefore must run even when
+// the caller's working directory has no beads database. Every phase —
+// plan, build, replay, verify — qualifies: none of them reads or writes the caller's
+// store, and all of them are meaningless if they cannot be run from an
+// arbitrary directory.
+func unifyCommandCanRunWithoutStore(cmd *cobra.Command) bool {
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "unify" {
+		return false
+	}
+	switch cmd.Name() {
+	case "plan", "build", "replay", "verify", "ready":
+		return true
+	default:
+		return false
+	}
 }
 
 func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
@@ -546,6 +578,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose/debug output")
 	rootCmd.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, "Suppress non-essential output (errors only)")
 	rootCmd.PersistentFlags().BoolVar(&ignoreSchemaSkew, "ignore-schema-skew", false, "Proceed despite forward schema drift (some queries may fail)")
+	rootCmd.PersistentFlags().BoolVar(&namespaceWide, "wide", false, "Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.")
 
 	// Add --version flag to root command (same behavior as version subcommand)
 	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
@@ -693,6 +726,14 @@ var rootCmd = &cobra.Command{
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
 		debug.SetQuiet(quietFlag)
+
+		// Pin the namespace read mode before any database access. The default
+		// is narrow and stays narrow unless the operator asked for wide, so a
+		// command is never silently re-scoped mid-flight. On a legacy (per-store)
+		// database the flag is accepted and inert: there is nothing to widen.
+		if namespaceWide {
+			dolt.SetNamespaceReadScope(dolt.NamespaceReadWide)
+		}
 
 		if err := applyChangeDirSelection(); err != nil {
 			return err
@@ -851,6 +892,14 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// 'brain unify' talks to the Dolt server, not to a local store, so
+		// it must be classified as store-free here too: a caller store that
+		// exists but cannot open would abort PersistentPreRunE before the
+		// migration ever starts.
+		if unifyCommandCanRunWithoutStore(cmd) {
+			skipsStoreInit = true
+		}
+
 		// Skip for root command with no subcommand (just shows help)
 		if cmd.Parent() == nil && cmdName == cmd.Use {
 			skipsStoreInit = true
@@ -992,7 +1041,19 @@ var rootCmd = &cobra.Command{
 		// Check if this is a read-only command (GH#804)
 		// Read-only commands open the store in read-only mode to avoid modifying
 		// the database (which breaks file watchers).
-		useReadOnly := isReadOnlyCommand(cmd.Name())
+		hookAncestry = hooksdef.AncestorRunningHook(beadsDir)
+		useReadOnly := isReadOnlyCommand(cmd.Name()) || insideHook()
+
+		// Declared hooks (hooks.d/*.toml). Unusable definitions refuse the
+		// command here, before anything can be written.
+		hookDefs, hookErr := loadHookDefs(cmd, beadsDir, useReadOnly)
+		if hookErr != nil {
+			return HandleError("%v", hookErr)
+		}
+		if proxiedServerMode && len(hookDefs) > 0 && !useReadOnly {
+			return HandleError("refusing to write: %d hook(s) are declared in %s but proxied-server mode does not run them, so the write path cannot be guarded",
+				len(hookDefs), hooksdef.HooksDir(beadsDir))
+		}
 
 		// Auto-migrate database on version bump (bd-jgxi).
 		// Runs for ALL commands (including read-only ones) because the migration
@@ -1203,6 +1264,15 @@ var rootCmd = &cobra.Command{
 			hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
 		}
 
+		// Declared guard/observer hooks sit closest to the raw store, so a
+		// refusal happens before anything above can react to the write.
+		if store != nil && len(hookDefs) > 0 && !useReadOnly {
+			store = storage.NewHookGuardStore(store, hookDefs, storage.HookGuardOptions{
+				Command: cmd.Name(),
+				Store:   filepath.Base(filepath.Dir(beadsDir)),
+			})
+		}
+
 		// Wrap store with hook-firing decorator so ALL mutations
 		// automatically fire on_create/on_update/on_close hooks.
 		// Set BD_NO_HOOKS=1 to disable all hook firing (useful for
@@ -1240,6 +1310,16 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Durable event outbox preflight: refuse a possibly-writing command
+		// BEFORE it mutates when the outbox cannot take its event (unreadable
+		// subscriber definition, backlog at the bound). Refusing after the
+		// mutation would strand an eventless change in the working set.
+		if store != nil {
+			if err := outboxPreflight(rootCtx, cmd); err != nil {
+				return HandleError("%v", err)
+			}
+		}
+
 		// Sync all state to CommandContext for unified access.
 		syncCommandContext()
 
@@ -1256,6 +1336,17 @@ var rootCmd = &cobra.Command{
 				uowProvider = nil
 			}
 		} else {
+			// Durable event outbox (brain): record this command's mutated issues
+			// as outbox events right after the mutation. Failure is loud: an
+			// eventless mutation is exactly the silent failure the outbox exists
+			// to prevent. (The commit that makes the rows part of Dolt history
+			// happens once, after the opportunistic delivery pass below.)
+			if commandDidWrite.Load() {
+				if _, err := maybeRecordOutboxEvents(rootCtx, cmd.Name()); err != nil {
+					return HandleError("%v — the mutation itself may already be committed but its event was NOT recorded; once the cause is fixed, record it with: bd outbox record <issue-id> --command %s", err, cmd.Name())
+				}
+			}
+
 			// Dolt auto-commit: after a successful write command (and after final flush),
 			// create a Dolt commit so changes don't remain only in the working set.
 			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
@@ -1305,9 +1396,22 @@ var rootCmd = &cobra.Command{
 
 			// Change-event emission: append a JSONL line describing this write
 			// if change-events.enabled. Best-effort; only fires after a real
-			// write so read-only commands produce no events.
+			// write so read-only commands produce no events. Convenience tail
+			// target only: the durable event_outbox table in the store's own
+			// database is the authoritative event log, recorded above.
 			if commandDidWrite.Load() {
 				maybeEmitChangeEvent(cmd.Name())
+			}
+
+			// Opportunistic outbox delivery: attempt due pending events right
+			// after the write's event commit. A down subscriber delays an event;
+			// it never loses one, and delivery failure is normal, not a defect
+			// in the command that triggered the pass (warnings only).
+			if commandDidWrite.Load() {
+				maybeDeliverOutboxDue(rootCtx)
+				if err := commitOutboxWork(rootCtx, fmt.Sprintf("event outbox: %s", cmd.Name())); err != nil {
+					return HandleError("event outbox commit failed: %v", err)
+				}
 			}
 
 			// Auto-push: push to Dolt remote if enabled and due.

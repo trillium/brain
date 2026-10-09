@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -12,6 +13,7 @@ import (
 // SearchIssues finds issues matching query and filters.
 // Delegates to issueops.SearchIssuesInTx for shared query logic.
 func (s *DoltStore) SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
+	filter = s.scopeNamespaces(ctx, filter)
 	var result []*types.Issue
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -22,6 +24,7 @@ func (s *DoltStore) SearchIssues(ctx context.Context, query string, filter types
 }
 
 func (s *DoltStore) SearchIssuesWithCounts(ctx context.Context, query string, filter types.IssueFilter) ([]*types.IssueWithCounts, error) {
+	filter = s.scopeNamespaces(ctx, filter)
 	var result []*types.IssueWithCounts
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -32,6 +35,7 @@ func (s *DoltStore) SearchIssuesWithCounts(ctx context.Context, query string, fi
 }
 
 func (s *DoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) ([]*types.Issue, error) {
+	filter = s.scopeWorkNamespaces(ctx, filter)
 	var result []*types.Issue
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -42,6 +46,7 @@ func (s *DoltStore) GetReadyWork(ctx context.Context, filter types.WorkFilter) (
 }
 
 func (s *DoltStore) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) ([]*types.IssueWithCounts, error) {
+	filter = s.scopeWorkNamespaces(ctx, filter)
 	var result []*types.IssueWithCounts
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -52,6 +57,7 @@ func (s *DoltStore) GetReadyWorkWithCounts(ctx context.Context, filter types.Wor
 }
 
 func (s *DoltStore) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
+	filter = s.scopeWorkNamespaces(ctx, filter)
 	var result []*types.BlockedIssue
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -74,6 +80,12 @@ func (s *DoltStore) GetEpicsEligibleForClosure(ctx context.Context) ([]*types.Ep
 
 // GetStaleIssues returns issues that haven't been updated recently
 func (s *DoltStore) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
+	// Same narrow/wide rule as the issue reads: narrow pins the namespace's
+	// own prefixes, wide leaves the filter unscoped (all stores), and a
+	// caller-set Namespaces is never overridden.
+	if prefixes, unified := s.namespacePrefixes(ctx); !readScopeWide() && unified && len(prefixes) > 0 && filter.Namespaces == nil {
+		filter.Namespaces = prefixes
+	}
 	var result []*types.Issue
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
 		var err error
@@ -88,7 +100,7 @@ func (s *DoltStore) GetStatistics(ctx context.Context) (*types.Statistics, error
 	stats := &types.Statistics{}
 
 	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
-		return issueops.ScanIssueCountsInTx(ctx, tx, stats)
+		return issueops.ScanIssueCountsScopedInTx(ctx, tx, stats, s.statisticNamespaces(ctx))
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get statistics: %w", err)
@@ -96,10 +108,18 @@ func (s *DoltStore) GetStatistics(ctx context.Context) (*types.Statistics, error
 
 	var blockedCount int
 	if err := s.withReadTx(ctx, func(tx *sql.Tx) error {
-		return tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM issues
-			WHERE is_blocked = 1 AND status <> 'closed' AND status <> 'pinned'
-		`).Scan(&blockedCount)
+		where := "WHERE is_blocked = 1 AND status <> 'closed' AND status <> 'pinned'"
+		var args []any
+		if ns := s.statisticNamespaces(ctx); len(ns) > 0 {
+			ors := make([]string, 0, len(ns))
+			for _, p := range ns {
+				ors = append(ors, "id LIKE ?")
+				args = append(args, strings.TrimSuffix(p, "-")+"-%")
+			}
+			where += " AND (" + strings.Join(ors, " OR ") + ")"
+		}
+		//nolint:gosec // G201: fixed fragments and ? placeholders only
+		return tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues\n\t\t\t"+where).Scan(&blockedCount)
 	}); err != nil {
 		return nil, fmt.Errorf("failed to count blocked issues: %w", err)
 	}

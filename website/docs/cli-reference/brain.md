@@ -341,6 +341,31 @@ bd stores doctor [flags]
       --timeout duration   Per-store read timeout (default 20s)
 ```
 
+#### bd brain stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off [flags]
+```
+
 #### bd brain stores env
 
 Write ~/.config/brain/stores.env from the registry (for shell wrappers)
@@ -453,4 +478,164 @@ Examples:
 
 ```
 bd stores set-about <store> <blurb> [flags]
+```
+
+### bd brain unify
+
+brain stores each keep their own Dolt database on a shared server. 'unify'
+consolidates them into ONE authoritative database while preserving the logical
+separation between stores.
+
+The mechanism is prefixes. A bead id is already self-describing
+("brain-se7t.389" is in the "brain" namespace), so store identity is already
+encoded in the primary key and unification needs no schema change, no id
+rewrite and no query rewrite. What the separate databases carried implicitly —
+which physical database a row came from, which store declares which prefix —
+is written into brain_stores and brain_store_prefixes.
+
+Phases:
+
+  plan    read production and print the deterministic mapping: participating
+          databases, namespace ownership, and every id that exists in more
+          than one database and what becomes of it
+  build   construct the unified database in an isolated Dolt server started
+          under --data-dir, reading production but never writing to it
+  replay  apply the changes the sources made since the build into the unified
+          database, so it can be kept current until it becomes the reference
+  verify  compare the unified database against production mechanically, by
+          row count, content size and an order-independent content digest;
+          --reference live compares against the sources as they stand now
+
+Duplicated ids. An id that more than one store holds is merged into one bead
+when the copies are identical. When the copies differ, nothing is picked and
+nothing is discarded: each copy becomes a bead of its own under a new id
+(&lt;authoring store's prefix&gt;-&lt;12 hex of sha256(id NUL store)&gt;), carrying that
+copy's row and child rows, and the original id becomes an open conflict bead
+that says so and lists both copies. Links other beads hold to the original id
+still point at it, so they reach the conflict bead.
+
+Production safety: this command group opens production read-only. The builder
+writes only to a Dolt server it starts itself, so a build cannot modify a live
+store even by accident.
+
+```
+bd brain unify [flags]
+```
+
+#### bd brain unify build
+
+Construct the unified database in an isolated Dolt server from live store data
+
+```
+bd brain unify build [flags]
+```
+
+**Flags:**
+
+```
+      --aliases string                JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store
+      --data-dir string               scratch directory for the isolated dolt server holding the unified database (required)
+      --database string               name of the unified database inside the isolated server (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the isolated server (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the build (default 4h0m0s)
+```
+
+#### bd brain unify plan
+
+Print the deterministic mapping from every current store into the unified database
+
+```
+bd brain unify plan [flags]
+```
+
+**Flags:**
+
+```
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --json                          emit the plan as JSON
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the plan (default 20m0s)
+```
+
+#### bd brain unify replay
+
+A merged database is built from a moment in the past. Every bead written,
+edited or closed in a source store after that moment exists only in the source.
+'replay' carries those changes into the merged database, so it can be kept
+current until it becomes the reference.
+
+For every source it reads the Dolt history since the commit 'unify build'
+recorded (brain_unify_source_commits), finds the beads and the database-state
+tables that changed, and re-reads exactly those from the source as it stands
+now. Inserts, updates and deletes are one operation: the merged database's rows
+for a changed bead are made equal to what the sources hold for it. Duplicated
+ids are handled by the build's own functions: identical copies stay one bead;
+copies that differ become a conflict bead plus one minted bead per copy, so a
+change that creates, edits or removes such a duplicate re-derives the conflict
+bead and its copies. Every duplicate is recorded in brain_unify_collisions.
+Tables Dolt keeps no history for (wisps) are reloaded whole. The next replay
+starts where this one read.
+
+Anything it cannot resolve confidently is a refusal that names the store and the
+table, and a refused replay leaves the merged database untouched:
+
+  - a merged database built before builds recorded their commits (rebuild it)
+  - a store that joined, left or moved to another database since the build
+  - a source whose history no longer contains its recorded commit
+  - a source table the build imported rows from that is gone
+  - a table or column the merged schema does not have
+  - a merged database built before differing copies became conflict beads
+  - a minted copy id that two copies derive, or that an existing bead has
+
+Prove a replay with 'unify verify --reference live', which compares the merged
+database against the sources as they stand. Sources are only ever read.
+
+```
+bd brain unify replay [flags]
+```
+
+**Flags:**
+
+```
+      --data-dir string               directory holding the merged database built by 'unify build' (required)
+      --database string               name of the merged database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the merged database (default "dolt")
+      --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the source stores (default 3307)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --timeout duration              overall time budget for the replay (default 4h0m0s)
+```
+
+#### bd brain unify verify
+
+Compare the unified database against production by counts, size and content digest
+
+```
+bd brain unify verify [flags]
+```
+
+**Flags:**
+
+```
+      --data-dir string               directory holding the unified database built by 'unify build' (required)
+      --database string               name of the unified database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the unified database (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --reference string              what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherited
+      --timeout duration              overall time budget for verification (default 3h0m0s)
 ```

@@ -32,6 +32,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 )
@@ -174,23 +175,14 @@ func collectPrimarySection(ctx context.Context, query string, cmd *cobra.Command
 	return section
 }
 
-// collectSecondarySections walks the store registry and queries each
-// non-primary store's `issues` table on the shared Dolt server. Errors on
-// any individual store are dropped (ISC-43); the function only returns the
-// successful sections.
+// collectSecondarySections walks the stores and queries each non-primary
+// store's `issues` table. On the unified database the walk changes shape
+// (pre-cutover checklist item 5): there is one store to walk and many
+// namespaces to filter, so the walk is one query over the connected
+// database's `issues` table, bucketed by each id prefix's owning store from
+// the build's brain_store_prefixes table. Legacy federations keep the
+// registry walk.
 func collectSecondarySections(ctx context.Context, query string) []federatedSection {
-	registry, err := loadStoresRegistry()
-	if err != nil {
-		// Registry-load failure ≠ secondary-store failure. Surface once on
-		// stderr and return no secondaries; we still emit the primary
-		// section.
-		fmt.Fprintf(os.Stderr, "warning: loading store registry: %v\n", err)
-		return nil
-	}
-	if len(registry) == 0 {
-		return nil
-	}
-
 	// We need a raw *sql.DB on the already-authenticated connection. Without
 	// it federation is impossible — bail out silently (we already printed
 	// the primary).
@@ -200,6 +192,121 @@ func collectSecondarySections(ctx context.Context, query string) []federatedSect
 	}
 	db := accessor.UnderlyingDB()
 	if db == nil {
+		return nil
+	}
+
+	if sections := collectUnifiedSections(ctx, db, query); sections != nil {
+		return sections
+	}
+	return collectRegistrySections(ctx, db, query)
+}
+
+// collectUnifiedSections answers nil when the connected database is not the
+// unified database (probe failure included — legacy walk then applies).
+// Each matching row's id prefix maps to its owning store via
+// brain_store_prefixes; unknown prefixes are skipped silently (ISC-43).
+// The primary namespace's rows are skipped: the primary section already
+// carries them.
+func collectUnifiedSections(ctx context.Context, db *sql.DB, query string) []federatedSection {
+	sc := issueops.UnifiedScopeForTx(ctx, db)
+	if !sc.Unified || sc.Store == "" {
+		return nil
+	}
+
+	// prefix -> owning store, from the build's own namespace record.
+	owner := map[string]string{}
+	rows, err := db.QueryContext(ctx, "SELECT prefix, store FROM brain_store_prefixes")
+	if err != nil {
+		return nil // not a build-fresh unified database; legacy walk applies
+	}
+	for rows.Next() {
+		var prefix, storeName string
+		if err := rows.Scan(&prefix, &storeName); err != nil {
+			_ = rows.Close()
+			return nil
+		}
+		owner[prefix] = storeName
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil
+	}
+	_ = rows.Close()
+	if len(owner) == 0 {
+		return nil
+	}
+
+	// One walk over the one store. The per-namespace cap is preserved by
+	// bucketing, so the LIMIT covers every namespace's page (ISC-38..40).
+	limit := federatedRowLimit * (len(owner) + 1)
+	pattern := "%" + query + "%"
+	//nolint:gosec // G201: limit is a computed integer constant shape
+	rows, err = db.QueryContext(ctx, fmt.Sprintf(
+		"SELECT id, title, status, issue_type, priority FROM issues "+
+			"WHERE title LIKE ? AND status <> 'closed' "+
+			"ORDER BY priority ASC, id ASC LIMIT %d", limit), pattern)
+	if err != nil {
+		return nil // ISC-43
+	}
+	defer func() { _ = rows.Close() }()
+
+	buckets := map[string][]federatedRow{}
+	order := []string{} // deterministic per-section order below
+	for rows.Next() {
+		var id, title, status, issueType string
+		var priority int
+		if err := rows.Scan(&id, &title, &status, &issueType, &priority); err != nil {
+			continue // ISC-43
+		}
+		prefix := id
+		if i := strings.Index(id, "-"); i > 0 {
+			prefix = id[:i]
+		}
+		storeName, ok := owner[prefix]
+		if !ok || strings.EqualFold(storeName, sc.Store) {
+			continue // unknown prefix, or the primary's own rows
+		}
+		if len(buckets[storeName]) == 0 {
+			order = append(order, storeName)
+		}
+		if len(buckets[storeName]) >= federatedRowLimit {
+			continue // ISC-38: per-store cap preserved
+		}
+		buckets[storeName] = append(buckets[storeName], federatedRow{
+			ID: id, Title: title, Status: status, IssueType: issueType, Priority: priority,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil // ISC-43
+	}
+
+	sections := make([]federatedSection, 0, len(order))
+	for _, storeName := range order {
+		sections = append(sections, federatedSection{Store: storeName, Issues: buckets[storeName]})
+	}
+	if len(sections) == 0 {
+		// A successful unified walk with no secondary results is a real
+		// empty answer, not a reason to fall back to the registry walk —
+		// the registry's databases may be stale or gone (ISC-39/42).
+		return []federatedSection{}
+	}
+	return sections
+}
+
+// collectRegistrySections is the legacy federation walk: resolve each
+// registry store's Dolt database from its metadata.json and cross-database
+// query it. Errors on any individual store are dropped (ISC-43); the
+// function only returns the successful sections.
+func collectRegistrySections(ctx context.Context, db *sql.DB, query string) []federatedSection {
+	registry, err := loadStoresRegistry()
+	if err != nil {
+		// Registry-load failure ≠ secondary-store failure. Surface once on
+		// stderr and return no secondaries; we still emit the primary
+		// section.
+		fmt.Fprintf(os.Stderr, "warning: loading store registry: %v\n", err)
+		return nil
+	}
+	if len(registry) == 0 {
 		return nil
 	}
 

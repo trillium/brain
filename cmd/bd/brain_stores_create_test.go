@@ -211,7 +211,7 @@ func TestBuildServerStoreConfig_RoundTripsThroughMetadataJSON(t *testing.T) {
 func TestWriteServerStoreWrapper_EmitsServerPins(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	wp, err := writeServerStoreWrapper("friction", "/data/friction/.beads", "", "127.0.0.1", 3307)
+	wp, err := writeServerStoreWrapper("friction", "/data/friction/.beads", "", "127.0.0.1", 3307, "friction")
 	if err != nil {
 		t.Fatalf("writeServerStoreWrapper: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestWriteServerStoreWrapper_EmitsServerPins(t *testing.T) {
 func TestWriteServerStoreWrapper_UsesCustomBdBinary(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
-	wp, err := writeServerStoreWrapper("chores", "/data/chores/.beads", "/opt/homebrew/bin/beads", "127.0.0.1", 3307)
+	wp, err := writeServerStoreWrapper("chores", "/data/chores/.beads", "/opt/homebrew/bin/beads", "127.0.0.1", 3307, "chores")
 	if err != nil {
 		t.Fatalf("writeServerStoreWrapper: %v", err)
 	}

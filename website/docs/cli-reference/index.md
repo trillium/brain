@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --docs-root`.
 
-This reference covers all 121 live top-level `bd` commands. Regenerate it with:
+This reference covers all 125 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -61,6 +61,7 @@ This reference covers all 121 live top-level `bd` commands. Regenerate it with:
 - [`bd gitlab`](./gitlab.md)
 - [`bd graph`](./graph.md)
 - [`bd history`](./history.md)
+- [`bd hook`](./hook.md)
 - [`bd hooks`](./hooks.md)
 - [`bd human`](./human.md)
 - [`bd import`](./import.md)
@@ -91,6 +92,7 @@ This reference covers all 121 live top-level `bd` commands. Regenerate it with:
 - [`bd notion`](./notion.md)
 - [`bd onboard`](./onboard.md)
 - [`bd orphans`](./orphans.md)
+- [`bd outbox`](./outbox.md)
 - [`bd patch`](./patch.md)
 - [`bd ping`](./ping.md)
 - [`bd preflight`](./preflight.md)
@@ -110,6 +112,8 @@ This reference covers all 121 live top-level `bd` commands. Regenerate it with:
 - [`bd rename-prefix`](./rename-prefix.md)
 - [`bd render`](./render.md)
 - [`bd render-all`](./render-all.md)
+- [`bd render-import`](./render-import.md)
+- [`bd render-marks`](./render-marks.md)
 - [`bd reopen`](./reopen.md)
 - [`bd repo`](./repo.md)
 - [`bd restore`](./restore.md)

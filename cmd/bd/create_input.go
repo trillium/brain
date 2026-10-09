@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/timeparsing"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
@@ -60,6 +61,7 @@ type createInput struct {
 	owner              string
 	jsonOutput         bool
 	validationMode     string
+	mintPrefix         string
 }
 
 func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
@@ -98,6 +100,16 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in.noInheritLabels, _ = cmd.Flags().GetBool("no-inherit-labels")
 	in.ephemeral, _ = cmd.Flags().GetBool("ephemeral")
 	in.noHistory, _ = cmd.Flags().GetBool("no-history")
+	in.mintPrefix, _ = cmd.Flags().GetString("prefix")
+
+	if in.mintPrefix != "" {
+		if in.graphFile != "" || in.markdownFile != "" {
+			return in, HandleError("--prefix applies to single-issue creation; drop it for a --file/--graph batch and set each issue's own spec")
+		}
+		if !issueops.IsValidAddedPrefix(in.mintPrefix) {
+			return in, HandleError("invalid --prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-'); claim a prefix with 'bd store-prefix add' first if this store does not own it yet", in.mintPrefix)
+		}
+	}
 
 	if in.ephemeral && in.noHistory {
 		return in, HandleError("--ephemeral and --no-history are mutually exclusive")
@@ -165,6 +177,9 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 
 	if in.explicitID != "" && in.parentID != "" {
 		return in, HandleError("cannot specify both --id and --parent flags")
+	}
+	if in.explicitID != "" && in.mintPrefix != "" {
+		return in, HandleError("cannot specify both --id and --prefix flags (--id is an explicit id, --prefix mints a fresh one under the named prefix)")
 	}
 
 	in.labels, _ = cmd.Flags().GetStringSlice("labels")

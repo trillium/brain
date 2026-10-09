@@ -12,6 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage/dberrors"
 	"github.com/steveyegge/beads/internal/storage/domain"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -52,6 +53,19 @@ func (r *configSQLRepositoryImpl) SetLocalMetadata(ctx context.Context, key, val
 }
 
 func (r *configSQLRepositoryImpl) GetConfig(ctx context.Context, key string) (string, error) {
+	// issue_prefix is the one config read that feeds id minting
+	// (domain/issue.go resolveTopLevelPrefix), so it follows the unified
+	// database's namespace rules rather than the plain template-seeded table:
+	// a storeless caller on the unified database is refused — exactly the
+	// boundary the direct Dolt path enforces (issueops.NewBatchContext) — and
+	// a wrapper-pinned caller reads its own namespace's row instead of
+	// whichever store happened to seed the config table.
+	if key == "issue_prefix" {
+		if err := issueops.RefuseStorelessMint(ctx, r.runner); err != nil {
+			return "", err
+		}
+		return issueops.GetConfigInTx(ctx, r.runner, key)
+	}
 	var value string
 	err := r.runner.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", key).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {

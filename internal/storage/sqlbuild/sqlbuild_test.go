@@ -1,6 +1,7 @@
 package sqlbuild
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -330,5 +331,45 @@ func TestFreeTextCommentProbesPerTokenNonContiguous(t *testing.T) {
 	}
 	if !sawAgentic || !sawAgent {
 		t.Errorf("expected both token patterns in args, got %v", args)
+	}
+}
+
+// TestBuildIssueFilterClauses_Namespaces pins the unified-database namespace
+// clause: each listed namespace contributes `id LIKE '<prefix>-%'`, OR'd among
+// themselves and ANDed with the rest of the filter.
+func TestBuildIssueFilterClauses_Namespaces(t *testing.T) {
+	clauses, args, err := BuildIssueFilterClauses("", types.IssueFilter{Namespaces: []string{"task", "robot"}}, IssuesFilterTables)
+	if err != nil {
+		t.Fatalf("BuildIssueFilterClauses: %v", err)
+	}
+	if len(clauses) != 1 {
+		t.Fatalf("clauses = %v, want one namespace clause", clauses)
+	}
+	if clauses[0] != "(id LIKE ? OR id LIKE ?)" {
+		t.Fatalf("clause = %q", clauses[0])
+	}
+	if !reflect.DeepEqual(args, []any{"task-%", "robot-%"}) {
+		t.Fatalf("args = %v", args)
+	}
+}
+
+// TestBuildReadyWorkWhere_Namespaces pins the ready-work namespace clause:
+// the unified database's namespaces OR'd into the ready predicate.
+func TestBuildReadyWorkWhere_Namespaces(t *testing.T) {
+	where, args, err := BuildReadyWorkWhere(types.WorkFilter{Namespaces: []string{"task", "robot"}}, IssuesFilterTables, ReadyWorkWhereInputs{})
+	if err != nil {
+		t.Fatalf("BuildReadyWorkWhere: %v", err)
+	}
+	if !strings.Contains(where, "(id LIKE ? OR id LIKE ?)") {
+		t.Fatalf("where missing namespace clause:\n%s", where)
+	}
+	found := false
+	for _, a := range args {
+		if a == "task-%" || a == "robot-%" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("namespace args missing: %v", args)
 	}
 }

@@ -146,6 +146,35 @@ Run 'bd backup init <path>' first to configure a destination.`,
 
 		start := time.Now()
 
+		// A shared database syncs under the same lock and records the same
+		// database-level state as auto-backup, so a manual sync and an
+		// automatic one never run together and the throttle sees both.
+		if db, shared, err := sharedBackupTarget(ctx); err != nil {
+			return fmt.Errorf("cannot tell whether this database is shared by several stores: %w", err)
+		} else if shared {
+			res, err := versioncontrolops.RunSharedBackup(ctx, db, versioncontrolops.SharedBackupOptions{
+				Force:    true,
+				LockWait: sharedBackupLockWait,
+			})
+			if err != nil {
+				return fmt.Errorf("backup sync failed: %w", err)
+			}
+			if res.Outcome == versioncontrolops.SharedBackupInProgress {
+				return fmt.Errorf("backup sync not run: another store's backup of this shared database is still running after %s", sharedBackupLockWait)
+			}
+			elapsed := time.Since(start)
+			if jsonOutput {
+				return outputJSON(map[string]interface{}{
+					"synced":      true,
+					"duration":    elapsed.String(),
+					"shared":      true,
+					"destination": res.Destination,
+				})
+			}
+			fmt.Printf("Shared database backup synced in %s\n", elapsed.Round(time.Millisecond))
+			return nil
+		}
+
 		// Sync to the configured backup
 		if err := bs.BackupSync(ctx, defaultDoltBackupName); err != nil {
 			if strings.Contains(err.Error(), "no backup") ||
