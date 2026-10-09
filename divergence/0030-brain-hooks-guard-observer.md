@@ -1,5 +1,5 @@
 ---
-id: 0029
+id: 0030
 title: hooks — declared guards refuse a write, observers fail open, unset hooks warn with a durable record
 isc: []
 status: built
