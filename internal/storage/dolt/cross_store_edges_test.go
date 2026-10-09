@@ -57,6 +57,55 @@ func TestGetDependenciesWithMetadata_ExternalEdges(t *testing.T) {
 		if deps[0].DependencyType != "related" {
 			t.Errorf("expected dependency type 'related', got %q", deps[0].DependencyType)
 		}
+		if !deps[0].Unresolved || deps[0].Title != types.UnresolvedDependencyTitle {
+			t.Errorf("expected unresolved target titled %q, got unresolved=%v title=%q",
+				types.UnresolvedDependencyTitle, deps[0].Unresolved, deps[0].Title)
+		}
+	}
+}
+
+// Legacy cross-store rows store "external:<store>:<id>". With one shared
+// issues table the bare <id> is a real bead, so the reader must return it.
+func TestGetDependenciesWithMetadata_LegacyExternalForm(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	for _, iss := range []*types.Issue{
+		{ID: "bd-src", Title: "Source", Status: types.StatusOpen, Priority: 1, IssueType: types.TypeTask},
+		{ID: "bd-real", Title: "Real Target", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask},
+	} {
+		if err := store.CreateIssue(ctx, iss, "tester"); err != nil {
+			t.Fatalf("failed to create issue %s: %v", iss.ID, err)
+		}
+	}
+	for _, target := range []string{"external:otherstore:bd-real", "external:otherstore:bd-gone"} {
+		dep := &types.Dependency{IssueID: "bd-src", DependsOnID: target, Type: "related"}
+		if err := store.AddDependency(ctx, dep, "tester"); err != nil {
+			t.Fatalf("failed to add dependency %s: %v", target, err)
+		}
+	}
+
+	deps, err := store.GetDependenciesWithMetadata(ctx, "bd-src")
+	if err != nil {
+		t.Fatalf("GetDependenciesWithMetadata failed: %v", err)
+	}
+	if len(deps) != 2 {
+		t.Fatalf("expected 2 dependencies, got %d", len(deps))
+	}
+	byID := map[string]*types.IssueWithDependencyMetadata{}
+	for _, d := range deps {
+		byID[d.ID] = d
+	}
+	real := byID["bd-real"]
+	if real == nil || real.Unresolved || real.Title != "Real Target" || real.Priority != 2 {
+		t.Errorf("external:otherstore:bd-real should resolve to the real bead, got %+v", real)
+	}
+	gone := byID["external:otherstore:bd-gone"]
+	if gone == nil || !gone.Unresolved || gone.Title != types.UnresolvedDependencyTitle {
+		t.Errorf("missing target should stay visible as unresolved, got %+v", gone)
 	}
 }
 
@@ -79,9 +128,20 @@ func TestGetDependentsWithMetadata_ExternalEdges(t *testing.T) {
 		t.Fatalf("failed to create issue: %v", err)
 	}
 
-	// Add a dependency where an external issue depends on our issue
+	// AddDependency requires the source issue to exist (every store shares one
+	// issues table), so a dependent from another store is an ordinary row.
+	other := &types.Issue{
+		ID:        "resume_bullets-9lp",
+		Title:     "Dependent From Another Store",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+	}
+	if err := store.CreateIssue(ctx, other, "tester"); err != nil {
+		t.Fatalf("failed to create dependent issue: %v", err)
+	}
 	externalDependent := &types.Dependency{
-		IssueID:     "resume_bullets-9lp",
+		IssueID:     other.ID,
 		DependsOnID: issue.ID,
 		Type:        "blocks",
 	}

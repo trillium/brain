@@ -155,17 +155,26 @@ bd dep add local-issue external:other-project:remote-issue
 External dependencies always block. When the remote issue closes,
 `bd ready` reflects the change (checked at query time).
 
-In a named-store federation, `dep add` also accepts an ID with a different
-store prefix:
+In the unified database every store shares one `issues` table, so a target
+with another store's prefix is an ordinary bead:
 
 ```bash
 brain dep add brain-abc task-xyz --type related
 ```
 
-The source store persists that target as an external dependency without
-creating a local target row. `dep list` (including `--json`), `brain related`,
-and `show --json` retain the edge even when the target is absent from the
-source store; graph traversal treats it as a leaf.
+`dep add` still persists a target that is not a local row in the
+`depends_on_external` column. Readers (`dep list`, including `--json`,
+`brain related`, and `show --json`) look the target up in the shared table:
+
+- A bare ID (`task-xyz`) shows the real bead.
+- A legacy `external:<store>:<id>` value is resolved to `<id>` before the
+  lookup, so those edges show the real bead too.
+- A target with no row at all (a typo, or a deleted bead) stays visible but is
+  rendered as unresolved: `dep list` prints `<id>: (not found) via <type>`, and
+  JSON carries `"title": "(not found)"` and `"unresolved": true`. `dep add` does
+  not reject such a target.
+
+Graph traversal treats cross-store targets as leaves.
 
 ## Gates
 

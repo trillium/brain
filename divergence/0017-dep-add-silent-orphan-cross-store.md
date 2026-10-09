@@ -56,10 +56,20 @@ $ dolt sql -q "SELECT issue_id, type, depends_on_issue_id, depends_on_external F
 ## Resolution
 
 The reader-rendering design was restored. A cross-store `dep add` continues to
-persist its target in `depends_on_external`; reader paths construct a minimal
-target when no local issue row exists. Consequently `dep list` (text and JSON),
-`brain related`, and `show --json` surface the edge. Cross-store targets remain
-leaf nodes rather than triggering a lookup or traversal into another store.
+persist its target in `depends_on_external`; the reader no longer drops an edge
+because its target has no row. Since unification all stores share one `issues`
+table, so:
+
+- a target that exists (bare ID) displays as the real bead;
+- a legacy `external:<store>:<id>` value is resolved to `<id>` before the
+  lookup, which surfaces those edges as real beads;
+- a target with no row (typo or deleted bead) stays visible, marked
+  unresolved (`(not found)` in `dep list`; `"unresolved": true` in JSON)
+  instead of looking like a P0 bead with a zero timestamp.
+
+`dep list` (text and JSON), `brain related`, and `show --json` all behave this
+way. `dep add` still accepts a missing target. Cross-store targets remain leaf
+nodes rather than triggering a traversal.
 
 The user-facing contract is documented in [Dependencies and Gates](../docs/DEPENDENCIES.md#external-and-cross-store-dependencies).
 
@@ -79,9 +89,11 @@ above when an edge is the intended relationship.
 
 ## Regression coverage
 
-`TestGetDependenciesWithMetadata_ExternalEdges` in
-`internal/storage/dolt/cross_store_edges_test.go` verifies that a related edge
-to an absent foreign-prefix target is returned with its ID and type.
+`internal/storage/dolt/cross_store_edges_test.go` covers an absent target
+(returned with its ID, type, and unresolved marker) and the legacy
+`external:<store>:<id>` form (resolved to the real bead).
+`TestResolveExternalDepTarget` in `internal/storage/issueops` covers the
+prefix parsing.
 
 ## Related divergence docs
 

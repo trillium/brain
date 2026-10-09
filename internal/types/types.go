@@ -827,11 +827,18 @@ type DependencyCounts struct {
 	DependentCount  int `json:"dependent_count"`  // Number of issues that depend on this issue
 }
 
+// UnresolvedDependencyTitle is the Title given to a dependency target that has
+// no issue row, so readers can show the edge without presenting it as a bead.
+const UnresolvedDependencyTitle = "(not found)"
+
 // IssueWithDependencyMetadata extends Issue with dependency relationship type
 // Note: We explicitly include all Issue fields to ensure proper JSON marshaling
 type IssueWithDependencyMetadata struct {
 	Issue
 	DependencyType DependencyType `json:"dependency_type"`
+	// Unresolved marks an edge whose target has no issue row; the embedded
+	// Issue then carries only the ID and UnresolvedDependencyTitle.
+	Unresolved bool `json:"unresolved,omitempty"`
 }
 
 // IssueWithCounts extends Issue with dependency relationship counts
