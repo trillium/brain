@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -186,6 +187,8 @@ type replayWork struct {
 	// are recorded ids that are no longer duplicated.
 	collisionsToWrite  []string
 	collisionsToDelete []string
+	// prefetch holds the source rows read before the apply transaction opens.
+	prefetch map[string][]fetchedRows
 	// postRepoint marks a replay that runs after the stores were repointed to
 	// the merged database (ReplayOptions.ProtectAfter): the merged database is
 	// being written to, so the replay only adds what the old databases have and
@@ -396,6 +399,9 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 	// concurrent write ("serialization failure"): nothing was applied, so decide
 	// again against the database as it is now (what to protect is recomputed) and
 	// apply again.
+	if err := r.prefetch(ctx, w, snap, r.opts.ProtectAfter != ""); err != nil {
+		return res, err
+	}
 	stats := map[string]*ReplayTableStats{}
 	for attempt := 1; ; attempt++ {
 		w.restore(snap)
@@ -407,9 +413,9 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		if err == nil {
 			break
 		}
-		if attempt < 8 && isSerializationFailure(err) {
+		if attempt < 15 && isSerializationFailure(err) {
 			r.log("the merged database changed under the replay (%v); deciding again (attempt %d)", err, attempt+1)
-			time.Sleep(time.Duration(attempt) * time.Second)
+			time.Sleep(time.Duration(100+rand.Intn(400)) * time.Millisecond)
 			continue
 		}
 		return res, err
@@ -1174,54 +1180,38 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 		}
 	}
 
-	for _, src := range r.plan.Sources {
-		has, err := r.source.HasTable(ctx, src.Database, tp.Table)
-		if err != nil {
-			return fmt.Errorf("refusing to replay: checking store %s for table %s: %w", src.Namespace, tp.Table, err)
-		}
-		if !has {
-			continue
-		}
-		cols, err := r.sharedColumns(ctx, src, tp)
-		if err != nil {
+	fetched := w.prefetch[tp.Table]
+	if fetched == nil {
+		var err error
+		if fetched, err = r.fetchBeadRows(ctx, w, tp, ids, full); err != nil {
 			return err
 		}
-		scopeIdx := indexOf(cols, tp.ScopeColumn)
-		if scopeIdx < 0 {
-			return fmt.Errorf("refusing to replay: store %s table %s has no %s column", src.Namespace, tp.Table, tp.ScopeColumn)
+	}
+	var allowed map[string]bool
+	if !full {
+		allowed = map[string]bool{}
+		for _, id := range w.mergedIDs(ids) {
+			allowed[id] = true
 		}
-		insert := func(rows [][]any) error {
-			kept, skipped, err := w.mapper.mapRows(tp, src.Namespace, cols, rows)
-			if err != nil {
-				return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
-			}
-			st.Skipped += skipped
-			if err := insertRowsMode(ctx, tx, tp.Target, cols, kept, mergeOnly); err != nil {
-				return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", src.Namespace, tp.Table, tp.Target, err)
-			}
-			st.Inserted += int64(len(kept))
-			return nil
-		}
-		if full {
-			jsonCols, err := r.source.JSONColumns(ctx, src.Database, tp.Table)
-			if err != nil {
-				return fmt.Errorf("refusing to replay: reading json columns of %s.%s: %w", src.Database, tp.Table, err)
-			}
-			if err := r.source.CopyRows(ctx, src.Database, tp.Table, cols, jsonCols, insert); err != nil {
-				return fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
-			}
-			continue
-		}
-		for _, chunk := range chunks(ids, 200) {
-			clause, args := inClause(tp.ScopeColumn, chunk)
-			rows, err := r.source.ReadRows(ctx, src.Database, tp.Table, cols, clause, args...)
-			if err != nil {
-				return fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
-			}
-			if err := insert(rows); err != nil {
-				return err
+	}
+	for _, f := range fetched {
+		scopeIdx := indexOf(f.cols, tp.ScopeColumn)
+		rows := f.rows
+		if allowed != nil {
+			// the rows were read for every bead the first decision named; keep the
+			// ones the current decision still wants (a bead protected since is out)
+			rows = rows[:0:0]
+			for _, row := range f.rows {
+				if allowed[cellText(row[scopeIdx])] {
+					rows = append(rows, row)
+				}
 			}
 		}
+		if err := insertRowsMode(ctx, tx, tp.Target, f.cols, rows, mergeOnly); err != nil {
+			return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", f.store, tp.Table, tp.Target, err)
+		}
+		st.Inserted += int64(len(rows))
+		st.Skipped += f.skipped
 	}
 
 	// The conflict beads among the reloaded ids, written by the build's own
@@ -1238,6 +1228,95 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 			return fmt.Errorf("refusing to replay: writing the conflict beads' rows into %s: %w", tp.Target, err)
 		}
 		st.Inserted += int64(len(rows))
+	}
+	return nil
+}
+
+// fetchedRows are one store's rows of a bead-scoped table, read from its source
+// and mapped exactly as the build maps them, ready to insert.
+type fetchedRows struct {
+	store   string
+	cols    []string
+	rows    [][]any
+	skipped int64
+}
+
+// fetchBeadRows reads, outside any merged-database transaction, what the sources
+// hold for the given beads (or the whole table). Reading is the slow part of a
+// reload; doing it before the transaction keeps the transaction to deletes and
+// inserts, so it is short and rarely loses its commit to a concurrent write.
+func (r *Replayer) fetchBeadRows(ctx context.Context, w *replayWork, tp TablePlan, ids []string, full bool) ([]fetchedRows, error) {
+	var out []fetchedRows
+	for _, src := range r.plan.Sources {
+		has, err := r.source.HasTable(ctx, src.Database, tp.Table)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to replay: checking store %s for table %s: %w", src.Namespace, tp.Table, err)
+		}
+		if !has {
+			continue
+		}
+		cols, err := r.sharedColumns(ctx, src, tp)
+		if err != nil {
+			return nil, err
+		}
+		if indexOf(cols, tp.ScopeColumn) < 0 {
+			return nil, fmt.Errorf("refusing to replay: store %s table %s has no %s column", src.Namespace, tp.Table, tp.ScopeColumn)
+		}
+		f := fetchedRows{store: src.Namespace, cols: cols}
+		take := func(rows [][]any) error {
+			kept, skipped, err := w.mapper.mapRows(tp, src.Namespace, cols, rows)
+			if err != nil {
+				return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			f.skipped += skipped
+			f.rows = append(f.rows, kept...)
+			return nil
+		}
+		if full {
+			jsonCols, err := r.source.JSONColumns(ctx, src.Database, tp.Table)
+			if err != nil {
+				return nil, fmt.Errorf("refusing to replay: reading json columns of %s.%s: %w", src.Database, tp.Table, err)
+			}
+			if err := r.source.CopyRows(ctx, src.Database, tp.Table, cols, jsonCols, take); err != nil {
+				return nil, fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+		} else {
+			for _, chunk := range chunks(ids, 200) {
+				clause, args := inClause(tp.ScopeColumn, chunk)
+				rows, err := r.source.ReadRows(ctx, src.Database, tp.Table, cols, clause, args...)
+				if err != nil {
+					return nil, fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
+				}
+				if err := take(rows); err != nil {
+					return nil, err
+				}
+			}
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// prefetch reads the rows every bead-scoped reload of the decided work will need.
+func (r *Replayer) prefetch(ctx context.Context, w *replayWork, snap replaySnapshot, postRepoint bool) error {
+	w.prefetch = map[string][]fetchedRows{}
+	for _, tp := range w.plans {
+		if tp.Scope == ScopeDatabaseState {
+			continue
+		}
+		ids := sortedKeys(snap.touched[tp.Table])
+		full := snap.full[tp.Table] && !postRepoint
+		if len(ids) == 0 && !full {
+			continue
+		}
+		rows, err := r.fetchBeadRows(ctx, w, tp, ids, full)
+		if err != nil {
+			return err
+		}
+		if rows == nil {
+			rows = []fetchedRows{}
+		}
+		w.prefetch[tp.Table] = rows
 	}
 	return nil
 }

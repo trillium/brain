@@ -846,3 +846,56 @@ func TestPostRepointCatchUpReadsTheOldDatabases(t *testing.T) {
 		t.Errorf("after the catch-up nothing is pending: %v %+v", err, res)
 	}
 }
+
+// TestReplayRetriesWhenAConcurrentWriteWinsTheCommit hammers the rows a replay
+// rewrites while it runs: whatever the commit races do, the replay must end
+// with the merged database equal to the sources, never with a serialization
+// failure.
+func TestReplayRetriesWhenAConcurrentWriteWinsTheCommit(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+	db, err := srv.OpenTarget(f.ctx, fixtureMergedDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			_, _ = db.ExecContext(f.ctx, fmt.Sprintf("update issues set notes='hammer %d' where id in ('alp-1','alp-2','alp-3','bet-1','bet-2')", i))
+			time.Sleep(25 * time.Millisecond) // a busy store, not a tight loop
+		}
+	}()
+	for round := 0; round < 4; round++ {
+		f.execIn("alpha", fmt.Sprintf("update issues set title='alpha 1 round %d' where id='alp-1'", round))
+		f.execIn("alpha", fmt.Sprintf("update issues set title='alpha 2 round %d' where id='alp-2'", round))
+		f.execIn("beta", fmt.Sprintf("update issues set title='beta 1 round %d' where id='bet-1'", round))
+		f.commit("alpha", "round")
+		f.commit("beta", "round")
+		if _, err := f.hostedReplay(srv.Port, ReplayOptions{NoCommit: true}); err != nil {
+			close(stop)
+			<-done
+			t.Fatalf("round %d: %v", round, err)
+		}
+	}
+	close(stop)
+	<-done
+	for id, want := range map[string]string{"alp-1": "alpha 1 round 3", "alp-2": "alpha 2 round 3", "bet-1": "beta 1 round 3"} {
+		if got := f.hostedVerifyTitle(srv.Port, id); got != want {
+			t.Errorf("%s = %q, want %q", id, got, want)
+		}
+	}
+}
