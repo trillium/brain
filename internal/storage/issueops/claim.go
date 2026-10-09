@@ -3,7 +3,6 @@ package issueops
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -94,14 +93,13 @@ func ClaimIssueInTx(ctx context.Context, tx DBTX, id string, actor string) (*Cla
 	}
 
 	// Record the claim event.
-	oldData, _ := json.Marshal(oldIssue)
 	newUpdates := map[string]interface{}{
 		"assignee": actor,
 		"status":   "in_progress",
 	}
-	newData, _ := json.Marshal(newUpdates)
+	oldData, newData := MarshalEventPayloads(oldIssue, newUpdates)
 
-	if err := RecordFullEventInTable(ctx, tx, eventTable, id, "claimed", actor, string(oldData), string(newData)); err != nil {
+	if err := RecordFullEventInTable(ctx, tx, eventTable, id, "claimed", actor, oldData, newData); err != nil {
 		return nil, fmt.Errorf("failed to record claim event: %w", err)
 	}
 
