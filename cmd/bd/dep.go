@@ -886,6 +886,10 @@ Examples:
 			default:
 				idStr = iss.ID
 			}
+			if iss.Unresolved {
+				fmt.Printf("  %s: %s via %s\n", iss.ID, iss.Title, iss.DependencyType)
+				continue
+			}
 			fmt.Printf("  %s: %s [P%d] (%s) via %s\n",
 				idStr, iss.Title, iss.Priority, iss.Status, iss.DependencyType)
 		}

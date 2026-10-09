@@ -881,10 +881,12 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 		return nil, nil
 	}
 
-	// Fetch all dependency target issues.
+	// Fetch all dependency target issues. Legacy cross-store rows carry
+	// "external:<store>:<id>"; every store now shares one issues table, so the
+	// bare <id> is the lookup key.
 	ids := make([]string, len(deps))
 	for i, d := range deps {
-		ids[i] = d.depID
+		ids[i] = ResolveExternalDepTarget(d.depID)
 	}
 	issues, err := GetIssuesByIDsInTx(ctx, tx, ids, nil)
 	if err != nil {
@@ -896,19 +898,35 @@ func GetDependenciesWithMetadataInTx(ctx context.Context, tx DBTX, issueID strin
 	}
 
 	var results []*types.IssueWithDependencyMetadata
-	for _, d := range deps {
-		issue, ok := issueMap[d.depID]
-		if !ok {
-			// External dependency (e.g., from depends_on_external column).
-			// Create a minimal Issue with just the ID so the edge is displayed.
-			issue = &types.Issue{ID: d.depID}
+	for i, d := range deps {
+		issue, ok := issueMap[ids[i]]
+		unresolved := !ok
+		if unresolved {
+			// No row for this target (typo or deleted bead). Keep the edge
+			// visible, marked unresolved so it is not mistaken for a real bead.
+			issue = &types.Issue{ID: d.depID, Title: types.UnresolvedDependencyTitle}
 		}
 		results = append(results, &types.IssueWithDependencyMetadata{
 			Issue:          *issue,
 			DependencyType: types.DependencyType(d.depType),
+			Unresolved:     unresolved,
 		})
 	}
 	return results, nil
+}
+
+// ResolveExternalDepTarget strips the legacy "external:<store>:<id>" wrapper
+// from a dependency target, returning the bare <id>. Any other value is
+// returned unchanged.
+func ResolveExternalDepTarget(target string) string {
+	rest, ok := strings.CutPrefix(target, "external:")
+	if !ok {
+		return target
+	}
+	if i := strings.Index(rest, ":"); i >= 0 && i+1 < len(rest) {
+		return rest[i+1:]
+	}
+	return target
 }
 
 // GetDependentsWithMetadataInTx returns issues that depend on the given issueID
