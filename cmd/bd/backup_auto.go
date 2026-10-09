@@ -80,6 +80,15 @@ func maybeAutoBackup(ctx context.Context) {
 		return
 	}
 
+	// A database shared by several stores is backed up once, to the
+	// registered destination, with database-level state — never per store.
+	// This runs before the GH#3523 check below because nothing here builds
+	// a file:// URL on the client: the destination is the one already
+	// registered on the database.
+	if maybeSharedAutoBackup(ctx) {
+		return
+	}
+
 	// GH#3523: when the Dolt server runs on a different filesystem
 	// from this client (operator's BEADS_DOLT_SERVER_HOST points at a
 	// non-localhost value), the file:// URL the auto-backup path
