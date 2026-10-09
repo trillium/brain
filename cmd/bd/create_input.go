@@ -11,6 +11,7 @@ import (
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/timeparsing"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
@@ -60,6 +61,7 @@ type createInput struct {
 	owner              string
 	jsonOutput         bool
 	validationMode     string
+	mintPrefix         string
 }
 
 func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
@@ -98,6 +100,16 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in.noInheritLabels, _ = cmd.Flags().GetBool("no-inherit-labels")
 	in.ephemeral, _ = cmd.Flags().GetBool("ephemeral")
 	in.noHistory, _ = cmd.Flags().GetBool("no-history")
+	in.mintPrefix, _ = cmd.Flags().GetString("prefix")
+
+	if in.mintPrefix != "" {
+		if in.graphFile != "" || in.markdownFile != "" {
+			return in, HandleError("--prefix applies to single-issue creation; drop it for a --file/--graph batch and set each issue's own spec")
+		}
+		if !issueops.IsValidAddedPrefix(in.mintPrefix) {
+			return in, HandleError("invalid --prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-'); claim a prefix with 'bd store-prefix add' first if this store does not own it yet", in.mintPrefix)
+		}
+	}
 
 	if in.ephemeral && in.noHistory {
 		return in, HandleError("--ephemeral and --no-history are mutually exclusive")
@@ -165,6 +177,9 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 
 	if in.explicitID != "" && in.parentID != "" {
 		return in, HandleError("cannot specify both --id and --parent flags")
+	}
+	if in.explicitID != "" && in.mintPrefix != "" {
+		return in, HandleError("cannot specify both --id and --prefix flags (--id is an explicit id, --prefix mints a fresh one under the named prefix)")
 	}
 
 	in.labels, _ = cmd.Flags().GetStringSlice("labels")
@@ -302,20 +317,26 @@ func resolveTitle(args []string, titleFlag, markdownFile, graphFile string) (str
 		return "", nil
 	}
 
+	var title string
 	switch {
 	case len(args) > 0 && titleFlag != "":
 		if args[0] != titleFlag {
 			return "", HandleError("cannot specify different titles as both positional argument and --title flag\n  Positional: %q\n  --title:    %q", args[0], titleFlag)
 		}
-		return args[0], nil
+		title = args[0]
 	case len(args) > 0:
 		if strings.HasPrefix(args[0], "-") {
 			return "", HandleError("title %q looks like a flag (starts with '-').\n  Run 'bd create --help' for available options.\n  To use this title anyway, pass it explicitly: bd create --title=%q", args[0], args[0])
 		}
-		return args[0], nil
+		title = args[0]
 	case titleFlag != "":
-		return titleFlag, nil
+		title = titleFlag
 	default:
-		return "", HandleError("title required (or use --file to create from markdown)")
+		return "", HandleError("title required (or use --edit to compose one, or --file to create from markdown)")
 	}
+
+	if err := titleLengthError(title); err != nil {
+		return "", err
+	}
+	return title, nil
 }

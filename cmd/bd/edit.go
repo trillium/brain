@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -25,7 +24,8 @@ Examples:
   bd edit bd-42 --title            # Edit title
   bd edit bd-42 --design           # Edit design notes
   bd edit bd-42 --notes            # Edit notes
-  bd edit bd-42 --acceptance       # Edit acceptance criteria`,
+  bd edit bd-42 --acceptance       # Edit acceptance criteria
+  bd edit bd-42 --append           # Append to the description from an empty buffer`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -62,20 +62,14 @@ Examples:
 			fieldToEdit = "acceptance_criteria"
 		}
 
-		editor := os.Getenv("EDITOR")
-		if editor == "" {
-			editor = os.Getenv("VISUAL")
+		appendMode, _ := cmd.Flags().GetBool("append")
+		if appendMode && fieldToEdit == "title" {
+			return HandleErrorRespectJSON("--append cannot be combined with --title")
 		}
-		if editor == "" {
-			for _, defaultEditor := range []string{"vim", "vi", "nano", "emacs"} {
-				if _, err := exec.LookPath(defaultEditor); err == nil {
-					editor = defaultEditor
-					break
-				}
-			}
-		}
-		if editor == "" {
-			return HandleErrorRespectJSON("no editor found. Set $EDITOR or $VISUAL environment variable")
+
+		editor, err := resolveEditorCommand()
+		if err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 
 		issue := result.Issue
@@ -106,20 +100,19 @@ Examples:
 			}
 		}()
 
-		if _, err := tmpFile.WriteString(currentValue); err != nil {
+		// In append mode the buffer starts empty: whatever gets written is added
+		// to the end of the field rather than replacing what is already there.
+		seedValue := currentValue
+		if appendMode {
+			seedValue = ""
+		}
+		if _, err := tmpFile.WriteString(seedValue); err != nil {
 			_ = tmpFile.Close()
 			return HandleErrorRespectJSON("writing to temp file: %v", err)
 		}
 		_ = tmpFile.Close()
 
-		editorParts := strings.Fields(editor)
-		editorArgs := append(editorParts[1:], tmpPath)
-		editorCmd := exec.Command(editorParts[0], editorArgs...) //nolint:gosec // G204: editor from trusted $EDITOR/$VISUAL env or known defaults
-		editorCmd.Stdin = os.Stdin
-		editorCmd.Stdout = os.Stdout
-		editorCmd.Stderr = os.Stderr
-
-		if err := editorCmd.Run(); err != nil {
+		if err := runEditorOnFile(editor, tmpPath); err != nil {
 			return HandleErrorRespectJSON("running editor: %v", err)
 		}
 
@@ -130,6 +123,15 @@ Examples:
 		}
 
 		newValue := strings.TrimSpace(string(editedContent))
+
+		if appendMode {
+			if newValue == "" {
+				editSaved = true
+				fmt.Println("No changes made")
+				return nil
+			}
+			newValue = appendToField(currentValue, newValue)
+		}
 
 		if newValue == currentValue {
 			editSaved = true
@@ -179,12 +181,22 @@ Examples:
 	},
 }
 
+// appendToField joins an addition onto the end of a field, separated by a blank
+// line so markdown blocks stay distinct.
+func appendToField(current, addition string) string {
+	if current == "" {
+		return addition
+	}
+	return strings.TrimRight(current, "\n") + "\n\n" + addition
+}
+
 func init() {
 	editCmd.Flags().Bool("title", false, "Edit the title")
 	editCmd.Flags().Bool("description", false, "Edit the description (default)")
 	editCmd.Flags().Bool("design", false, "Edit the design notes")
 	editCmd.Flags().Bool("notes", false, "Edit the notes")
 	editCmd.Flags().Bool("acceptance", false, "Edit the acceptance criteria")
+	editCmd.Flags().Bool("append", false, "Start from an empty buffer and append what you write to the field")
 	editCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(editCmd)
 }

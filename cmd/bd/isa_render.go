@@ -27,7 +27,9 @@ var isaRenderCmd = &cobra.Command{
 <exfil-root>/<slug>/ISA.md.
 
 The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
-variable; it defaults to ${HOME}/.claude/PAI/MEMORY/WORK. The render is
+variable; it defaults to ${HOME}/.claude/brain/MEMORY/WORK. When that
+path does not exist but the legacy ${HOME}/.claude/PAI/MEMORY/WORK does,
+the legacy path is used instead. The render is
 atomic: a temp file is written first, then rename(2) makes the swap, so
 readers never observe a half-written file.
 

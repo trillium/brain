@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-emit-wrappers help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-emit-wrappers help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version deploy deploy-check
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -19,7 +19,19 @@ BUILD_DIR := .
 GIT_BUILD := $(shell git rev-parse --short HEAD)
 # Brain fork semver — derived from the most recent brain/vX.Y.Z tag.
 # Falls back to "0.0.0-dev" when no brain tag exists yet.
-BRAIN_VERSION := $(shell git describe --tags --match "brain/v*" --abbrev=0 2>/dev/null | sed 's|brain/v||' || echo "0.0.0-dev")
+# The `|| echo` form does not work here: the shell reports the *pipeline's*
+# status, which is sed's 0, so a failed `git describe` yielded an empty version
+# and the binary reported "1.1.0-rc.1+brain." with nothing after the dot. Test
+# the captured value instead so the documented fallback actually fires.
+BRAIN_VERSION := $(shell v=$$(git describe --tags --match "brain/v*" --abbrev=0 2>/dev/null | sed 's|brain/v||'); if [ -n "$$v" ]; then printf '%s' "$$v"; else printf '0.0.0-dev'; fi)
+# Whether HEAD has landed on origin/main, baked in so `bd version` can flag a
+# binary built from an open PR branch as UNLANDED (robots-k2r4). "unknown" when
+# this clone has no origin/main ref (fresh clone, CI, tarball) — better to say
+# nothing than to call every build unlanded.
+GIT_LANDED := $(shell \
+	if ! git rev-parse --verify -q origin/main >/dev/null 2>&1; then echo unknown; \
+	elif git merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then echo yes; \
+	else echo no; fi)
 ifeq ($(OS),Windows_NT)
 INSTALL_DIR := $(USERPROFILE)/.local/bin
 else
@@ -56,14 +68,31 @@ REGRESSION_TIMEOUT ?= 20m
 build:
 	@echo "Building bd..."
 ifeq ($(OS),Windows_NT)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
 else
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION)" -o $(BUILD_DIR)/bd ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED)" -o $(BUILD_DIR)/bd ./cmd/bd
 ifeq ($(shell uname),Darwin)
 	@codesign -s - -f $(BUILD_DIR)/bd 2>/dev/null || true
 	@echo "Signed bd for macOS"
 endif
 endif
+
+# Rebuild ~/.local/bin/beads from origin/main and install it (robots-k2r4).
+#
+# This is the step that was missing: merging a PR on GitHub changed nothing on
+# the box, so agents kept running whatever the live binary was last built from
+# — for two days, the tip of an *unmerged* PR branch.
+#
+# NOT `make install`: on a federation box ~/.local/bin/bd is the beads
+# federation *wrapper* script and ~/.local/bin/beads is the real binary.
+# `make install` writes the binary to bd and symlinks beads at it, clobbering
+# the wrapper. `make deploy` only ever writes the binary path.
+deploy:
+	@./scripts/deploy-local.sh
+
+# Report whether the live binary is behind or off origin/main. Exit 1 if stale.
+deploy-check:
+	@./scripts/deploy-local.sh --check
 
 # Print the current brain fork version (from most recent brain/vX.Y.Z tag)
 brain-version:
@@ -283,6 +312,8 @@ help:
 	@echo "  make bench-quick  - Run quick benchmarks (shorter benchtime)"
 	@echo "  make install      - Install bd to ~/.local/bin (with codesign on macOS, includes 'beads' alias)"
 	@echo "  make install-force - Install bd, skipping the origin/main update check"
+	@echo "  make deploy       - Rebuild ~/.local/bin/beads from origin/main (federation boxes; preserves the bd wrapper)"
+	@echo "  make deploy-check - Report whether the live beads binary drifted from origin/main (exit 1 if stale)"
 	@echo "  make fmt          - Format all Go files with gofmt"
 	@echo "  make fmt-check    - Check Go formatting (for CI)"
 	@echo "  make check-docs   - Validate docs against CLI flags"

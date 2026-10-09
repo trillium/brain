@@ -37,6 +37,13 @@ func validateKVKey(key string) error {
 	if strings.HasPrefix(key, kvkeys.MemoryPrefix) {
 		return fmt.Errorf("key cannot start with %q (reserved for persistent memories; use 'bd remember' / 'bd forget')", kvkeys.MemoryPrefix)
 	}
+	// Reserve the memory-bead index namespace: a generic membead.* key would
+	// collide with the memory -> bead ID index, allowing forged aliases that
+	// silently label wrong issues. Keep it owned by bd remember's internal
+	// linking machinery only.
+	if strings.HasPrefix(key, kvkeys.MemoryBeadPrefix) {
+		return fmt.Errorf("key cannot start with %q (reserved for memory-bead index)", kvkeys.MemoryBeadPrefix)
+	}
 	// Prevent keys that look like internal config
 	if strings.HasPrefix(key, "sync.") || strings.HasPrefix(key, "conflict.") ||
 		strings.HasPrefix(key, "federation.") || strings.HasPrefix(key, "jira.") ||

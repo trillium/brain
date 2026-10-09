@@ -26,4 +26,21 @@ const (
 	// conflicted key carries this prefix; cmd/bd reserves it so generic
 	// `bd kv set` keys cannot collide with the `bd remember` namespace.
 	MemoryConfigKeyPrefix = Prefix + MemoryPrefix
+
+	// MemoryBeadPrefix namespaces the memory-key -> bead-ID index that
+	// `bd remember` writes when it mints a companion knowledge bead.
+	//
+	// It sits beside MemoryPrefix rather than under it on purpose: `bd
+	// memories` lists everything under "kv.memory." verbatim, so an index row
+	// nested there would show up as a memory whose content is a bead ID.
+	// "membead." shares no prefix boundary with "memory." ("kv.membead.x" does
+	// not carry the "kv.memory." prefix), so the two namespaces cannot bleed.
+	MemoryBeadPrefix = "membead."
+
+	// MemoryBeadConfigKeyPrefix is the full config-table key prefix for the
+	// memory-key -> bead-ID index (Prefix + MemoryBeadPrefix ==
+	// "kv.membead."). internal/utils reads it to resolve a memory key to the
+	// bead it is linked to, so `bd tag <memory-key> human` lands on a real
+	// issue instead of dead-ending in "no issue found".
+	MemoryBeadConfigKeyPrefix = Prefix + MemoryBeadPrefix
 )

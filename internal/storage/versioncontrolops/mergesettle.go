@@ -22,6 +22,11 @@ import (
 // the operator.
 const memoryConfigKeyPrefix = kvkeys.MemoryConfigKeyPrefix
 
+// memoryBeadConfigKeyPrefix is the config-table key prefix for the memory-key -> bead-ID
+// index. Like memoryConfigKeyPrefix, conflicts on this namespace are safe to auto-resolve
+// (lexicographically smallest issue ID wins when the same key is minted on both clones).
+const memoryBeadConfigKeyPrefix = kvkeys.MemoryBeadConfigKeyPrefix
+
 // This file holds the merge-settlement machinery shared by server-mode
 // DoltStore (which drives it inside an explicit *sql.Tx) and the embedded
 // store's pull path (which drives it on a pinned autocommit connection via
@@ -307,11 +312,13 @@ func TryAutoResolveMergeConflicts(ctx context.Context, db DBConn) (bool, error) 
 				return false, err
 			}
 		case "config":
-			// --theirs makes this clone's local kv.memory.* edit lose to the
-			// remote value (the same convergent trade-off metadata makes). That
-			// supersession is otherwise undiagnosable, so name the resolved keys
-			// first. Best-effort: a diagnostics query failure must not abort an
-			// otherwise-correct resolution.
+			// Memory-bead conflicts (kv.membead.*) are resolved deterministically:
+			// lexicographically smallest issue ID wins. Memory conflicts
+			// (kv.memory.*) resolve with --theirs (the same convergent trade-off
+			// metadata makes). Best-effort diagnostics.
+			if merr := resolveMembeadConflictsDeterministically(ctx, db); merr != nil {
+				return false, fmt.Errorf("failed to resolve membead conflicts: %w", merr)
+			}
 			if keys, kerr := resolvedConfigConflictKeys(ctx, db); kerr == nil && len(keys) > 0 {
 				fmt.Fprintf(os.Stderr,
 					"Notice: auto-resolved %d memory config conflict(s) with the remote value (--theirs); "+
@@ -415,17 +422,18 @@ func dependencyConflictsAreAuditOnly(ctx context.Context, db DBConn) (bool, erro
 }
 
 // configConflictsAreMemoryConvergent reports whether every conflicted config
-// row is a persistent-memory row (key prefixed memoryConfigKeyPrefix). Memories
-// are the only config class safe to auto-resolve with --theirs: like metadata,
-// all clones pulling from the same remote converge on the remote's value (a
-// local edit to the same memory key loses, the same convergent trade-off
-// metadata makes). Any other config key in conflict — issue_prefix above all,
-// whose stale-value sweep GH#2455 specifically guards against — is a real
-// semantic conflict, so the whole config table is left for the operator.
+// row is either a persistent-memory row (key prefixed memoryConfigKeyPrefix) or
+// a memory-bead index row (key prefixed memoryBeadConfigKeyPrefix). Both are safe
+// to auto-resolve: memories converge like metadata (all clones pulling from the
+// same remote get the remote's value); membeads converge deterministically
+// (lexicographically smallest issue ID wins). Any other config key in conflict
+// — issue_prefix above all, whose stale-value sweep GH#2455 specifically guards
+// against — is a real semantic conflict, so the whole config table is left for
+// the operator.
 //
 // The key column is config's primary key, so a same-key conflict carries the
 // identical key on both sides; an add/delete conflict leaves one side NULL. A
-// row is convergent only if every key it presents is a memory key.
+// row is convergent only if every key it presents is either a memory or membead key.
 func configConflictsAreMemoryConvergent(ctx context.Context, db DBConn) (bool, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT our_key, their_key FROM dolt_conflicts_config`)
@@ -440,12 +448,70 @@ func configConflictsAreMemoryConvergent(ctx context.Context, db DBConn) (bool, e
 			return false, fmt.Errorf("scan config conflict: %w", err)
 		}
 		for _, k := range []sql.NullString{ourKey, theirKey} {
-			if k.Valid && !strings.HasPrefix(k.String, memoryConfigKeyPrefix) {
+			if k.Valid && !isMemoryOrMembeadKey(k.String) {
 				return false, nil
 			}
 		}
 	}
 	return true, rows.Err()
+}
+
+// isMemoryOrMembeadKey reports whether a config key is either a persistent
+// memory (kv.memory.*) or a memory-bead index entry (kv.membead.*).
+func isMemoryOrMembeadKey(key string) bool {
+	return strings.HasPrefix(key, memoryConfigKeyPrefix) ||
+		strings.HasPrefix(key, memoryBeadConfigKeyPrefix)
+}
+
+// resolveMembeadConflictsDeterministically handles memory-bead conflicts by
+// keeping the lexicographically smallest issue ID when the same memory key is
+// minted on two clones. It must be called BEFORE DOLT_CONFLICTS_RESOLVE clears
+// dolt_conflicts_config.
+func resolveMembeadConflictsDeterministically(ctx context.Context, db DBConn) error {
+	rows, err := db.QueryContext(ctx, `
+		SELECT our_value, their_value FROM dolt_conflicts_config
+		WHERE our_key LIKE 'kv.membead.%' OR their_key LIKE 'kv.membead.%'`)
+	if err != nil {
+		return fmt.Errorf("query membead conflicts: %w", err)
+	}
+	defer rows.Close()
+
+	type membeadFix struct {
+		ourValue   string
+		theirValue string
+	}
+	var fixes []membeadFix
+	for rows.Next() {
+		var ourVal, theirVal sql.NullString
+		if err := rows.Scan(&ourVal, &theirVal); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan membead conflict: %w", err)
+		}
+		if ourVal.Valid && theirVal.Valid && ourVal.String != theirVal.String {
+			fixes = append(fixes, membeadFix{
+				ourValue:   ourVal.String,
+				theirValue: theirVal.String,
+			})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for _, fix := range fixes {
+		var winner string
+		if fix.ourValue < fix.theirValue {
+			winner = fix.ourValue
+		} else {
+			winner = fix.theirValue
+		}
+		if _, err := db.ExecContext(ctx,
+			"UPDATE config SET value = ? WHERE value = ? OR value = ?",
+			winner, fix.ourValue, fix.theirValue); err != nil {
+			return fmt.Errorf("resolve membead conflict: %w", err)
+		}
+	}
+	return nil
 }
 
 // resolvedConfigConflictKeys returns the keys of the config rows currently in

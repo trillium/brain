@@ -15,7 +15,19 @@ import (
 // Fields are organized into logical groups for maintainability.
 type Issue struct {
 	// ===== Core Identification =====
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// Name is the additive human/voice-facing kebab-case bead name derived
+	// deterministically from Title via DisplayName (same rules as the brain
+	// slug.Auto helper: lowercase, non-alphanumeric runs collapse to a
+	// single hyphen, trimmed, capped at 64 chars on a word boundary).
+	//
+	// The canonical id stays authoritative in all machine-readable output;
+	// Name is a display aid only: it is NOT unique (two beads whose titles
+	// kebab to the same string share a name), NOT stable across title
+	// edits, and MUST NOT be used as a lookup key. Disambiguate by ID.
+	// Empty (omitted) when the title yields no alphanumerics.
+	// See docs/brain/VOICE_IDENTIFIERS.md.
+	Name        string `json:"name,omitempty"`
 	ContentHash string `json:"-"` // Internal: SHA256 of canonical content
 
 	// ===== Issue Content =====
@@ -110,6 +122,59 @@ type Issue struct {
 	Actor     string `json:"actor,omitempty"`      // Entity URI who caused this event
 	Target    string `json:"target,omitempty"`     // Entity URI or bead ID affected
 	Payload   string `json:"payload,omitempty"`    // Event-specific JSON data
+}
+
+// DisplayName derives the human/voice-facing kebab-case bead name for
+// title. It mirrors the brain slug.Auto algorithm (see
+// internal/brain/verb/slug) so every non-empty result is a valid --slug:
+//
+//  1. Lowercase the title.
+//  2. Replace runs of non-[a-z0-9] chars with a single hyphen.
+//  3. Trim leading/trailing hyphens.
+//  4. Truncate to 64 chars; walk back to the last hyphen so the name
+//     ends on a word boundary.
+//  5. Titles with no alphanumerics yield "" (the JSON field omits it).
+//
+// Kept as a local pure function (rather than importing the brain verb
+// package) because core types must not depend on the brain verb layer;
+// the exfiltrator's kebab helper follows the same precedent.
+func DisplayName(title string) string {
+	if title == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(title))
+	prevHyphen := false
+	for _, r := range strings.ToLower(title) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+			prevHyphen = false
+		} else if !prevHyphen {
+			b.WriteByte('-')
+			prevHyphen = true
+		}
+	}
+	s := strings.Trim(b.String(), "-")
+	if s == "" {
+		return ""
+	}
+	if len(s) > 64 {
+		s = s[:64]
+		if i := strings.LastIndex(s, "-"); i > 0 {
+			s = s[:i]
+		}
+		s = strings.TrimRight(s, "-")
+	}
+	return s
+}
+
+// EnsureName sets i.Name from i.Title when Name is empty. Storage scan
+// paths call this so every DB-read issue carries its display name;
+// in-memory producers (create preview/result) call it before JSON output.
+func (i *Issue) EnsureName() {
+	if i != nil && i.Name == "" {
+		i.Name = DisplayName(i.Title)
+	}
 }
 
 // ComputeContentHash creates a deterministic hash of the issue's content.
@@ -557,7 +622,7 @@ const TypeEvent IssueType = "event"
 const (
 	TypeKnowledge IssueType = "knowledge"
 	TypeBoth      IssueType = "both"
-	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — see PAI/DOCUMENTATION/IsaFormat.md).
+	// brain v0.3 F1d: ISA kind ("Ideal State Artifact" — IsaFormat v2.7).
 	// Rides on the same issue_type TEXT column as task/knowledge/both/etc.
 	// Tracked sections live in the isa_sections table (migration 0051);
 	// ISA-specific columns (isa_phase, isa_progress_m/n, etc.) live on
@@ -1255,6 +1320,13 @@ type IssueFilter struct {
 	DescriptionContains string
 	NotesContains       string
 	ExternalRefContains string
+	CommentsContains    string // Substring match against comment bodies (AND filter)
+
+	// SearchComments widens the free-text `query` match so it also hits comment
+	// bodies, not just title/ID. Most durable content in a long-lived store
+	// accumulates in comments, so a title-only search reports false misses
+	// (robots-4m0m). Opt-in: it adds a correlated EXISTS over the comments table.
+	SearchComments bool
 
 	// Date ranges
 	CreatedAfter  *time.Time
@@ -1274,6 +1346,13 @@ type IssueFilter struct {
 	// Numeric ranges
 	PriorityMin *int
 	PriorityMax *int
+
+	// Namespace scoping on the unified database (docs/design/
+	// brain-single-database.md): restrict the read to the listed stores'
+	// namespaces. A bead's namespace is its id prefix, so each namespace
+	// contributes one `id LIKE '<prefix>-%'` clause. Nil/empty = unscoped
+	// (the pre-unification behaviour; a legacy database has one namespace).
+	Namespaces []string
 
 	// Source repo filtering (for multi-repo support)
 	SourceRepo *string // Filter by source_repo field (nil = any)
@@ -1363,6 +1442,9 @@ func (s SortPolicy) IsValid() bool {
 
 // WorkFilter is used to filter ready work queries
 type WorkFilter struct {
+	// Namespaces scopes the ready/blocked read to the listed stores'
+	// namespaces on the unified database (same semantics as IssueFilter's).
+	Namespaces    []string
 	Status        Status
 	Type          string // Filter by issue type (task, bug, feature, epic, merge-request, etc.)
 	Priority      *int
@@ -1411,9 +1493,10 @@ type WorkFilter struct {
 
 // StaleFilter is used to filter stale issue queries
 type StaleFilter struct {
-	Days   int    // Issues not updated in this many days
-	Status string // Filter by status (open|in_progress|blocked), empty = all non-closed
-	Limit  int    // Maximum issues to return
+	Days       int      // Issues not updated in this many days
+	Status     string   // Filter by status (open|in_progress|blocked), empty = all non-closed
+	Limit      int      // Maximum issues to return
+	Namespaces []string // Namespace scoping on the unified database (see IssueFilter)
 }
 
 // WispFilter is used to filter ListWisps queries.

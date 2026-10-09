@@ -97,3 +97,26 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | ID | Title | Status |
 | --- | --- | --- |
 | [0001](0001-brain-repo-genesis.md) | brain repo genesis — fork from bd | landed |
+| [0002](0002-first-tranche-decisions.md) | first-tranche decisions | landed |
+| [0003](0003-modularity-first.md) | modularity-first architecture | landed |
+| [0004](0004-brain-verb-seam-and-parent.md) | brain verb seam and parent | landed |
+| [0005](0005-brain-vs-bd-vocabulary-doc.md) | brain-vs-bd vocabulary doc | landed |
+| [0006](0006-brain-primitives-reframe.md) | brain primitives reframe | landed |
+| [0007](0007-brain-new.md) | brain new | landed |
+| [0008](0008-brain-link.md) | brain link | landed |
+| [0009](0009-brain-related.md) | brain related | landed |
+| [0010](0010-brain-recast.md) | brain recast | landed |
+| [0011](0011-first-tranche-isc-marks.md) | first-tranche ISC marks | landed |
+| [0012](0012-exfiltration-decorator.md) | exfiltration decorator | landed |
+| [0014](0014-isa-show-json-drops-progress.md) | isa-show json drops progress | open |
+| [0015](0015-create-missing-slug-flag.md) | create missing slug flag | open |
+| [0016](0016-isa-by-slug-json-returns-text.md) | isa-by-slug json returns text | open |
+| [0017](0017-dep-add-silent-orphan-cross-store.md) | dep-add silent orphan cross-store | landed |
+| [0019](0019-create-edit-compose.md) | create/edit compose | proposed |
+| [0020](0020-brain-feature-inventory.md) | brain feature inventory | landed |
+| [0021](0021-brain-prefix-release-design.md) | brain prefix release and history (design + implementation) | landed |
+| [0022](0022-brain-cutover-rehearsal.md) | brain cutover rehearsal | landed |
+| [0023](0023-vision-landing.md) | VISION.md landed — the captain-approved vision, verbatim | proposed |
+| [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |
+| [0025](0025-brain-collision-duplication-records.md) | duplication-records design — the vision's collision model, designed not built | proposed |
+| [0026](0026-external-stores-design.md) | external-store model — a store's command runs where its database lives (design only) | landed |

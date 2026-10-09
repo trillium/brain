@@ -23,7 +23,33 @@ All notable changes to the beads project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## brain v0.5.0
+
+Built on beads 1.1.0-rc.1 (`1.1.0-rc.1+brain.0.5.0`). Unified database with
+replay and conflict beads, prefix release and history, guard/observer hooks,
+durable event outbox, markdown edit-back, shared-database backup. See
+[docs/brain/releases/v0.5.0.md](docs/brain/releases/v0.5.0.md).
+
 ## [Unreleased]
+
+### Added
+
+- **`bd create --edit` (`-E`) composes the title and body in `$EDITOR`.** The
+  first line of the buffer is the title, everything after the first blank line
+  is the body; instructions sit below a `>8` scissors line so markdown headings
+  in the body survive. Running `bd create` with no title at a terminal composes
+  the same way — non-interactive callers keep the existing `title required`
+  error. An over-long title re-opens the buffer with the text intact instead of
+  discarding it, and the draft file is kept until the bead actually exists.
+- **`bd edit <id> --append`** opens an empty buffer and appends what you write
+  to the field (description by default; also `--notes`, `--design`,
+  `--acceptance`), separated by a blank line.
+
+### Changed
+
+- A title over the 500-character limit now reports the actual length and points
+  at `--edit` (or `--description`) instead of failing with a bare validation
+  error. See `divergence/0019-create-edit-compose.md`.
 
 ### Fixed
 
@@ -31,14 +57,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Each update wrote an `events` row containing the whole pre-change issue plus
   the whole applied update, which made the table quadratic in appends: one
   `bd note` line added to a bead with 320 KB of notes wrote a ~640 KB event row.
-  An append-per-tool-call ledger reached 3.3 GB of event payload backing 5 MB of
-  real notes, unreclaimable by `dolt gc` because all of it is reachable. String
+  An append-per-tool-call ledger reached 3.3 GB of raw event payload backing
+  5 MB of real notes (the payload is mostly repeated prefixes, so it costs row
+  size, scan time and copy/dump time more than disk). String
   values in event payloads are now capped at `BEADS_EVENT_FIELD_LIMIT` bytes
   (default 1024) — a strict cap, with the elision markers counted against it —
   and an appended-to field collapses its unchanged prefix to a marker, so an
   append costs bytes proportional to the appended text. Measured
   end to end: 80,504 bytes → 415 bytes for one append to a 40 KB notes field.
   Set `BEADS_EVENT_FIELD_LIMIT=0` to restore the previous full-copy behaviour.
+  The cap is on by default for every store: a single field over 1 KB (a long
+  description, say) is now elided in the audit row, with the full value still in
+  `issues`. See `divergence/0033-event-payload-elision.md`.
 
 ## [1.1.0-rc.1] - 2026-06-23
 

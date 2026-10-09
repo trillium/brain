@@ -89,9 +89,17 @@ func GetIssuesByLabelInTx(ctx context.Context, tx *sql.Tx, label string) ([]stri
 	return ids, nil
 }
 
-// DeleteConfigInTx removes a configuration value.
+// DeleteConfigInTx removes a configuration value — the namespace's value
+// under the unified database's re-keyed config.
 func DeleteConfigInTx(ctx context.Context, tx *sql.Tx, key string) error {
-	_, err := tx.ExecContext(ctx, "DELETE FROM config WHERE `key` = ?", key)
+	sc := UnifiedScopeForTx(ctx, tx)
+	query := "DELETE FROM config WHERE `key` = ?"
+	args := []any{key}
+	if sc.Enabled() {
+		query = "DELETE FROM " + sc.name(utConfig) + " WHERE `store` = ? AND `key` = ?"
+		args = []any{sc.Store, key}
+	}
+	_, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("delete config %s: %w", key, err)
 	}

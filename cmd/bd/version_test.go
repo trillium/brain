@@ -348,3 +348,89 @@ func TestVersionFlag(t *testing.T) {
 		rootCmd.SetArgs(nil)
 	})
 }
+
+// TestLandedSuffix pins the one thing that makes deploy drift visible: a binary
+// built off an unmerged branch must say so. Losing the marker silently returns
+// us to robots-k2r4, where agents ran an unlanded build for two days.
+func TestLandedSuffix(t *testing.T) {
+	origLanded := Landed
+	defer func() { Landed = origLanded }()
+
+	tests := []struct {
+		landed   string
+		wantMark bool
+	}{
+		{"no", true},
+		{"yes", false},
+		{"unknown", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		Landed = tt.landed
+		got := landedSuffix()
+		if tt.wantMark {
+			if !strings.Contains(got, "UNLANDED") {
+				t.Errorf("Landed=%q: landedSuffix() = %q, want it to contain UNLANDED", tt.landed, got)
+			}
+		} else if got != "" {
+			t.Errorf("Landed=%q: landedSuffix() = %q, want empty", tt.landed, got)
+		}
+	}
+}
+
+// TestVersionOutputUnlanded checks the marker actually reaches both the human
+// and the JSON output, and that a landed build stays quiet.
+func TestVersionOutputUnlanded(t *testing.T) {
+	origLanded := Landed
+	origJSON := jsonOutput
+	origCombined := versionCombinedOnly
+	oldStdout := os.Stdout
+	defer func() {
+		Landed = origLanded
+		jsonOutput = origJSON
+		versionCombinedOnly = origCombined
+		os.Stdout = oldStdout
+	}()
+	versionCombinedOnly = false
+
+	run := func(t *testing.T, landed string, asJSON bool) string {
+		t.Helper()
+		Landed = landed
+		jsonOutput = asJSON
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("Failed to create pipe: %v", err)
+		}
+		os.Stdout = w
+		if err := versionCmd.RunE(versionCmd, []string{}); err != nil {
+			w.Close()
+			t.Fatalf("versionCmd.RunE: %v", err)
+		}
+		w.Close()
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		return buf.String()
+	}
+
+	if out := run(t, "no", false); !strings.Contains(out, "UNLANDED") {
+		t.Errorf("Landed=no: expected UNLANDED marker in %q", out)
+	}
+	if out := run(t, "yes", false); strings.Contains(out, "UNLANDED") {
+		t.Errorf("Landed=yes: unexpected UNLANDED marker in %q", out)
+	}
+	if out := run(t, "unknown", false); strings.Contains(out, "UNLANDED") {
+		t.Errorf("Landed=unknown: unexpected UNLANDED marker in %q", out)
+	}
+
+	if out := run(t, "no", true); !strings.Contains(out, `"landed": false`) {
+		t.Errorf("Landed=no: expected \"landed\": false in JSON %q", out)
+	}
+	if out := run(t, "yes", true); !strings.Contains(out, `"landed": true`) {
+		t.Errorf("Landed=yes: expected \"landed\": true in JSON %q", out)
+	}
+	// "unknown" must not assert a value either way.
+	if out := run(t, "unknown", true); strings.Contains(out, `"landed"`) {
+		t.Errorf("Landed=unknown: expected no \"landed\" key in JSON %q", out)
+	}
+}

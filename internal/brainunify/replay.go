@@ -1,0 +1,1759 @@
+package brainunify
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// A merged database is built from a moment in the past, and every change a
+// source makes while (or after) the build runs exists only in the source.
+// `replay` carries those changes into the merged database: it reads each
+// source's history from the commit the build recorded
+// (brain_unify_source_commits), finds the beads and the database-state tables
+// that changed, and re-reads exactly those from the sources as they stand now.
+//
+// What the replay promises, and how:
+//
+//   - The merged database ends equal to what the sources hold NOW, with
+//     duplicated ids handled the way the build handles them: identical copies
+//     merge into one bead, and copies that differ become a conflict bead plus
+//     one minted bead per copy. Nothing is reimplemented: the plan handed in
+//     was computed by Discover, the same function the build uses, and the
+//     replay maps every row through the build's row mapper and writes the
+//     conflict beads with the build's functions. A change that creates, edits
+//     or removes a divergent duplicate therefore re-derives the conflict bead
+//     and its copies from the sources, deleting the ids the old decision used.
+//   - It never applies a diff row's values. A diff only names WHICH beads
+//     changed; the rows written are re-read from the sources through the
+//     build's own column encoding, so inserts, updates and deletes are all one
+//     operation — "make this bead's rows in the merged database equal what the
+//     sources hold for it" — and a winner that moved between stores is handled
+//     by the same operation as a plain edit.
+//   - Every condition it cannot resolve confidently is a loud refusal naming
+//     the store and the table. Every decision is made, and every source is
+//     read, before the first write, and the writes run in one transaction, so a
+//     refused replay leaves the merged database as it found it.
+//   - Sources are only ever read. Every source statement passes
+//     readOnlySource's SELECT guard.
+//
+// The acceptance test is the verifier: `verify --reference live` recomputes
+// the expected side from the sources as they stand and compares it with the
+// merged database, so a replay that missed a change fails it.
+
+// ReplayOptions configures a replay.
+type ReplayOptions struct {
+	// DataDir is the directory holding the merged database. The replay starts
+	// its own Dolt server over it, as verify does. Not used when MergedPort is
+	// set.
+	DataDir string
+	// MergedHost and MergedPort name a RUNNING Dolt server that hosts the merged
+	// database (usually the same server that holds the sources). The replay then
+	// updates it in place, one transaction at a time, while the server stays up
+	// and the sources stay live: nothing is stopped and no data directory is
+	// touched. MergedHost defaults to 127.0.0.1.
+	MergedHost string
+	MergedPort int
+	// NoCommit skips the Dolt commit the replay otherwise makes of the merged
+	// database. A hosted merged database that stores are already writing to must
+	// not have their uncommitted work committed under a replay's message.
+	NoCommit bool
+	// DryRun decides everything and applies nothing: the result lists what a
+	// replay would reload. It is the cutover readiness check.
+	DryRun bool
+	// ProtectAfter, a UTC timestamp ("2006-01-02 15:04:05"), is set for a replay
+	// that runs after the stores were repointed to the merged database. A bead
+	// the merged database changed after that moment (its updated_at, or an event
+	// or comment newer than it) is NOT reloaded from the old databases, whose
+	// version is older; it is reported in KeptMerged instead.
+	ProtectAfter string
+	// Database is the merged database's name inside that server.
+	Database string
+	// DoltBin is the dolt binary used to start the server.
+	DoltBin string
+	// Host and Port locate the Dolt server holding the sources.
+	Host string
+	Port int
+	// Logf receives progress lines.
+	Logf func(format string, args ...any)
+}
+
+// ReplayTableStats is what a replay did to one table of the merged database.
+type ReplayTableStats struct {
+	Table string
+	// Deleted counts rows removed from the merged table before the reload.
+	Deleted int64
+	// Inserted counts rows written from the sources.
+	Inserted int64
+	// Skipped counts source rows not written because their bead's copy in that
+	// store is the skipped copy of an identical duplicate.
+	Skipped int64
+	// Full reports that the table was reloaded whole because the sources keep
+	// no history for it (a table Dolt does not version, such as wisps).
+	Full bool
+}
+
+// ReplayResult is the outcome of a replay.
+type ReplayResult struct {
+	Database string
+	DataDir  string
+	// Beads are the bead ids whose rows were reconciled, sorted.
+	Beads []string
+	// Tables is one entry per merged table the replay wrote to.
+	Tables []ReplayTableStats
+	// ChangedStores are the stores whose history showed changes.
+	ChangedStores []string
+	// CollisionsWritten and CollisionsRemoved are the ids whose
+	// brain_unify_collisions record was written or deleted.
+	CollisionsWritten []string
+	CollisionsRemoved []string
+	// Commits are the new starting points recorded for the next replay.
+	Commits []recordedSourceCommit
+	// Committed reports whether the result was committed to the merged
+	// database's own Dolt history.
+	Committed bool
+	// DryRun reports that nothing was applied; FullTables, StateChanged and
+	// TouchedByTable then say what a replay would do.
+	DryRun         bool
+	FullTables     []string
+	StateChanged   map[string][]string
+	TouchedByTable map[string]int
+	// KeptMerged are beads the old databases changed but the merged database
+	// changed later (see ReplayOptions.ProtectAfter); the merged version stays.
+	KeptMerged    []string
+	Elapsed       time.Duration
+	ServerLogPath string
+}
+
+// Replayer carries a replay run.
+type Replayer struct {
+	source *readOnlySource
+	plan   Plan
+	opts   ReplayOptions
+	log    func(format string, args ...any)
+
+	cols   map[string][]string
+	colsMu sync.Mutex
+}
+
+// NewReplayer returns a replayer reading the sources through source and
+// mapping them by plan. The plan must have been computed from the sources now,
+// by Discover, exactly as for a build.
+func NewReplayer(source *readOnlySource, plan Plan, opts ReplayOptions) *Replayer {
+	log := opts.Logf
+	if log == nil {
+		log = func(string, ...any) {}
+	}
+	return &Replayer{source: source, plan: plan, opts: opts, log: log, cols: map[string][]string{}}
+}
+
+// replayWork is everything the decision phase settled, before any write.
+type replayWork struct {
+	bases map[string]recordedSourceCommit
+	heads map[string]string
+	conns map[string]*readOnlySource
+	plans []TablePlan
+	// template is the store whose state also seeds the merged database's own
+	// single-valued state tables.
+	template string
+
+	// touched maps a bead-scoped table to the ids to reconcile in it.
+	touched map[string]map[string]bool
+	// full marks bead-scoped tables the sources keep no history for.
+	full map[string]bool
+	// changedTables maps a store to the bead-scoped tables its history showed
+	// changes in.
+	changedTables map[string]map[string]bool
+	// stateChanged maps a store to the state tables to replace for it.
+	stateChanged map[string]map[string]bool
+	// changedStores are the stores whose history showed changes (tables the
+	// sources keep no history for are reloaded every time and do not count).
+	changedStores map[string]bool
+
+	live map[string]Collision
+	// recorded are the collision records the merged database held before the
+	// replay.
+	recorded map[string]recordedCollision
+	// mapper maps source rows to merged rows, as the build does.
+	mapper *rowMapper
+	// collisionsToWrite are ids whose record is written; collisionsToDelete
+	// are recorded ids that are no longer duplicated.
+	collisionsToWrite  []string
+	collisionsToDelete []string
+	// prefetch holds the source rows read before the apply transaction opens.
+	prefetch map[string][]fetchedRows
+	// postRepoint marks a replay that runs after the stores were repointed to
+	// the merged database (ReplayOptions.ProtectAfter): the merged database is
+	// being written to, so the replay only adds what the old databases have and
+	// the merged one lacks.
+	postRepoint bool
+	// wide are the stores whose fingerprints are re-recorded for every table
+	// because a collision they take part in changed.
+	wide map[string]bool
+}
+
+// Replay runs the replay.
+//
+//nolint:gocyclo // one linear pipeline: validate, decide, apply, re-record
+func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
+	start := time.Now()
+	hosted := r.opts.MergedPort != 0
+	if r.opts.DataDir == "" && !hosted {
+		return ReplayResult{}, fmt.Errorf("--data-dir is required (or --merged-port to update a merged database a running server hosts)")
+	}
+	database := r.opts.Database
+	if database == "" {
+		database = "brain_unified"
+	}
+	host := r.opts.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := r.opts.Port
+	if port == 0 {
+		port = 3307
+	}
+	res := ReplayResult{Database: database, DataDir: r.opts.DataDir, DryRun: r.opts.DryRun}
+
+	// One read-only connection per source database: dolt_log and dolt_diff
+	// resolve against the connection's default database.
+	conns, err := r.openSourceConns(ctx, host, port)
+	if err != nil {
+		return res, err
+	}
+	defer func() {
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}()
+
+	var merged *sql.DB
+	var mergedRO *readOnlySource
+	if hosted {
+		mh := r.opts.MergedHost
+		if mh == "" {
+			mh = "127.0.0.1"
+		}
+		dsn := fmt.Sprintf("root@tcp(%s:%d)/%s?parseTime=false&multiStatements=false&maxAllowedPacket=0", mh, r.opts.MergedPort, database)
+		merged, err = sql.Open("mysql", dsn)
+		if err != nil {
+			return res, fmt.Errorf("opening the merged database %s on %s:%d: %w", database, mh, r.opts.MergedPort, err)
+		}
+		merged.SetMaxOpenConns(4)
+		defer func() { _ = merged.Close() }()
+		err = pingPatiently(merged)
+		if err != nil {
+			return res, fmt.Errorf("pinging the merged database %s on %s:%d: %w", database, mh, r.opts.MergedPort, err)
+		}
+		if mergedRO, err = OpenSource(mh, r.opts.MergedPort); err != nil {
+			return res, err
+		}
+		defer func() { _ = mergedRO.Close() }()
+		r.log("merged database %s hosted on %s:%d (updated in place; the server stays up)", database, mh, r.opts.MergedPort)
+	} else {
+		srv, err := StartIsolatedServer(ctx, r.opts.DoltBin, r.opts.DataDir)
+		if err != nil {
+			return res, err
+		}
+		defer func() { _ = srv.Stop() }()
+		res.ServerLogPath = filepath.Join(r.opts.DataDir, "unified-server.log")
+		r.log("isolated dolt server over %s on 127.0.0.1:%d", r.opts.DataDir, srv.Port)
+		if merged, err = srv.OpenTarget(ctx, database); err != nil {
+			return res, err
+		}
+		defer func() { _ = merged.Close() }()
+		if mergedRO, err = OpenSource("127.0.0.1", srv.Port); err != nil {
+			return res, err
+		}
+		defer func() { _ = mergedRO.Close() }()
+	}
+
+	// Two replays at once would apply the same changes twice and race on the pins;
+	// a replay of a hosted merged database takes a named lock on the server for
+	// its whole run and refuses to start while another holds it.
+	if !r.opts.DryRun {
+		lockConn, err := merged.Conn(ctx)
+		if err != nil {
+			return res, fmt.Errorf("opening a connection to the merged database: %w", err)
+		}
+		defer func() {
+			_, _ = lockConn.ExecContext(context.Background(), "select release_lock('brain_unify_replay')")
+			_ = lockConn.Close()
+		}()
+		var got sql.NullInt64
+		if err := lockConn.QueryRowContext(ctx, "select get_lock('brain_unify_replay', 0)").Scan(&got); err != nil {
+			return res, fmt.Errorf("taking the replay lock: %w", err)
+		}
+		if !got.Valid || got.Int64 != 1 {
+			return res, fmt.Errorf("refusing to replay: another replay of this merged database is running (it holds the lock brain_unify_replay)")
+		}
+	}
+
+	w := &replayWork{conns: conns}
+
+	// ---- validate: every premise is checked loudly before anything is read --
+	if err := r.validateMerged(ctx, mergedRO, database); err != nil {
+		return res, err
+	}
+	if w.bases, err = r.readRecordedCommits(ctx, mergedRO, database); err != nil {
+		return res, err
+	}
+	if err := r.validateCommits(ctx, w); err != nil {
+		return res, err
+	}
+	if w.template, err = r.readTemplateStore(ctx, mergedRO, database); err != nil {
+		return res, err
+	}
+	if tmpl, ok := r.plan.SourceByNamespace(w.template); ok {
+		if err := r.source.PrimeSchema(ctx, tmpl.Database); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	if err := mergedRO.PrimeSchema(ctx, database); err != nil {
+		return res, fmt.Errorf("refusing to replay: %w", err)
+	}
+	if w.plans, err = TablePlansFor(ctx, r.source, r.plan, w.template); err != nil {
+		return res, err
+	}
+	imported, err := r.readImportLog(ctx, mergedRO, database)
+	if err != nil {
+		return res, err
+	}
+	if err := r.validateSchema(ctx, mergedRO, database, w.plans); err != nil {
+		return res, err
+	}
+	recorded, err := r.readCollisionRecords(ctx, mergedRO, database)
+	if err != nil {
+		return res, err
+	}
+	if err := r.plan.Refusal(); err != nil {
+		return res, fmt.Errorf("refusing to replay: %w", err)
+	}
+	if len(r.plan.Conflicts()) > 0 || hasConflicts(recorded) {
+		if err := validateRekeying(w.plans); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+		if err := validateConflictTables(w.plans); err != nil {
+			return res, fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	w.mapper = newRowMapper(r.plan)
+
+	r.log("validated the merged database and the starting points of %d source(s)", len(r.plan.Sources))
+
+	// ---- decide ------------------------------------------------------------
+	if err := r.collectChanges(ctx, mergedRO, database, w, imported); err != nil {
+		return res, err
+	}
+	r.log("read what changed in the sources: %d store(s) with history changes, %d bead-scoped table(s) to reload whole", len(w.changedStores), len(w.full))
+	if err := r.reconcileCollisions(w, recorded); err != nil {
+		return res, err
+	}
+
+	snap := w.snapshot()
+	protect := func() error {
+		if r.opts.ProtectAfter == "" {
+			return nil
+		}
+		kept, err := r.protectNewer(ctx, mergedRO, database, w)
+		if err != nil {
+			return err
+		}
+		res.KeptMerged = kept
+		if len(kept) > 0 {
+			r.log("kept the merged version of %d bead(s) the stores changed after %s", len(kept), r.opts.ProtectAfter)
+		}
+		return nil
+	}
+
+	if r.opts.DryRun {
+		if err := protect(); err != nil {
+			return res, err
+		}
+		res.Beads = unionIDs(w.touched)
+		res.CollisionsWritten = append(res.CollisionsWritten, w.collisionsToWrite...)
+		res.CollisionsRemoved = append(res.CollisionsRemoved, w.collisionsToDelete...)
+		res.ChangedStores = sortedKeys(w.changedStores)
+		res.FullTables = sortedKeys(w.full)
+		res.StateChanged = map[string][]string{}
+		for st, tbs := range w.stateChanged {
+			res.StateChanged[st] = sortedKeys(tbs)
+		}
+		res.TouchedByTable = map[string]int{}
+		for t, ids := range w.touched {
+			res.TouchedByTable[t] = len(ids)
+		}
+		res.Elapsed = time.Since(start)
+		return res, nil
+	}
+
+	// ---- apply: one transaction, so a failure leaves the database as found.
+	// On a merged database the stores are writing to, the commit can lose to a
+	// concurrent write ("serialization failure"): nothing was applied, so decide
+	// again against the database as it is now (what to protect is recomputed) and
+	// apply again.
+	if err := r.prefetch(ctx, w, snap, r.opts.ProtectAfter != ""); err != nil {
+		return res, err
+	}
+	stats := map[string]*ReplayTableStats{}
+	for attempt := 1; ; attempt++ {
+		w.restore(snap)
+		stats = map[string]*ReplayTableStats{}
+		if err := protect(); err != nil {
+			return res, err
+		}
+		err := r.applyOnce(ctx, merged, mergedRO, database, w, stats, &res)
+		if err == nil {
+			break
+		}
+		if attempt < 15 && isSerializationFailure(err) {
+			r.log("the merged database changed under the replay (%v); deciding again (attempt %d)", err, attempt+1)
+			time.Sleep(time.Duration(100+rand.Intn(400)) * time.Millisecond)
+			continue
+		}
+		return res, err
+	}
+
+	// The rows are durable once the transaction commits; the Dolt commit
+	// makes the replay a point in the merged database's own history.
+	if r.opts.NoCommit {
+		r.log("not committing to the merged database's Dolt history (--no-commit)")
+	} else if rows, err := merged.QueryContext(ctx, "call dolt_commit('-Am', 'brain unify replay: apply source changes since the recorded commits')"); err != nil {
+		r.log("warning: could not create a dolt commit: %v", err)
+	} else {
+		for rows.Next() {
+		}
+		_ = rows.Err()
+		_ = rows.Close()
+		res.Committed = true
+		r.log("committed the replay into the merged database's history")
+	}
+
+	res.Beads = unionIDs(w.touched)
+	res.CollisionsWritten = append(res.CollisionsWritten, w.collisionsToWrite...)
+	res.CollisionsRemoved = append(res.CollisionsRemoved, w.collisionsToDelete...)
+	res.ChangedStores = sortedKeys(w.changedStores)
+	for _, name := range sortedKeys(stats) {
+		res.Tables = append(res.Tables, *stats[name])
+	}
+	res.Elapsed = time.Since(start)
+	return res, nil
+}
+
+// ---------------------------------------------------------------------------
+// validation
+// ---------------------------------------------------------------------------
+
+// validateMerged refuses a merged database the replay cannot use: one without
+// the recorded starting points, which is the documented rebuild case.
+func (r *Replayer) validateMerged(ctx context.Context, mergedRO *readOnlySource, database string) error {
+	for _, table := range []string{"brain_unify_source_commits", "brain_unify_collisions", "brain_unify_import_log", "brain_unify_source_fingerprints", "brain_stores"} {
+		has, err := mergedRO.HasTable(ctx, database, table)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: checking %s for table %s: %w", database, table, err)
+		}
+		if has {
+			continue
+		}
+		if table == "brain_unify_source_commits" {
+			return fmt.Errorf("refusing to replay: %s has no brain_unify_source_commits table, so it was built before builds recorded a replay starting point and a replay cannot know what it missed; rebuild it", database)
+		}
+		return fmt.Errorf("refusing to replay: %s has no %s table, so it is not a database 'unify build' made; rebuild it", database, table)
+	}
+	have, err := mergedRO.Columns(ctx, database, "brain_unify_collisions")
+	if err != nil {
+		return fmt.Errorf("refusing to replay: listing the columns of brain_unify_collisions in %s: %w", database, err)
+	}
+	for _, col := range []string{"resolution", "copy_ids", "copy_hashes"} {
+		if !contains(have, col) {
+			return fmt.Errorf("refusing to replay: brain_unify_collisions in %s has no %s column, so it was built before duplicated ids with differing copies became conflict beads, and its duplicates follow a different rule; rebuild it", database, col)
+		}
+	}
+	return nil
+}
+
+// readRecordedCommits reads each source's build-time commit.
+func (r *Replayer) readRecordedCommits(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]recordedSourceCommit, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `store`, `source_database`, `commit_hash` from `%s`.`brain_unify_source_commits`", database))
+	if err != nil {
+		return nil, fmt.Errorf("reading brain_unify_source_commits: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]recordedSourceCommit{}
+	for rows.Next() {
+		var c recordedSourceCommit
+		if err := rows.Scan(&c.Store, &c.Database, &c.Hash); err != nil {
+			return nil, err
+		}
+		out[c.Store] = c
+	}
+	return out, rows.Err()
+}
+
+// openSourceConns opens one read-only connection per source database. Two
+// stores sharing a database is refused: a replay could not attribute rows.
+func (r *Replayer) openSourceConns(ctx context.Context, host string, port int) (map[string]*readOnlySource, error) {
+	byDatabase := map[string][]string{}
+	for _, s := range r.plan.Sources {
+		byDatabase[s.Database] = append(byDatabase[s.Database], s.Namespace)
+	}
+	conns := map[string]*readOnlySource{}
+	for db, stores := range byDatabase {
+		if len(stores) > 1 {
+			closeAll(conns)
+			return nil, fmt.Errorf("refusing to replay: stores %s share one source database %s, so a replay could not attribute its rows; rebuild", strings.Join(stores, ", "), db)
+		}
+		conn, err := OpenReadOnlyDatabase(ctx, host, port, db)
+		if err != nil {
+			closeAll(conns)
+			return nil, fmt.Errorf("refusing to replay: opening the history of database %s (store %s): %w", db, stores[0], err)
+		}
+		conns[db] = conn
+	}
+	return conns, nil
+}
+
+func closeAll(conns map[string]*readOnlySource) {
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
+// validateCommits refuses every starting point that cannot be trusted:
+//
+//   - a store with no recorded commit, or a recorded store that no longer
+//     participates: the set of sources cannot be cut short or grown quietly;
+//   - a store now read from a different database than the one recorded;
+//   - a source whose history no longer contains its recorded commit: rewritten
+//     or collected history makes "what changed since" unknowable.
+func (r *Replayer) validateCommits(ctx context.Context, w *replayWork) error {
+	participating := map[string]bool{}
+	for _, src := range r.plan.Sources {
+		participating[src.Namespace] = true
+		base, ok := w.bases[src.Namespace]
+		if !ok {
+			return fmt.Errorf("refusing to replay: store %s (database %s) has no recorded commit; it joined after the merged database was built, so a replay cannot know what it holds; rebuild", src.Namespace, src.Database)
+		}
+		if base.Database != src.Database {
+			return fmt.Errorf("refusing to replay: store %s was built from database %s but now reads from %s; rebuild", src.Namespace, base.Database, src.Database)
+		}
+		exists, err := w.conns[src.Database].HasCommit(ctx, base.Hash)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: reading the history of store %s (database %s): %w", src.Namespace, src.Database, err)
+		}
+		if !exists {
+			return fmt.Errorf("refusing to replay: store %s (database %s) no longer contains its recorded commit %s; its history was rewritten or collected, so what changed since is unknowable; rebuild", src.Namespace, src.Database, base.Hash)
+		}
+	}
+	for _, store := range sortedKeys(w.bases) {
+		if !participating[store] {
+			return fmt.Errorf("refusing to replay: store %s was built into the merged database but no longer participates (unreachable or unregistered); a replay will not drop a store silently; rebuild or restore it", store)
+		}
+	}
+	return nil
+}
+
+// readTemplateStore reads the schema template from the build's own record, so
+// a replay classifies tables exactly as the existing schema was classified.
+func (r *Replayer) readTemplateStore(ctx context.Context, mergedRO *readOnlySource, database string) (string, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `store` from `%s`.`brain_stores` where `template_source` = 1", database))
+	if err != nil {
+		return "", fmt.Errorf("reading the template store of %s: %w", database, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			return "", err
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if len(out) != 1 {
+		return "", fmt.Errorf("refusing to replay: %s records %d template stores (%s), so the table classification its schema was built with cannot be re-derived; rebuild", database, len(out), strings.Join(out, ", "))
+	}
+	return out[0], nil
+}
+
+// readImportLog reads which (store, table) pairs the build imported rows from.
+func (r *Replayer) readImportLog(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]int64, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `store`, `table_name`, `imported_rows` from `%s`.`brain_unify_import_log`", database))
+	if err != nil {
+		return nil, fmt.Errorf("reading brain_unify_import_log: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var store, table string
+		var n int64
+		if err := rows.Scan(&store, &table, &n); err != nil {
+			return nil, err
+		}
+		out[store+"\x00"+table] = n
+	}
+	return out, rows.Err()
+}
+
+// validateSchema refuses a merged database whose tables cannot take the rows
+// the sources would write: the merged schema is fixed at build time and a
+// replay never alters it.
+func (r *Replayer) validateSchema(ctx context.Context, mergedRO *readOnlySource, database string, plans []TablePlan) error {
+	for _, tp := range plans {
+		has, err := mergedRO.HasTable(ctx, database, tp.Target)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: checking the merged table %s: %w", tp.Target, err)
+		}
+		if !has {
+			return fmt.Errorf("refusing to replay: the sources have table %s but %s has no table %s; the merged schema was fixed at build time; rebuild", tp.Table, database, tp.Target)
+		}
+		have, err := mergedRO.Columns(ctx, database, tp.Target)
+		if err != nil {
+			return fmt.Errorf("refusing to replay: listing the columns of merged table %s: %w", tp.Target, err)
+		}
+		for _, c := range tp.Columns {
+			if !contains(have, c) {
+				return fmt.Errorf("refusing to replay: the sources' table %s has column %s but merged table %s does not; the merged schema was fixed at build time; rebuild", tp.Table, c, tp.Target)
+			}
+		}
+	}
+	return nil
+}
+
+// sourceColumns returns a source table's columns, cached for the run.
+func (r *Replayer) sourceColumns(ctx context.Context, src SourceFacts, table string) ([]string, error) {
+	key := src.Database + "\x00" + table
+	r.colsMu.Lock()
+	cols, ok := r.cols[key]
+	r.colsMu.Unlock()
+	if ok {
+		return cols, nil
+	}
+	cols, err := r.source.Columns(ctx, src.Database, table)
+	if err != nil {
+		return nil, err
+	}
+	r.colsMu.Lock()
+	r.cols[key] = cols
+	r.colsMu.Unlock()
+	return cols, nil
+}
+
+// sharedColumns is the column set a source can supply to a merged table: the
+// merged table's columns that the source's table also has.
+func (r *Replayer) sharedColumns(ctx context.Context, src SourceFacts, tp TablePlan) ([]string, error) {
+	have, err := r.sourceColumns(ctx, src, tp.Table)
+	if err != nil {
+		return nil, fmt.Errorf("refusing to replay: listing the columns of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+	}
+	var common []string
+	for _, c := range tp.Columns {
+		if contains(have, c) {
+			common = append(common, c)
+		}
+	}
+	if len(common) == 0 {
+		return nil, fmt.Errorf("refusing to replay: store %s table %s shares no column with the merged table %s", src.Namespace, tp.Table, tp.Target)
+	}
+	return common, nil
+}
+
+// ---------------------------------------------------------------------------
+// decide: what changed
+// ---------------------------------------------------------------------------
+
+// collectChanges reads every source's history since its recorded commit and
+// settles which beads and which state tables the replay must reconcile.
+//
+// It asks each source a handful of questions rather than one per table: its
+// table list, which tables changed between the recorded commit and the working
+// set (dolt_diff_summary, one query), and which tables Dolt does not version
+// (dolt_status_ignored). Only a table that changed is diffed for the beads it
+// touched. A table Dolt does not version has no history at all, so its current
+// content is fingerprinted and compared with the fingerprint the build or the
+// last replay recorded for it; only a difference reloads it. A store whose head
+// is the recorded commit, whose working set is clean and whose unversioned
+// tables match costs a few queries, however many tables it has.
+func (r *Replayer) collectChanges(ctx context.Context, mergedRO *readOnlySource, database string, w *replayWork, imported map[string]int64) error {
+	w.heads = map[string]string{}
+	w.touched = map[string]map[string]bool{}
+	w.full = map[string]bool{}
+	w.stateChanged = map[string]map[string]bool{}
+	w.changedTables = map[string]map[string]bool{}
+	w.changedStores = map[string]bool{}
+
+	recorded, err := readRecordedByStore(ctx, mergedRO, database)
+	if err != nil {
+		return err
+	}
+
+	// Each source has its own connection, so the stores are asked at the same
+	// time: the questions are many small reads on a server that answers each in
+	// tens of milliseconds, and asking them one after another was the cost.
+	results := make([]storeChanges, len(r.plan.Sources))
+	errs := make([]error, len(r.plan.Sources))
+	sem := make(chan struct{}, 8)
+	var wg sync.WaitGroup
+	for i, src := range r.plan.Sources {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(i int, src SourceFacts) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			results[i], errs[i] = r.collectStore(ctx, src, w, recorded[src.Namespace], imported)
+		}(i, src)
+	}
+	wg.Wait()
+	for i, src := range r.plan.Sources {
+		if errs[i] != nil {
+			return errs[i]
+		}
+		sc := results[i]
+		w.heads[src.Namespace] = sc.head
+		if sc.changed {
+			w.changedStores[src.Namespace] = true
+		}
+		if len(sc.changedTables) > 0 {
+			w.changedTables[src.Namespace] = sc.changedTables
+		}
+		if len(sc.stateChanged) > 0 {
+			w.stateChanged[src.Namespace] = sc.stateChanged
+		}
+		for t := range sc.full {
+			w.full[t] = true
+		}
+		for t, ids := range sc.touched {
+			if w.touched[t] == nil {
+				w.touched[t] = map[string]bool{}
+			}
+			for id := range ids {
+				w.touched[t][id] = true
+			}
+		}
+	}
+	return nil
+}
+
+// storeChanges is what one source's questions settled.
+type storeChanges struct {
+	head          string
+	changed       bool
+	touched       map[string]map[string]bool // bead-scoped table -> ids
+	changedTables map[string]bool
+	stateChanged  map[string]bool
+	full          map[string]bool
+}
+
+func (sc *storeChanges) reload(tp TablePlan, history bool) {
+	if tp.Scope == ScopeDatabaseState {
+		sc.stateChanged[tp.Table] = true
+		if history {
+			sc.changed = true
+		}
+		return
+	}
+	sc.full[tp.Table] = true
+}
+
+// collectStore settles one source: see collectChanges.
+func (r *Replayer) collectStore(ctx context.Context, src SourceFacts, w *replayWork, recorded map[string]map[string]Fingerprint, imported map[string]int64) (storeChanges, error) {
+	sc := storeChanges{touched: map[string]map[string]bool{}, changedTables: map[string]bool{}, stateChanged: map[string]bool{}, full: map[string]bool{}}
+	conn := w.conns[src.Database]
+	base := w.bases[src.Namespace]
+
+	// The next window's starting point is read BEFORE any diff: a commit a
+	// source makes after this read is later than everything this replay reads,
+	// so the next window overlaps this one and cannot miss it. An overlap only
+	// re-applies a row, which is idempotent.
+	head, err := conn.HeadCommit(ctx)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: reading the dolt_log head of store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	sc.head = head
+
+	tables, err := r.source.BaseTables(ctx, src.Database)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: listing the tables of store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	have := map[string]bool{}
+	for _, t := range tables {
+		have[t] = true
+	}
+	if err := r.source.PrimeSchema(ctx, src.Database); err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	summary, err := conn.DiffSummaryTables(ctx, base.Hash)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+	ignored, err := conn.IgnoredTables(ctx)
+	if err != nil {
+		return sc, fmt.Errorf("refusing to replay: store %s (database %s): %w", src.Namespace, src.Database, err)
+	}
+
+	for _, tp := range w.plans {
+		if !have[tp.Table] {
+			if n := imported[src.Namespace+"\x00"+tp.Table]; n > 0 {
+				return sc, fmt.Errorf("refusing to replay: the build imported %d row(s) of table %s from store %s, but that table no longer exists in database %s; what became of those rows is unknowable; rebuild", n, tp.Table, src.Namespace, src.Database)
+			}
+			continue
+		}
+
+		kind, inSummary := summary[tp.Table]
+
+		// A table Dolt does not version has no history to diff, and a state table
+		// (config, metadata, ...) is small and often left with uncommitted
+		// bookkeeping changes that say nothing: compare what the table holds now
+		// with what was recorded for it, and reload it only when it differs.
+		if ignored[tp.Table] || (tp.Scope == ScopeDatabaseState && inSummary) {
+			changed, err := r.unversionedChanged(ctx, src, tp, recorded[tp.Target])
+			if err != nil {
+				return sc, err
+			}
+			if changed {
+				sc.reload(tp, !ignored[tp.Table])
+			}
+			continue
+		}
+
+		if !inSummary {
+			continue // identical to the recorded commit
+		}
+		if tp.Scope != ScopeDatabaseState {
+			cols, err := r.sourceColumns(ctx, src, tp.Table)
+			if err != nil {
+				return sc, fmt.Errorf("refusing to replay: listing the columns of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+			}
+			if !contains(cols, tp.ScopeColumn) {
+				return sc, fmt.Errorf("refusing to replay: store %s table %s has no %s column, so its rows cannot be attributed to a bead", src.Namespace, tp.Table, tp.ScopeColumn)
+			}
+		}
+		if kind == diffAdded {
+			// Created since the recorded commit: no history to diff, reload whole.
+			sc.reload(tp, false)
+			continue
+		}
+		switch tp.Scope {
+		default:
+			ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
+			if err != nil {
+				return sc, fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+			sc.changed = true
+			sc.changedTables[tp.Table] = true
+			if sc.touched[tp.Table] == nil {
+				sc.touched[tp.Table] = map[string]bool{}
+			}
+			for _, id := range ids {
+				sc.touched[tp.Table][id] = true
+			}
+		}
+	}
+	return sc, nil
+}
+
+// unversionedChanged reports whether a table Dolt keeps no history for holds
+// something other than what was recorded: the same server-side fingerprints the
+// build took, excluding what the build excluded, against the recorded rows.
+func (r *Replayer) unversionedChanged(ctx context.Context, src SourceFacts, tp TablePlan, recorded map[string]Fingerprint) (bool, error) {
+	now := map[string]Fingerprint{}
+	if tp.Scope == ScopeDatabaseState {
+		fp, err := r.source.ReferenceDigest(ctx, src.Database, &tp, src.Namespace)
+		if err != nil {
+			return false, fmt.Errorf("refusing to replay: digest of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+		}
+		if fp.Rows > 0 {
+			now[src.Namespace] = fp
+		}
+	} else {
+		byGroup, err := r.source.FingerprintByGroup(ctx, src.Database, tp.Table, tp.ScopeColumnName(), "", r.plan.sourceExclusions(src.Namespace))
+		if err != nil {
+			return false, fmt.Errorf("refusing to replay: fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+		}
+		for g, fp := range byGroup {
+			if fp.Rows > 0 {
+				now[g] = fp
+			}
+		}
+	}
+	nonEmpty := map[string]Fingerprint{}
+	for g, fp := range recorded {
+		if fp.Rows > 0 {
+			nonEmpty[g] = fp
+		}
+	}
+	return !equalFingerprints(now, nonEmpty), nil
+}
+
+func equalFingerprints(a, b map[string]Fingerprint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for g, fp := range a {
+		if other, ok := b[g]; !ok || other != fp {
+			return false
+		}
+	}
+	return true
+}
+
+// readRecordedByStore reads the fingerprints the build or the last replay
+// recorded, keyed by store, merged table and group.
+func readRecordedByStore(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]map[string]map[string]Fingerprint, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `store`, `table_name`, `group_name`, `row_count`, `byte_count`, `hash_value` from `%s`.`brain_unify_source_fingerprints`", database))
+	if err != nil {
+		return nil, fmt.Errorf("refusing to replay: reading the recorded fingerprints: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]map[string]map[string]Fingerprint{}
+	for rows.Next() {
+		var store, table, group string
+		var n int64
+		var b, h float64
+		if err := rows.Scan(&store, &table, &group, &n, &b, &h); err != nil {
+			return nil, err
+		}
+		if out[store] == nil {
+			out[store] = map[string]map[string]Fingerprint{}
+		}
+		if out[store][table] == nil {
+			out[store][table] = map[string]Fingerprint{}
+		}
+		out[store][table][group] = Fingerprint{Rows: n, Bytes: int64(b), Hash: int64(h)}
+	}
+	return out, rows.Err()
+}
+
+// recordedCollision is the part of a brain_unify_collisions row a replay
+// compares with the sources.
+type recordedCollision struct {
+	Resolution string
+	Winner     string
+	Losers     []string
+	// CopyIDs maps each copy of a conflict to the id it was minted under.
+	CopyIDs map[string]string
+}
+
+func hasConflicts(recorded map[string]recordedCollision) bool {
+	for _, rec := range recorded {
+		if rec.Resolution == ResolutionConflict {
+			return true
+		}
+	}
+	return false
+}
+
+func (rec recordedCollision) matches(c Collision) bool {
+	if rec.Resolution != c.Resolution {
+		return false
+	}
+	if c.Divergent {
+		return equalStringMaps(rec.CopyIDs, c.copyIDs())
+	}
+	return rec.Winner == c.Winner && equalStrings(rec.Losers, c.Losers)
+}
+
+func equalStringMaps(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *Replayer) readCollisionRecords(ctx context.Context, mergedRO *readOnlySource, database string) (map[string]recordedCollision, error) {
+	rows, err := mergedRO.query(ctx, fmt.Sprintf(
+		"select `id`, `winner`, `losers`, `resolution`, `copy_ids` from `%s`.`brain_unify_collisions`", database))
+	if err != nil {
+		return nil, fmt.Errorf("reading brain_unify_collisions: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]recordedCollision{}
+	for rows.Next() {
+		var id, winner, losers, resolution, copyIDs string
+		if err := rows.Scan(&id, &winner, &losers, &resolution, &copyIDs); err != nil {
+			return nil, err
+		}
+		rec := recordedCollision{Winner: winner, Resolution: resolution, CopyIDs: map[string]string{}}
+		if err := json.Unmarshal([]byte(losers), &rec.Losers); err != nil {
+			return nil, fmt.Errorf("refusing to replay: the losers of recorded collision %s are unreadable (%q): %w", id, losers, err)
+		}
+		if err := json.Unmarshal([]byte(copyIDs), &rec.CopyIDs); err != nil {
+			return nil, fmt.Errorf("refusing to replay: the copy ids of recorded collision %s are unreadable (%q): %w", id, copyIDs, err)
+		}
+		sort.Strings(rec.Losers)
+		out[id] = rec
+	}
+	return out, rows.Err()
+}
+
+// reconcileCollisions compares the duplicated ids the sources hold now (the
+// plan's collisions, resolved by the build's own rules) with the ones the merged
+// database recorded, and widens the set of beads to reconcile to every id whose
+// resolution changed. An id that became a conflict needs its copies minted and
+// the conflict bead written; one that stopped being a conflict needs them
+// removed; a conflict whose copies changed needs the old minted ids deleted and
+// the new ones loaded. Reconciling the id in every bead-scoped table, deleting
+// every id the old and the new resolution used, does all of it with one
+// operation.
+func (r *Replayer) reconcileCollisions(w *replayWork, recorded map[string]recordedCollision) error {
+	w.live = map[string]Collision{}
+	w.recorded = recorded
+	for _, c := range r.plan.Collisions {
+		w.live[c.ID] = c
+	}
+
+	touchedAnywhere := unionSet(w.touched)
+	widen := func(id string) {
+		for _, tp := range w.plans {
+			if tp.Scope == ScopeDatabaseState {
+				continue
+			}
+			if w.touched[tp.Table] == nil {
+				w.touched[tp.Table] = map[string]bool{}
+			}
+			w.touched[tp.Table][id] = true
+		}
+	}
+	w.wide = map[string]bool{}
+	noteStores := func(c *Collision, rec *recordedCollision) {
+		if c != nil {
+			for _, s := range c.holders() {
+				w.wide[s] = true
+			}
+		}
+		if rec != nil {
+			if rec.Winner != "" {
+				w.wide[rec.Winner] = true
+			}
+			for _, l := range rec.Losers {
+				w.wide[l] = true
+			}
+			for s := range rec.CopyIDs {
+				w.wide[s] = true
+			}
+		}
+	}
+
+	for _, id := range sortedKeys(w.live) {
+		c := w.live[id]
+		rec, had := recorded[id]
+		changed := !had || !rec.matches(c)
+		// A table the sources keep no history for is reloaded whole on every
+		// replay, so a change there to a conflict's copy leaves no trace in any
+		// diff. The record's digest of each copy has to be re-taken either way.
+		reread := c.Divergent && len(w.full) > 0
+		if !changed && !touchedAnywhere[id] && !reread {
+			continue
+		}
+		w.collisionsToWrite = append(w.collisionsToWrite, id)
+		if changed {
+			widen(id)
+			if had {
+				noteStores(&c, &rec)
+			} else {
+				noteStores(&c, nil)
+			}
+		}
+	}
+	for _, id := range sortedKeys(recorded) {
+		if _, still := w.live[id]; still {
+			continue
+		}
+		rec := recorded[id]
+		w.collisionsToDelete = append(w.collisionsToDelete, id)
+		widen(id)
+		noteStores(nil, &rec)
+	}
+	return nil
+}
+
+// mergedIDs expands bead ids as the sources name them into every id those beads
+// occupy in the merged database, under the resolution the merged database
+// recorded and the one the sources now call for: the id itself (a plain bead,
+// or a conflict bead) and the minted id of each copy.
+func (w *replayWork) mergedIDs(ids []string) []string {
+	seen := map[string]bool{}
+	for _, id := range ids {
+		seen[id] = true
+		if c, ok := w.live[id]; ok {
+			for _, cp := range c.Copies {
+				seen[cp.ID] = true
+			}
+		}
+		for _, minted := range w.recorded[id].CopyIDs {
+			seen[minted] = true
+		}
+	}
+	return sortedKeys(seen)
+}
+
+// ---------------------------------------------------------------------------
+// apply
+// ---------------------------------------------------------------------------
+
+// applyChanges makes the merged database's rows for every changed bead and
+// every changed state table equal to what the sources hold now.
+func (r *Replayer) applyChanges(ctx context.Context, tx *sql.Tx, mergedRO *readOnlySource, database string, w *replayWork, stats map[string]*ReplayTableStats) error {
+	statFor := func(table string) *ReplayTableStats {
+		s := stats[table]
+		if s == nil {
+			s = &ReplayTableStats{Table: table}
+			stats[table] = s
+		}
+		return s
+	}
+
+	for _, tp := range w.plans {
+		if tp.Scope == ScopeDatabaseState {
+			continue
+		}
+		ids := sortedKeys(w.touched[tp.Table])
+		full := w.full[tp.Table]
+		if len(ids) == 0 && !full {
+			continue
+		}
+		st := statFor(tp.Target)
+		st.Full = full
+		if err := r.reloadBeadTable(ctx, tx, w, tp, ids, full, st); err != nil {
+			return err
+		}
+	}
+
+	for _, store := range sortedKeys(w.stateChanged) {
+		src, _ := r.plan.SourceByNamespace(store)
+		for _, tp := range w.plans {
+			if !w.stateChanged[store][tp.Table] {
+				continue
+			}
+			if err := r.reloadStateTable(ctx, tx, mergedRO, database, w, src, tp, statFor(tp.Target)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// reloadBeadTable replaces the merged rows of the given beads (or of the whole
+// table) with the rows the sources hold now, mapped exactly as the build maps
+// them (the skipped copy of an identical duplicate left out, a conflict's copies
+// moved under their minted ids), and then writes the rows the tool authors for
+// the conflicts among them.
+func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWork, tp TablePlan, ids []string, full bool, st *ReplayTableStats) error {
+	mergeOnly := w.postRepoint && tp.Scope != ScopeIssues
+	if full {
+		res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"`")
+		if err != nil {
+			return fmt.Errorf("refusing to replay: clearing merged table %s: %w", tp.Target, err)
+		}
+		n, _ := res.RowsAffected()
+		st.Deleted += n
+	} else if !mergeOnly {
+		for _, chunk := range chunks(w.mergedIDs(ids), 200) {
+			clause, args := inClause(tp.ScopeColumn, chunk)
+			res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"` where "+clause, args...)
+			if err != nil {
+				return fmt.Errorf("refusing to replay: deleting the beads %s from merged table %s: %w", truncate(strings.Join(chunk, ", "), 200), tp.Target, err)
+			}
+			n, _ := res.RowsAffected()
+			st.Deleted += n
+		}
+	}
+
+	fetched := w.prefetch[tp.Table]
+	if fetched == nil {
+		var err error
+		if fetched, err = r.fetchBeadRows(ctx, w, tp, ids, full); err != nil {
+			return err
+		}
+	}
+	var allowed map[string]bool
+	if !full {
+		allowed = map[string]bool{}
+		for _, id := range w.mergedIDs(ids) {
+			allowed[id] = true
+		}
+	}
+	for _, f := range fetched {
+		scopeIdx := indexOf(f.cols, tp.ScopeColumn)
+		rows := f.rows
+		if allowed != nil {
+			// the rows were read for every bead the first decision named; keep the
+			// ones the current decision still wants (a bead protected since is out)
+			rows = rows[:0:0]
+			for _, row := range f.rows {
+				if allowed[cellText(row[scopeIdx])] {
+					rows = append(rows, row)
+				}
+			}
+		}
+		if err := insertRowsMode(ctx, tx, tp.Target, f.cols, rows, mergeOnly); err != nil {
+			return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", f.store, tp.Table, tp.Target, err)
+		}
+		st.Inserted += int64(len(rows))
+		st.Skipped += f.skipped
+	}
+
+	// The conflict beads among the reloaded ids, written by the build's own
+	// function; on a whole-table reload, every conflict.
+	var conflicts []Collision
+	for _, id := range sortedKeys(w.live) {
+		c := w.live[id]
+		if c.Divergent && (full || contains(ids, id)) {
+			conflicts = append(conflicts, c)
+		}
+	}
+	if cols, rows := tableConflictRows(tp, conflicts); len(rows) > 0 {
+		if err := insertRows(ctx, tx, tp.Target, cols, rows); err != nil {
+			return fmt.Errorf("refusing to replay: writing the conflict beads' rows into %s: %w", tp.Target, err)
+		}
+		st.Inserted += int64(len(rows))
+	}
+	return nil
+}
+
+// fetchedRows are one store's rows of a bead-scoped table, read from its source
+// and mapped exactly as the build maps them, ready to insert.
+type fetchedRows struct {
+	store   string
+	cols    []string
+	rows    [][]any
+	skipped int64
+}
+
+// fetchBeadRows reads, outside any merged-database transaction, what the sources
+// hold for the given beads (or the whole table). Reading is the slow part of a
+// reload; doing it before the transaction keeps the transaction to deletes and
+// inserts, so it is short and rarely loses its commit to a concurrent write.
+func (r *Replayer) fetchBeadRows(ctx context.Context, w *replayWork, tp TablePlan, ids []string, full bool) ([]fetchedRows, error) {
+	var out []fetchedRows
+	for _, src := range r.plan.Sources {
+		has, err := r.source.HasTable(ctx, src.Database, tp.Table)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to replay: checking store %s for table %s: %w", src.Namespace, tp.Table, err)
+		}
+		if !has {
+			continue
+		}
+		cols, err := r.sharedColumns(ctx, src, tp)
+		if err != nil {
+			return nil, err
+		}
+		if indexOf(cols, tp.ScopeColumn) < 0 {
+			return nil, fmt.Errorf("refusing to replay: store %s table %s has no %s column", src.Namespace, tp.Table, tp.ScopeColumn)
+		}
+		f := fetchedRows{store: src.Namespace, cols: cols}
+		take := func(rows [][]any) error {
+			kept, skipped, err := w.mapper.mapRows(tp, src.Namespace, cols, rows)
+			if err != nil {
+				return fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			f.skipped += skipped
+			f.rows = append(f.rows, kept...)
+			return nil
+		}
+		if full {
+			jsonCols, err := r.source.JSONColumns(ctx, src.Database, tp.Table)
+			if err != nil {
+				return nil, fmt.Errorf("refusing to replay: reading json columns of %s.%s: %w", src.Database, tp.Table, err)
+			}
+			if err := r.source.CopyRows(ctx, src.Database, tp.Table, cols, jsonCols, take); err != nil {
+				return nil, fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+		} else {
+			for _, chunk := range chunks(ids, 200) {
+				clause, args := inClause(tp.ScopeColumn, chunk)
+				rows, err := r.source.ReadRows(ctx, src.Database, tp.Table, cols, clause, args...)
+				if err != nil {
+					return nil, fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
+				}
+				if err := take(rows); err != nil {
+					return nil, err
+				}
+			}
+		}
+		out = append(out, f)
+	}
+	return out, nil
+}
+
+// prefetch reads the rows every bead-scoped reload of the decided work will need.
+func (r *Replayer) prefetch(ctx context.Context, w *replayWork, snap replaySnapshot, postRepoint bool) error {
+	w.prefetch = map[string][]fetchedRows{}
+	for _, tp := range w.plans {
+		if tp.Scope == ScopeDatabaseState {
+			continue
+		}
+		ids := sortedKeys(snap.touched[tp.Table])
+		full := snap.full[tp.Table] && !postRepoint
+		if len(ids) == 0 && !full {
+			continue
+		}
+		rows, err := r.fetchBeadRows(ctx, w, tp, ids, full)
+		if err != nil {
+			return err
+		}
+		if rows == nil {
+			rows = []fetchedRows{}
+		}
+		w.prefetch[tp.Table] = rows
+	}
+	return nil
+}
+
+// reloadStateTable replaces one store's slice of a re-keyed database-state
+// table, and the template store's slice of the merged database's own
+// single-valued table as well. State tables are small configuration, so the
+// whole slice is reloaded rather than diffed row by row.
+func (r *Replayer) reloadStateTable(ctx context.Context, tx *sql.Tx, mergedRO *readOnlySource, database string, w *replayWork, src SourceFacts, tp TablePlan, st *ReplayTableStats) error {
+	has, err := r.source.HasTable(ctx, src.Database, tp.Table)
+	if err != nil {
+		return fmt.Errorf("refusing to replay: checking store %s for table %s: %w", src.Namespace, tp.Table, err)
+	}
+	res, err := tx.ExecContext(ctx, "delete from `"+tp.Target+"` where `"+storeColumn+"` = ?", src.Namespace)
+	if err != nil {
+		return fmt.Errorf("refusing to replay: clearing store %s from merged table %s: %w", src.Namespace, tp.Target, err)
+	}
+	n, _ := res.RowsAffected()
+	st.Deleted += n
+
+	var rows [][]any
+	var cols []string
+	if has {
+		if cols, err = r.sharedColumns(ctx, src, tp); err != nil {
+			return err
+		}
+		if rows, err = r.source.ReadRows(ctx, src.Database, tp.Table, cols, ""); err != nil {
+			return fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
+		}
+	}
+	if len(rows) > 0 {
+		prefixed := append([]string{storeColumn}, cols...)
+		stamped := make([][]any, 0, len(rows))
+		for _, row := range rows {
+			stamped = append(stamped, append([]any{src.Namespace}, row...))
+		}
+		if err := insertRows(ctx, tx, tp.Target, prefixed, stamped); err != nil {
+			return fmt.Errorf("refusing to replay: store %s table %s into merged table %s: %w", src.Namespace, tp.Table, tp.Target, err)
+		}
+		st.Inserted += int64(len(rows))
+	}
+
+	if src.Namespace != w.template {
+		return nil
+	}
+	plain, err := mergedRO.HasTable(ctx, database, tp.Table)
+	if err != nil {
+		return fmt.Errorf("refusing to replay: checking the merged database for table %s: %w", tp.Table, err)
+	}
+	if !plain {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, "delete from `"+tp.Table+"`"); err != nil {
+		return fmt.Errorf("refusing to replay: clearing merged table %s: %w", tp.Table, err)
+	}
+	if len(rows) > 0 {
+		if err := insertRows(ctx, tx, tp.Table, cols, rows); err != nil {
+			return fmt.Errorf("refusing to replay: template store %s table %s into merged table %s: %w", src.Namespace, tp.Table, tp.Table, err)
+		}
+	}
+	return nil
+}
+
+// insertRows writes rows in size-bounded batches.
+func insertRows(ctx context.Context, ex sqlExecer, table string, cols []string, rows [][]any) error {
+	return insertRowsMode(ctx, ex, table, cols, rows, false)
+}
+
+// insertRowsMode writes rows in size-bounded batches; with ignore, a row whose
+// key already exists is left as it is (insert ignore).
+func insertRowsMode(ctx context.Context, ex sqlExecer, table string, cols []string, rows [][]any, ignore bool) error {
+	const (
+		batchRows  = 100
+		batchBytes = 4 << 20
+	)
+	stmt := insertPrefix(table, cols)
+	if ignore {
+		stmt = strings.Replace(stmt, "insert into", "insert ignore into", 1)
+	}
+	var batch []string
+	size := 0
+	flush := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		_, err := ex.ExecContext(ctx, stmt+strings.Join(batch, ","))
+		if err != nil {
+			err = fmt.Errorf("%w\nstatement: %s", err, truncate(stmt+batch[0], 1200))
+		}
+		batch, size = batch[:0], 0
+		return err
+	}
+	for _, row := range rows {
+		tuple := valueTuple(row)
+		batch = append(batch, tuple)
+		size += len(tuple)
+		if len(batch) >= batchRows || size >= batchBytes {
+			if err := flush(); err != nil {
+				return err
+			}
+		}
+	}
+	return flush()
+}
+
+// writeCollisionRecords brings brain_unify_collisions in line with the
+// collisions the sources hold now.
+func (r *Replayer) writeCollisionRecords(ctx context.Context, tx *sql.Tx, w *replayWork) error {
+	for _, id := range w.collisionsToWrite {
+		rec, err := buildCollisionRecord(ctx, r.source, r.plan, w.plans, w.mapper, w.live[id])
+		if err != nil {
+			return fmt.Errorf("refusing to replay: %w", err)
+		}
+		if err := writeCollisionRow(ctx, tx, rec); err != nil {
+			return fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	for _, id := range w.collisionsToDelete {
+		if _, err := tx.ExecContext(ctx, "delete from `brain_unify_collisions` where `id` = ?", id); err != nil {
+			return fmt.Errorf("refusing to replay: removing the collision record for %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// refreshPrefixes rewrites the prefix ownership record from the sources as
+// they stand: a bead with a new prefix, or a shifted bead count, changes it.
+func (r *Replayer) refreshPrefixes(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, "delete from `brain_store_prefixes`"); err != nil {
+		return fmt.Errorf("refusing to replay: clearing brain_store_prefixes: %w", err)
+	}
+	for _, ns := range SortedNamespaces(r.plan.Namespaces) {
+		if err := writePrefixRow(ctx, tx, ns); err != nil {
+			return fmt.Errorf("refusing to replay: %w", err)
+		}
+	}
+	return nil
+}
+
+// rerecordFingerprints replaces the recorded source fingerprints that the
+// replay made stale with readings of the sources as they stand now, taken the
+// same way the build took them (same server-side expressions, same exclusion
+// of collision losers). A store's tables are re-recorded when its history
+// showed a change in them, when the sources keep no history for them, or for
+// every table of a store whose collision decisions changed.
+func (r *Replayer) rerecordFingerprints(ctx context.Context, tx *sql.Tx, w *replayWork) error {
+	for _, src := range r.plan.Sources {
+		var done []string
+		for i := range w.plans {
+			tp := &w.plans[i]
+			if !w.fingerprintStale(src.Namespace, *tp) {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx,
+				"delete from `brain_unify_source_fingerprints` where `store` = ? and `table_name` = ?", src.Namespace, tp.Target); err != nil {
+				return fmt.Errorf("refusing to replay: clearing the recorded fingerprints of %s/%s: %w", src.Namespace, tp.Target, err)
+			}
+			has, err := r.source.HasTable(ctx, src.Database, tp.Table)
+			if err != nil {
+				return fmt.Errorf("refusing to replay: checking store %s for table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if !has {
+				continue
+			}
+			done = append(done, tp.Table)
+			if tp.Scope == ScopeDatabaseState {
+				fp, err := r.source.ReferenceDigest(ctx, src.Database, tp, src.Namespace)
+				if err != nil {
+					return fmt.Errorf("refusing to replay: digest of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+				}
+				if fp.Rows > 0 {
+					if err := writeSourceFingerprint(ctx, tx, GroupFingerprint{Store: src.Namespace, Table: tp.Target, Group: src.Namespace, Fingerprint: fp}); err != nil {
+						return err
+					}
+				}
+				continue
+			}
+			byGroup, err := r.source.FingerprintByGroup(ctx, src.Database, tp.Table, tp.ScopeColumnName(), "", r.plan.sourceExclusions(src.Namespace))
+			if err != nil {
+				return fmt.Errorf("refusing to replay: fingerprint of %s.%s (store %s): %w", src.Database, tp.Table, src.Namespace, err)
+			}
+			for _, g := range sortedKeys(byGroup) {
+				if byGroup[g].Rows == 0 {
+					continue
+				}
+				if err := writeSourceFingerprint(ctx, tx, GroupFingerprint{Store: src.Namespace, Table: tp.Target, Group: g, Fingerprint: byGroup[g]}); err != nil {
+					return err
+				}
+			}
+		}
+		if len(done) > 0 {
+			r.log("re-recorded the source fingerprints of store %s: %s", src.Namespace, strings.Join(done, ", "))
+		}
+	}
+	return nil
+}
+
+// fingerprintStale reports whether a store's recorded fingerprint for a table
+// no longer describes the source.
+func (w *replayWork) fingerprintStale(store string, tp TablePlan) bool {
+	if w.wide[store] {
+		return true
+	}
+	if tp.Scope == ScopeDatabaseState {
+		return w.stateChanged[store][tp.Table]
+	}
+	return w.full[tp.Table] || w.changedTables[store][tp.Table]
+}
+
+// advanceCommits records every store's new starting point for the next
+// replay. The head was read before any diff, so what a source commits from
+// here on is inside the next window.
+func (r *Replayer) advanceCommits(ctx context.Context, tx *sql.Tx, w *replayWork) ([]recordedSourceCommit, error) {
+	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	var out []recordedSourceCommit
+	for _, src := range r.plan.Sources {
+		head := w.heads[src.Namespace]
+		if head == w.bases[src.Namespace].Hash {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx,
+			"replace into `brain_unify_source_commits` (`store`,`source_database`,`commit_hash`,`recorded_at`) values "+
+				valueTuple([]any{src.Namespace, src.Database, head, now})); err != nil {
+			return nil, fmt.Errorf("refusing to replay: recording the new starting commit of store %s: %w", src.Namespace, err)
+		}
+		out = append(out, recordedSourceCommit{Store: src.Namespace, Database: src.Database, Hash: head})
+	}
+	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// small helpers
+// ---------------------------------------------------------------------------
+
+func inClause(col string, values []string) (string, []any) {
+	marks := make([]string, len(values))
+	args := make([]any, len(values))
+	for i, v := range values {
+		marks[i] = "?"
+		args[i] = v
+	}
+	return "`" + col + "` in (" + strings.Join(marks, ",") + ")", args
+}
+
+func chunks(values []string, n int) [][]string {
+	var out [][]string
+	for len(values) > n {
+		out = append(out, values[:n])
+		values = values[n:]
+	}
+	if len(values) > 0 {
+		out = append(out, values)
+	}
+	return out
+}
+
+func unionSet(m map[string]map[string]bool) map[string]bool {
+	out := map[string]bool{}
+	for _, ids := range m {
+		for id := range ids {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+func unionIDs(m map[string]map[string]bool) []string { return sortedKeys(unionSet(m)) }
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// protectNewer prepares a replay that runs after the stores were repointed to
+// the merged database, which is now being written to. It must add what the old
+// databases hold (writes that landed there between the last replay and the
+// repoint, and from stragglers) without undoing anything the merged database
+// did since, so:
+//
+//   - a bead's issue row is reloaded from the old databases unless the merged
+//     database changed it after ProtectAfter (its updated_at is newer), in which
+//     case the merged row stays and the bead is returned for the report;
+//   - every other bead table (labels, comments, events, dependencies, ...) only
+//     gains the rows the merged database lacks (insert ignore); nothing the
+//     merged database wrote is deleted, because the old databases' version of it
+//     is older;
+//   - tables reloaded whole, database-state tables, collision records, prefix
+//     counts and recorded fingerprints are left alone (the merged database's own
+//     writes have moved past them);
+//   - conflict beads and their minted copies are left alone.
+func (r *Replayer) protectNewer(ctx context.Context, mergedRO *readOnlySource, database string, w *replayWork) ([]string, error) {
+	w.postRepoint = true
+	w.full = map[string]bool{}
+	w.stateChanged = map[string]map[string]bool{}
+	w.collisionsToWrite, w.collisionsToDelete = nil, nil
+	conflicted := map[string]bool{}
+	for id, c := range w.live {
+		if c.Divergent {
+			conflicted[id] = true
+		}
+	}
+	for id, rec := range w.recorded {
+		if rec.Resolution == ResolutionConflict {
+			conflicted[id] = true
+		}
+	}
+	for _, tbl := range w.touched {
+		for id := range conflicted {
+			delete(tbl, id)
+		}
+	}
+
+	ids := sortedKeys(w.touched["issues"])
+	var kept []string
+	for _, chunk := range chunks(ids, 200) {
+		clause, args := inClause("id", chunk)
+		stmt := fmt.Sprintf("select distinct `id` from `%s`.`issues` where %s and `updated_at` > ?", database, clause)
+		rows, err := mergedRO.query(ctx, stmt, append(args, r.opts.ProtectAfter)...)
+		if err != nil {
+			return nil, fmt.Errorf("refusing to replay: looking for beads the merged database changed after %s: %w", r.opts.ProtectAfter, err)
+		}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			kept = append(kept, id)
+			delete(w.touched["issues"], id)
+		}
+		err = rows.Err()
+		_ = rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	sort.Strings(kept)
+	return kept, nil
+}
+
+// applyOnce applies the decided work in one transaction.
+func (r *Replayer) applyOnce(ctx context.Context, merged *sql.DB, mergedRO *readOnlySource, database string, w *replayWork, stats map[string]*ReplayTableStats, res *ReplayResult) error {
+	conn, err := merged.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("opening a connection to the merged database: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "set foreign_key_checks = 0"); err != nil {
+		return fmt.Errorf("disabling foreign key checks on the merged database: %w", err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning the replay transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := r.applyChanges(ctx, tx, mergedRO, database, w, stats); err != nil {
+		return err
+	}
+	if !w.postRepoint {
+		if err := r.writeCollisionRecords(ctx, tx, w); err != nil {
+			return err
+		}
+		if err := r.refreshPrefixes(ctx, tx); err != nil {
+			return err
+		}
+		if err := r.rerecordFingerprints(ctx, tx, w); err != nil {
+			return err
+		}
+	}
+	if res.Commits, err = r.advanceCommits(ctx, tx, w); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing the replay transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// isSerializationFailure reports a commit that lost to a concurrent write.
+func isSerializationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "serialization failure") || strings.Contains(msg, "Error 1213") || strings.Contains(msg, "Error 1205") || strings.Contains(msg, "try restarting transaction")
+}
+
+// replaySnapshot is the decided work before a protection pass changes it.
+type replaySnapshot struct {
+	touched            map[string]map[string]bool
+	full               map[string]bool
+	stateChanged       map[string]map[string]bool
+	collisionsToWrite  []string
+	collisionsToDelete []string
+}
+
+func copySet(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func copySets(in map[string]map[string]bool) map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = copySet(v)
+	}
+	return out
+}
+
+func (w *replayWork) snapshot() replaySnapshot {
+	return replaySnapshot{
+		touched: copySets(w.touched), full: copySet(w.full), stateChanged: copySets(w.stateChanged),
+		collisionsToWrite:  append([]string(nil), w.collisionsToWrite...),
+		collisionsToDelete: append([]string(nil), w.collisionsToDelete...),
+	}
+}
+
+func (w *replayWork) restore(s replaySnapshot) {
+	w.touched, w.full, w.stateChanged = copySets(s.touched), copySet(s.full), copySets(s.stateChanged)
+	w.collisionsToWrite = append([]string(nil), s.collisionsToWrite...)
+	w.collisionsToDelete = append([]string(nil), s.collisionsToDelete...)
+	w.postRepoint = false
+}

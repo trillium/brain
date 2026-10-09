@@ -160,6 +160,16 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		return errors.New("exfiltrator: issue has no kind")
 	}
 
+	// A bead marked for deletion must not be rendered: its file is gone
+	// by intent (an operator, or an accident in the synced folder) and the
+	// mark stands until a human clears it ('bd render-marks clear').
+	// Auto-rendering the bead again here would silently undo that intent —
+	// render is NOT the clear. Load-bearing callers hydrate labels
+	// (GetIssue, IssueFilter default) so the mark is always visible here.
+	if hasDeletionMark(issue.Labels) {
+		return &SkipMarkedError{ID: issue.ID}
+	}
+
 	slug, persistedNow, err := m.slugFor(issue)
 	if err != nil {
 		return fmt.Errorf("exfiltrator: derive slug for %s: %w", issue.ID, err)
@@ -168,6 +178,17 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 	path := m.pathFor(issue.IssueType, slug)
 	if err := ensureDir(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("exfiltrator: mkdir for %s: %w", issue.ID, err)
+	}
+
+	if owner, err := m.existingOwnerID(path); err == nil && owner != "" && owner != issue.ID {
+		// The render key is the slug, so two rows can map to one file
+		// (cutover probe Question (b): cross-namespace slug collisions
+		// become reachable in a unified database). Last-write-wins would
+		// silently corrupt the file — refuse the overwrite and name both
+		// ids instead; the reconciler / render-all report surfaces it.
+		return fmt.Errorf(
+			"exfiltrator: refusing to overwrite %s: it belongs to %s, and %s's render key maps to the same slug %q — rename one of the two beads' brain_slug",
+			path, owner, issue.ID, slug)
 	}
 
 	if err := m.writeCheckpoint(checkpointEntry{
@@ -194,10 +215,77 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		}
 	}
 
+	// Record the file in the render manifest so the edit-back run can
+	// later distinguish "this bead's render was deleted" from "this bead
+	// was never rendered". New code (edit-back, divergence/0029); without
+	// it the manifest simply does not exist and deletion detection reports
+	// itself as unavailable.
+	if err := m.recordManifest(issue.ID, string(issue.IssueType), slug); err != nil {
+		_ = m.clearCheckpoint()
+		return fmt.Errorf("exfiltrator: record manifest for %s: %w", issue.ID, err)
+	}
+
 	if err := m.clearCheckpoint(); err != nil {
 		return fmt.Errorf("exfiltrator: clear checkpoint for %s: %w", issue.ID, err)
 	}
 	return nil
+}
+
+// hasDeletionMark answers whether labels contains DeletionMarkLabel.
+func hasDeletionMark(labels []string) bool {
+	for _, l := range labels {
+		if l == DeletionMarkLabel {
+			return true
+		}
+	}
+	return false
+}
+
+// SkipMarkedError is the typed error Render returns when the issue being
+// rendered carries the DeletionMarkLabel. The render decorator swallows it
+// as it swallows render failures, but the explicit render verbs type-assert
+// it so a 'bd render' on a marked bead prints the skip and the way out
+// instead of a bare failure.
+type SkipMarkedError struct {
+	ID string
+}
+
+func (e *SkipMarkedError) Error() string {
+	return fmt.Sprintf("%s is marked for deletion — renders skip it until the mark is cleared with 'bd render-marks clear %s'", e.ID, e.ID)
+}
+
+// IsSkipMarked answers whether err is the deletion-mark render skip. Keep
+// the matcher here rather than in three separate verbs so the type never
+// drifts away from its consumers.
+func IsSkipMarked(err error) bool {
+	var se *SkipMarkedError
+	return errors.As(err, &se)
+}
+
+// existingOwnerID reads the id frontmatter line of an already-rendered
+// markdown file. Empty means unreadable, unparsable, or no recorded id —
+// callers treat that as "no owner on record" and proceed (a file from a
+// pre-id renderer must not wedge every subsequent write).
+func (m *MarkdownExfiltrator) existingOwnerID(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, 4096)
+	n, _ := f.Read(buf)
+	head := string(buf[:n])
+	// Stay inside the frontmatter block: stop at its closing "---" line.
+	if end := strings.Index(head, "\n---\n"); end >= 0 {
+		head = head[:end]
+	}
+	for _, line := range strings.Split(head, "\n") {
+		line = strings.TrimSpace(line)
+		if after, ok := strings.CutPrefix(line, "id:"); ok {
+			return strings.TrimSpace(after), nil
+		}
+	}
+	return "", nil
 }
 
 // Remove deletes the markdown for the given (kind, slug) pair if it
@@ -225,6 +313,14 @@ func (m *MarkdownExfiltrator) Remove(_ context.Context, issueID string, kind typ
 
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("exfiltrator: remove %s: %w", path, err)
+	}
+
+	// The store removed this file on purpose (kind transitions move it) —
+	// clear the manifest entry so the edit-back run never reads the
+	// removal as a later deletion.
+	if err := m.dropManifest(issueID); err != nil {
+		_ = m.clearCheckpoint()
+		return fmt.Errorf("exfiltrator: drop manifest for %s: %w", issueID, err)
 	}
 
 	if err := m.clearCheckpoint(); err != nil {
@@ -297,6 +393,13 @@ func (m *MarkdownExfiltrator) slugFor(issue *types.Issue) (slug string, derivedN
 	}
 	m.allocatedSlugs[key] = issue.ID
 	return slug, true, nil
+}
+
+// MetadataSlug is the exported helper other packages use to read the
+// render-key slug out of a bead's raw metadata. It delegates to
+// metadataSlug so the key's parse rules can never fork.
+func MetadataSlug(raw json.RawMessage) string {
+	return metadataSlug(raw)
 }
 
 // metadataSlug returns the brain_slug field stored in raw, or "" when

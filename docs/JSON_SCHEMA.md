@@ -150,6 +150,7 @@ Optional fields:
 - `dependencies` (object[]): Dependency records
 - `dependency_count`, `dependent_count`, `comment_count` (number)
 - `parent` (string|null): Parent issue ID
+- `name` (string, omitted when underivable): Additive human/voice-facing kebab-case name derived from `title`; `id` remains canonical. See `brain/VOICE_IDENTIFIERS.md`.
 
 ### bd ready --json
 

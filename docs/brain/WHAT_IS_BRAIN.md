@@ -1,7 +1,8 @@
 # what is brain?
 
+> **Version: 1.1.0 (2026-10-07)** — correction pass for factual staleness: the exfiltration hook shipped, `kind` gained `isa`, the store federation and unified-database work added. Structure and voice unchanged. Revision history in `divergence/`.
 > **Audience:** anyone — including future-Trillium on a phone — who needs to understand what `brain` actually is.
-> **TL;DR:** **brain IS bd, renamed.** One binary. The same Go source code, installed under the name `brain` instead of `bd`. Every bd verb (`create`, `show`, `list`, `ready`, `close`, `update`, `dep add`, `prime`, `bootstrap`, ...) is reachable as `brain <verb>` because the binary answers to its installed name. brain ADDS a few verbs (`new`, `link`, `related`, `recast`) and ADDS one column-shaped convention (`kind`), and ADDS a markdown-exfiltration hook. That is the whole delta. There is no "brain layer" routing through bd. There is no "use bd for that, brain for this." There is one tool with two acceptable names, plus a small set of extra verbs glued on.
+> **TL;DR:** **brain IS bd, renamed.** One binary. The same Go source code, installed under the name `brain` instead of `bd`. Every bd verb (`create`, `show`, `list`, `ready`, `close`, `update`, `dep add`, `prime`, `bootstrap`, ...) is reachable as `brain <verb>` because the binary answers to its installed name. brain ADDS a small verb family (`new`, `link`, `related`, `recast`, plus more since — see `WHAT_BRAIN_ADDS.md` for the full list), ADDS a column-shaped convention (`kind`), and ADDS a markdown-exfiltration hook that shipped (divergence/0012). And the rename framing grew into a layer of its own: a **store federation** — many named stores behind thin wrapper commands, one binary, one search — that is being consolidated into a single database with namespaces. There is no "brain layer" routing through bd, and no "use bd for that, brain for this." There is one tool with two acceptable names, a set of extra verbs, and a federation on top.
 
 ---
 
@@ -31,10 +32,12 @@ bd already ships a binary-rename mechanism. Install it as `fork`, `spoon`, `ops`
 
 What brain adds, on top of that rename:
 
-1. **A `kind` discriminator** on every brain doc — `task | knowledge | both` — riding on bd's existing `issues.issue_type` column. No schema migration.
-2. **Four new verbs** registered on the same Cobra root: `brain new`, `brain link`, `brain related`, `brain recast`. These are the verbs brain ADDS to the binary; bd's existing verbs continue to work unchanged.
+1. **A `kind` discriminator** on every brain doc — `task | knowledge | both | isa` — riding on bd's existing `issues.issue_type` column. No schema migration.
+2. **A family of new verbs** registered on the same Cobra root: the knowledge-graph core (`brain new`, `brain link`, `brain related`, `brain recast`, detailed in §4) plus more since — the ISA verb family, `brain stores`, `bd transfer`, `bd render`/`render-all`, `bd store-prefix`, `bd patch`. The full, evidence-backed list lives in [`WHAT_BRAIN_ADDS.md`](WHAT_BRAIN_ADDS.md); this primer only walks the four core ones.
 3. **Two new edge types** — `extends`, `learned-from` — registered in `internal/types/types.go` (commit `c4b6a78e4`) alongside bd's existing 16.
-4. **A markdown exfiltration hook** (`Exfiltrator` seam, not yet built — ISC-117-121) that writes one markdown file per brain doc to `~/data/knowledge/entries/{kind}/{id}.md` on every mutation.
+4. **A markdown exfiltration hook** — `BrainExfiltrationDecorator`, shipped (divergence/0012) — that writes one markdown file per brain doc to the store's entries tree (`entries/{kind}/{slug}.md`) on every mutation, with the render root derived per store.
+
+**What the framing grew into: the store federation and one database.** Since this primer was first written, the "one binary, renamed per install" model grew a **federation of named stores**: many stores, each reached through its own thin wrapper command (one shared binary pinned to that store's directory and name), one registry, one federated search across all of them (`bd search --federated`). That consolidation is being finished by **unifying all the per-store Dolt databases into a single database** (`brain_unified`) where each store owns a namespace — ids minted under the store's own prefix, ownership enforced on every mint, reads narrow to the wrapper's namespace by default and only go wide across stores with an explicit `--wide`. Unification is built and proven on scratch copies of real data, but not yet deployed — production still runs one database per store. The full detail is the inventory's §1 (federation) and §2 (unified database), not repeated here.
 
 That is the full surface area of "what's actually new." Everything else you can do in brain, you can do because the renamed bd binary already does it.
 
@@ -96,7 +99,7 @@ Every right-hand-column verb is defined in §4 below.
 
 ## 4. The verbs brain adds (in detail)
 
-These are the four verbs that did not exist on bd. Each is registered through the `BrainVerb` seam (Decision #5, `divergence/0003`, landed `5149a9e53`) and dispatched by the same Cobra root that handles bd's verbs.
+These are the four verbs that did not exist on bd (more brain-only verbs exist by now — ISA verb family, `stores`, `transfer`, `render`, `store-prefix`, `patch`; see [`WHAT_BRAIN_ADDS.md`](WHAT_BRAIN_ADDS.md)). Each is registered through the `BrainVerb` seam (Decision #5, `divergence/0003`, landed `5149a9e53`) and dispatched by the same Cobra root that handles bd's verbs.
 
 > **Naming note on `brain new`:** the kind is a required positional argument (`brain new <kind> <title>`), not a flag. This matches the voice pattern Trillium actually uses ("brain new task ...", "brain new knowledge ..."), matches ISA ISC-104/105/106 which test exactly that signature, and removes a class of ambiguity — there is no "smart default" to second-guess.
 
@@ -123,7 +126,7 @@ created: B-d4f88
   title: active investigation: launchd quarantine of resolver
 ```
 
-Kind is required. There is no implicit default. If kind is omitted brain exits 2 with `error: kind is required, must be one of task|knowledge|both`.
+Kind is required. There is no implicit default. If kind is omitted brain exits 2 with `error: kind is required, must be one of task|knowledge|both|isa`.
 
 **Why required (not defaulted):**
 - The voice pattern Trillium uses already speaks the kind ("brain new task ...", "brain new knowledge ...").
@@ -151,12 +154,12 @@ Kind is required. There is no implicit default. If kind is omitted brain exits 2
 **Scenario: missing kind argument**
 - **Given** Trillium types `brain new "thought I had on the train"` without a kind
 - **When** Cobra parses the args
-- **Then** brain exits 2 with `error: kind is required, must be one of task|knowledge|both`; nothing is written; no markdown file is created.
+- **Then** brain exits 2 with `error: kind is required, must be one of task|knowledge|both|isa`; nothing is written; no markdown file is created.
 
 **Scenario: invalid kind value**
 - **Given** Trillium types `brain new note "..."`
 - **When** the verb validates the kind argument
-- **Then** brain exits 2 with `error: invalid kind "note", must be one of task|knowledge|both`; the typed-enum guard from ISC-102 catches this before any storage call.
+- **Then** brain exits 2 with `error: invalid kind "note", must be one of task|knowledge|both|isa`; the typed-enum guard from ISC-102 catches this before any storage call.
 
 ---
 
@@ -344,27 +347,28 @@ None of these are "shims" or "wrappers." They are the exact same Cobra subcomman
 
 ## 6. The `kind` discriminator — the only schema-shaped new idea
 
-bd's `issues.issue_type` column is `TEXT`. bd writes `"task"` there. brain teaches the CLI three values:
+bd's `issues.issue_type` column is `TEXT`. bd writes `"task"` there. brain teaches the CLI four values:
 
 ```
                   issues.issue_type  (bd's existing TEXT column)
                           │
-        ┌─────────────────┼─────────────────┐
-        ▼                 ▼                 ▼
-     "task"          "knowledge"          "both"
-        │                 │                 │
-   default for       written by         written by
-   `brain create`    `brain new        `brain new
-   and bd's existing knowledge ...`     both ...`
-   verbs that
-   create rows
-        │                 │                 │
-   appears in:       appears in:        appears in:
-   - brain ready     - brain list       - all of the above
-   - brain list      - brain related      (both qualifies
-   - brain related     traversals          as task-shaped
-     traversals      - NOT in            for ready/queue)
-                       brain ready
+        ┌─────────────┬───┴─────────────┬──────────────┐
+        ▼             ▼                 ▼              ▼
+     "task"       "knowledge"        "both"         "isa"
+        │             │                 │              │
+   default for    written by      written by       written by
+   `brain create` `brain new      `brain new       `brain new isa ...`
+   and bd's       knowledge ...`  both ...`        allocates
+   existing verbs                                  `<prefix>-isa-XXXXX`
+   that create                                     ids (the ISA
+   rows                                            store-type record)
+        │             │                 │              │
+   appears in:       appears in:      appears in:     its own isa-*
+   - brain ready     - brain list     - all of the    verb family
+   - brain list      - brain related    above (both
+   - brain related     traversals        qualifies
+     traversals      - NOT in            as task-shaped
+                       brain ready      for ready/queue)
 ```
 
 Concrete behavior:
@@ -378,9 +382,14 @@ $ brain new knowledge "Dolt FK constraints are lazy until commit"
 
 $ brain new both "Friday cache bug fix + the postmortem"
    → issue_type = "both"           appears in both views, and in `brain ready`
+
+$ brain new isa "the v0.4 ISA record"
+   → issue_type = "isa"            the ISA-as-store-type record;
+                                   isa-list / isa-show / isa-section /
+                                   isa-render operate on these
 ```
 
-**No new column. No migration.** The only code change is a typed-enum guard in the verb layer (ISC-102) that rejects values outside `{task, knowledge, both}` when written through brain-added verbs. bd-existing verbs continue to default `task` as they always have.
+**No new column. No migration.** The only code change is a typed-enum guard in the verb layer (ISC-102) that rejects values outside `{task, knowledge, both, isa}` when written through brain-added verbs. bd-existing verbs continue to default `task` as they always have.
 
 ---
 
@@ -442,12 +451,12 @@ If `BrainVerb` ever needs to swap, only the brain-added verbs feel it. bd's exis
                                                        │
                                                        ▼
                                               ┌──────────────────┐
-                                              │ Exfiltrator      │  ISC-117-121,
-                                              │ Render(node)     │  not yet built
-                                              │ ↓                │
-                                              │ ~/data/knowledge │
-                                              │ /entries/{kind}/ │
-                                              │ {id}.md          │
+                                              │ Exfiltrator      │  shipped,
+                                              │ Render(node)     │  divergence/0012
+                                              │ ↓                │  (BrainExfiltration-
+                                              │ <store-derived   │  Decorator)
+                                              │  entries root>/  │
+                                              │ {kind}/{slug}.md │
                                               └──────────────────┘
 ```
 
@@ -455,7 +464,7 @@ Three things this diagram makes load-bearing:
 
 1. **bd-existing-verbs and brain-added-verbs both terminate at the same `internal/storage` layer.** They are not parallel write paths; they are siblings sharing a back-end.
 2. **`BrainVerb` is a seam, not a router.** Only brain-added verbs pass through it. bd-existing verbs route directly from Cobra to storage.
-3. **Exfiltration is a decorator on bd's existing `HookFiringStore`, not a parallel write path.** When the Exfiltrator lands, it intercepts the same writes bd already fires hooks on. bd's own behavior does not change.
+3. **Exfiltration is a decorator on bd's existing `HookFiringStore`, not a parallel write path.** The `BrainExfiltrationDecorator` (shipped, divergence/0012) intercepts the same writes bd already fires hooks on. bd's own behavior does not change.
 
 ---
 
@@ -520,7 +529,7 @@ These scenarios touch multiple primitives and demonstrate the "one bag of brain 
 ```
    verb                      example                                        notes
   ───────────────────────   ───────────────────────────────────────────   ─────────────────────────────
-   brain new <kind> "X"      brain new task "ship the FTS5 indexer"        kind required: task|knowledge|both
+   brain new <kind> "X"      brain new task "ship the FTS5 indexer"        kind required: task|knowledge|both|isa
    brain link a b --T        brain link B-a7b3c B-217 --learned-from       18 edge types; --extends, --learned-from new
    brain related <id>        brain related B-a7b3c --depth=2               BFS tree, depth-capped
    brain recast <id>         brain recast B-a7b3c --to=task                kind change in place; preserves ID + edges
@@ -537,10 +546,10 @@ These scenarios touch multiple primitives and demonstrate the "one bag of brain 
    brain dolt push/pull      brain dolt push                                same as bd dolt push/pull
    brain jot save "X"        brain jot save "thought, figure out later"     wisp alias namespace (ISC-251)
 
-   one binary               renamed to `brain` at install time              answers to both `bd` and `brain`
-   one schema               kind ∈ {task, knowledge, both} on issue_type     no migration
+   one binary               renamed to `brain` at install time              answers to both `bd` and `brain`; one of many named stores in the federation
+   one schema               kind ∈ {task, knowledge, both, isa} on issue_type  no migration
    one edge table           18 edge types (16 bd + 2 brain)                  brain's: extends, learned-from
-   one exfiltration hook    HookFiringStore decorator (ISC-117-121)          writes entries/{kind}/{id}.md, not yet built
+   one exfiltration hook    BrainExfiltrationDecorator (shipped, divergence/0012)  writes entries/{kind}/{slug}.md on every mutation
 ```
 
 ---
@@ -551,5 +560,6 @@ These scenarios touch multiple primitives and demonstrate the "one bag of brain 
 - The seam itself: `internal/brain/verb/verb.go` and its tests
 - The brain parent Cobra command: `cmd/bd/brain.go`
 - The reframe this doc lands: `divergence/0006-brain-primitives-reframe.md`
-- The canonical brain spec: `../../ISA.md` — problem, vision, ISC table, decision log
+- The approved vision the work now designs against: `../../VISION.md`
+- The retired v0.3 project ISA, kept as a frozen historical record: [`archive/ISA-v03.md`](archive/ISA-v03.md) — decision log, constraints, ISCs
 - The full divergence trail: `../../divergence/`

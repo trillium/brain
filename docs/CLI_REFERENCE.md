@@ -25,6 +25,13 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd gate list](#bd-gate-list) — List gate issues
   - [bd gate resolve](#bd-gate-resolve) — Manually resolve (close) a gate
   - [bd gate show](#bd-gate-show) — Show a gate issue
+- [bd isa-by-slug](#bd-isa-by-slug) — Resolve a slug to a brain id (O(1) lookup against the issues.slug column)
+- [bd isa-list](#bd-isa-list) — List every ISA (or only active ISAs)
+- [bd isa-render](#bd-isa-render) — Render an ISA from the substrate to canonical IsaFormat v2.7 markdown on disk
+- [bd isa-render-all](#bd-isa-render-all) — Re-render every active ISA to disk (useful after upgrades or corruption)
+- [bd isa-render-pending](#bd-isa-render-pending) — List ISAs whose on-disk markdown is stale relative to the substrate
+- [bd isa-section](#bd-isa-section) — Upsert one of the twelve canonical ISA sections on an isa-kind issue
+- [bd isa-show](#bd-isa-show) — Show an ISA document (full doc or a single section) without markdown rendering
 - [bd label](#bd-label) — Manage issue labels
   - [bd label add](#bd-label-add) — Add a label to one or more issues
   - [bd label list](#bd-label-list) — List labels for an issue
@@ -39,10 +46,17 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd merge-slot create](#bd-merge-slot-create) — Create a merge slot bead for the current rig
   - [bd merge-slot release](#bd-merge-slot-release) — Release the merge slot
 - [bd note](#bd-note) — Append a note to an issue
+- [bd patch](#bd-patch) — Patch a single field on an issue (non-interactive)
 - [bd priority](#bd-priority) — Set the priority of an issue
 - [bd promote](#bd-promote) — Promote a wisp to a permanent bead
 - [bd q](#bd-q) — Quick capture: create issue and output only ID
 - [bd query](#bd-query) — Query issues using a simple query language
+- [bd render](#bd-render) — Re-render an issue's markdown to the store's exfiltration root
+- [bd render-all](#bd-render-all) — Re-render every issue's markdown (useful after corruption or root change)
+- [bd render-import](#bd-render-import) — Import edits from the store's rendered markdown into their beads (opt-in per store), and mark beads whose rendered file was deleted
+- [bd render-marks](#bd-render-marks) — Show or clear the "marked-for-deletion" label beads carry when their rendered file was deleted
+  - [bd render-marks clear](#bd-render-marks-clear) — Clear the deletion mark on the named beads (renders resume; the files are re-created)
+  - [bd render-marks list](#bd-render-marks-list) — List every bead carrying the deletion mark
 - [bd reopen](#bd-reopen) — Reopen one or more closed issues
 - [bd search](#bd-search) — Search issues by text query
 - [bd set-state](#bd-set-state) — Set operational state (creates event + updates label)
@@ -104,6 +118,12 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd export](#bd-export) — Export issues to JSONL format
 - [bd federation](#bd-federation) — Manage peer-to-peer federation (requires CGO)
 - [bd import](#bd-import) — Import issues from a JSONL file or stdin into the database
+- [bd outbox](#bd-outbox) — Durable event outbox: delivery state, retries, backlog
+  - [bd outbox ack](#bd-outbox-ack) — Record an acknowledgement by hand
+  - [bd outbox deliver](#bd-outbox-deliver) — Run one delivery pass: attempt every due pending event
+  - [bd outbox list](#bd-outbox-list) — Show outbox events: the backlog and its bound
+  - [bd outbox purge](#bd-outbox-purge) — Delete retired events older than a timestamp
+  - [bd outbox record](#bd-outbox-record) — Record the event for a mutation whose event was not recorded
 - [bd restore](#bd-restore) — Restore the pre-compaction content of a compacted issue
 - [bd vc](#bd-vc) — Version control operations
   - [bd vc commit](#bd-vc-commit) — Create a commit with all staged changes
@@ -138,6 +158,10 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd dolt stop](#bd-dolt-stop) — Stop the Dolt SQL server for this project
   - [bd dolt test](#bd-dolt-test) — Test connection to Dolt server
 - [bd forget](#bd-forget) — Remove a persistent memory
+- [bd hook](#bd-hook) — Declared guard/observer hooks (hooks.d)
+  - [bd hook list](#bd-hook-list) — List declared hooks and validate hooks.d
+  - [bd hook test](#bd-hook-test) — Run one hook against a sample payload and show its decision
+  - [bd hook warnings](#bd-hook-warnings) — List and acknowledge hook warnings
 - [bd hooks](#bd-hooks) — Manage git hooks for beads integration
   - [bd hooks install](#bd-hooks-install) — Install bd git hooks
   - [bd hooks list](#bd-hooks-list) — List installed git hooks status
@@ -231,6 +255,14 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd audit label](#bd-audit-label) — Append a label entry referencing an existing interaction
   - [bd audit record](#bd-audit-record) — Append an audit interaction entry
 - [bd blocked](#bd-blocked) — Show blocked issues
+- [bd brain](#bd-brain) — brain — knowledge graph + task tool on top of bd
+  - [bd brain link](#bd-brain-link) — Link two brain docs with a typed edge
+  - [bd brain new](#bd-brain-new) — Create a new brain doc (kind = task | knowledge | both | isa)
+  - [bd brain promote](#bd-brain-promote) — Redirect: did you mean `brain recast &lt;id&gt; --to=&lt;kind&gt;`?
+  - [bd brain recast](#bd-brain-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
+  - [bd brain related](#bd-brain-related) — Walk the graph from a center brain doc and print the subgraph as a tree
+  - [bd brain stores](#bd-brain-stores) — Manage the brain federation store registry
+  - [bd brain unify](#bd-brain-unify) — Plan, build, replay and verify the consolidation of brain's stores into one Dolt database
 - [bd completion](#bd-completion) — Generate the autocompletion script for the specified shell
   - [bd completion bash](#bd-completion-bash) — Generate the autocompletion script for bash
   - [bd completion fish](#bd-completion-fish) — Generate the autocompletion script for fish
@@ -286,6 +318,24 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
 - [bd rename](#bd-rename) — Rename an issue ID
 - [bd ship](#bd-ship) — Publish a capability for cross-project dependencies
+- [bd store-prefix](#bd-store-prefix) — Show or extend the unified database's namespace record (brain_store_prefixes)
+  - [bd store-prefix add](#bd-store-prefix-add) — Claim a new id prefix for a store's namespace
+  - [bd store-prefix history](#bd-store-prefix-history) — Show a prefix's ownership trail (claims and releases, newest first)
+  - [bd store-prefix list](#bd-store-prefix-list) — Show the unified database's prefix-ownership record
+  - [bd store-prefix release](#bd-store-prefix-release) — Free this store's own id prefix (deliberate, confirmed, event-recorded)
+- [bd stores](#bd-stores) — Manage the brain federation store registry
+  - [bd stores add](#bd-stores-add) — Register a store in the brain federation registry
+  - [bd stores alias](#bd-stores-alias) — Make a second CLI name resolve to an existing store
+  - [bd stores create](#bd-stores-create) — Provision a new connected store (dolt init + entries dir + wrapper + registry)
+  - [bd stores doctor](#bd-stores-doctor) — Assert every store in the registry answers a read
+  - [bd stores edit-back](#bd-stores-edit-back) — Declare whether a store accepts edits from its rendered markdown files
+  - [bd stores env](#bd-stores-env) — Write ~/.config/brain/stores.env from the registry (for shell wrappers)
+  - [bd stores list](#bd-stores-list) — List all registered stores
+  - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
+  - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
+  - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
+- [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
 - [bd version](#bd-version) — Print version information
 
@@ -464,7 +514,18 @@ bd comments list
 
 ### bd create
 
-Create a new issue (or batch from markdown/graph JSON)
+Create a new issue (or batch from markdown/graph JSON).
+
+Compose in your editor when the body is more than a one-liner: the first line
+of the buffer is the title, everything after the first blank line is the body.
+
+Examples:
+  bd create "Short title"                      # title only
+  bd create "Short title" -d "Body text"       # title + body inline
+  bd create --edit                             # compose title + body in $EDITOR
+  bd create "Short title" --edit               # prefill the title, write the body
+  bd create                                    # same as --edit when run at a terminal
+  bd edit bd-42 --append                       # append more body later, in $EDITOR
 
 ```
 bd create [title] [flags]
@@ -487,6 +548,7 @@ bd create [title] [flags]
       --design-file string      Read design from file (use - for stdin)
       --dry-run                 Preview what would be created without actually creating
       --due string              Due date/time. Formats: +6h, +1d, +2w, tomorrow, next monday, 2025-01-15
+  -E, --edit                    Compose the title and body in $EDITOR (implied when no title is given at a terminal)
       --ephemeral               Create as ephemeral (short-lived, subject to TTL compaction)
   -e, --estimate int            Time estimate in minutes (e.g., 60 for 1 hour)
       --event-actor string      Entity URI who caused this event (requires --type=event)
@@ -600,6 +662,7 @@ Examples:
   bd edit bd-42 --design           # Edit design notes
   bd edit bd-42 --notes            # Edit notes
   bd edit bd-42 --acceptance       # Edit acceptance criteria
+  bd edit bd-42 --append           # Append to the description from an empty buffer
 
 ```
 bd edit [id] [flags]
@@ -609,6 +672,7 @@ bd edit [id] [flags]
 
 ```
       --acceptance    Edit the acceptance criteria
+      --append        Start from an empty buffer and append what you write to the field
       --description   Edit the description (default)
       --design        Edit the design notes
       --notes         Edit the notes
@@ -811,6 +875,217 @@ This is similar to 'bd show' but validates that the issue is a gate.
 
 ```
 bd gate show <gate-id>
+```
+
+### bd isa-by-slug
+
+Resolve an ISA slug to its brain id. Lookup is O(1) against the
+issues.slug column (added in F1a; auto-populated in F1d).
+
+  bd isa-by-slug ship-the-thing   # prints the id on success, exit 0
+                                  # missing slug exits 1 with stderr message
+
+isa-by-slug is restricted to kind=isa rows. A slug present on a non-isa row
+is treated as not-found and exits 1.
+
+```
+bd isa-by-slug <slug>
+```
+
+### bd isa-list
+
+List all ISA-kind issues with their phase, progress, effort, and last
+update. With --active, filters out ISAs whose phase is LEARN (i.e. completed
+runs that are in the learning/post-mortem phase).
+
+  bd isa-list              # text table, every ISA
+  bd isa-list --active     # text table, ISAs not in LEARN phase
+  bd isa-list --json       # JSON array of compact objects
+
+Empty result: exit 0 with no output.
+
+```
+bd isa-list [flags]
+```
+
+**Flags:**
+
+```
+      --active   Filter to ISAs whose phase is not LEARN
+      --json     Emit a JSON array of compact ISA objects
+```
+
+### bd isa-render
+
+Render an ISA-kind issue to canonical markdown at
+&lt;exfil-root&gt;/&lt;slug&gt;/ISA.md.
+
+The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
+variable; it defaults to $&#123;HOME&#125;/.claude/brain/MEMORY/WORK. When that
+path does not exist but the legacy $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK does,
+the legacy path is used instead. The render is
+atomic: a temp file is written first, then rename(2) makes the swap, so
+readers never observe a half-written file.
+
+The rendered file mirrors the IsaFormat v2.7 frontmatter (task, slug, effort,
+phase, progress, mode, started, updated) and adds one new key — brain_id —
+so downstream tools can trace markdown back to the substrate row.
+
+isa-render is only valid for kind=isa. Calling it on any other kind exits 1.
+Missing issue exits 1. Path-traversal-shaped slugs (someone INSERT'd a slug
+with '/' or '..' directly into the DB) exit 2.
+
+The path of the rendered file is printed to stdout. Exit 0 on success.
+
+Examples:
+  bd isa-render brain-isa-00001
+  BRAIN_ISA_EXFIL_ROOT=/tmp/work bd isa-render brain-isa-00001
+
+```
+bd isa-render <id>
+```
+
+### bd isa-render-all
+
+Re-render every ISA in the substrate to its canonical exfil path.
+
+The exfil root and atomicity semantics match bd isa-render. With --since,
+only ISAs whose isa_updated_at is at or after the supplied RFC3339 timestamp
+are re-rendered — useful for incremental refreshes.
+
+For each ISA, one tab-separated line is printed to stdout:
+  &lt;id&gt;\t&lt;path&gt;\t&lt;status&gt;
+
+where status is "rendered", "skipped-divergent", or "failed: &lt;reason&gt;".
+
+"skipped-divergent" means the on-disk ISA.md is disk-canonical (it lacks this
+row's brain_id frontmatter — a hand-authored file the render must not clobber);
+that row is left untouched and is NOT counted as a failure.
+
+A per-ISA failure does not stop the run; the exit code is 0 only if every
+render either succeeded or was skipped as divergent. Otherwise exit 1 (and
+individual failure lines on stdout describe what went wrong).
+
+```
+bd isa-render-all [flags]
+```
+
+**Flags:**
+
+```
+      --since string   Only re-render ISAs with isa_updated_at >= this RFC3339 timestamp
+```
+
+### bd isa-render-pending
+
+List every ISA whose on-disk markdown is stale relative to the
+substrate.
+
+Pending state is derived, not persisted — there is no separate "needs render"
+column. An ISA is pending when:
+
+  - the target ISA.md file does not exist on disk, OR
+  - the file's mtime is older than the row's isa_updated_at.
+
+Auto-render hooks on bd patch and bd isa-section attempt a synchronous
+post-commit render. If that render fails (disk full, permission denied,
+filesystem unavailable), the brain write is NOT rolled back — the brain row
+is canonical, the markdown is a shadow — and a warning is logged to stderr.
+This verb surfaces every shadow that has fallen behind, so the operator can
+re-run 'bd isa-render &lt;id&gt;' or 'bd isa-render-all' to bring the disk back
+into sync.
+
+Text output (one line per stale ISA):
+  &lt;id&gt;\t&lt;slug&gt;\t&lt;reason&gt;
+
+where reason is one of:
+  - "missing"
+  - "stale (file: &lt;RFC3339&gt;, db: &lt;RFC3339&gt;)"
+  - "path error: &lt;message&gt;"   (slug somehow contains '..' or '/' despite
+                                 the F1d regex)
+
+JSON output (--json):
+  [&#123; "id", "slug", "reason", "file_mtime", "isa_updated_at" &#125;, ...]
+
+Exit codes:
+  0 — pending list emitted (empty if nothing stale)
+  1 — listing failed catastrophically (DB error, etc.)
+
+Examples:
+  bd isa-render-pending
+  bd isa-render-pending --json | jq '.[].id'
+
+```
+bd isa-render-pending [flags]
+```
+
+**Flags:**
+
+```
+      --json   Emit results as a JSON array
+```
+
+### bd isa-section
+
+Set one of the twelve canonical ISA document sections on an isa-kind issue.
+
+bd isa-section writes to the isa_sections table (issue_id, section_name, body)
+as an UPSERT, and atomically touches issues.isa_updated_at = NOW() so the row's
+"last touched" semantics match the rest of the ISA substrate.
+
+Valid section names (lower_snake_case, case-sensitive):
+  changelog, constraints, criteria, decisions, features, goal,
+  out_of_scope, principles, problem, test_strategy, verification, vision
+
+Input source is required; exactly one of:
+
+  --value-from-file &lt;path&gt;   read the section body from a file
+  --value-stdin              read the section body from stdin
+
+isa-section is only valid for kind=isa. Calling it on any other kind exits 2.
+Missing issue exits 1.
+
+Examples:
+  bd isa-section isa-001 problem    --value-from-file ./sections/problem.md
+  cat changelog.md | bd isa-section isa-001 changelog --value-stdin
+
+```
+bd isa-section <id> <section-name> [flags]
+```
+
+**Flags:**
+
+```
+      --value-from-file string   Path to a file whose contents become the section body
+      --value-stdin              Read the section body from stdin
+```
+
+### bd isa-show
+
+Read an ISA-kind issue's full document (or a single section) directly from
+the substrate.
+
+By default isa-show emits markdown assembled from the twelve canonical
+sections in spec order, suitable for piping to a pager. Use --json to emit
+the stable JSON document shape consumed by tooling.
+
+  bd isa-show isa-001                      # markdown (default)
+  bd isa-show isa-001 --section=problem    # just the Problem body, no header
+  bd isa-show isa-001 --json               # full JSON doc
+  bd isa-show isa-001 --json --section=X   # --json wins; --section is ignored
+
+isa-show is only valid for kind=isa. Calling it on any other kind exits 1.
+Missing issue exits 1.
+
+```
+bd isa-show <id> [flags]
+```
+
+**Flags:**
+
+```
+      --json             Emit the stable JSON document shape instead of rendered markdown
+      --section string   Restrict output to a single canonical section name (e.g. 'problem', 'changelog')
 ```
 
 ### bd label
@@ -1067,6 +1342,40 @@ bd note <id> [text...] [flags]
       --stdin         Read note text from stdin
 ```
 
+### bd patch
+
+Patch a single field on an issue, non-interactively.
+
+bd patch is the primary mutation path for ISA-substrate fields:
+
+  isa_phase, isa_progress_m, isa_progress_n,
+  isa_effort, isa_mode, isa_started_at, isa_updated_at, slug
+
+ISA fields are only valid on issues with kind=isa. Patching an ISA field on
+any other kind exits with code 2.
+
+Slug is special: it is patchable on any kind and does NOT touch
+isa_updated_at.
+
+Non-ISA, non-slug fields are routed to 'bd update' validation; if your
+field is not in the patch allowlist, use 'bd update' instead.
+
+Examples:
+  bd patch isa-001 --field isa_phase --value BUILD
+  bd patch isa-001 --field isa_progress_m --value 7
+  bd patch bd-001  --field slug --value my-new-slug
+
+```
+bd patch <id> [flags]
+```
+
+**Flags:**
+
+```
+      --field string   Field name to patch (required)
+      --value string   New value for the field (required)
+```
+
 ### bd priority
 
 Set the priority of an issue.
@@ -1210,6 +1519,166 @@ bd query [expression] [flags]
       --sort string   Sort by field: priority, created, updated, closed, status, id, title, type, assignee
 ```
 
+### bd render
+
+Render the markdown for a single issue and write it to disk under
+&lt;exfil-root&gt;/entries/&lt;kind&gt;/&lt;slug&gt;.md.
+
+Exfil root resolves in this order: BRAIN_KNOWLEDGE_ROOT env, dirname($BEADS_DIR),
+~/data/brain. Every kind renders — task, knowledge, both, bug, feature, epic,
+etc. — there is no kind gate.
+
+Use this when the on-disk markdown has been deleted, corrupted, or written by
+an older version of bd. The substrate row is authoritative; the markdown is a
+derived view.
+
+A bead carrying the "marked-for-deletion" label (its rendered file was
+deleted and the deletion has not been cleared by 'bd render-marks clear')
+skips the render and says so: a re-render never silently clears the mark,
+and nothing resurrects the deleted file without a human.
+
+The path of the rendered file is printed to stdout. Exit 0 on success.
+
+Examples:
+  bd render brain-k00042
+  BRAIN_KNOWLEDGE_ROOT=/tmp/work bd render brain-k00042
+
+```
+bd render <id>
+```
+
+### bd render-all
+
+Walk every issue in the substrate and render its markdown to the
+configured exfil root.
+
+Beads carrying the "marked-for-deletion" label (their rendered file was
+deleted, not yet reviewed) are skipped with a named status line — a
+re-render never silently clears the mark.
+
+For each issue, one tab-separated line is printed to stdout:
+  &lt;id&gt;\t&lt;path&gt;\t&lt;status&gt;
+
+where status is "rendered" or "failed: &lt;reason&gt;". A per-issue failure does not
+stop the run; the exit code is 0 only if every render succeeded. Otherwise
+exit 1 (and individual failure lines on stdout describe what went wrong).
+
+A summary line is emitted on stderr at the end:
+  Exfiltrated &lt;ok&gt; / &lt;total&gt; beads to &lt;root&gt;/entries/ (&lt;failed&gt; failed)
+
+With --json, stdout is a single JSON object instead of per-line text:
+  &#123; "rendered": N, "failed": N, "total": N, "root": "&lt;path&gt;",
+    "results": [ &#123; "id", "path", "status", "error" &#125;, ... ] &#125;
+
+```
+bd render-all
+```
+
+### bd render-import
+
+Import edits made to this store's rendered markdown files back into the
+beads they name, and mark beads whose rendered file has been deleted.
+
+The pass is opt-in per store and refuses to guess:
+
+  - A store accepts edit-back only when its registry entry declares it:
+      bd stores edit-back &lt;name&gt; on
+    Where the declaration lives: ~/.config/brain/stores.yaml, per store.
+    'bd stores list' shows which stores accept edits (one-way is the
+    default). A store that does not accept edit-back keeps today's one-way
+    rendering: this run reports the file-vs-row differences and writes
+    nothing to the substrate.
+  - WHAT AN EDIT MEANS: the fields the import defines are title, status,
+    priority, labels (the frontmatter's labels/tags), and description (the
+    body after the "# &#123;title&#125;" H1). Everything else on the bead — id, kind,
+    render-key slug, created/updated timestamps, metadata — stays
+    substrate-owned; the file's disagreement there is never a change. The
+    substrate stays the authority: the database keeps the durable record,
+    and the render-import run is the one place the field is allowed to win,
+    with every change printed as old → new.
+  - DELETION MARKS, NEVER DELETES: a rendered file that has disappeared
+    (recorded by the render manifest, entries/.render-manifest.json) marks
+    its bead with the "marked-for-deletion" label. The bead is never
+    removed and its label is visible on every read. A bead wearing the
+    mark is skipped by every render — a re-render never silently clears
+    the mark, and an unmarked render never resurrects the deleted file —
+    so an accident in the synced folder cannot destroy the record, and
+    nothing resurrects it without a human. The mark is cleared only by
+      bd render-marks clear &lt;id&gt;
+    after which the normal render path re-creates the file.
+
+Refusals are loud and named — each is a different refusal with its own
+code, spelled out by the run: a file that cannot be read; frontmatter
+that names no bead (no id); a file naming a bead whose id prefix belongs
+to another store's namespace; a file naming a bead that does not exist in
+this store (refused by name); a file whose slug disagrees with the bead it
+names; a file at a path the render manifest never recorded for that bead;
+tags and labels disagreeing; a body whose H1 disagrees with both the
+file's and the bead's title; a priority that is not an integer 0-4; an
+edit to a bead that is already marked for deletion.
+
+Behavioral contract (see divergence/0029): each refused file names its
+reason; each applied edit names old → new; each mark names the missing
+file. Exit 0 only when nothing was refused.
+
+Examples:
+  bd render-import
+  bd render-import --json
+
+```
+bd render-import
+```
+
+### bd render-marks
+
+Dealing with deletion marks.
+
+When a rendered markdown file (entries/&lt;kind&gt;/&lt;slug&gt;.md) disappears — an
+operator intended it, or an accident in the synced folder — 'bd
+render-import' marks the bead with the "marked-for-deletion" label instead
+of deleting anything. The bead stays; the mark is visible on every read
+('bd show', 'bd list'); and, while the mark stands, renders skip the bead
+(the file is not silently re-created), so the deletion intent gets a
+human's review rather than a background undo.
+
+  bd render-marks list          every bead carrying the mark
+  bd render-marks clear &lt;id&gt;…   acknowledge the review, clear the mark
+
+Clearing the mark is an explicit act and the only way a mark leaves a bead:
+it removes the label through the normal store surface, after which the
+post-write render path re-creates the file. Deleting the SUBSTRATE bead
+itself, if the deletion intent is confirmed after all, is deliberately a
+separate decision ('bd delete &lt;id&gt;') and never automatic.
+
+```
+bd render-marks
+```
+
+#### bd render-marks clear
+
+Clear the "marked-for-deletion" label on the named beads. This is the ONLY
+way a mark leaves a bead — no render path clears it by itself.
+
+After a clear, the normal render path re-creates each bead's rendered file
+(the label change itself triggers the post-write render). To acknowledge
+the deletion intent by actually deleting the substrate bead, use
+'bd delete &lt;id&gt;' separately; this verb only unmarks, it never deletes.
+
+```
+bd render-marks clear <id>...
+```
+
+#### bd render-marks list
+
+List the beads whose rendered file was deleted and whose deletion has not
+been reviewed yet. Each bead carries the "marked-for-deletion" label.
+
+With --json, stdout is a JSON array of &#123;id, title, status&#125; objects.
+
+```
+bd render-marks list
+```
+
 ### bd reopen
 
 Reopen closed issues by setting status to 'open' and clearing the closed_at timestamp.
@@ -1227,12 +1696,13 @@ bd reopen [id...] [flags]
 
 ### bd search
 
-Search issues across title, description, and ID (excludes closed issues by default).
+Search issues across title, description, comments, and ID (excludes closed issues by default).
 
 ID-like queries (e.g., "bd-123", "hq-319") use fast exact/prefix matching.
 Text queries are tokenized on whitespace and each token is matched against
-title and description; results are ranked by relevance unless --sort is given.
-Use --status all to include closed issues.
+title, description, and comment bodies; results are ranked by relevance unless
+--sort is given (comment-only matches rank below title/description matches).
+Use --no-comments to skip comment bodies, and --status all to include closed issues.
 
 Examples:
   bd search "authentication bug"
@@ -1246,6 +1716,8 @@ Examples:
   bd search "bug" --sort priority
   bd search "task" --sort created --reverse
   bd search "api" --desc-contains "endpoint"
+  bd search "release" --comments-contains "rollback"
+  bd search "fork-origin" --no-comments  # title/description/ID only
   bd search "cleanup" --no-assignee --no-labels
 
 ```
@@ -1258,11 +1730,13 @@ bd search [query] [flags]
   -a, --assignee string              Filter by assignee
       --closed-after string          Filter issues closed after date (YYYY-MM-DD or RFC3339)
       --closed-before string         Filter issues closed before date (YYYY-MM-DD or RFC3339)
+      --comments-contains string     Filter by comment-body substring (case-insensitive)
       --created-after string         Filter issues created after date (YYYY-MM-DD or RFC3339)
       --created-before string        Filter issues created before date (YYYY-MM-DD or RFC3339)
       --desc-contains string         Filter by description substring (case-insensitive)
       --empty-description            Filter issues with empty or missing description
       --external-contains string     Filter by external ref substring (case-insensitive)
+      --federated                    Search across all registered brain stores on the same Dolt server (brain + secondaries). Sectioned output, primary store first.
       --has-metadata-key string      Filter issues that have this metadata key set
   -l, --label strings                Filter by labels (AND: must have ALL)
       --label-any strings            Filter by labels (OR: must have AT LEAST ONE)
@@ -1270,6 +1744,7 @@ bd search [query] [flags]
       --long                         Show detailed multi-line output for each issue
       --metadata-field stringArray   Filter by metadata field (key=value, repeatable)
       --no-assignee                  Filter issues with no assignee
+      --no-comments                  Do not match the query against comment bodies (faster)
       --no-labels                    Filter issues with no labels
       --notes-contains string        Filter by notes substring (case-insensitive)
       --priority-max string          Filter by maximum priority (inclusive, 0-4 or P0-P4)
@@ -2480,6 +2955,134 @@ bd import [file|-] [flags]
   -i, --input string   Read JSONL from a specific file
 ```
 
+### bd outbox
+
+Operator verbs for the durable event outbox.
+
+Every write command records one event per mutated issue in the event_outbox
+table inside the store's own database — the same Dolt commit as the mutation —
+and delivery retries each event with bounded backoff (1s, 2s, 4s, ... capping
+at 1h) until every configured subscriber acknowledges it. A subscriber being
+down delays an event; it never loses one.
+
+  bd outbox list                      the backlog: pending rows, attempts, errors, bound
+  bd outbox deliver                   one delivery pass over due events
+  bd outbox ack &lt;seq&gt; --subscriber X  record an acknowledgement by hand
+  bd outbox record &lt;id&gt;... --command C  record the event of a mutation that has none
+  bd outbox purge --before &lt;RFC3339&gt;  delete retired events older than this
+
+Configuration (config.yaml):
+  change-events.outbox.enabled: true
+  change-events.outbox.subscribers:
+    - "name=pulse;url=http://127.0.0.1:8099/events"
+    - "name=archive;command=/usr/local/bin/archive-event"
+
+An acknowledgement is an HTTP 2xx (within change-events.outbox.timeout) for a
+url subscriber, exit 0 for a command subscriber, or 'bd outbox ack'. Only an
+acknowledgement retires an event; an unacknowledged event stays visible in
+'bd outbox list' forever.
+
+```
+bd outbox
+```
+
+#### bd outbox ack
+
+Record an acknowledgement for one outbox event by hand.
+
+This is the operator escape hatch for a subscriber that will never acknowledge
+(decommissioned, or replaced by a renamed one) and for repairing a corrupt
+row. The event retires when every subscriber frozen on it has acknowledged;
+pass a name not on the row with --force to record it anyway.
+
+```
+bd outbox ack <seq> --subscriber <name> [flags]
+```
+
+**Flags:**
+
+```
+      --force               Acknowledge even when the subscriber is not frozen on the row, or the row is corrupt
+      --subscriber string   Subscriber that acknowledged (required)
+```
+
+#### bd outbox deliver
+
+Deliver due outbox events to their configured subscribers.
+
+Each pending event whose next-attempt time has arrived is attempted, once per
+subscriber. Success (HTTP 2xx / exit 0) records the acknowledgement; an event
+whose every frozen subscriber has acknowledged retires. Failure leaves the
+event pending with its next retry scheduled by the bounded backoff (1s, 2s,
+4s, ... capping at 1h) and the attempt's error recorded on the row. Nothing is
+ever dropped: run again (loop, cron, or the automatic pass after each write)
+until the subscriber comes back.
+
+```
+bd outbox deliver [flags]
+```
+
+**Flags:**
+
+```
+      --all   Attempt every pending event, ignoring the backoff schedule
+```
+
+#### bd outbox list
+
+List outbox events with the delivery state of each.
+
+The summary line shows what the backoff-and-bound story is anchored on: events
+not yet retired (pending) against change-events.outbox.max-pending. Reaching
+the bound refuses new writes loudly; see docs/brain/event-outbox.md.
+
+```
+bd outbox list [flags]
+```
+
+**Flags:**
+
+```
+      --pending-only   Only unretired events
+```
+
+#### bd outbox purge
+
+Delete retired outbox events (delivered and acknowledged) whose
+delivered_at is older than --before. Pending events are never touched: the
+outbox only shrinks by acknowledgement, and only the operator deletes record.
+
+```
+bd outbox purge --before <RFC3339> [flags]
+```
+
+**Flags:**
+
+```
+      --before string   Delete retired events delivered before this RFC3339 timestamp (required)
+```
+
+#### bd outbox record
+
+Record outbox events by hand for issues whose mutation committed but whose
+event was not recorded — the repair for the one window the outbox cannot close
+(a process killed between the store's mutation commit and the event insert) and
+for a command that failed with "its event was NOT recorded".
+
+The events are subject to the same rules as automatic ones: subscribers are
+frozen from the current configuration and the events are delivered like any
+other. Requires change-events.outbox.enabled.
+
+```
+bd outbox record <issue-id>... --command <name> [flags]
+```
+
+**Flags:**
+
+```
+      --command string   Command whose mutation is being recorded (required)
+```
+
 ### bd restore
 
 Restore the pre-compaction content of a compacted issue.
@@ -3177,6 +3780,83 @@ Install, uninstall, or list git hooks for beads integration.
 
 The hooks provide:
 - pre-commit: Run chained hooks before commit
+### bd hook
+
+Hooks declared in &lt;beadsDir&gt;/hooks.d/&lt;name&gt;.toml observe mutations and may
+refuse them. A guard hook runs before a write and can refuse it (fail-closed);
+an observer runs after (fail-open); a hook that declares no policy warns.
+
+Every failure of an observer or unset-policy hook becomes a durable warning
+record in the store. Hooks never write: the store is the only writer.
+
+See docs/brain/HOOKS.md.
+
+```
+bd hook
+```
+
+#### bd hook list
+
+List every hook declared in hooks.d and report every definition that cannot be
+loaded. Exits non-zero when any definition is unusable. Writes nothing.
+
+Examples:
+  bd hook list
+  bd hook list --json
+
+```
+bd hook list
+```
+
+#### bd hook test
+
+Run a declared hook exactly as the write path would — same shell, same
+sanitized environment, same timeout — against a sample or supplied payload, and
+print its exit status, output and what its declared policy would do with it.
+Writes nothing.
+
+Examples:
+  bd hook test no-secrets --event create
+  bd hook test no-secrets --payload-file payload.json
+
+```
+bd hook test <name> [flags]
+```
+
+**Flags:**
+
+```
+      --event string          Event to run the hook for: create, update, close or delete (default "create")
+      --payload-file string   JSON file holding the payload to pipe to the hook
+```
+
+#### bd hook warnings
+
+List the durable warning records hooks have produced. A warning says which hook
+degraded and what happened; it stays "open" until acknowledged, so it can be
+routed to a person or a repair agent instead of being read and stepped over.
+
+Records live in the store's config table under the "hookwarning." prefix, so
+anything that can read the store can read them (bd hook warnings --json).
+
+Examples:
+  bd hook warnings                      # open warnings
+  bd hook warnings --status all --json
+  bd hook warnings --ack hw-20261008T101500Z-1a2b3c4d
+  bd hook warnings --ack-all
+
+```
+bd hook warnings [flags]
+```
+
+**Flags:**
+
+```
+      --ack stringArray   Acknowledge the warning with this id (repeatable)
+      --ack-all           Acknowledge every open warning
+      --status string     Show warnings with this status: open, acknowledged or all (default "open")
+```
+
 - post-merge: Run chained hooks after pull/merge
 - pre-push: Run chained hooks before push
 - post-checkout: Run chained hooks after branch checkout
@@ -3632,10 +4312,17 @@ Store a memory that persists across sessions and account rotations.
 Memories are injected at prime time (bd prime) so you have them
 in every session without manual loading.
 
+Each memory also gets a companion knowledge issue holding the same text, so
+the insight can be commented on, tagged, shown, and searched like any other
+bead. The memory key and the issue ID both name it: the key is what 'bd
+memories' and 'bd prime' read, the issue ID is what comment/tag/show take
+(and the key resolves to it). Pass --no-bead to store the memory alone.
+
 Examples:
   bd remember "always run tests with -race flag"
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
+  bd remember "prod deploy needs a second approver" --no-bead
 
 ```
 bd remember "<insight>" [flags]
@@ -3645,6 +4332,7 @@ bd remember "<insight>" [flags]
 
 ```
       --key string   Explicit key for the memory (auto-generated from content if not set). If a memory with this key already exists, it will be updated in place
+      --no-bead      Store the memory only; do not mint the companion knowledge issue that comment/tag/show act on
 ```
 
 ### bd setup
@@ -5342,6 +6030,638 @@ bd blocked [flags]
       --parent string   Filter to descendants of this bead/epic
 ```
 
+### bd brain
+
+brain v0.3 absorbs bd into a single tool that unifies tasks and
+knowledge under one substrate (Dolt) with markdown as the exfiltrated
+render artifact.
+
+The 'brain' verbs (new, show, list, link, related) speak the knowledge-graph
+vocabulary documented in ISA.md. They are thin aliases over bd's storage
+layer, gated by the kind discriminator (task | knowledge | both).
+
+For the bd vocabulary (create, dep, list, show, etc.) see 'bd --help'.
+
+See ISA.md §"Decisions" → "First-Tranche Decisions" → "Decision 5
+(modularity-first architecture)" for the seam this command tree implements.
+
+```
+bd brain
+```
+
+#### bd brain link
+
+brain link writes one typed edge (a row in the dependencies table)
+between two existing brain docs.
+
+Exactly one edge-type flag must be set:
+  --extends         the from-doc extends/revises the to-doc
+  --learned-from    the from-doc captures a lesson learned from the to-doc
+  --related         the two docs are related (the catch-all edge)
+  --type &lt;name&gt;     any well-known bd dependency type (escape hatch)
+
+The flags are mutually exclusive — setting zero or more than one is a
+usage error. The wrapper resolves the chosen flag to a single edge-type
+string and hands it to the verb; the verb does all validation, existence
+probing, and storage I/O.
+
+Examples:
+  bd brain link B-a7b3c B-217 --learned-from
+  bd brain link B-a7b3c B-552a --extends
+  bd brain link B-100 B-101 --related
+  bd brain link B-100 B-101 --type=blocks
+
+```
+bd brain link <from> <to> [flags]
+```
+
+**Flags:**
+
+```
+      --extends        Edge type: from-doc extends/revises to-doc
+      --learned-from   Edge type: from-doc captures a lesson learned from to-doc
+      --related        Edge type: the two docs are related
+      --type string    Edge type: any well-known bd dependency type (escape hatch)
+```
+
+#### bd brain new
+
+brain new creates a brain doc of the given kind.
+
+&lt;kind&gt; must be one of:
+  task       — work to be done; participates in ready/blocked queues
+  knowledge  — a note or learning; reference-only, never "ready"
+  both       — task-shaped work whose body is also the lesson (defaults open)
+  isa        — an Ideal State Artifact; allocates IDs of shape &lt;prefix&gt;-isa-XXXXX
+               and REQUIRES a slug (auto-generated from &lt;title&gt; when --slug is
+               omitted; supply --slug explicitly when the title yields no
+               alphanumerics).
+
+The kind value rides on the existing issues.issue_type column. For kind=isa
+the verb additionally sets issue.IDPrefix="isa" so the storage layer allocates
+"&lt;config-prefix&gt;-isa-XXXXX" IDs (see migrations 0050/0051/0052 for the
+substrate).
+
+--slug is optional for non-isa kinds: when non-empty it is validated against
+the slug regex (^[a-z0-9][a-z0-9-]&#123;0,63&#125;$) and written to the issues.slug
+column; when empty the column stays NULL. Slug values must be globally unique
+across all kinds — collisions exit with code 2.
+
+Examples:
+  bd brain new task "ship the FTS5 indexer"
+  bd brain new knowledge "Dolt FK constraints are lazy until commit"
+  bd brain new both "Friday cache bug + postmortem" --body "details..."
+  bd brain new isa "Brain as ISA Substrate"
+  bd brain new isa "Custom ISA" --slug=my-custom-slug
+
+Valid kinds: task | knowledge | both | isa
+
+```
+bd brain new <kind> <title> [flags]
+```
+
+**Flags:**
+
+```
+      --body string   Optional markdown body (maps to the existing description column)
+      --slug string   Optional slug (required for kind=isa; auto-generated from title when omitted)
+```
+
+#### bd brain promote
+
+brain promote is NOT a brain verb. It is a redirector for the natural-
+language verb that often comes to mind when someone wants to shift a
+brain doc's kind (knowledge → task, for example).
+
+The brain verb for kind-shift is "recast":
+
+  brain recast &lt;id&gt; --to=&lt;kind&gt;
+
+The name "promote" was avoided because bd already uses it for wisp →
+bead graduation (a different, narrower operation). Namespacing matters
+more than reading-naturalness for a verb that appears hundreds of
+times in shell history.
+
+```
+bd brain promote
+```
+
+#### bd brain recast
+
+brain recast shifts the kind of an existing brain doc. Every edge
+survives. Every comment survives. The body survives. The ID survives.
+Only the issue_type column changes — and, on certain transitions, the
+status column.
+
+--to=&lt;kind&gt; is REQUIRED. Valid values:
+  task        — work to be done; participates in ready/blocked queues
+  knowledge   — a note or learning; reference-only, never "ready"
+  both        — task-shaped work whose body is also the lesson
+
+Status rules:
+  knowledge → task / both : status defaults to 'open' unless the row
+                            was explicitly 'closed' (then preserved)
+  task → knowledge / both : status preserved
+  both → task / knowledge : status preserved
+
+If the current kind already equals --to, recast is a no-op (exit 0,
+no write, no markdown churn).
+
+Markdown relocation (entries/knowledge/&lt;slug&gt;.md → entries/task/&lt;slug&gt;.md)
+is OUT OF SCOPE for this verb — the exfiltrator handles it on its next
+idempotent sync.
+
+Examples:
+  brain recast B-a7b3c --to=task
+  brain recast B-a7b3c --to=knowledge
+  brain recast B-a7b3c --to=both
+  brain recast B-a7b3c --to=task --json
+
+```
+bd brain recast <id> [flags]
+```
+
+**Flags:**
+
+```
+      --to string   Target kind: one of task | knowledge | both (required)
+```
+
+#### bd brain related
+
+brain related performs a breadth-first walk of outgoing edges from
+the given center brain doc and prints the reachable subgraph as an
+indented tree.
+
+The walk is bounded by --depth (default 2). --depth=0 prints just the
+center; --depth=1 prints the center and direct neighbours; higher
+values BFS further out. Each printed node carries its kind tag
+([kind=task], [kind=knowledge], or [kind=both]) and — for closed tasks
+— a ", closed" annotation. On a cycle, the second appearance of a node
+is annotated "(already visited)" and the BFS does not recurse through
+it again.
+
+Edges are followed in the outgoing (from → to) direction only — the
+same direction "bd dep list" prints by default and the same direction
+"brain link &lt;a&gt; &lt;b&gt;" creates. This keeps the rendered tree directional
+and prevents an explosion at common hub nodes; a future
+"--bidirectional" flag is conceivable but not in scope.
+
+Examples:
+  bd brain related B-a7b3c
+  bd brain related B-a7b3c --depth=3
+  bd brain related B-a7b3c --depth=0      # print the center alone
+  bd brain related B-a7b3c --json         # machine-readable tree
+
+```
+bd brain related <id> [flags]
+```
+
+**Flags:**
+
+```
+      --depth int   BFS depth cap (0 prints the center alone; higher walks further) (default 2)
+```
+
+#### bd brain stores
+
+Manage the registry of bd stores federated under brain.
+
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
+can be searched via 'brain search', transferred to via 'brain transfer',
+and synced via 'brain repo sync'.
+
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).
+
+```
+bd stores
+```
+
+##### bd brain stores add
+
+Register a store in the brain federation registry
+
+```
+bd stores add <name> <beads-dir>
+```
+
+##### bd brain stores alias
+
+Create a second CLI variant ('alias') that points at an already-
+registered store. Useful for singular/plural pairs (idea/ideas,
+person/people) or short forms of long names.
+
+Writes a wrapper at ~/.local/bin/&lt;new-name&gt; pinning the existing
+store's BEADS_DIR and BD_NAME. Does NOT add a separate registry
+entry — both names route to the same data because the wrapper
+sets BEADS_DIR identically.
+
+Examples:
+  brain stores alias robots robot       # 'robot' command → robots store
+  brain stores alias person people      # 'people' command → person store
+  brain stores alias ideas idea         # 'idea' command → ideas store
+
+To remove an alias, delete the wrapper:  rm ~/.local/bin/&lt;new-name&gt;
+
+```
+bd stores alias <existing-store> <new-name> [flags]
+```
+
+**Flags:**
+
+```
+      --bd-binary string   Path to bd that the wrapper should exec (default: "bd")
+      --no-wrapper         Skip writing the wrapper at ~/.local/bin/<alias>
+```
+
+##### bd brain stores create
+
+Provision a new connected store end-to-end. Does, in order:
+
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in &lt;path&gt;/.beads/.
+  2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
+  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
+
+Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
+with --no-wrapper if you manage shell shims another way.
+
+If any step fails after files have been written, the verb leaves the
+partial state in place and exits non-zero — re-running with the same
+arguments resumes idempotently.
+
+Examples:
+  brain stores create recipes
+  brain stores create recipes --path /Volumes/extra/recipes
+  brain stores create recipes --bd-binary /opt/homebrew/bin/bd
+
+```
+bd stores create <name> [flags]
+```
+
+**Flags:**
+
+```
+      --bd-binary string    Path to bd that the wrapper should exec (default: "bd", resolved by PATH)
+      --dolt-email string   --email arg to pass to 'dolt init' (skipped if empty)
+      --dolt-name string    --name arg to pass to 'dolt init' (skipped if empty)
+      --no-wrapper          Skip writing the CLI wrapper at ~/.local/bin/<name>
+      --path string         Filesystem root for the new store (default: $HOME/data/<name>)
+```
+
+##### bd brain stores doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd stores doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
+##### bd brain stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off
+```
+
+##### bd brain stores env
+
+Write ~/.config/brain/stores.env from the registry (for shell wrappers)
+
+```
+bd stores env
+```
+
+##### bd brain stores list
+
+List all registered stores
+
+```
+bd stores list [flags]
+```
+
+**Flags:**
+
+```
+  -v, --verbose   Include each store's about blurb as an extra column
+```
+
+##### bd brain stores remove
+
+Unregister a store from the brain federation registry
+
+```
+bd stores remove <name>
+```
+
+##### bd brain stores rename
+
+Rename a connected store end-to-end. Does, in order:
+
+  1. Rename ~/data/&lt;old-name&gt;/  →  ~/data/&lt;new-name&gt;/
+     (if the path follows the default ~/data/&lt;name&gt;/ convention).
+     A custom path is left in place; only the registry key changes.
+  2. Rewrite the wrapper at ~/.local/bin/&lt;old-name&gt; to ~/.local/bin/&lt;new-name&gt;
+     pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
+  3. Update ~/.config/brain/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
+  4. Regenerate ~/.config/brain/stores.env.
+
+What this does NOT do:
+  - The underlying Dolt database name stays the same — existing bead IDs
+    keep their original prefix (e.g. agent-XXXXX stays agent-XXXXX after
+    renaming 'agents' to 'robots'). The transfer-verb's builtin alias
+    table maps the old name to the new for legacy lookups.
+  - The exfiltrated markdown root moves with the directory, so future
+    'bd render' calls write to ~/data/&lt;new-name&gt;/entries/ automatically.
+
+Examples:
+  brain stores rename agents robots
+  brain stores rename fishes whales
+  brain stores rename agents robots --keep-old-wrapper   # leave both names working
+
+```
+bd stores rename <old-name> <new-name> [flags]
+```
+
+**Flags:**
+
+```
+      --keep-old-wrapper   Leave ~/.local/bin/<old-name> in place pointing at the renamed path
+```
+
+##### bd brain stores render-all
+
+Iterate every store registered in ~/.config/brain/stores.yaml and
+trigger markdown exfiltration for each one. The current bd binary is
+re-invoked once per store with BEADS_DIR pinned, so per-store summaries
+land on stderr exactly as a stand-alone 'bd render-all' would.
+
+Useful after:
+  - Installing a new bd binary that changes the exfiltration contract
+    (every-kind exfil, store-derived root, etc.).
+  - Restoring a store from backup where the markdown sidecar drifted.
+  - Adding a new store to the registry and wanting it populated.
+
+A federation-level summary line is emitted on stderr at the end:
+  Federation: &lt;N&gt; stores OK, &lt;M&gt; stores failed (rendered &lt;R&gt;, failed &lt;F&gt;)
+
+JSON mode (--json) replaces the per-store stdout streams with one
+structured object per store and a top-level summary.
+
+Exit codes:
+  0 — every store reported success
+  1 — at least one store had per-bead failures or could not be opened
+
+```
+bd stores render-all [flags]
+```
+
+**Flags:**
+
+```
+      --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+##### bd brain stores set-about
+
+Attach a short description to a registered store, stored in the
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
+unchanged. View blurbs with 'brain stores list --verbose'.
+
+Pass an empty string to clear the blurb.
+
+Examples:
+  brain stores set-about robots "agent-detected tooling defects"
+  brain stores set-about ideas ""     # clear the blurb
+
+```
+bd stores set-about <store> <blurb>
+```
+
+#### bd brain unify
+
+brain stores each keep their own Dolt database on a shared server. 'unify'
+consolidates them into ONE authoritative database while preserving the logical
+separation between stores.
+
+The mechanism is prefixes. A bead id is already self-describing
+("brain-se7t.389" is in the "brain" namespace), so store identity is already
+encoded in the primary key and unification needs no schema change, no id
+rewrite and no query rewrite. What the separate databases carried implicitly —
+which physical database a row came from, which store declares which prefix —
+is written into brain_stores and brain_store_prefixes.
+
+Phases:
+
+  plan    read production and print the deterministic mapping: participating
+          databases, namespace ownership, and every id that exists in more
+          than one database and what becomes of it
+  build   construct the unified database in an isolated Dolt server started
+          under --data-dir, reading production but never writing to it
+  replay  apply the changes the sources made since the build into the unified
+          database, so it can be kept current until it becomes the reference
+  verify  compare the unified database against production mechanically, by
+          row count, content size and an order-independent content digest;
+          --reference live compares against the sources as they stand now
+
+Duplicated ids. An id that more than one store holds is merged into one bead
+when the copies are identical. When the copies differ, nothing is picked and
+nothing is discarded: each copy becomes a bead of its own under a new id
+(&lt;authoring store's prefix&gt;-&lt;12 hex of sha256(id NUL store)&gt;), carrying that
+copy's row and child rows, and the original id becomes an open conflict bead
+that says so and lists both copies. Links other beads hold to the original id
+still point at it, so they reach the conflict bead.
+
+Production safety: this command group opens production read-only. The builder
+writes only to a Dolt server it starts itself, so a build cannot modify a live
+store even by accident.
+
+```
+bd brain unify
+```
+
+##### bd brain unify build
+
+Construct the unified database in an isolated Dolt server from live store data
+
+```
+bd brain unify build [flags]
+```
+
+**Flags:**
+
+```
+      --aliases string                JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store
+      --data-dir string               scratch directory for the isolated dolt server holding the unified database (required)
+      --database string               name of the unified database inside the isolated server (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the isolated server (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the build (default 4h0m0s)
+```
+
+##### bd brain unify plan
+
+Print the deterministic mapping from every current store into the unified database
+
+```
+bd brain unify plan [flags]
+```
+
+**Flags:**
+
+```
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --json                          emit the plan as JSON
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherits (default: the store with the most beads)
+      --timeout duration              overall time budget for the plan (default 20m0s)
+```
+
+##### bd brain unify replay
+
+A merged database is built from a moment in the past. Every bead written,
+edited or closed in a source store after that moment exists only in the source.
+'replay' carries those changes into the merged database, so it can be kept
+current until it becomes the reference.
+
+For every source it reads the Dolt history since the commit 'unify build'
+recorded (brain_unify_source_commits), finds the beads and the database-state
+tables that changed, and re-reads exactly those from the source as it stands
+now. Inserts, updates and deletes are one operation: the merged database's rows
+for a changed bead are made equal to what the sources hold for it. Duplicated
+ids are handled by the build's own functions: identical copies stay one bead;
+copies that differ become a conflict bead plus one minted bead per copy, so a
+change that creates, edits or removes such a duplicate re-derives the conflict
+bead and its copies. Every duplicate is recorded in brain_unify_collisions.
+Tables Dolt keeps no history for (wisps) are reloaded whole. The next replay
+starts where this one read.
+
+Anything it cannot resolve confidently is a refusal that names the store and the
+table, and a refused replay leaves the merged database untouched:
+
+  - a merged database built before builds recorded their commits (rebuild it)
+  - a store that joined, left or moved to another database since the build
+  - a source whose history no longer contains its recorded commit
+  - a source table the build imported rows from that is gone
+  - a table or column the merged schema does not have
+  - a merged database built before differing copies became conflict beads
+  - a minted copy id that two copies derive, or that an existing bead has
+
+Prove a replay with 'unify verify --reference live', which compares the merged
+database against the sources as they stand. Sources are only ever read.
+
+```
+bd brain unify replay [flags]
+```
+
+**Flags:**
+
+```
+      --data-dir string               directory holding the merged database built by 'unify build' (required)
+      --database string               name of the merged database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the merged database (default "dolt")
+      --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the source stores (default 3307)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --timeout duration              overall time budget for the replay (default 4h0m0s)
+```
+
+##### bd brain unify verify
+
+Compare the unified database against production by counts, size and content digest
+
+```
+bd brain unify verify [flags]
+```
+
+**Flags:**
+
+```
+      --data-dir string               directory holding the unified database built by 'unify build' (required)
+      --database string               name of the unified database (default "brain_unified")
+      --dolt-bin string               dolt binary used to start the server over the unified database (default "dolt")
+      --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --port int                      dolt sql-server port holding the production stores (default 3307)
+      --reference string              what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --template string               store whose schema the unified database inherited
+      --timeout duration              overall time budget for verification (default 3h0m0s)
+```
+
 ### bd completion
 
 Generate the autocompletion script for bd for the specified shell.
@@ -6853,6 +8173,457 @@ bd ship <capability> [flags]
 ```
       --dry-run   Preview without making changes
       --force     Ship even if issue is not closed
+```
+
+### bd store-prefix
+
+Manage the unified database's prefix-ownership record at runtime.
+
+  bd store-prefix list              show every prefix, its owning store, and
+                                    the reason the ownership was decided
+  bd store-prefix add &lt;prefix&gt;      claim a new id prefix for this store
+                                    (defaults to the wrapper's BD_NAME;
+                                    claim for another store with --store)
+  bd store-prefix release &lt;prefix&gt;  free this store's own id prefix (requires
+                                    --confirm; refuses while it carries beads
+                                    or the build decided it)
+  bd store-prefix history &lt;prefix&gt;  show the ownership trail — claims and
+                                    releases, newest first, with the reason
+                                    each act carried
+
+Prefixes are the mechanism "which store is this bead in" rides on: a bead's
+namespace is the segment of its id before the first '-'. The command refuses
+anything a reader could never scope to (a '-' inside a prefix), refuses a
+prefix another store already owns (the record is never rewritten silently),
+and is idempotent for the claiming store's own prefixes. A claimed prefix is
+usable immediately: beads mint under it ("create --prefix &lt;prefix&gt;"), explicit
+ids carry it, and every read (narrow or wide) resolves ownership from this
+same record.
+
+Release and history are the deliberate ownership-change edge
+(docs/design/brain-prefix-release.md): release deletes the row only through
+an explicit, confirmed act by the owner's own namespace, and every ownership
+change — a claim and a release alike — appends a row to the append-only
+brain_store_prefix_events audit table in the same transaction, so ownership
+is never changed silently. A release is refused while the prefix still
+carries any bead (absolute refusal, no --with-beads override) and for any
+prefix the build decided; a transfer is release-then-claim.
+
+On a legacy (per-store) database there is no namespace record to extend; the
+command refuses instead of pretending.
+
+```
+bd store-prefix
+```
+
+#### bd store-prefix add
+
+Claim an id prefix for the named store in the unified database's
+brain_store_prefixes record, so beads can mint under it immediately.
+
+The prefix defaults to the wrapper invoking this command (BD_NAME); claim for
+a different store with --store. The ownership decision is recorded with its
+reason ("operator-added"), and when this namespace's scoped config is
+addressable the prefix is appended to the store's allowed_prefixes so the
+create path accepts it in the same breath.
+
+Refusals are loud and non-silent:
+  - a '-' inside a prefix would disagree with the first-'-' bucket every
+    reader uses, so the shape refuses it;
+  - a prefix another store already owns refuses with the owner's name and the
+    reason it was decided — transfer it only after that store releases it;
+  - claiming a prefix this store already owns is a no-op (nothing changes).
+
+```
+bd store-prefix add <prefix> [flags]
+```
+
+**Flags:**
+
+```
+      --store string   Store whose namespace claims the prefix (default: the wrapper's BD_NAME)
+```
+
+#### bd store-prefix history
+
+Print the ownership trail of one id prefix from the append-only
+brain_store_prefix_events table: every claim and every release recorded from
+that table's adoption onward, newest first, with the reason each act carried.
+
+Claims are recorded from the event table's adoption onward. Runtime rows that
+existed before it have no event, and none is invented for them — the gap is
+stated where you are looking, rather than filled with a fabricated row.
+Every ownership change lands with its event in the same transaction, so no
+path changes ownership silently.
+
+```
+bd store-prefix history <prefix>
+```
+
+#### bd store-prefix list
+
+List every id prefix the unified database's brain_store_prefixes record
+knows: the prefix, the store that owns it, the reason the ownership was
+decided (build-time "declared-by-store-config"/"store-name-matches-prefix" or
+runtime "operator-added"), and the bead count observed at claim time.
+
+```
+bd store-prefix list
+```
+
+#### bd store-prefix release
+
+Free a prefix this namespace owns on the unified database's
+brain_store_prefixes record, as a deliberate act by the owning store's own
+wrapper (BD_NAME): there is no --store escape on the releasing side.
+
+The act never happens as a side effect: it refuses unless --confirm is given,
+and the confirmation is recorded in the append-only event row, so "deliberate"
+is stored, not asserted. On success the ownership row is deleted — the prefix
+returns to exactly its pre-claim state, re-claimable by anyone through the
+ordinary 'bd store-prefix add' — and a 'release' event lands in
+brain_store_prefix_events inside the same transaction, naming who released,
+when, and why (--reason, recorded verbatim; optional).
+
+Refusals are loud and none is bypassable:
+  - without --confirm: release is the one namespace verb whose mistake is
+    subtractive, so intent must be explicit;
+  - the prefix still carries beads: ABSOLUTE refusal (no --with-beads
+    override) — a prefix frees only when it carries no beads; migrate the
+    beads off it first, which is the explicit, auditable path;
+  - the prefix is build-decided ("declared-by-store-config",
+    "store-name-matches-prefix", "first-observing-source",
+    "no-source-declares-or-matches"): retracting the build's mapping decision
+    is a re-unification act, not this verb;
+  - the act is not performed as the owner's namespace;
+  - the prefix is not recorded at all — nothing to release, an error, not a
+    success-shaped no-op.
+
+To transfer a prefix to another store, release it here and claim it there.
+That unclaimed window is real — the next claim wins it — so do the two acts
+promptly and check 'bd store-prefix list' between them.
+
+```
+bd store-prefix release <prefix> [flags]
+```
+
+**Flags:**
+
+```
+      --confirm         Confirm the release: the act never happens without it, and the confirmation is recorded in the event row
+      --reason string   Why the prefix is being released (recorded verbatim in the event row; optional, max 64 characters)
+```
+
+### bd stores
+
+Manage the registry of bd stores federated under brain.
+
+The registry lives at ~/.config/brain/stores.yaml (legacy path
+~/.config/pai/stores.yaml is a compat symlink kept for transition).
+Each registered store
+can be searched via 'brain search', transferred to via 'brain transfer',
+and synced via 'brain repo sync'.
+
+Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
+shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
+PAI_STORE_* aliases are still emitted for transition).
+
+```
+bd stores [flags]
+```
+
+#### bd stores add
+
+Register a store in the brain federation registry
+
+```
+bd stores add <name> <beads-dir> [flags]
+```
+
+#### bd stores alias
+
+Create a second CLI variant ('alias') that points at an already-
+registered store. Useful for singular/plural pairs (idea/ideas,
+person/people) or short forms of long names.
+
+Writes a wrapper at ~/.local/bin/&lt;new-name&gt; pinning the existing
+store's BEADS_DIR and BD_NAME. Does NOT add a separate registry
+entry — both names route to the same data because the wrapper
+sets BEADS_DIR identically.
+
+Examples:
+  brain stores alias robots robot       # 'robot' command → robots store
+  brain stores alias person people      # 'people' command → person store
+  brain stores alias ideas idea         # 'idea' command → ideas store
+
+To remove an alias, delete the wrapper:  rm ~/.local/bin/&lt;new-name&gt;
+
+```
+bd stores alias <existing-store> <new-name> [flags]
+```
+
+**Flags:**
+
+```
+      --bd-binary string   Path to bd that the wrapper should exec (default: "bd")
+      --no-wrapper         Skip writing the wrapper at ~/.local/bin/<alias>
+```
+
+#### bd stores create
+
+Provision a new connected store end-to-end. Does, in order:
+
+  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
+     as exported by the brain wrapper) the store is created as a database in the
+     running shared dolt sql-server: metadata.json (dolt_mode=server) and
+     config.yaml are written first, then bd CREATEs the database and initializes
+     the schema. Without the server pins it falls back to an embedded 'dolt init'
+     in &lt;path&gt;/.beads/.
+  2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
+  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
+     wrapper exports the four server pins (mirroring the review/brain wrappers);
+     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
+  4. Register the store in ~/.config/brain/stores.yaml.
+  5. Regenerate ~/.config/brain/stores.env.
+
+Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
+with --no-wrapper if you manage shell shims another way.
+
+If any step fails after files have been written, the verb leaves the
+partial state in place and exits non-zero — re-running with the same
+arguments resumes idempotently.
+
+Examples:
+  brain stores create recipes
+  brain stores create recipes --path /Volumes/extra/recipes
+  brain stores create recipes --bd-binary /opt/homebrew/bin/bd
+
+```
+bd stores create <name> [flags]
+```
+
+**Flags:**
+
+```
+      --bd-binary string    Path to bd that the wrapper should exec (default: "bd", resolved by PATH)
+      --dolt-email string   --email arg to pass to 'dolt init' (skipped if empty)
+      --dolt-name string    --name arg to pass to 'dolt init' (skipped if empty)
+      --no-wrapper          Skip writing the CLI wrapper at ~/.local/bin/<name>
+      --path string         Filesystem root for the new store (default: $HOME/data/<name>)
+```
+
+#### bd stores doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd stores doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
+#### bd stores edit-back
+
+Declare edit-back for a store in ~/.config/brain/stores.yaml.
+
+Edit-back is per store and OFF by default. When a store accepts edit-back,
+'bd render-import' may write an edit made to one of the store's rendered
+markdown files (entries/&lt;kind&gt;/&lt;slug&gt;.md) back into the bead the file names.
+When a store does not declare it, its render stays one-way: 'bd
+render-import' running there reports the file-vs-row differences and writes
+nothing.
+
+The substrate stays the authority either way: a render-import run applies
+only the fields the import defines (title, status, priority, labels,
+description), reports every change as old → new, and deletes nothing.
+Dealing with the files' own deletions is 'bd render-marks' — a rendered
+file that disappears marks its bead for deletion, never removes it.
+
+  bd stores edit-back brain on
+  bd stores edit-back task off
+  bd stores list --verbose
+
+```
+bd stores edit-back <name> on|off [flags]
+```
+
+#### bd stores env
+
+Write ~/.config/brain/stores.env from the registry (for shell wrappers)
+
+```
+bd stores env [flags]
+```
+
+#### bd stores list
+
+List all registered stores
+
+```
+bd stores list [flags]
+```
+
+**Flags:**
+
+```
+  -v, --verbose   Include each store's about blurb as an extra column
+```
+
+#### bd stores remove
+
+Unregister a store from the brain federation registry
+
+```
+bd stores remove <name> [flags]
+```
+
+#### bd stores rename
+
+Rename a connected store end-to-end. Does, in order:
+
+  1. Rename ~/data/&lt;old-name&gt;/  →  ~/data/&lt;new-name&gt;/
+     (if the path follows the default ~/data/&lt;name&gt;/ convention).
+     A custom path is left in place; only the registry key changes.
+  2. Rewrite the wrapper at ~/.local/bin/&lt;old-name&gt; to ~/.local/bin/&lt;new-name&gt;
+     pointing at the new path. Old wrapper is removed unless --keep-old-wrapper.
+  3. Update ~/.config/brain/stores.yaml: &lt;old-name&gt; → &lt;new-name&gt;.
+  4. Regenerate ~/.config/brain/stores.env.
+
+What this does NOT do:
+  - The underlying Dolt database name stays the same — existing bead IDs
+    keep their original prefix (e.g. agent-XXXXX stays agent-XXXXX after
+    renaming 'agents' to 'robots'). The transfer-verb's builtin alias
+    table maps the old name to the new for legacy lookups.
+  - The exfiltrated markdown root moves with the directory, so future
+    'bd render' calls write to ~/data/&lt;new-name&gt;/entries/ automatically.
+
+Examples:
+  brain stores rename agents robots
+  brain stores rename fishes whales
+  brain stores rename agents robots --keep-old-wrapper   # leave both names working
+
+```
+bd stores rename <old-name> <new-name> [flags]
+```
+
+**Flags:**
+
+```
+      --keep-old-wrapper   Leave ~/.local/bin/<old-name> in place pointing at the renamed path
+```
+
+#### bd stores render-all
+
+Iterate every store registered in ~/.config/brain/stores.yaml and
+trigger markdown exfiltration for each one. The current bd binary is
+re-invoked once per store with BEADS_DIR pinned, so per-store summaries
+land on stderr exactly as a stand-alone 'bd render-all' would.
+
+Useful after:
+  - Installing a new bd binary that changes the exfiltration contract
+    (every-kind exfil, store-derived root, etc.).
+  - Restoring a store from backup where the markdown sidecar drifted.
+  - Adding a new store to the registry and wanting it populated.
+
+A federation-level summary line is emitted on stderr at the end:
+  Federation: &lt;N&gt; stores OK, &lt;M&gt; stores failed (rendered &lt;R&gt;, failed &lt;F&gt;)
+
+JSON mode (--json) replaces the per-store stdout streams with one
+structured object per store and a top-level summary.
+
+Exit codes:
+  0 — every store reported success
+  1 — at least one store had per-bead failures or could not be opened
+
+```
+bd stores render-all [flags]
+```
+
+**Flags:**
+
+```
+      --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores set-about
+
+Attach a short description to a registered store, stored in the
+registry (~/.config/brain/stores.yaml) only. The wrapper script is left
+unchanged. View blurbs with 'brain stores list --verbose'.
+
+Pass an empty string to clear the blurb.
+
+Examples:
+  brain stores set-about robots "agent-detected tooling defects"
+  brain stores set-about ideas ""     # clear the blurb
+
+```
+bd stores set-about <store> <blurb> [flags]
+```
+
+### bd transfer
+
+brain transfer moves an existing brain doc from its current store
+to a destination store on the same Dolt SQL server, in a single
+atomic transaction.
+
+&lt;id&gt;    The source doc's id (e.g. "inbox-abc"). The first token before
+        the "-" is treated as the store prefix; the prefix must resolve
+        to a known store.
+
+&lt;dest&gt;  The destination store name. Must be one of the registered store
+        names — for the canonical brain federation these are:
+        brain, tasks (alias: task), projects (alias: project),
+        agents (alias: agent), inbox, decisions (alias: decision),
+        ideas (alias: idea), life, questions (alias: question), assert.
+
+On success the source row is closed with a close_reason recording the
+destination id, a new row is created in the destination store under
+that store's prefix, and a 'supersedes' edge is written into the
+source store's dependencies table (with depends_on_external set to
+the new dest id) so the move is queryable from either side. All
+changes commit as one transaction — a failure at any step rolls back
+everything.
+
+Examples:
+  brain transfer inbox-abc brain    # move an inbox capture into the brain hub
+  brain transfer inbox-abc task     # move an inbox capture into tasks
+  brain transfer assert-fye brain   # move an assertion into the brain hub
+
+```
+bd transfer <id> <dest>
 ```
 
 ### bd undefer

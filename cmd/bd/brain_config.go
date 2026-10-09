@@ -47,6 +47,15 @@ func (p storeSlugPersister) SetSlug(ctx context.Context, issueID, slug string) e
 //  1. BRAIN_KNOWLEDGE_ROOT environment variable (explicit override).
 //  2. dirname($BEADS_DIR) — the store's own directory. e.g.
 //     BEADS_DIR=~/data/brain/.beads → root=~/data/brain.
+//     The store name this root sits under must come from the namespace,
+//     not the database (pre-cutover checklist item 4): when a moved
+//     wrapper shares the unified database's BEADS_DIR with every other
+//     moved store, dirname names the .beads directory's owner, not the
+//     wrapper. So when BD_NAME names a different store than the .beads
+//     parent directory does, the render root nests under the namespace:
+//     BEADS_DIR=~/data/brain/.beads with BD_NAME=task → root=~/data/brain/task.
+//     A wrapper whose parent already matches its namespace renders exactly
+//     as before — no legacy path moves.
 //  3. ~/data/brain (sensible default for the brain variant).
 //
 // Returns empty string only if the home directory cannot be resolved
@@ -59,6 +68,9 @@ func brainKnowledgeRoot() string {
 	}
 	if beadsDir := os.Getenv("BEADS_DIR"); beadsDir != "" {
 		if parent := filepath.Dir(beadsDir); parent != "" && parent != "." && parent != "/" {
+			if ns := os.Getenv("BD_NAME"); ns != "" && filepath.Base(parent) != ns {
+				return filepath.Join(parent, ns)
+			}
 			return parent
 		}
 	}

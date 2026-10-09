@@ -1031,6 +1031,70 @@ func TestResolvePartialID_MemoryKeyHint(t *testing.T) {
 	}
 }
 
+// TestResolvePartialID_MemoryKeyResolvesToLinkedIssue covers robots-b1ic: a
+// memory whose companion issue exists must resolve to that issue, so the
+// documented flag-for-review recipe ("remember the finding, then tag it human")
+// runs end to end on the key `remember` printed.
+func TestResolvePartialID_MemoryKeyResolvesToLinkedIssue(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	const key = "brain-remember-prints-a-slug-no-verb-resolves"
+	issue := &types.Issue{
+		ID:        "bd-mem001",
+		Title:     "brain remember prints a slug no verb resolves",
+		Status:    types.StatusOpen,
+		Priority:  3,
+		IssueType: types.TypeKnowledge,
+	}
+	if err := store.CreateIssue(ctx, issue, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetConfig(ctx, kvkeys.MemoryConfigKeyPrefix+key, "the insight body"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := store.SetConfig(ctx, kvkeys.MemoryBeadConfigKeyPrefix+key, issue.ID); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	got, err := ResolvePartialID(ctx, store, key)
+	if err != nil {
+		t.Fatalf("ResolvePartialID(%q) unexpected error: %v", key, err)
+	}
+	if got != issue.ID {
+		t.Errorf("ResolvePartialID(%q) = %q; want %q", key, got, issue.ID)
+	}
+}
+
+// TestResolvePartialID_DanglingMemoryLinkFallsBack keeps a stale index row from
+// resolving to an ID that is not in the issues table. A link left behind by a
+// deleted issue -- or synced into a store that never had it -- has to fall
+// through to the ordinary not-found path (with the memory hint), never hand
+// back a phantom ID that every downstream verb then fails on.
+func TestResolvePartialID_DanglingMemoryLinkFallsBack(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	const key = "memory-whose-issue-was-deleted"
+	if err := store.SetConfig(ctx, kvkeys.MemoryConfigKeyPrefix+key, "the insight body"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := store.SetConfig(ctx, kvkeys.MemoryBeadConfigKeyPrefix+key, "bd-gone42"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+
+	got, err := ResolvePartialID(ctx, store, key)
+	if err == nil {
+		t.Fatalf("ResolvePartialID(%q) = %q; want an error for a dangling link", key, got)
+	}
+	if !contains(err.Error(), "no issue found matching") {
+		t.Errorf("error %q lost the 'no issue found matching' phrase routing depends on", err.Error())
+	}
+	if !contains(err.Error(), "stored memory key") {
+		t.Errorf("error = %q; want the memory hint to still fire", err.Error())
+	}
+}
+
 // TestResolvePartialID_NoMemoryHintForPlainMiss keeps the hint targeted: an
 // ordinary bad ID must not gain memory chatter.
 func TestResolvePartialID_NoMemoryHintForPlainMiss(t *testing.T) {

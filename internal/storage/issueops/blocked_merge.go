@@ -40,9 +40,9 @@ func MarkIsBlockedRecomputePendingInTx(ctx context.Context, tx *sql.Tx, fromComm
 	if !doltCommitHashRE.MatchString(value) {
 		value = "full"
 	}
+	sc := UnifiedScopeForTx(ctx, tx)
 	_, err := tx.ExecContext(ctx,
-		"INSERT IGNORE INTO metadata (`key`, value) VALUES (?, ?)",
-		isBlockedRecomputePendingKey, value)
+		sc.metadataIgnoreQuery(), sc.metadataWriteArgs(value)...)
 	return err
 }
 
@@ -51,8 +51,9 @@ func MarkIsBlockedRecomputePendingInTx(ctx context.Context, tx *sql.Tx, fromComm
 // caller's recompute proceeds either way.
 func pendingIsBlockedRecompute(ctx context.Context, tx *sql.Tx) string {
 	var value string
+	sc := UnifiedScopeForTx(ctx, tx)
 	if err := tx.QueryRowContext(ctx,
-		"SELECT value FROM metadata WHERE `key` = ?", isBlockedRecomputePendingKey).Scan(&value); err != nil {
+		sc.metadataReadQuery(), sc.metadataReadArgs(isBlockedRecomputePendingKey)...).Scan(&value); err != nil {
 		return ""
 	}
 	return value
@@ -94,6 +95,7 @@ func RecomputeIsBlockedAfterMergeInTx(ctx context.Context, tx *sql.Tx, fromCommi
 	// pre-merge HEAD, or to a full pass when it is unknown. The marker is
 	// cleared in this same transaction, so it survives if this attempt fails
 	// too and disappears atomically with a successful recompute.
+	sc := UnifiedScopeForTx(ctx, tx)
 	if pending := pendingIsBlockedRecompute(ctx, tx); pending != "" {
 		if doltCommitHashRE.MatchString(pending) && fromCommit != "" {
 			fromCommit = pending
@@ -104,7 +106,7 @@ func RecomputeIsBlockedAfterMergeInTx(ctx context.Context, tx *sql.Tx, fromCommi
 			return err
 		}
 		_, err := tx.ExecContext(ctx,
-			"DELETE FROM metadata WHERE `key` = ?", isBlockedRecomputePendingKey)
+			sc.metadataDeleteQuery(), sc.metadataReadArgs(isBlockedRecomputePendingKey)...)
 		return err
 	}
 	return recomputeIsBlockedAfterMergeScoped(ctx, tx, fromCommit)

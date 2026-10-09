@@ -118,7 +118,11 @@ func TestResolveSource(t *testing.T) {
 		{"task-xyz", "tasks", "task"},
 		{"inbox-asdf", "inbox", "inbox"},
 		{"decision-fye", "decisions", "decision"},
-		{"agent-001", "agents", "agent"},
+		// ResolveSource answers with the *canonical* store name. "agents" was
+		// renamed to "robots" in brain v0.4.0; the DB and ID prefix stayed
+		// "agent" so existing agent-XXXXX beads keep resolving. The old name
+		// survives only as a dest alias (see TestLoad_Aliases).
+		{"agent-001", "robots", "agent"},
 		{"project-007", "projects", "project"},
 		{"idea-aaa", "ideas", "idea"},
 		{"life-bbb", "life", "life"},
@@ -302,6 +306,47 @@ func TestHubDB(t *testing.T) {
 	r, _ := transfer.Load("")
 	if got := r.HubDB(); got != "dolt" {
 		t.Errorf("HubDB() = %q, want \"dolt\"", got)
+	}
+}
+
+// TestLoad_CorruptLegacyHealthyCanonical verifies the legacy read is
+// best-effort: a corrupt legacy file never blocks routing while the
+// canonical registry is healthy.
+func TestLoad_CorruptLegacyHealthyCanonical(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	storeDir := filepath.Join(home, "custom-inbox")
+	beadsDir := filepath.Join(storeDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"dolt_database":"inbox_custom"}`), 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	for dir, body := range map[string]string{
+		filepath.Join(home, ".config", "pai"):   "not: [valid yaml: but parseable",
+		filepath.Join(home, ".config", "brain"): "stores:\n  inbox: " + storeDir + "\n",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+			t.Fatalf("write %s: %v", dir, err)
+		}
+	}
+
+	r, err := transfer.Load(home)
+	if err != nil {
+		t.Fatalf("corrupt legacy must not fail healthy-canonical Load: %v", err)
+	}
+	db, _, err := r.ResolveDest("inbox")
+	if err != nil {
+		t.Fatalf("ResolveDest(inbox): %v", err)
+	}
+	if db != "inbox_custom" {
+		t.Errorf("ResolveDest(inbox) db = %q, want \"inbox_custom\" (canonical override)", db)
 	}
 }
 

@@ -79,8 +79,9 @@ if [ ! -f "cmd/bd/version.go" ]; then
     exit 1
 fi
 
-# Get current version
-CURRENT_VERSION=$(grep 'Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
+# Get current version. Anchored to the exact `Version` declaration so the
+# fork's `BrainVersion` line never matches (de-PAI v0.5.0).
+CURRENT_VERSION=$(grep -E '^[[:space:]]*Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
 # Base (prerelease-stripped) form of the current version. The Windows PE
 # numeric fields (file_version/product_version, manifest version) only ever
 # hold the base form, so they must be matched on the base, not on the full

@@ -200,6 +200,9 @@ func setHookRunner(h *hooks.Runner) {
 
 // isReadonlyMode returns true if read-only mode is enabled.
 func isReadonlyMode() bool {
+	if insideHook() {
+		return true
+	}
 	if shouldUseGlobals() {
 		return readonlyMode
 	}

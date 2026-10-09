@@ -202,7 +202,8 @@ func GenerateIssueIDInTable(ctx context.Context, tx *sql.Tx, table, prefix strin
 // IsCounterModeTx checks whether issue_id_mode=counter is configured.
 func IsCounterModeTx(ctx context.Context, tx *sql.Tx) (bool, error) {
 	var idMode string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "issue_id_mode").Scan(&idMode)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "issue_id_mode")...).Scan(&idMode)
 	if err != nil && err != sql.ErrNoRows {
 		return false, fmt.Errorf("failed to read issue_id_mode config: %w", err)
 	}
@@ -336,7 +337,8 @@ func GetAdaptiveConfigTx(ctx context.Context, tx *sql.Tx) AdaptiveIDConfig {
 	cfg := DefaultAdaptiveConfig()
 
 	var probStr string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "max_collision_prob").Scan(&probStr)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "max_collision_prob")...).Scan(&probStr)
 	if err == nil && probStr != "" {
 		if prob, err := strconv.ParseFloat(probStr, 64); err == nil {
 			cfg.MaxCollisionProbability = prob
@@ -344,7 +346,7 @@ func GetAdaptiveConfigTx(ctx context.Context, tx *sql.Tx) AdaptiveIDConfig {
 	}
 
 	var minLenStr string
-	err = tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "min_hash_length").Scan(&minLenStr)
+	err = tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "min_hash_length")...).Scan(&minLenStr)
 	if err == nil && minLenStr != "" {
 		if minLen, err := strconv.Atoi(minLenStr); err == nil {
 			cfg.MinLength = minLen
@@ -352,7 +354,7 @@ func GetAdaptiveConfigTx(ctx context.Context, tx *sql.Tx) AdaptiveIDConfig {
 	}
 
 	var maxLenStr string
-	err = tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "max_hash_length").Scan(&maxLenStr)
+	err = tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "max_hash_length")...).Scan(&maxLenStr)
 	if err == nil && maxLenStr != "" {
 		if maxLen, err := strconv.Atoi(maxLenStr); err == nil {
 			cfg.MaxLength = maxLen
@@ -380,7 +382,8 @@ func ComputeAdaptiveLength(numIssues int, cfg AdaptiveIDConfig) int {
 // GetCustomStatusesTx reads custom statuses from config within a transaction.
 func GetCustomStatusesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "status.custom").Scan(&raw)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "status.custom")...).Scan(&raw)
 	if err == sql.ErrNoRows || raw == "" {
 		return nil, nil
 	}
@@ -403,7 +406,8 @@ func GetCustomStatusesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
 // GetCustomTypesTx reads custom types from config within a transaction.
 func GetCustomTypesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	var raw string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "types.custom").Scan(&raw)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "types.custom")...).Scan(&raw)
 	if err == sql.ErrNoRows || raw == "" {
 		return nil, nil
 	}
@@ -537,7 +541,8 @@ func IsDoltNothingToCommit(err error) bool {
 // ReadConfigPrefix reads and normalizes issue_prefix from the config table.
 func ReadConfigPrefix(ctx context.Context, tx *sql.Tx) (string, error) {
 	var configPrefix string
-	err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", "issue_prefix").Scan(&configPrefix)
+	sc := UnifiedScopeForTx(ctx, tx)
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "issue_prefix")...).Scan(&configPrefix)
 	if err == sql.ErrNoRows || configPrefix == "" {
 		yamlPrefix := strings.TrimSpace(config.GetString("issue-prefix"))
 		underscoreYamlPrefix := strings.TrimSpace(config.GetString("issue_prefix"))

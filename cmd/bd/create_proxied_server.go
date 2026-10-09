@@ -153,6 +153,8 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 		FatalError("%v", err)
 	}
 
+	discardComposeDraft()
+
 	switch {
 	case in.jsonOutput:
 		if err := outputJSON(result.Issue); err != nil {
@@ -187,6 +189,7 @@ func runCreateLintIssue(in createInput) {
 func buildCreateIssueFromInput(in createInput) *types.Issue {
 	return buildCreateIssue(createIssueParams{
 		ID:                 in.explicitID,
+		PrefixOverride:     in.mintPrefix,
 		Title:              in.title,
 		Description:        in.description,
 		Design:             in.design,

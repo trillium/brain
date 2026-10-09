@@ -115,6 +115,15 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 		whereClauses = append(whereClauses, fmt.Sprintf("issue_type NOT IN (%s)", ph))
 		args = append(args, a...)
 	}
+	if len(filter.Namespaces) > 0 {
+		// Namespace scoping on the unified database (see IssueFilter.Namespaces).
+		ors := make([]string, 0, len(filter.Namespaces))
+		for _, ns := range filter.Namespaces {
+			ors = append(ors, "id LIKE ?")
+			args = append(args, strings.TrimSuffix(ns, "-")+"-%")
+		}
+		whereClauses = append(whereClauses, "("+strings.Join(ors, " OR ")+")")
+	}
 	if filter.Unassigned {
 		whereClauses = append(whereClauses, "(assignee IS NULL OR assignee = '')")
 	} else if filter.Assignee != nil {

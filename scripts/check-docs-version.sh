@@ -18,7 +18,9 @@ if [ ! -f "cmd/bd/version.go" ] || [ ! -f "website/docusaurus.config.ts" ]; then
     exit 1
 fi
 
-CANONICAL=$(grep 'Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
+# Anchored to the exact `Version` declaration so the fork's `BrainVersion`
+# line never matches (de-PAI v0.5.0).
+CANONICAL=$(grep -E '^[[:space:]]*Version = ' cmd/bd/version.go | sed 's/.*"\(.*\)".*/\1/')
 if [ -z "$CANONICAL" ]; then
     echo -e "${RED}Could not read version from cmd/bd/version.go${NC}"
     exit 1

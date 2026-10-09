@@ -1,14 +1,14 @@
 // Package slug implements slug validation and auto-generation for brain
 // docs. Slugs are stable, human-readable identifiers stored on the
 // issues.slug column (added in migration 0050, unique-indexed in
-// migration 0052). They are required for ISA-kind docs (so PAI hooks
+// migration 0052). They are required for ISA-kind docs (so brain hooks
 // can look up the ISA by its WORK/ directory slug) and optional for
 // other kinds.
 //
 // The regex contract `^[a-z0-9][a-z0-9-]{0,63}$` lines up with the
-// kebab-case slugger PAI uses for `MEMORY/WORK/{timestamp}_{slug}/`
+// kebab-case slugger used for `MEMORY/WORK/{timestamp}_{slug}/`
 // directories, so a `--slug=foo-bar` passed at brain new time matches
-// the WORK/ directory name PAI already chose.
+// the WORK/ directory name already chosen.
 package slug
 
 import (
@@ -21,9 +21,9 @@ import (
 // Pattern is the canonical slug regex. Lowercase letters and digits,
 // optional internal hyphens; must start AND end with a letter or digit;
 // 1–64 chars. Leading and trailing hyphens are rejected because the
-// kebab-case slugger PAI uses for MEMORY/WORK/ directory names trims
+// kebab-case slugger used for MEMORY/WORK/ directory names trims
 // them — accepting them at validate time would let `brain new --slug=foo-`
-// drift away from the WORK/ directory shape PAI already chose.
+// drift away from the WORK/ directory shape already chosen.
 const Pattern = `^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`
 
 var pattern = regexp.MustCompile(Pattern)
@@ -53,7 +53,7 @@ func Validate(s string) error {
 }
 
 // Auto generates a slug from a title using a kebab-case slugger that
-// mirrors the one PAI uses for MEMORY/WORK/ directory names. The
+// mirrors the one used for MEMORY/WORK/ directory names. The
 // algorithm:
 //
 //  1. Lowercase the title.

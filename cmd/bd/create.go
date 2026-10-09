@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/routing"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/timeparsing"
@@ -27,10 +28,22 @@ import (
 )
 
 var createCmd = &cobra.Command{
-	Use:           "create [title]",
-	GroupID:       "issues",
-	Aliases:       []string{"new"},
-	Short:         "Create a new issue (or batch from markdown/graph JSON)",
+	Use:     "create [title]",
+	GroupID: "issues",
+	Aliases: []string{"new"},
+	Short:   "Create a new issue (or batch from markdown/graph JSON)",
+	Long: `Create a new issue (or batch from markdown/graph JSON).
+
+Compose in your editor when the body is more than a one-liner: the first line
+of the buffer is the title, everything after the first blank line is the body.
+
+Examples:
+  bd create "Short title"                      # title only
+  bd create "Short title" -d "Body text"       # title + body inline
+  bd create --edit                             # compose title + body in $EDITOR
+  bd create "Short title" --edit               # prefill the title, write the body
+  bd create                                    # same as --edit when run at a terminal
+  bd edit bd-42 --append                       # append more body later, in $EDITOR`,
 	Args:          cobra.MinimumNArgs(0),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -43,6 +56,13 @@ var createCmd = &cobra.Command{
 				c.CloseEventAndAdd(evt)
 			}
 		}()
+
+		composedArgs, composeErr := maybeComposeCreate(cmd, args)
+		if composeErr != nil {
+			return composeErr
+		}
+		args = composedArgs
+		defer reportComposeDraft()
 
 		if usesProxiedServer() {
 			in, err := gatherCreateInput(cmd, args)
@@ -102,7 +122,11 @@ var createCmd = &cobra.Command{
 		} else if titleFlag != "" {
 			title = titleFlag
 		} else {
-			return HandleError("title required (or use --file to create from markdown)")
+			return HandleError("title required (or use --edit to compose one, or --file to create from markdown)")
+		}
+
+		if err := titleLengthError(title); err != nil {
+			return err
 		}
 
 		// Get silent flag
@@ -170,6 +194,15 @@ var createCmd = &cobra.Command{
 		}
 
 		explicitID, _ := cmd.Flags().GetString("id")
+		mintPrefix, _ := cmd.Flags().GetString("prefix")
+		if mintPrefix != "" {
+			if explicitID != "" {
+				return HandleError("cannot specify both --id and --prefix flags (--id is an explicit id, --prefix mints a fresh one under the named prefix)")
+			}
+			if !issueops.IsValidAddedPrefix(mintPrefix) {
+				return HandleError("invalid --prefix %q: a prefix is letters, digits or underscores after an initial letter, and cannot contain '-' (an id's namespace is the segment before its first '-'); claim a prefix with 'bd store-prefix add' first if this store does not own it yet", mintPrefix)
+			}
+		}
 		parentID, _ := cmd.Flags().GetString("parent")
 		externalRef, _ := cmd.Flags().GetString("external-ref")
 		deps, _ := cmd.Flags().GetStringSlice("deps")
@@ -343,6 +376,7 @@ var createCmd = &cobra.Command{
 		renderDryRun := func() error {
 			previewIssue := buildCreateIssue(createIssueParams{
 				ID:                 explicitID,
+				PrefixOverride:     mintPrefix,
 				Title:              title,
 				Description:        description,
 				Design:             design,
@@ -371,6 +405,7 @@ var createCmd = &cobra.Command{
 			})
 
 			if jsonOutput {
+				previewIssue.EnsureName()
 				return outputJSON(previewIssue)
 			}
 			renderCreateDryRunPreview(previewIssue, labels, deps)
@@ -523,6 +558,7 @@ var createCmd = &cobra.Command{
 			DueAt:              dueAt,
 			DeferUntil:         deferUntil,
 			Metadata:           metadata,
+			PrefixOverride:     mintPrefix,
 		})
 
 		ctx := createCtx
@@ -702,8 +738,10 @@ var createCmd = &cobra.Command{
 		}
 
 		commandDidWrite.Store(true)
+		discardComposeDraft()
 
 		if jsonOutput {
+			issue.EnsureName()
 			if err := outputJSON(issue); err != nil {
 				return err
 			}
@@ -749,6 +787,7 @@ type createIssueParams struct {
 	DueAt              *time.Time
 	DeferUntil         *time.Time
 	Metadata           json.RawMessage
+	PrefixOverride     string
 }
 
 func buildCreateIssue(params createIssueParams) *types.Issue {
@@ -790,6 +829,7 @@ func buildCreateIssue(params createIssueParams) *types.Issue {
 		DueAt:              params.DueAt,
 		DeferUntil:         params.DeferUntil,
 		Metadata:           params.Metadata,
+		PrefixOverride:     params.PrefixOverride,
 	}
 }
 
@@ -871,6 +911,7 @@ func init() {
 	createCmd.Flags().StringP("file", "f", "", "Create multiple issues from markdown file")
 	createCmd.Flags().String("graph", "", "Create a graph of issues with dependencies from JSON plan file")
 	createCmd.Flags().String("title", "", "Issue title (alternative to positional argument)")
+	createCmd.Flags().BoolP("edit", "E", false, "Compose the title and body in $EDITOR (implied when no title is given at a terminal)")
 	createCmd.Flags().Bool("silent", false, "Output only the issue ID (for scripting)")
 	createCmd.Flags().Bool("dry-run", false, "Preview what would be created without actually creating")
 	registerPriorityFlag(createCmd, "2")
@@ -883,6 +924,7 @@ func init() {
 	createCmd.Flags().StringSlice("label", []string{}, "Alias for --labels")
 	_ = createCmd.Flags().MarkHidden("label") // Only fails if flag missing (caught in tests)
 	createCmd.Flags().String("id", "", "Explicit issue ID (e.g., 'bd-42' for partitioning)")
+	createCmd.Flags().String("prefix", "", "Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')")
 	createCmd.Flags().String("parent", "", "Parent issue ID for hierarchical child (e.g., 'bd-a3f8e9')")
 	createCmd.Flags().Bool("no-inherit-labels", false, "Don't inherit labels from parent issue")
 	createCmd.Flags().StringSlice("deps", []string{}, "Dependencies in format 'type:id' or 'id' (e.g., 'discovered-from:bd-20,blocks:bd-15' or 'bd-20')")

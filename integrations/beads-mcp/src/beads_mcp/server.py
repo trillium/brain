@@ -38,6 +38,7 @@ from beads_mcp.models import (
     OperationResult,
     Stats,
 )
+from beads_mcp.project_registry import BACKLOG, FOREGROUND, ProjectRegistry
 from beads_mcp.tools import (
     beads_add_dependency,
     beads_blocked,
@@ -349,6 +350,7 @@ _TOOL_CATALOG = {
     "blocked": "Show blocked issues and what blocks them",
     "context": "Manage workspace context (set, show, init)",
     "admin": "Administrative/diagnostic operations (validate, repair, schema, debug, migration, pollution)",
+    "projects": "Project registry: list/search/resolve projects, foreground context, aliases + promotion",
     "discover_tools": "List available tools (names only)",
     "get_tool_info": "Get detailed info for a specific tool",
 }
@@ -559,6 +561,27 @@ async def get_tool_info(tool_name: str) -> dict[str, Any]:
             "returns": "Dict with operation results (or string for debug)",
             "example": "admin(action='validate', checks='orphans')",
         },
+        "projects": {
+            "name": "projects",
+            "description": (
+                "Project registry: durable foreground/backlog awareness of every project. "
+                "Actions: list, search, resolve, context, alias-add, alias-remove, "
+                "promote, demote, refresh."
+            ),
+            "parameters": {
+                "action": "str - list, search, resolve, context, alias-add/remove, promote, demote, refresh",
+                "query": "str (optional) - search/resolve text; backlog matches report from_backlog=true",
+                "state": "str (optional) - list/search filter: foreground|backlog",
+                "project_id": "str (optional) - e.g. 'project-3ha' for alias/promote/demote",
+                "alias": "str (optional) - alias text for alias-add/alias-remove",
+                "reason": "str (optional) - required for promote/demote (when/why is recorded)",
+                "human_confirmed": "bool (default false) - required true for demote (explicit human intent)",
+                "limit": "int (default 20) - max entries to return",
+                "workspace_root": "str (optional) - accepted for routing consistency, registry is global",
+            },
+            "returns": "Dict with action results; resolve/search hits carry from_backlog flags",
+            "example": "projects(action='resolve', query='beads auth bug')",
+        },
         "context": {
             "name": "context",
             "description": "Manage workspace context for beads operations",
@@ -722,6 +745,98 @@ def _context_show() -> str:
     actor = os.environ.get("BEADS_ACTOR", "NOT SET")
 
     return f"Workspace root: {working_dir}\nDatabase: {db_path}\nActor: {actor}"
+
+
+def _get_registry() -> ProjectRegistry:
+    """Build a registry from the live Project Store seed + persisted overlays."""
+    return ProjectRegistry()
+
+
+@mcp.tool(
+    name="projects",
+    description="""Project registry: list/search/resolve known projects with foreground/backlog states.
+Resolve work against this registry before creating or routing beads. Search hits
+explicitly report from_backlog. Mentioning a backlog project never promotes it;
+filing a bead under it (create with project=) auto-promotes. Demote requires
+explicit human intent (human_confirmed=True).""",
+)
+async def projects(
+    action: str,
+    query: str | None = None,
+    state: str | None = None,
+    project_id: str | None = None,
+    alias: str | None = None,
+    reason: str | None = None,
+    human_confirmed: bool = False,
+    limit: int = 20,
+    workspace_root: str | None = None,  # noqa: ARG001 - accepted for routing consistency
+) -> dict[str, Any]:
+    """Run a project-registry action (list/search/resolve/context/maintenance)."""
+    registry = _get_registry()
+    act = (action or "").lower().replace("_", "-")
+
+    if act == "list":
+        entries = registry.list_projects(state=state, limit=limit)
+        return {"action": "list", "count": len(entries), "projects": [e.to_dict() for e in entries]}
+
+    if act == "search":
+        entries = registry.search(query or "", state=state, limit=limit)
+        return {
+            "action": "search",
+            "query": query or "",
+            "count": len(entries),
+            "backlog_matches": sum(1 for e in entries if e.from_backlog),
+            "projects": [e.to_dict() for e in entries],
+        }
+
+    if act == "resolve":
+        entries = registry.resolve(query or "", limit=limit)
+        return {
+            "action": "resolve",
+            "query": query or "",
+            "count": len(entries),
+            "backlog_matches": sum(1 for e in entries if e.from_backlog),
+            "directive": "Resolve before creating or routing work. Mere mention does NOT promote.",
+            "projects": [e.to_dict() for e in entries],
+        }
+
+    if act == "context":
+        fg = registry.foreground_context()
+        return {"action": "context", "count": len(fg), "foreground": fg}
+
+    if act == "alias-add":
+        if not project_id or not alias:
+            return {"error": "alias-add requires project_id and alias"}
+        entry = registry.alias_add(project_id, alias)
+        return {"action": "alias-add", "project": entry.to_dict()}
+
+    if act == "alias-remove":
+        if not project_id or not alias:
+            return {"error": "alias-remove requires project_id and alias"}
+        entry = registry.alias_remove(project_id, alias)
+        return {"action": "alias-remove", "project": entry.to_dict()}
+
+    if act == "promote":
+        if not project_id:
+            return {"error": "promote requires project_id"}
+        entry = registry.promote(project_id, reason or "")
+        return {"action": "promote", "project": entry.to_dict()}
+
+    if act == "demote":
+        if not project_id:
+            return {"error": "demote requires project_id"}
+        try:
+            entry = registry.demote(project_id, reason or "", human_confirmed=human_confirmed)
+        except PermissionError as exc:
+            return {"error": str(exc)}
+        return {"action": "demote", "project": entry.to_dict()}
+
+    if act == "refresh":
+        fg_count = len(registry.list_projects(state=FOREGROUND))
+        bl_count = len(registry.list_projects(state=BACKLOG))
+        return {"action": "refresh", "foreground": fg_count, "backlog": bl_count, "total": fg_count + bl_count}
+
+    return {"error": f"Unknown action '{action}'. Use list, search, resolve, context, or maintenance."}
 
 
 # Register all tools
@@ -1058,11 +1173,14 @@ async def create_issue(
     deps: list[str] | None = None,
     workspace_root: str | None = None,
     brief: bool = True,
+    project: str | None = None,
 ) -> Issue | OperationResult:
     """Create a new issue.
 
     Args:
         brief: If True (default), return minimal OperationResult; if False, return full Issue
+        project: Optional project-xxx hint. Filing a bead under a backlog project
+            auto-promotes it to foreground (mentioning alone never does).
     """
     issue = await beads_create_issue(
         title=title,
@@ -1078,8 +1196,21 @@ async def create_issue(
         deps=deps,
     )
 
+    promotion_note: str | None = None
+    if project:
+        try:
+            promoted = _get_registry().maybe_promote_on_create(
+                project,
+                labels=labels,
+                reason_prefix=f"auto: bead {issue.id} created",
+            )
+            if promoted is not None:
+                promotion_note = f"Promoted {promoted.project_id} to foreground ({promoted.promote_reason})"
+        except (KeyError, ValueError) as exc:
+            logger.warning("project auto-promote skipped: %s", exc)
+
     if brief:
-        return OperationResult(id=issue.id, action="created")
+        return OperationResult(id=issue.id, action="created", message=promotion_note)
     return issue
 
 

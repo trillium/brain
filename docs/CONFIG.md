@@ -52,7 +52,7 @@ Common tool-level settings you can configure:
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
 | `external_projects` | - | - | (none) | Map project names to paths for cross-project deps |
-| `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` |
+| `backup.enabled` | - | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` (one backup for a database shared by several stores — see [Auto-Backup](#auto-backup)) |
 | `backup.interval` | - | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `dolt.auto-push` | - | `BD_DOLT_AUTO_PUSH` | `false` | Auto-push to Dolt remote after writes (explicit opt-in) |
 | `dolt.auto-push-interval` | - | `BD_DOLT_AUTO_PUSH_INTERVAL` | `5m` | Minimum time between auto-pushes |
@@ -70,8 +70,10 @@ Every update writes an `events` row holding a JSON copy of the issue before the
 change plus a JSON copy of the applied updates. Without a cap that is quadratic
 for append-heavy fields: `bd note` rewrites the whole `notes` field, so appending
 one line to a bead whose notes are already 320 KB writes a ~640 KB event row.
-One auto-documenting ledger reached **3.3 GB of event payload backing 5 MB of
-actual notes** — and `dolt gc` cannot shrink it, because all of it is reachable.
+One auto-documenting ledger reached **3.3 GB of raw event payload backing 5 MB
+of actual notes**. Dolt's content-addressed storage dedupes much of the repeated
+prefix on disk, so the cost is mainly row size, scan time, and the copy/dump
+paths, plus a growth rate that is quadratic in appends.
 
 So string values in event payloads are capped at `BEADS_EVENT_FIELD_LIMIT` bytes
 (default 1024). Oversize values keep their head and tail with an
@@ -133,6 +135,35 @@ backup:
 - If data changed and the throttle interval has passed, a Dolt-native backup is synced to `.beads/backup/`
 - Full database state and commit history are preserved in the backup
 - State is tracked in `.beads/backup/backup_state.json`
+
+**A database shared by several stores** (the brain unified database, recognised
+by its `brain_unified_config` table) is backed up **once**, not once per store:
+
+- The destination is the one you registered with `bd backup init <path>` (the
+  `default` entry of the database's backup registrations, which every store on
+  the database sees). Auto-backup never registers a destination of its own on a
+  shared database. With no `default` destination — or with only some other name
+  registered — `bd` prints `auto-backup REFUSED — no backup was taken` and
+  skips the backup; it does not fall back to a per-store copy. Run
+  `bd backup init <path>` once, from any store, to fix it.
+- The throttle (`backup.interval`) and change detection are kept in the
+  database, in the dolt-ignored table `brain_shared_backup_state`, so they are
+  shared by every store. `.beads/backup/` is not created or read.
+- Two stores whose commands finish together run one sync: the first takes a
+  Dolt named lock (`bd-shared-backup:<database>`), the others find it held and
+  skip. A manual `bd backup sync` takes the same lock (waiting up to 2 minutes)
+  and records the same state.
+- Also refused, loudly: a shared-database check that cannot be answered, an
+  unreadable state row, a state table that cannot be created.
+- `bd backup status` shows the shared record (destination, last backup, Dolt
+  commit, and the refusal if auto-backup is refused).
+- A database used by a single store is unchanged: `.beads/backup/` and
+  `backup_export`, as above.
+- Per-store folders left by earlier versions (`.beads/backup/` in each store)
+  are not touched or deleted; remove them yourself once the shared backup is
+  verified.
+
+Design: [`divergence/0032-shared-database-backup.md`](../divergence/0032-shared-database-backup.md).
 
 **Manual commands:**
 - `bd backup init <path>` — register a backup destination (filesystem or DoltHub URL)
