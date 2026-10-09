@@ -235,6 +235,14 @@ id is not retired as a tombstone, it stays a real bead.
   parsed to the right namespace by `PrefixOf` either way. A hierarchical
   conflicted id would simply get a flat minted copy.
 
+- **After the repoint, a hosted replay takes each store's source database
+  from the merged database's `brain_stores.source_database`, not from the
+  stores' metadata** (which then names `brain_unified` for every store); the
+  merged database is never a source. Pings tolerate a busy server (three
+  attempts of up to 60 s). A replay that loses its commit to a concurrent
+  write (serialization failure) reads the source rows before the transaction,
+  decides again and retries (up to 15 times, jittered).
+
 # Deliberately not done here
 
 A command that resolves a conflict (fold the copies, close one, close the
