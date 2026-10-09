@@ -354,18 +354,26 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		return res, err
 	}
 
-	if r.opts.ProtectAfter != "" {
+	snap := w.snapshot()
+	protect := func() error {
+		if r.opts.ProtectAfter == "" {
+			return nil
+		}
 		kept, err := r.protectNewer(ctx, mergedRO, database, w)
 		if err != nil {
-			return res, err
+			return err
 		}
 		res.KeptMerged = kept
 		if len(kept) > 0 {
 			r.log("kept the merged version of %d bead(s) the stores changed after %s", len(kept), r.opts.ProtectAfter)
 		}
+		return nil
 	}
 
 	if r.opts.DryRun {
+		if err := protect(); err != nil {
+			return res, err
+		}
 		res.Beads = unionIDs(w.touched)
 		res.CollisionsWritten = append(res.CollisionsWritten, w.collisionsToWrite...)
 		res.CollisionsRemoved = append(res.CollisionsRemoved, w.collisionsToDelete...)
@@ -383,48 +391,29 @@ func (r *Replayer) Replay(ctx context.Context) (ReplayResult, error) {
 		return res, nil
 	}
 
-	// ---- apply: one transaction, so a failure leaves the database as found --
-	conn, err := merged.Conn(ctx)
-	if err != nil {
-		return res, fmt.Errorf("opening a connection to the merged database: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-	if _, err := conn.ExecContext(ctx, "set foreign_key_checks = 0"); err != nil {
-		return res, fmt.Errorf("disabling foreign key checks on the merged database: %w", err)
-	}
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return res, fmt.Errorf("beginning the replay transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
+	// ---- apply: one transaction, so a failure leaves the database as found.
+	// On a merged database the stores are writing to, the commit can lose to a
+	// concurrent write ("serialization failure"): nothing was applied, so decide
+	// again against the database as it is now (what to protect is recomputed) and
+	// apply again.
 	stats := map[string]*ReplayTableStats{}
-	if err := r.applyChanges(ctx, tx, mergedRO, database, w, stats); err != nil {
+	for attempt := 1; ; attempt++ {
+		w.restore(snap)
+		stats = map[string]*ReplayTableStats{}
+		if err := protect(); err != nil {
+			return res, err
+		}
+		err := r.applyOnce(ctx, merged, mergedRO, database, w, stats, &res)
+		if err == nil {
+			break
+		}
+		if attempt < 8 && isSerializationFailure(err) {
+			r.log("the merged database changed under the replay (%v); deciding again (attempt %d)", err, attempt+1)
+			time.Sleep(time.Duration(attempt) * time.Second)
+			continue
+		}
 		return res, err
 	}
-	if !w.postRepoint {
-		if err := r.writeCollisionRecords(ctx, tx, w); err != nil {
-			return res, err
-		}
-		if err := r.refreshPrefixes(ctx, tx); err != nil {
-			return res, err
-		}
-		if err := r.rerecordFingerprints(ctx, tx, w); err != nil {
-			return res, err
-		}
-	}
-	if res.Commits, err = r.advanceCommits(ctx, tx, w); err != nil {
-		return res, err
-	}
-	if err := tx.Commit(); err != nil {
-		return res, fmt.Errorf("committing the replay transaction: %w", err)
-	}
-	committed = true
 
 	// The rows are durable once the transaction commits; the Dolt commit
 	// makes the replay a point in the merged database's own history.
@@ -1594,4 +1583,98 @@ func (r *Replayer) protectNewer(ctx context.Context, mergedRO *readOnlySource, d
 	}
 	sort.Strings(kept)
 	return kept, nil
+}
+
+// applyOnce applies the decided work in one transaction.
+func (r *Replayer) applyOnce(ctx context.Context, merged *sql.DB, mergedRO *readOnlySource, database string, w *replayWork, stats map[string]*ReplayTableStats, res *ReplayResult) error {
+	conn, err := merged.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("opening a connection to the merged database: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.ExecContext(ctx, "set foreign_key_checks = 0"); err != nil {
+		return fmt.Errorf("disabling foreign key checks on the merged database: %w", err)
+	}
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning the replay transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if err := r.applyChanges(ctx, tx, mergedRO, database, w, stats); err != nil {
+		return err
+	}
+	if !w.postRepoint {
+		if err := r.writeCollisionRecords(ctx, tx, w); err != nil {
+			return err
+		}
+		if err := r.refreshPrefixes(ctx, tx); err != nil {
+			return err
+		}
+		if err := r.rerecordFingerprints(ctx, tx, w); err != nil {
+			return err
+		}
+	}
+	if res.Commits, err = r.advanceCommits(ctx, tx, w); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing the replay transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// isSerializationFailure reports a commit that lost to a concurrent write.
+func isSerializationFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "serialization failure") || strings.Contains(msg, "Error 1213") || strings.Contains(msg, "Error 1205") || strings.Contains(msg, "try restarting transaction")
+}
+
+// replaySnapshot is the decided work before a protection pass changes it.
+type replaySnapshot struct {
+	touched            map[string]map[string]bool
+	full               map[string]bool
+	stateChanged       map[string]map[string]bool
+	collisionsToWrite  []string
+	collisionsToDelete []string
+}
+
+func copySet(in map[string]bool) map[string]bool {
+	out := make(map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func copySets(in map[string]map[string]bool) map[string]map[string]bool {
+	out := make(map[string]map[string]bool, len(in))
+	for k, v := range in {
+		out[k] = copySet(v)
+	}
+	return out
+}
+
+func (w *replayWork) snapshot() replaySnapshot {
+	return replaySnapshot{
+		touched: copySets(w.touched), full: copySet(w.full), stateChanged: copySets(w.stateChanged),
+		collisionsToWrite:  append([]string(nil), w.collisionsToWrite...),
+		collisionsToDelete: append([]string(nil), w.collisionsToDelete...),
+	}
+}
+
+func (w *replayWork) restore(s replaySnapshot) {
+	w.touched, w.full, w.stateChanged = copySets(s.touched), copySet(s.full), copySets(s.stateChanged)
+	w.collisionsToWrite = append([]string(nil), s.collisionsToWrite...)
+	w.collisionsToDelete = append([]string(nil), s.collisionsToDelete...)
+	w.postRepoint = false
 }
