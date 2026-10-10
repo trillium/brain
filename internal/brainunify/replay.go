@@ -1386,15 +1386,18 @@ func insertRows(ctx context.Context, ex sqlExecer, table string, cols []string, 
 }
 
 // insertRowsMode writes rows in size-bounded batches; with ignore, a row whose
-// key already exists is left as it is (insert ignore).
+// key already exists is left as it is. That is "on duplicate key update k=k"
+// and not "insert ignore": ignore also downgrades NULL-in-NOT-NULL and
+// over-length errors to warnings, storing an empty string or a truncated value.
 func insertRowsMode(ctx context.Context, ex sqlExecer, table string, cols []string, rows [][]any, ignore bool) error {
 	const (
 		batchRows  = 100
 		batchBytes = 4 << 20
 	)
 	stmt := insertPrefix(table, cols)
-	if ignore {
-		stmt = strings.Replace(stmt, "insert into", "insert ignore into", 1)
+	suffix := ""
+	if ignore && len(cols) > 0 {
+		suffix = " on duplicate key update `" + cols[0] + "`=`" + cols[0] + "`"
 	}
 	var batch []string
 	size := 0
@@ -1402,7 +1405,7 @@ func insertRowsMode(ctx context.Context, ex sqlExecer, table string, cols []stri
 		if len(batch) == 0 {
 			return nil
 		}
-		_, err := ex.ExecContext(ctx, stmt+strings.Join(batch, ","))
+		_, err := ex.ExecContext(ctx, stmt+strings.Join(batch, ",")+suffix)
 		if err != nil {
 			err = fmt.Errorf("%w\nstatement: %s", err, truncate(stmt+batch[0], 1200))
 		}

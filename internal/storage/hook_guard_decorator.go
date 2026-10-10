@@ -282,6 +282,71 @@ func (g *HookGuardStore) DeleteIssue(ctx context.Context, id string) error {
 		func() error { return g.inner.DeleteIssue(ctx, id) })
 }
 
+// ClaimIssue is an update: `bd update --claim` must not be a way around an
+// update guard.
+func (g *HookGuardStore) ClaimIssue(ctx context.Context, id string, actor string) error {
+	return g.mutate(ctx, mutation{event: hooksdef.EventUpdate, subject: id, actor: actor,
+		updates: map[string]interface{}{"claim": true}},
+		func() error { return g.inner.ClaimIssue(ctx, id, actor) })
+}
+
+// ClaimReadyIssue picks its bead inside the store, so the guard sees the
+// request (the filter) and not yet a subject; observers see the claimed bead.
+func (g *HookGuardStore) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	m := mutation{event: hooksdef.EventUpdate, actor: actor,
+		updates: map[string]interface{}{"claim": true, "ready": true}}
+	if _, err := g.eng.guard(ctx, m); err != nil {
+		return nil, err
+	}
+	claimed, err := g.inner.ClaimReadyIssue(ctx, filter, actor)
+	if err != nil || claimed == nil {
+		return claimed, err
+	}
+	if g.eng.has(m.event, false) {
+		m.subject = claimed.ID
+		g.eng.observe(ctx, g.eng.payload(ctx, m, nil))
+	}
+	return claimed, nil
+}
+
+// DeleteIssues guards each id as a delete; the first refusal refuses the batch
+// before anything is removed. A dry run changes nothing and is not guarded.
+func (g *HookGuardStore) DeleteIssues(ctx context.Context, ids []string, cascade bool, force bool, dryRun bool) (*types.DeleteIssuesResult, error) {
+	if dryRun {
+		return g.inner.DeleteIssues(ctx, ids, cascade, force, dryRun)
+	}
+	snapshots := make([]hooksdef.Payload, 0, len(ids))
+	for _, id := range ids {
+		pre, err := g.eng.guard(ctx, mutation{event: hooksdef.EventDelete, subject: id,
+			updates: map[string]interface{}{"cascade": cascade}})
+		if err != nil {
+			return nil, err
+		}
+		snapshots = append(snapshots, pre)
+	}
+	res, err := g.inner.DeleteIssues(ctx, ids, cascade, force, dryRun)
+	if err != nil {
+		return res, err
+	}
+	if g.eng.has(hooksdef.EventDelete, false) {
+		for i, id := range ids {
+			p := snapshots[i]
+			if p.Event == "" {
+				p = g.eng.payload(ctx, mutation{event: hooksdef.EventDelete, subject: id}, nil)
+			}
+			g.eng.observe(ctx, p)
+		}
+	}
+	return res, nil
+}
+
+// UpdateIssueID (`bd rename`) is an update of the bead being renamed.
+func (g *HookGuardStore) UpdateIssueID(ctx context.Context, oldID, newID string, issue *types.Issue, actor string) error {
+	return g.mutate(ctx, mutation{event: hooksdef.EventUpdate, subject: oldID, actor: actor,
+		updates: map[string]interface{}{"rename_to": newID}},
+		func() error { return g.inner.UpdateIssueID(ctx, oldID, newID, issue, actor) })
+}
+
 func (g *HookGuardStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
 	return g.mutate(ctx, depMutation(dep, true, actor),
 		func() error { return g.inner.AddDependency(ctx, dep, actor) })

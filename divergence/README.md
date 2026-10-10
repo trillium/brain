@@ -118,5 +118,12 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | [0022](0022-brain-cutover-rehearsal.md) | brain cutover rehearsal | landed |
 | [0023](0023-vision-landing.md) | VISION.md landed — the captain-approved vision, verbatim | proposed |
 | [0024](0024-isa-retirement.md) | ISA retired — historical record; primer corrected for staleness | landed |
-| [0025](0025-brain-collision-duplication-records.md) | duplication-records design — the vision's collision model, designed not built | proposed |
+| [0025](0025-brain-collision-duplication-records.md) | duplication-records design — the vision's collision model, designed not built | landed |
 | [0026](0026-external-stores-design.md) | external-store model — a store's command runs where its database lives (design only) | landed |
+| [0027](0027-brain-unify-replay.md) | unify replay — keep a merged database current with the sources it was built from | built |
+| [0028](0028-brain-unify-conflict-beads.md) | unify conflict beads — duplicated ids whose copies differ keep every copy | built |
+| [0029](0029-brain-markdown-editback.md) | opt-in edit-back from rendered markdown, and mark-for-deletion | landed |
+| [0030](0030-brain-hooks-guard-observer.md) | hooks — declared guards refuse a write, observers fail open, unset hooks warn with a durable record | built |
+| [0031](0031-durable-event-outbox.md) | durable event outbox — events are rows in the store, delivered with retries until acknowledged | landed |
+| [0032](0032-shared-database-backup.md) | back a shared database up once — one destination, one throttle, one lock | proposed |
+| [0033](0033-event-payload-elision.md) | cap string values in audit `events` rows so appends stop growing the table quadratically | proposed |

@@ -5,7 +5,7 @@ isc: []
 status: landed
 created: 2026-10-07
 updated: 2026-10-07
-commits: [ab64c1a00b7e8cfb83726e8559d768f561feda2c]
+commits: [c47de0e91]
 touches:
   - ISA.md
   - docs/brain/archive/ISA-v03.md

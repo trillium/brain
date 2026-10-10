@@ -1,7 +1,9 @@
 package hooksdef
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,7 +52,19 @@ func AncestorRunningHook(beadsDir string) bool {
 	if beadsDir == "" || runtime.GOOS == "windows" {
 		return false
 	}
-	markers, _ := filepath.Glob(filepath.Join(beadsDir, RunningPrefix+"*"+RunningSuffix))
+	// ReadDir, not Glob: a store path holding [ * ? is a glob pattern, and a
+	// pattern that matches nothing would switch this layer off silently.
+	entries, err := os.ReadDir(beadsDir)
+	if err != nil {
+		return !errors.Is(err, fs.ErrNotExist)
+	}
+	var markers []string
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, RunningPrefix) && strings.HasSuffix(name, RunningSuffix) {
+			markers = append(markers, filepath.Join(beadsDir, name))
+		}
+	}
 	if len(markers) == 0 {
 		return false
 	}
@@ -85,6 +99,10 @@ func processAlive(pid int) bool {
 	return p.Signal(syscallZero) == nil
 }
 
+// psPath is absolute on purpose: a hook controls PATH, and a PATH-resolved ps
+// is a ps the hook can replace.
+var psPath = "/bin/ps"
+
 // ancestry returns this process's ancestor pids, found with ps. ok is false
 // when the tree could not be read.
 func ancestry() (map[int]bool, bool) {
@@ -92,7 +110,7 @@ func ancestry() (map[int]bool, bool) {
 	pid := os.Getppid()
 	for depth := 0; pid > 1 && depth < 64; depth++ {
 		out[pid] = true
-		raw, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
+		raw, err := exec.Command(psPath, "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
 		if err != nil {
 			return nil, false
 		}

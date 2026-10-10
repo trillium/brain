@@ -247,8 +247,11 @@ func throttled(st SharedBackupState, interval time.Duration, now time.Time) bool
 	return !st.Timestamp.IsZero() && now.Sub(st.Timestamp) < interval
 }
 
-func unchanged(st SharedBackupState, head string) bool {
-	return st.LastDoltCommit != "" && st.LastDoltCommit == head
+// unchanged reports that dest already holds head. A destination that is not
+// the one the last sync went to has not got it, whatever HEAD says: re-pointing
+// `default` (bd backup init, bd backup restore) must trigger a fresh sync.
+func unchanged(st SharedBackupState, head, dest string) bool {
+	return st.LastDoltCommit != "" && st.LastDoltCommit == head && st.Destination == dest
 }
 
 // RunSharedBackup backs a shared database up once, to its registered
@@ -291,7 +294,7 @@ func RunSharedBackup(ctx context.Context, db *sql.DB, opts SharedBackupOptions) 
 	if err != nil {
 		return SharedBackupResult{}, err
 	}
-	if !opts.Force && unchanged(st, head) {
+	if !opts.Force && unchanged(st, head, dest) {
 		return SharedBackupResult{Outcome: SharedBackupUnchanged, Destination: dest, State: st}, nil
 	}
 
@@ -322,7 +325,7 @@ func RunSharedBackup(ctx context.Context, db *sql.DB, opts SharedBackupOptions) 
 	if head, err = sharedHead(ctx, conn); err != nil {
 		return SharedBackupResult{}, err
 	}
-	if !opts.Force && unchanged(st, head) {
+	if !opts.Force && unchanged(st, head, dest) {
 		return SharedBackupResult{Outcome: SharedBackupUnchanged, Destination: dest, State: st}, nil
 	}
 
