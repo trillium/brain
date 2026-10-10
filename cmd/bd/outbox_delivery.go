@@ -27,6 +27,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -37,6 +38,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/hooksdef"
 )
 
 // outboxBackoffBase and outboxBackoffMax bound the retry schedule. After the
@@ -297,7 +299,16 @@ func deliverToSubscriber(ctx context.Context, s *outboxSubscriber, payload []byt
 		execCmd := exec.CommandContext(ctx, s.Command)
 		execCmd.Stdin = bytes.NewReader(append(append([]byte{}, payload...), '\n'))
 		execCmd.Stderr = nil
-		if out, err := execCmd.CombinedOutput(); err != nil {
+		execCmd.Env = hooksdef.ScrubStoreEnv(os.Environ())
+		prepareOutboxCommand(execCmd)
+		out, err := execCmd.CombinedOutput()
+		// A clean exit whose background child still holds the output pipe
+		// surfaces as ErrWaitDelay once WaitDelay passes; the subscriber did
+		// exit 0, so it acknowledged.
+		if errors.Is(err, exec.ErrWaitDelay) && ctx.Err() == nil {
+			err = nil
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("subscriber %q: command %s timed out after %s (no acknowledgement)", s.Name, s.Command, timeout)
 			}
@@ -306,6 +317,10 @@ func deliverToSubscriber(ctx context.Context, s *outboxSubscriber, payload []byt
 		return nil
 	}
 }
+
+// outboxCommandWaitDelay bounds how long a subscriber command's output pipe is
+// awaited once the command itself has exited or been killed.
+const outboxCommandWaitDelay = 2 * time.Second
 
 func truncateOutboxErr(s string) string {
 	s = strings.TrimSpace(s)

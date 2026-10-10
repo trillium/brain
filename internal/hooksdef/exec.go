@@ -30,7 +30,14 @@ var strippedEnvPrefixes = []string{"BEADS_", "BRAIN_", "BD_", "DOLT_", "MYSQL_"}
 // HookEnv builds the environment a hook process runs in: the caller's
 // environment minus every store-facing family, plus the EnvInsideHook marker.
 func HookEnv(environ []string) []string {
-	out := make([]string, 0, len(environ)+1)
+	return append(ScrubStoreEnv(environ), EnvInsideHook+"=1")
+}
+
+// ScrubStoreEnv returns environ without the store-facing families (database
+// credentials, server ports, store paths). Anything bd runs on a third
+// party's behalf, such as an outbox subscriber command, gets this.
+func ScrubStoreEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
 		key, _, ok := strings.Cut(kv, "=")
 		if !ok {
@@ -47,7 +54,7 @@ func HookEnv(environ []string) []string {
 			out = append(out, kv)
 		}
 	}
-	return append(out, EnvInsideHook+"=1")
+	return out
 }
 
 // RunResult is what one hook execution produced.

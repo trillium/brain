@@ -72,7 +72,7 @@ func newMock(t *testing.T) (sqlmock.Sqlmock, func(opts SharedBackupOptions) (Sha
 }
 
 func stateJSON(commit string, at time.Time) string {
-	return `{"last_dolt_commit":"` + commit + `","timestamp":"` + at.Format(time.RFC3339) + `"}`
+	return `{"last_dolt_commit":"` + commit + `","timestamp":"` + at.Format(time.RFC3339) + `","destination":"` + destURL + `"}`
 }
 
 func TestIsSharedDatabase(t *testing.T) {
@@ -166,6 +166,35 @@ func TestRunSharedBackupUnchangedTakesNoLockAndNoSync(t *testing.T) {
 	res, err := run(SharedBackupOptions{Interval: 15 * time.Minute})
 	if err != nil || res.Outcome != SharedBackupUnchanged {
 		t.Fatalf("got %+v, %v; want unchanged", res, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Re-pointing `default` at a new destination must sync even though HEAD has
+// not moved: the new destination has never received it.
+func TestRunSharedBackupChangedDestinationIsNotUnchanged(t *testing.T) {
+	const newDest = "file:///backups/other"
+	mock, run := newMock(t)
+	// outside the lock: state says c1 was synced to destURL; default now points elsewhere
+	expectState(mock, stateJSON("c1", t0.Add(-time.Hour)))
+	expectBackups(mock, "default", newDest)
+	expectHead(mock, "c1")
+	mock.ExpectQuery(q(qDatabase)).WillReturnRows(sqlmock.NewRows([]string{"d"}).AddRow("brain_unified"))
+	mock.ExpectQuery(q(qGetLock)).WithArgs(sharedBackupLockName("brain_unified"), 0).
+		WillReturnRows(sqlmock.NewRows([]string{"g"}).AddRow(1))
+	expectState(mock, stateJSON("c1", t0.Add(-time.Hour)))
+	expectBackups(mock, "default", newDest)
+	expectHead(mock, "c1")
+	expectCount(mock, 1)
+	mock.ExpectExec(q(qSync)).WithArgs(SharedBackupDestinationName).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(q(qSave)).WithArgs(SharedBackupStateKey, sqlmock.AnyArg()).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(q(qRelease)).WithArgs(sharedBackupLockName("brain_unified")).
+		WillReturnRows(sqlmock.NewRows([]string{"r"}).AddRow(1))
+	res, err := run(SharedBackupOptions{Interval: 15 * time.Minute})
+	if err != nil || res.Outcome != SharedBackupSynced || res.State.Destination != newDest {
+		t.Fatalf("got %+v, %v; want synced to the new destination", res, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
