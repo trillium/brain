@@ -6,6 +6,8 @@ brain is a Go fork of [beads](https://github.com/gastownhall/beads). It keeps be
 
 ## The model
 
+**brain is a graph of beads.** It is an arbitrary collection of *data beads* (facts, learnings, decisions, ideas — `kind: knowledge`) and *task beads* (actionable work — `kind: task`), connected by interlocking dependency edges (`brain link`, `brain related`; e.g. `informs`, `extends`, `learned-from`, blocks/parent-child). A bead can be both (`kind: both`). The beads and the dependencies between them are what brain *is*; neither a particular database product nor a fixed set of stores defines it. Stores are a way of grouping beads, and one underlying database can hold the whole flexible model — including dependencies that cross stores.
+
 brain is one Dolt database (`brain_unified`) holding a family of stores, each with a focused purpose and its own CLI wrapper. A store is a **namespace** of that database, not a database of its own: its beads are the rows whose ids carry the store's prefix, and ownership of the prefix is recorded in the database. Every wrapper is a thin shell script that sets `BEADS_DIR` and `BD_NAME` (and the shared server address) before dispatching to the brain binary; `BEADS_DIR` names the store's directory, whose `.beads/metadata.json` points at the shared database, and `BD_NAME` selects the store's namespace. See [docs/design/brain-single-database.md](docs/design/brain-single-database.md).
 
 | CLI         | Store directory                  | Prefix      | Purpose                                      |
