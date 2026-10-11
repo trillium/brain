@@ -2,13 +2,15 @@
 
 Personal agent infrastructure. A multi-scope memory and task system that AI agents can depend on, with markdown exfiltration so the same content is also human-readable and grep-friendly.
 
-brain is a Go fork of [beads](https://github.com/gastownhall/beads). It keeps beads' versioned Dolt substrate and graph-shaped issue model, then layers a federation model on top: one binary, many named stores, unified search.
+brain is a Go fork of [beads](https://github.com/gastownhall/beads). It keeps beads' versioned Dolt substrate and graph-shaped issue model, then layers a federation model on top: one binary, many named stores, one shared database, unified search.
 
 ## The model
 
-brain is not one store — it is a family of stores, each with a focused purpose and its own CLI wrapper. Every store is a beads `.beads/` Dolt database. Every wrapper is a thin shell script that sets `BEADS_DIR` and `BD_NAME` before dispatching to the brain binary.
+**brain is a graph of beads.** It is an arbitrary collection of *data beads* (facts, learnings, decisions, ideas — `kind: knowledge`) and *task beads* (actionable work — `kind: task`), connected by interlocking dependency edges (`brain link`, `brain related`; e.g. `informs`, `extends`, `learned-from`, blocks/parent-child). A bead can be both (`kind: both`). The beads and the dependencies between them are what brain *is*; neither a particular database product nor a fixed set of stores defines it. Stores are a way of grouping beads, and one underlying database can hold the whole flexible model — including dependencies that cross stores.
 
-| CLI         | Store path                       | Prefix      | Purpose                                      |
+brain is one Dolt database (`brain_unified`) holding a family of stores, each with a focused purpose and its own CLI wrapper. A store is a **namespace** of that database, not a database of its own: its beads are the rows whose ids carry the store's prefix, and ownership of the prefix is recorded in the database. Every wrapper is a thin shell script that sets `BEADS_DIR` and `BD_NAME` (and the shared server address) before dispatching to the brain binary; `BEADS_DIR` names the store's directory, whose `.beads/metadata.json` points at the shared database, and `BD_NAME` selects the store's namespace. See [docs/design/brain-single-database.md](docs/design/brain-single-database.md).
+
+| CLI         | Store directory                  | Prefix      | Purpose                                      |
 |-------------|----------------------------------|-------------|----------------------------------------------|
 | `brain`     | `~/data/knowledge/.beads/`       | `brain-`    | Facts, learnings, concepts — the default hub |
 | `task`      | `~/data/tasks/.beads/`           | `task-`     | Actionable work items (global, cross-project)|
@@ -20,11 +22,13 @@ brain is not one store — it is a family of stores, each with a focused purpose
 | `assert`    | `~/data/assertions/.beads/`      | `assert-`   | AI assertion claims + verdicts               |
 | `life`      | `~/data/life/.beads/`            | `life-`     | Personal context (health, habits, goals)     |
 
-**brain is the search hub.** `brain search X` finds entries across all registered stores. Writes always go to the specific store via its wrapper — brain is never the write target for task/project/idea etc.
+**One database, many namespaces.** Reads through a wrapper are narrow by default — they see only that store's namespace. Pass `--wide` to read every store's beads in the one database. Creates mint ids under the wrapper's own prefix, and a command with no store namespace pinned (no `BD_NAME`) refuses to create rather than guess.
+
+**brain is the search hub.** `brain search X` finds entries across all registered stores (one wide read of the shared database, bucketed per store with `--federated`). Writes always go to the specific store via its wrapper — brain is never the write target for task/project/idea etc.
 
 **Capture first, classify later.** Drop anything into `inbox` with zero classification overhead. Promote it to the right store when you have 30 seconds: `brain transfer inbox-abc task`.
 
-**Per-project task tracking stays in the repo.** Each code repo has its own local `bd` store (`.beads/` in the repo). The `task` store is for global, cross-project work items that don't belong to a single codebase.
+**Per-project task tracking stays in the repo.** Each code repo has its own local `bd` store (`.beads/` in the repo), separate from the shared brain database. The `task` store is for global, cross-project work items that don't belong to a single codebase.
 
 ## Store registry
 
@@ -38,15 +42,15 @@ deprecated `PAI_STORE_*` / `PAI_STORES_LIST` aliases for transition. See
 [docs/BRAIN_DEPAI_MIGRATION.md](docs/BRAIN_DEPAI_MIGRATION.md).
 
 ```sh
-brain stores create recipes              # provision new store end-to-end (dolt init, entries/, wrapper, registry, env)
-brain stores add task ~/data/tasks/.beads  # register an existing dolt repo without creating files
+brain stores create recipes              # provision new store end-to-end (namespace in the shared database, entries/, wrapper, registry, env)
+brain stores add task ~/data/tasks/.beads  # register an existing store directory without creating files
 brain stores list
 brain stores env                         # regenerate ~/.config/brain/stores.env
 brain stores remove recipes              # unregister (does NOT delete files)
 brain stores doctor                      # assert every registered store answers a read
 ```
 
-`brain stores create` is idempotent — re-running with the same arguments resumes safely if a prior run was interrupted.
+On a server that hosts the unified database, `brain stores create` adds the new store as a namespace of it rather than creating a separate database. `brain stores create` is idempotent — re-running with the same arguments resumes safely if a prior run was interrupted.
 
 `brain stores doctor` probes each store the way an agent reaches it — through its `~/.local/bin/<name>` wrapper — and exits 1 naming the stores that failed. Every exit 1 carries a `FAILING STORES:` line; when the registry itself is unreadable the line carries the `__registry__` sentinel, since no store names are known. Run it from a scheduler: a store that is registered but never initialized answers `no beads database found` on every call, and for queue-shaped stores (`staleness`, `review`, `inbox`) that is indistinguishable from an empty queue, so nothing surfaces it on its own.
 
@@ -54,11 +58,11 @@ A store with no wrapper (registered with `--no-wrapper`, or one that was lost) i
 
 ## What brain adds to beads
 
-- **Multi-store federation.** `brain stores add/create/list/env`, `brain search` across all stores, `brain transfer` between stores.
-- **One-shot store provisioning.** `brain stores create <name>` does dolt init + entries dir + CLI wrapper + registry write + env regen in a single idempotent command — no manual steps.
+- **Multi-store federation on one database.** `brain stores add/create/list/env`, `brain search` across all stores, `brain transfer` between stores — all stores are namespaces of the single `brain_unified` database, so cross-store reads and dependencies need no cross-database plumbing.
+- **One-shot store provisioning.** `brain stores create <name>` does namespace provisioning in the shared database + entries dir + CLI wrapper + registry write + env regen in a single idempotent command — no manual steps.
 - **Kind discriminator.** One bag of docs — `kind: task | knowledge | both | isa` — so tasks and knowledge live in the same substrate with the same query layer.
 - **Markdown exfiltration on every mutation, every kind.** Every write renders a markdown file to `<store>/entries/<kind>/<slug>.md` — not just the brain trio (task/knowledge/both) but every IssueType bd recognizes (bug, feature, epic, decision, message, etc.). Dolt is canonical; markdown is the human view.
-- **Store-derived exfil root.** Resolution is `BRAIN_KNOWLEDGE_ROOT` → `dirname($BEADS_DIR)/entries` → `~/data/brain/entries` — so each store's markdown lands next to its own `.beads/` directory automatically.
+- **Store-derived exfil root.** Resolution is `BRAIN_KNOWLEDGE_ROOT` → `dirname($BEADS_DIR)/entries` → `~/data/brain/entries` — so each store's markdown lands next to its own store directory automatically.
 - **On-demand re-render.** `bd render <id>` and `bd render-all` re-emit markdown from the substrate when the on-disk copy is missing, corrupted, or out of date. `render-all` prints a confirmation summary (`Exfiltrated N / M beads to <root>/entries/ (K failed)`) and supports `--json` for scripting.
 - **ISA primitives.** First-class support for ISA (Ideal State Artifact) format v2.7 — `brain new isa`, `brain isa-section`, `brain isa-render`, per-section UPSERT semantics. (Format originated as PAI Algorithm v6.4+ ISAs; see migration notes.)
 - **Auto-file feature requests.** Unknown flag on a `brain` command? It files a feature request automatically and prints the ID.
