@@ -125,7 +125,7 @@ func init() {
 	unifyBuildCmd.Flags().BoolVar(&unifyAllowColl, "allow-collisions", false, "no longer has any effect")
 	_ = unifyBuildCmd.Flags().MarkDeprecated("allow-collisions", allowCollisionsRetired)
 	unifyBuildCmd.Flags().DurationVar(&unifyTimeout, "timeout", 4*time.Hour, "overall time budget for the build")
-	unifyBuildCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build")
+	unifyBuildCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one only draws a warning from the build")
 	unifyBuildCmd.Flags().StringVar(&unifyAliases, "aliases", "", "JSON file {wrapper name (BD_NAME): store} for wrappers whose name is not their store's; recorded in brain_store_aliases so a wrapper resolves to its store")
 	unifyPlanCmd.Flags().StringSliceVar(&unifyProjectID, "project-id", nil, "project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable)")
 

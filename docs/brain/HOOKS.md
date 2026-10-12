@@ -149,7 +149,10 @@ Reads from a hook are allowed.
 
 Guards and observers sit in the storage layer closest to the database, so every
 `bd` path that creates, updates, closes, deletes, labels, links or comments goes
-through them, including inside transactions. Not covered: bulk maintenance paths
-that bypass those methods (import, `bd dolt pull` merges, compaction, delete by
-source repo), and proxied-server mode — where hooks are declared, writes are
+through them, including inside transactions. That includes `update --claim`,
+`ready --claim` (an update), multi-id and `--cascade` deletes (one delete per id)
+and `rename` (an update). Not covered: bulk maintenance paths that bypass those
+methods (import, `bd dolt pull` merges, compaction, delete by source repo),
+slots, merge slots, promote-from-ephemeral and `bd config set`, and
+proxied-server mode — where hooks are declared, writes are
 refused there rather than run unguarded.
