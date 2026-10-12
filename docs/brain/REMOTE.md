@@ -92,6 +92,16 @@ the host itself) simply has no `remote.yaml` and runs locally.
 - `brain remote …` itself is the only client-side command; every other
   invocation, including `--help` and `--version`, is answered by the host.
 
+## When the host moves
+
+`brain host promote` moves the host role to another machine (see
+[`HOST_PROMOTE.md`](HOST_PROMOTE.md)). A client that was offline for the move, or
+never registered with the host, does not need to be told: the old host answers its
+next command with where the brain went, the client checks that the new machine
+really is the host the old one named, rewrites `remote.yaml`, runs the command
+once more and prints one line saying it re-pointed. If it cannot verify the move
+it changes nothing and says why (exit 76).
+
 ## What a call costs
 
 Measured from a Mac mini to the host's Mac over Tailscale (the host was busy,

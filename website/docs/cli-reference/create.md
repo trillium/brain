@@ -37,6 +37,7 @@ bd create [title] [flags]
   -a, --assignee string         Assignee
       --body-file string        Read description from file (use - for stdin)
       --context string          Additional context for the issue
+      --date string             Date for a store with create.id-pattern (day, week, month, quarter or year); defaults to today in America/Los_Angeles. An explicit --id must match the pattern
       --defer string            Defer until date (issue hidden from bd ready until then). Same formats as --due
       --deps strings            Dependencies in format 'type:id' or 'id' (e.g., 'discovered-from:bd-20,blocks:bd-15' or 'bd-20')
   -d, --description string      Issue description
