@@ -49,6 +49,7 @@ var YamlOnlyKeys = map[string]bool{
 
 	// Create command settings
 	"create.require-description": true,
+	"create.id-pattern":          true, // day|week|month|quarter|year: one date-keyed bead per period
 
 	// Change-event emission (brain). Startup-read at PersistentPostRun, so it
 	// lives in yaml rather than the DB (matches the export.* pattern).

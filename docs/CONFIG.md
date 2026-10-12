@@ -46,6 +46,7 @@ Common tool-level settings you can configure:
 | `federation.sovereignty` | - | `BD_FEDERATION_SOVEREIGNTY` | (none) | Data sovereignty tier: `T1`, `T2`, `T3`, `T4` |
 | `dolt.auto-commit` | `--dolt-auto-commit` | `BD_DOLT_AUTO_COMMIT` | `on` | (Dolt backend) Automatically create a Dolt commit after successful write commands |
 | `create.require-description` | - | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description when creating issues |
+| `create.id-pattern` | - | - | (none) | Date-keyed ids, one bead per period: `day` (`<prefix>-YYYY-MM-DD`), `week` (Sunday that starts the week, `<prefix>-YYYY-MM-DD`), `month` (`<prefix>-YYYY-MM`), `quarter` (`<prefix>-YYYY-qN`), `year` (`<prefix>-YYYY`), in America/Los_Angeles. `bd create` takes the id from today or `--date`, validates `--id` against the pattern, and refuses a second bead for the same period (naming the existing one). `--file`/`--graph` are refused; `--parent` children and wisps are exempt |
 | `validation.on-create` | - | `BD_VALIDATION_ON_CREATE` | `none` | Template validation on create: `none`, `warn`, `error` |
 | `validation.on-sync` | - | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync: `none`, `warn`, `error` |
 | `git.author` | - | `BD_GIT_AUTHOR` | (none) | Override commit author for beads commits |
