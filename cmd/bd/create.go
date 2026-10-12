@@ -75,6 +75,16 @@ Examples:
 		file, _ := cmd.Flags().GetString("file")
 		graphFile, _ := cmd.Flags().GetString("graph")
 
+		if file != "" || graphFile != "" {
+			route := "--file"
+			if file == "" {
+				route = "--graph"
+			}
+			if err := rejectIDPatternRoute(route); err != nil {
+				return HandleError("%v", err)
+			}
+		}
+
 		if file != "" {
 			if graphFile != "" {
 				return HandleError("cannot specify both --file and --graph")
@@ -215,6 +225,18 @@ Examples:
 		if wisp && noHistory {
 			return HandleError("--ephemeral and --no-history are mutually exclusive")
 		}
+		dateFlag, _ := cmd.Flags().GetString("date")
+		patternID := false
+		if _, ok, perr := storeIDPattern(); perr != nil {
+			return HandleError("%v", perr)
+		} else if ok && !wisp && parentID == "" {
+			patternID = true
+		}
+		resolvedID, rerr := resolveCreateID(createIDPrefix(), explicitID, dateFlag, parentID, mintPrefix, wisp, time.Now())
+		if rerr != nil {
+			return HandleError("%v", rerr)
+		}
+		explicitID = resolvedID
 		molTypeStr, _ := cmd.Flags().GetString("mol-type")
 		var molType types.MolType
 		if molTypeStr != "" {
@@ -508,6 +530,12 @@ Examples:
 			}
 			explicitID = childID
 			createCtx = storage.WithReservedChildCounter(createCtx, parentID, childID)
+		}
+
+		if patternID {
+			if err := ensureIDPatternFree(createCtx, explicitID, store.GetIssue); err != nil {
+				return HandleError("%v", err)
+			}
 		}
 
 		if explicitID != "" {
@@ -924,6 +952,7 @@ func init() {
 	createCmd.Flags().StringSlice("label", []string{}, "Alias for --labels")
 	_ = createCmd.Flags().MarkHidden("label") // Only fails if flag missing (caught in tests)
 	createCmd.Flags().String("id", "", "Explicit issue ID (e.g., 'bd-42' for partitioning)")
+	createCmd.Flags().String("date", "", "Date for a store with create.id-pattern (day, week, month, quarter or year); defaults to today in America/Los_Angeles. An explicit --id must match the pattern")
 	createCmd.Flags().String("prefix", "", "Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')")
 	createCmd.Flags().String("parent", "", "Parent issue ID for hierarchical child (e.g., 'bd-a3f8e9')")
 	createCmd.Flags().Bool("no-inherit-labels", false, "Don't inherit labels from parent issue")

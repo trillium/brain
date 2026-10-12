@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -28,6 +29,15 @@ func resolveProxiedCustomTypes(dbTypes []string) []string {
 func runCreateProxiedServer(cmd *cobra.Command, ctx context.Context, in createInput) {
 	if in.repoOverrideSet {
 		FatalError("--repo is not supported with --proxied-server")
+	}
+	if in.graphFile != "" || in.markdownFile != "" {
+		route := "--file"
+		if in.graphFile != "" {
+			route = "--graph"
+		}
+		if err := rejectIDPatternRoute(route); err != nil {
+			FatalError("%v", err)
+		}
 	}
 	switch {
 	case in.graphFile != "":
@@ -57,6 +67,20 @@ func proxiedOpenUOW(ctx context.Context) (uow.UnitOfWork, domain.CreateContext) 
 
 func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInput) {
 	runCreateLintIssue(in)
+	_, patterned, perr := storeIDPattern()
+	if perr != nil {
+		FatalError("%v", perr)
+	}
+	patterned = patterned && !in.ephemeral && in.parentID == ""
+	if patterned || in.date != "" {
+		cfgUW, pctx := proxiedOpenUOW(ctx)
+		cfgUW.Close(ctx)
+		id, err := resolveCreateID(overlayYAMLPrefix(pctx.IssuePrefix), in.explicitID, in.date, in.parentID, in.mintPrefix, in.ephemeral, time.Now())
+		if err != nil {
+			FatalError("%v", err)
+		}
+		in.explicitID = id
+	}
 	if in.explicitID != "" {
 		if _, err := validation.ValidateIDFormat(in.explicitID); err != nil {
 			FatalError("%v", err)
@@ -120,6 +144,15 @@ func runCreateProxiedSingle(_ *cobra.Command, ctx context.Context, in createInpu
 	if in.explicitID != "" {
 		effectivePrefix := overlayYAMLPrefix(cctx.IssuePrefix)
 		if err := validation.ValidateIDPrefixAllowed(in.explicitID, effectivePrefix, cctx.AllowedPrefixes, in.force); err != nil {
+			FatalError("%v", err)
+		}
+	}
+
+	if patterned {
+		freeUW, _ := proxiedOpenUOW(ctx)
+		err := ensureIDPatternFree(ctx, in.explicitID, freeUW.IssueUseCase().GetIssue)
+		freeUW.Close(ctx)
+		if err != nil {
 			FatalError("%v", err)
 		}
 	}

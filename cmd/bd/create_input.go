@@ -22,6 +22,7 @@ type createInput struct {
 	graphFile          string
 	title              string
 	explicitID         string
+	date               string
 	parentID           string
 	issueType          string
 	priority           int
@@ -172,6 +173,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	in.externalRef, _ = cmd.Flags().GetString("external-ref")
 	in.explicitID, _ = cmd.Flags().GetString("id")
 	in.parentID, _ = cmd.Flags().GetString("parent")
+	in.date, _ = cmd.Flags().GetString("date")
 	in.waitsFor, _ = cmd.Flags().GetString("waits-for")
 	in.waitsForGate, _ = cmd.Flags().GetString("waits-for-gate")
 
