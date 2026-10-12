@@ -578,3 +578,53 @@ func TestSummarizeUndoFoldsFileSteps(t *testing.T) {
 		}
 	}
 }
+
+func TestLaunchdServerPlistAndServiceCalls(t *testing.T) {
+	home := t.TempDir()
+	m := newServiceManager(home)
+	var calls []string
+	m.run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}
+	svc := m.newServerService("launchd", "")
+	if svc.Label != "com.brain.dolt-server" || !strings.HasSuffix(svc.Plist, "Library/LaunchAgents/com.brain.dolt-server.plist") {
+		t.Fatalf("default service: %+v", svc)
+	}
+	plist := launchdServerPlist(svc, serverSpec{DoltBin: "/opt/homebrew/bin/dolt", DataDir: "/Users/me/data & more/.beads", Bind: "127.0.0.1", Port: 3307, RemotesAPIPort: 3310})
+	for _, want := range []string{"<string>com.brain.dolt-server</string>", "<string>sql-server</string>", "<string>3307</string>", "--remotesapi-port", "<string>3310</string>",
+		"/Users/me/data &amp; more/.beads", "<key>KeepAlive</key>", "<key>RunAtLoad</key>"} {
+		if !strings.Contains(plist, want) {
+			t.Errorf("plist lacks %q:\n%s", want, plist)
+		}
+	}
+	// Stopping a launchd server disables it (so it does not return at login) and
+	// unloads it; undoing the journal enables and loads it again, in that order.
+	j, err := openJournal(filepath.Join(home, "j"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.stop(context.Background(), svc, freePort(t), true, nil, j); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := j.undo(m); err != nil {
+		t.Fatal(err)
+	}
+	uid := m.domain()
+	want := []string{
+		"launchctl disable " + uid + "/com.brain.dolt-server",
+		"launchctl bootout " + uid + "/com.brain.dolt-server",
+		"launchctl enable " + uid + "/com.brain.dolt-server",
+		"launchctl bootstrap " + uid + " " + svc.Plist,
+	}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Errorf("launchctl calls:\n%s\nwant:\n%s", strings.Join(calls, "\n"), strings.Join(want, "\n"))
+	}
+	if validLaunchdLabel("bad label;rm") || !validLaunchdLabel("com.pai.brain-sync") {
+		t.Error("label validation")
+	}
+	// An externally managed server is never stopped by brain.
+	if err := m.stop(context.Background(), hostService{Kind: "external"}, 1, true, nil, nil); err == nil {
+		t.Error("brain must refuse to stop a server it does not manage")
+	}
+}

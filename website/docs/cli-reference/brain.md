@@ -540,7 +540,7 @@ bd brain unify build [flags]
       --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
       --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
       --port int                      dolt sql-server port holding the production stores (default 3307)
-      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one refuses the build
+      --project-id strings            project id of a store neither its database nor the registry identifies, as <store>=<uuid> (repeatable); a store left without one only draws a warning from the build
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
       --template string               store whose schema the unified database inherits (default: the store with the most beads)
       --timeout duration              overall time budget for the build (default 4h0m0s)
