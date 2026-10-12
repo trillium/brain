@@ -23,6 +23,15 @@ All notable changes to the beads project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## brain v0.5.1
+
+Built on beads 1.1.0-rc.1 (`1.1.0-rc.1+brain.0.5.1`). `brain remote` client
+mode and `brain host promote`, date-keyed ids (`create.id-pattern`), cross-store
+dependency edges that resolve in readers, audit-event payloads capped
+(`BEADS_EVENT_FIELD_LIMIT`), the `transfer` registry reader fix, review fixes
+for hooks, outbox and backup, and the README rewrite. See
+[docs/brain/releases/v0.5.1.md](docs/brain/releases/v0.5.1.md).
+
 ## brain v0.5.0
 
 Built on beads 1.1.0-rc.1 (`1.1.0-rc.1+brain.0.5.0`). Unified database with
