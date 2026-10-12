@@ -164,7 +164,26 @@ var validPrefix = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 // Only the `stores: name → path` map is consumed; any other keys are
 // ignored so a yaml format extension upstream does not break us.
 type storesYAML struct {
-	Stores map[string]string `yaml:"stores"`
+	Stores map[string]storePath `yaml:"stores"`
+}
+
+// storePath is one registry value: either the legacy bare path string or the
+// current {path, about} mapping that 'brain stores' writes.
+type storePath string
+
+func (p *storePath) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		*p = storePath(value.Value)
+		return nil
+	}
+	var m struct {
+		Path string `yaml:"path"`
+	}
+	if err := value.Decode(&m); err != nil {
+		return err
+	}
+	*p = storePath(m.Path)
+	return nil
 }
 
 // metadataJSON mirrors the subset of .beads/metadata.json we need.
@@ -273,10 +292,10 @@ func Load(homeDir string) (*Registry, error) {
 	}
 	enriched := make(map[string]string)
 	for name, beadsPath := range legacyDoc.Stores {
-		enriched[strings.ToLower(strings.TrimSpace(name))] = beadsPath
+		enriched[strings.ToLower(strings.TrimSpace(name))] = string(beadsPath)
 	}
 	for name, beadsPath := range canonicalDoc.Stores {
-		enriched[strings.ToLower(strings.TrimSpace(name))] = beadsPath
+		enriched[strings.ToLower(strings.TrimSpace(name))] = string(beadsPath)
 	}
 	if len(enriched) == 0 {
 		return r, nil
@@ -296,7 +315,13 @@ func Load(homeDir string) (*Registry, error) {
 			// prefix shape; skip it but keep the fallback intact.
 			continue
 		}
-		metaPath := filepath.Join(expandHome(beadsPath, homeDir), ".beads", "metadata.json")
+		// 'brain stores add' records the .beads directory itself; older
+		// entries name its parent. Accept both.
+		storeDir := expandHome(beadsPath, homeDir)
+		if filepath.Base(storeDir) != ".beads" {
+			storeDir = filepath.Join(storeDir, ".beads")
+		}
+		metaPath := filepath.Join(storeDir, "metadata.json")
 		raw, err := os.ReadFile(metaPath) //nolint:gosec // path is constructed from caller-supplied registry
 		if err != nil {
 			continue
