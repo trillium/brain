@@ -173,9 +173,11 @@ func remoteQuote(s string) string {
 
 // remoteScript is what the host's shell runs; the command name and arguments
 // follow it as positional parameters, so none of them is ever re-parsed.
-// BRAIN_REMOTE=off keeps a configured host from forwarding onward.
+// BRAIN_REMOTE=off keeps a configured host from forwarding onward;
+// BRAIN_REMOTE_FORWARDED=1 tells the host the call came from a client, so a
+// host that has since moved can answer with where the brain went.
 func (c *remoteConfig) remoteScript() string {
-	return `d="` + c.binDir() + `"; PATH="$d:$PATH"; BRAIN_REMOTE=off; export PATH BRAIN_REMOTE; exec "$d/$0" "$@"`
+	return `d="` + c.binDir() + `"; PATH="$d:$PATH"; BRAIN_REMOTE=off; BRAIN_REMOTE_FORWARDED=1; export PATH BRAIN_REMOTE BRAIN_REMOTE_FORWARDED; exec "$d/$0" "$@"`
 }
 
 // remoteCommand builds the single string ssh sends to the host: an sh -c
@@ -254,8 +256,9 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 		return nil, "", false, nil
 	}
 	name = os.Getenv(envRemoteStore)
-	// 'brain remote …' configures this machine and always runs here.
-	if name == "" && len(args) > 0 && args[0] == "remote" {
+	// 'brain remote …' and 'brain host …' configure or manage this machine and
+	// always run here.
+	if name == "" && len(args) > 0 && (args[0] == "remote" || args[0] == "host") {
 		return nil, "", false, nil
 	}
 	cfg, err = loadRemoteConfig()
@@ -296,13 +299,154 @@ func maybeForwardRemote(args []string) (handled bool, exitCode int) {
 // forwardRemote runs name+args on the host with the given streams and returns
 // the exit status to use. Files are passed straight through to ssh, so a real
 // TTY or pipe is relayed byte for byte.
+//
+// If the host answers that the brain has moved (a "moved" notice, see
+// brain_host_follow.go), the client verifies the move, points remote.yaml at the
+// new host and runs the command once more there, provided the command's input
+// can be replayed. If the move cannot be verified, nothing is changed and the
+// command is not run anywhere.
 func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdin, stdout, stderr *os.File) int {
+	startOffset := int64(-1)
+	if fi, err := stdin.Stat(); err == nil && fi.Mode().IsRegular() {
+		if off, serr := stdin.Seek(0, io.SeekCurrent); serr == nil {
+			startOffset = off
+		}
+	}
+	moved, code := forwardOnce(cfg, name, args, tty, stdin, stdout, stderr)
+	if code != hostMovedExit || moved == nil {
+		return code
+	}
+
+	oldHost := cfg.Host
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	final, hops, err := followMove(ctx, cfg, moved)
+	cancel()
+	if err != nil {
+		fmt.Fprintf(stderr, "brain: %s says the brain host moved to %s, but that could not be verified, so nothing was changed and your command did not run: %v\n"+
+			"  If you trust the move, point this client yourself:  brain remote set %s\n", oldHost, moved.Target, err, moved.Target)
+		return hostMovedUnverifiedExit
+	}
+
+	persisted := os.Getenv(envRemoteHost) == ""
+	if persisted {
+		saved, lerr := loadRemoteConfig()
+		if lerr == nil {
+			saved.Host = final
+			lerr = saveRemoteConfig(saved)
+		}
+		persisted = lerr == nil
+	}
+	cfg.Host = final
+	plural := ""
+	if len(hops) > 1 {
+		plural = fmt.Sprintf(" after %d moves", len(hops))
+	}
+	if persisted {
+		fmt.Fprintf(stderr, "brain: re-pointed this client from %s to %s (the brain host moved %s%s; verified); %s updated\n", oldHost, final, moved.At, plural, remoteConfigFile())
+	} else {
+		fmt.Fprintf(stderr, "brain: using %s for this command (the brain host moved from %s%s; verified); %s is overridden by $%s, so it was not rewritten\n", final, oldHost, plural, remoteConfigFile(), envRemoteHost)
+	}
+	if !stdinReplayable(stdin, tty, startOffset) {
+		fmt.Fprintf(stderr, "brain: this command's input was already consumed and cannot be replayed; run it again to use the new host\n")
+		return hostMovedExit
+	}
+	again, code := forwardOnce(cfg, name, args, tty, stdin, stdout, stderr)
+	if code == hostMovedExit && again != nil {
+		fmt.Fprintf(stderr, "brain: %s also reports a move (to %s); not following a second time for one command. Run it again.\n", final, again.Target)
+	}
+	return code
+}
+
+// forwardOnce runs the command on cfg.Host. If the host answered with a moved
+// notice, it is returned alongside the exit status.
+func forwardOnce(cfg *remoteConfig, name string, args []string, tty bool, stdin, stdout, stderr *os.File) (*movedNotice, int) {
 	cmd := exec.Command(sshBinary(), cfg.sshArgs(tty, name, args)...) //nolint:gosec // args are quoted/validated above
 	// stderr is also kept (bounded) so an ssh failure can be told apart from the
 	// host command exiting 255, or a closed pipe downstream ('task list | head').
 	seen := &headBuffer{limit: 4096}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, io.MultiWriter(stderr, seen)
-	return runRelayed(cmd, cfg, stderr, seen)
+	filter := &movedFilter{dst: stderr}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, io.MultiWriter(filter, seen)
+	code := runRelayed(cmd, cfg, stderr, seen)
+	filter.flush()
+	return filter.notice, code
+}
+
+// hostMovedExit is the exit status a moved host answers with (EX_TEMPFAIL).
+const hostMovedExit = 75
+
+// hostMovedMarker starts the single stderr line a host that has handed the
+// brain to another machine answers forwarded commands with. The first word
+// after it is the new host's ssh target (all that older clients read), then
+// key=value facts the client verifies, then a sentence for people.
+const hostMovedMarker = "brain-host-moved: "
+
+// movedFilter passes stderr through, except that a first line carrying the
+// moved marker is swallowed (the client reports the move in its own words).
+type movedFilter struct {
+	dst     io.Writer
+	buf     []byte
+	decided bool
+	notice  *movedNotice
+}
+
+func (f *movedFilter) Write(p []byte) (int, error) {
+	if f.decided {
+		return f.dst.Write(p)
+	}
+	f.buf = append(f.buf, p...)
+	if i := bytes.IndexByte(f.buf, '\n'); i >= 0 {
+		f.decided = true
+		if n := parseMovedNotice(f.buf[:i]); n != nil {
+			f.notice = n
+			f.buf = f.buf[i+1:]
+		}
+		f.drain()
+	} else if len(f.buf) >= len(hostMovedMarker) && !bytes.HasPrefix(f.buf, []byte(hostMovedMarker)) {
+		f.decided = true
+		f.drain()
+	}
+	return len(p), nil
+}
+
+func (f *movedFilter) drain() {
+	if len(f.buf) > 0 {
+		_, _ = f.dst.Write(f.buf)
+	}
+	f.buf = nil
+}
+
+// flush releases a held first line that never turned out to be a marker.
+func (f *movedFilter) flush() {
+	if !f.decided {
+		f.decided = true
+		if n := parseMovedNotice(bytes.TrimRight(f.buf, "\n")); n != nil {
+			f.notice = n
+			f.buf = nil
+			return
+		}
+		f.drain()
+	}
+}
+
+// stdinReplayable reports whether a command's input can be given to a second
+// attempt: a terminal (nothing was read), a character device such as /dev/null,
+// or a regular file that can be rewound to where it started.
+func stdinReplayable(f *os.File, tty bool, startOffset int64) bool {
+	if tty {
+		return true
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	switch {
+	case fi.Mode().IsRegular() && startOffset >= 0:
+		_, serr := f.Seek(startOffset, io.SeekStart)
+		return serr == nil
+	case fi.Mode()&os.ModeCharDevice != 0:
+		return true
+	}
+	return false
 }
 
 // headBuffer keeps the first limit bytes written to it.

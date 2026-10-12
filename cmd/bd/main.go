@@ -667,6 +667,12 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// A frozen or moved brain host refuses the commands it must not run
+		// (brain host promote); first, before any state is touched.
+		if err := hostRoleGate(cmd); err != nil {
+			return err
+		}
+
 		// Initialize CommandContext to hold runtime state (replaces scattered globals)
 		initCommandContext()
 
@@ -894,6 +900,12 @@ var rootCmd = &cobra.Command{
 
 		// 'brain remote …' configures client mode and talks to ssh only.
 		if isBrainRemoteVerb(cmd) {
+			skipsStoreInit = true
+		}
+
+		// 'brain host …' manages this machine's role; it talks to the Dolt
+		// server and to ssh, and never opens a store.
+		if isBrainHostVerb(cmd) {
 			skipsStoreInit = true
 		}
 
@@ -1608,6 +1620,12 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 }
 
 func main() {
+	// A machine that gave the host role away answers forwarded client calls with
+	// where the brain went (the client verifies it and follows).
+	if handled, code := hostGateEarly(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
 	// Client mode (brain remote): when a brain host is configured, run the
 	// command there and exit. Must come first — before any command, config or
 	// database machinery starts — so a client never opens a local store.
