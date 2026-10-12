@@ -567,6 +567,43 @@ bd brain unify plan [flags]
       --timeout duration              overall time budget for the plan (default 20m0s)
 ```
 
+#### bd brain unify ready
+
+ready asks the running server that hosts the merged database whether it holds
+everything the sources hold. It is a replay that decides everything and applies
+nothing, so it is change-driven and fast: per source it compares the Dolt head
+with the recorded starting point, lists the tables that changed since it
+(dolt_diff_summary), and compares the tables Dolt does not version, and the small
+state tables, by fingerprint with what was recorded. It prints READY, or what a
+replay would reload, and exits non-zero when more than --max-pending items
+differ. Sources that are being written to are never identical for long; what
+matters is how small the difference is at the moment you repoint, because the
+post-repoint catch-up ('replay --protect-after') closes the rest.
+
+With --verify it also runs the recorded verification of the merged database
+(every table's count, size and digest against what the build and the replays
+recorded), which proves the merged database itself is intact.
+
+```
+bd brain unify ready [flags]
+```
+
+**Flags:**
+
+```
+      --database string               name of the merged database (default "brain_unified")
+      --dolt-bin string               dolt binary (unused with --merged-port; kept for symmetry) (default "dolt")
+      --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --max-pending int               ready when at most this many items (beads, tables, state tables, collision records) differ
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
+      --port int                      dolt sql-server port holding the source stores (default 3307)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --timeout duration              overall time budget (default 30m0s)
+      --verify                        also run the recorded verification of the merged database (a few minutes)
+```
+
 #### bd brain unify replay
 
 A merged database is built from a moment in the past. Every bead written,
@@ -610,9 +647,14 @@ bd brain unify replay [flags]
       --data-dir string               directory holding the merged database built by 'unify build' (required)
       --database string               name of the merged database (default "brain_unified")
       --dolt-bin string               dolt binary used to start the server over the merged database (default "dolt")
+      --dry-run                       decide and report what would be reloaded; apply nothing
       --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
       --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
+      --no-commit                     do not make a Dolt commit of the merged database (use once stores write to it)
       --port int                      dolt sql-server port holding the source stores (default 3307)
+      --protect-after string          UTC time (2006-01-02 15:04:05) the stores were repointed to the merged database: a bead the merged database changed after it is not reloaded from the older databases
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
       --timeout duration              overall time budget for the replay (default 4h0m0s)
 ```
@@ -633,6 +675,8 @@ bd brain unify verify [flags]
       --dolt-bin string               dolt binary used to start the server over the unified database (default "dolt")
       --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
       --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
       --port int                      dolt sql-server port holding the production stores (default 3307)
       --reference string              what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)

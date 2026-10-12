@@ -186,6 +186,11 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd recall](#bd-recall) — Retrieve a specific memory
 - [bd remember](#bd-remember) — Store a persistent memory
 - [bd setup](#bd-setup) — Setup integration with AI editors
+- [bd store-prefix](#bd-store-prefix) — Show or extend the unified database's namespace record (brain_store_prefixes)
+  - [bd store-prefix add](#bd-store-prefix-add) — Claim a new id prefix for a store's namespace
+  - [bd store-prefix history](#bd-store-prefix-history) — Show a prefix's ownership trail (claims and releases, newest first)
+  - [bd store-prefix list](#bd-store-prefix-list) — Show the unified database's prefix-ownership record
+  - [bd store-prefix release](#bd-store-prefix-release) — Free this store's own id prefix (deliberate, confirmed, event-recorded)
 - [bd where](#bd-where) — Show active beads location
 
 ### Maintenance:
@@ -316,13 +321,14 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd notion sync](#bd-notion-sync) — Sync issues with Notion
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
+- [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
+  - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
+  - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
+  - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
+  - [bd remote status](#bd-remote-status) — Show the configured host, reachability, latency and versions
+  - [bd remote unset](#bd-remote-unset) — Stop forwarding; use local databases again
 - [bd rename](#bd-rename) — Rename an issue ID
 - [bd ship](#bd-ship) — Publish a capability for cross-project dependencies
-- [bd store-prefix](#bd-store-prefix) — Show or extend the unified database's namespace record (brain_store_prefixes)
-  - [bd store-prefix add](#bd-store-prefix-add) — Claim a new id prefix for a store's namespace
-  - [bd store-prefix history](#bd-store-prefix-history) — Show a prefix's ownership trail (claims and releases, newest first)
-  - [bd store-prefix list](#bd-store-prefix-list) — Show the unified database's prefix-ownership record
-  - [bd store-prefix release](#bd-store-prefix-release) — Free this store's own id prefix (deliberate, confirmed, event-recorded)
 - [bd stores](#bd-stores) — Manage the brain federation store registry
   - [bd stores add](#bd-stores-add) — Register a store in the brain federation registry
   - [bd stores alias](#bd-stores-alias) — Make a second CLI name resolve to an existing store
@@ -358,6 +364,7 @@ These flags apply to all commands:
       --readonly                  Read-only mode: block write operations (for worker sandboxes)
       --sandbox                   Sandbox mode: disables Dolt auto-push
   -v, --verbose                   Enable verbose/debug output
+      --wide                      Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.
 ```
 
 ---
@@ -567,6 +574,7 @@ bd create [title] [flags]
       --no-inherit-labels       Don't inherit labels from parent issue
       --notes string            Additional notes
       --parent string           Parent issue ID for hierarchical child (e.g., 'bd-a3f8e9')
+      --prefix string           Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')
   -p, --priority string         Priority (0-4 or P0-P4, 0=highest) (default "2")
       --repo string             Target repository for issue (overrides auto-routing)
       --silent                  Output only the issue ID (for scripting)
@@ -1439,6 +1447,7 @@ bd q [title] [flags]
 
 ```
   -l, --labels strings    Labels
+      --prefix string     Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')
   -p, --priority string   Priority (0-4 or P0-P4) (default "2")
   -t, --type string       Issue type (default "task")
 ```
@@ -3774,12 +3783,6 @@ Examples:
 bd forget <key>
 ```
 
-### bd hooks
-
-Install, uninstall, or list git hooks for beads integration.
-
-The hooks provide:
-- pre-commit: Run chained hooks before commit
 ### bd hook
 
 Hooks declared in &lt;beadsDir&gt;/hooks.d/&lt;name&gt;.toml observe mutations and may
@@ -3857,6 +3860,12 @@ bd hook warnings [flags]
       --status string     Show warnings with this status: open, acknowledged or all (default "open")
 ```
 
+### bd hooks
+
+Install, uninstall, or list git hooks for beads integration.
+
+The hooks provide:
+- pre-commit: Run chained hooks before commit
 - post-merge: Run chained hooks after pull/merge
 - pre-push: Run chained hooks before push
 - post-checkout: Run chained hooks after branch checkout
@@ -4374,6 +4383,145 @@ bd setup [recipe] [flags]
       --project         Install for this project only (gemini/mux)
       --remove          Remove the integration
       --stealth         Use stealth mode (claude/gemini)
+```
+
+### bd store-prefix
+
+Manage the unified database's prefix-ownership record at runtime.
+
+  bd store-prefix list              show every prefix, its owning store, and
+                                    the reason the ownership was decided
+  bd store-prefix add &lt;prefix&gt;      claim a new id prefix for this store
+                                    (defaults to the wrapper's BD_NAME;
+                                    claim for another store with --store)
+  bd store-prefix release &lt;prefix&gt;  free this store's own id prefix (requires
+                                    --confirm; refuses while it carries beads
+                                    or the build decided it)
+  bd store-prefix history &lt;prefix&gt;  show the ownership trail — claims and
+                                    releases, newest first, with the reason
+                                    each act carried
+
+Prefixes are the mechanism "which store is this bead in" rides on: a bead's
+namespace is the segment of its id before the first '-'. The command refuses
+anything a reader could never scope to (a '-' inside a prefix), refuses a
+prefix another store already owns (the record is never rewritten silently),
+and is idempotent for the claiming store's own prefixes. A claimed prefix is
+usable immediately: beads mint under it ("create --prefix &lt;prefix&gt;"), explicit
+ids carry it, and every read (narrow or wide) resolves ownership from this
+same record.
+
+Release and history are the deliberate ownership-change edge
+(docs/design/brain-prefix-release.md): release deletes the row only through
+an explicit, confirmed act by the owner's own namespace, and every ownership
+change — a claim and a release alike — appends a row to the append-only
+brain_store_prefix_events audit table in the same transaction, so ownership
+is never changed silently. A release is refused while the prefix still
+carries any bead (absolute refusal, no --with-beads override) and for any
+prefix the build decided; a transfer is release-then-claim.
+
+On a legacy (per-store) database there is no namespace record to extend; the
+command refuses instead of pretending.
+
+```
+bd store-prefix
+```
+
+#### bd store-prefix add
+
+Claim an id prefix for the named store in the unified database's
+brain_store_prefixes record, so beads can mint under it immediately.
+
+The prefix defaults to the wrapper invoking this command (BD_NAME); claim for
+a different store with --store. The ownership decision is recorded with its
+reason ("operator-added"), and when this namespace's scoped config is
+addressable the prefix is appended to the store's allowed_prefixes so the
+create path accepts it in the same breath.
+
+Refusals are loud and non-silent:
+  - a '-' inside a prefix would disagree with the first-'-' bucket every
+    reader uses, so the shape refuses it;
+  - a prefix another store already owns refuses with the owner's name and the
+    reason it was decided — transfer it only after that store releases it;
+  - claiming a prefix this store already owns is a no-op (nothing changes).
+
+```
+bd store-prefix add <prefix> [flags]
+```
+
+**Flags:**
+
+```
+      --store string   Store whose namespace claims the prefix (default: the wrapper's BD_NAME)
+```
+
+#### bd store-prefix history
+
+Print the ownership trail of one id prefix from the append-only
+brain_store_prefix_events table: every claim and every release recorded from
+that table's adoption onward, newest first, with the reason each act carried.
+
+Claims are recorded from the event table's adoption onward. Runtime rows that
+existed before it have no event, and none is invented for them — the gap is
+stated where you are looking, rather than filled with a fabricated row.
+Every ownership change lands with its event in the same transaction, so no
+path changes ownership silently.
+
+```
+bd store-prefix history <prefix>
+```
+
+#### bd store-prefix list
+
+List every id prefix the unified database's brain_store_prefixes record
+knows: the prefix, the store that owns it, the reason the ownership was
+decided (build-time "declared-by-store-config"/"store-name-matches-prefix" or
+runtime "operator-added"), and the bead count observed at claim time.
+
+```
+bd store-prefix list
+```
+
+#### bd store-prefix release
+
+Free a prefix this namespace owns on the unified database's
+brain_store_prefixes record, as a deliberate act by the owning store's own
+wrapper (BD_NAME): there is no --store escape on the releasing side.
+
+The act never happens as a side effect: it refuses unless --confirm is given,
+and the confirmation is recorded in the append-only event row, so "deliberate"
+is stored, not asserted. On success the ownership row is deleted — the prefix
+returns to exactly its pre-claim state, re-claimable by anyone through the
+ordinary 'bd store-prefix add' — and a 'release' event lands in
+brain_store_prefix_events inside the same transaction, naming who released,
+when, and why (--reason, recorded verbatim; optional).
+
+Refusals are loud and none is bypassable:
+  - without --confirm: release is the one namespace verb whose mistake is
+    subtractive, so intent must be explicit;
+  - the prefix still carries beads: ABSOLUTE refusal (no --with-beads
+    override) — a prefix frees only when it carries no beads; migrate the
+    beads off it first, which is the explicit, auditable path;
+  - the prefix is build-decided ("declared-by-store-config",
+    "store-name-matches-prefix", "first-observing-source",
+    "no-source-declares-or-matches"): retracting the build's mapping decision
+    is a re-unification act, not this verb;
+  - the act is not performed as the owner's namespace;
+  - the prefix is not recorded at all — nothing to release, an error, not a
+    success-shaped no-op.
+
+To transfer a prefix to another store, release it here and claim it there.
+That unclaimed window is real — the next claim wins it — so do the two acts
+promptly and check 'bd store-prefix list' between them.
+
+```
+bd store-prefix release <prefix> [flags]
+```
+
+**Flags:**
+
+```
+      --confirm         Confirm the release: the act never happens without it, and the confirmation is recorded in the event row
+      --reason string   Why the prefix is being released (recorded verbatim in the event row; optional, max 64 characters)
 ```
 
 ### bd where
@@ -6589,6 +6737,43 @@ bd brain unify plan [flags]
       --timeout duration              overall time budget for the plan (default 20m0s)
 ```
 
+##### bd brain unify ready
+
+ready asks the running server that hosts the merged database whether it holds
+everything the sources hold. It is a replay that decides everything and applies
+nothing, so it is change-driven and fast: per source it compares the Dolt head
+with the recorded starting point, lists the tables that changed since it
+(dolt_diff_summary), and compares the tables Dolt does not version, and the small
+state tables, by fingerprint with what was recorded. It prints READY, or what a
+replay would reload, and exits non-zero when more than --max-pending items
+differ. Sources that are being written to are never identical for long; what
+matters is how small the difference is at the moment you repoint, because the
+post-repoint catch-up ('replay --protect-after') closes the rest.
+
+With --verify it also runs the recorded verification of the merged database
+(every table's count, size and digest against what the build and the replays
+recorded), which proves the merged database itself is intact.
+
+```
+bd brain unify ready [flags]
+```
+
+**Flags:**
+
+```
+      --database string               name of the merged database (default "brain_unified")
+      --dolt-bin string               dolt binary (unused with --merged-port; kept for symmetry) (default "dolt")
+      --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
+      --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --max-pending int               ready when at most this many items (beads, tables, state tables, collision records) differ
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
+      --port int                      dolt sql-server port holding the source stores (default 3307)
+      --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --timeout duration              overall time budget (default 30m0s)
+      --verify                        also run the recorded verification of the merged database (a few minutes)
+```
+
 ##### bd brain unify replay
 
 A merged database is built from a moment in the past. Every bead written,
@@ -6632,9 +6817,14 @@ bd brain unify replay [flags]
       --data-dir string               directory holding the merged database built by 'unify build' (required)
       --database string               name of the merged database (default "brain_unified")
       --dolt-bin string               dolt binary used to start the server over the merged database (default "dolt")
+      --dry-run                       decide and report what would be reloaded; apply nothing
       --host string                   dolt sql-server host holding the source stores (default "127.0.0.1")
       --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
+      --no-commit                     do not make a Dolt commit of the merged database (use once stores write to it)
       --port int                      dolt sql-server port holding the source stores (default 3307)
+      --protect-after string          UTC time (2006-01-02 15:04:05) the stores were repointed to the merged database: a bead the merged database changed after it is not reloaded from the older databases
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
       --timeout duration              overall time budget for the replay (default 4h0m0s)
 ```
@@ -6655,6 +6845,8 @@ bd brain unify verify [flags]
       --dolt-bin string               dolt binary used to start the server over the unified database (default "dolt")
       --host string                   dolt sql-server host holding the production stores (default "127.0.0.1")
       --include-database strings      unregistered database that holds several prefixes but is a store, not a cross-store replica; it participates as db:<name> (repeatable; give the same value to plan, build, replay and verify)
+      --merged-host string            host of a RUNNING dolt server that hosts the merged database (with --merged-port; replaces --data-dir) (default "127.0.0.1")
+      --merged-port int               port of a RUNNING dolt server that hosts the merged database; the replay updates it in place and nothing is stopped
       --port int                      dolt sql-server port holding the production stores (default 3307)
       --reference string              what to compare the merged database against: 'recorded' (the fingerprints the build or last replay took) or 'live' (the sources as they stand now; the acceptance test for a replay) (default "recorded")
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
@@ -8124,6 +8316,90 @@ bd ready [flags]
   -u, --unassigned                   Show only unassigned issues
 ```
 
+### bd remote
+
+Make this machine a client of another machine's brain.
+
+  brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
+  brain remote install            write a wrapper per store in the host's registry
+  brain remote status             show the host, reachability, latency, versions
+  brain remote disconnect         close the shared ssh connection
+  brain remote unset              go back to using local databases
+
+Once a host is set, 'brain …' and every installed store command ('task create',
+'inbox list', …) run the same command line on the host over ssh, through the
+host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
+Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
+locally once; BRAIN_REMOTE_HOST=&lt;target&gt; overrides the configured host.
+
+Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
+
+```
+bd remote
+```
+
+#### bd remote disconnect
+
+Close the shared ssh connection (the next call reopens it)
+
+```
+bd remote disconnect
+```
+
+#### bd remote install
+
+Reads the host's store registry ('brain stores list' there) and writes one
+small wrapper per store into --dir (default: the directory of this binary).
+Re-run it whenever the host gains a store. It only ever replaces files it
+generated itself, never writes a command called 'bd', and reports any wrapper
+that shadows (or is shadowed by) another command on PATH.
+
+```
+bd remote install [flags]
+```
+
+**Flags:**
+
+```
+      --also strings   Extra command names to install (host wrappers that are not registry stores)
+      --bin string     Brain binary the wrappers exec (default: this binary)
+      --dir string     Directory for the wrappers (default: this binary's directory)
+      --dry-run        Show what would change without writing
+      --force          Replace existing files that were not generated by this command
+      --prune          Remove generated wrappers for stores the host no longer has
+```
+
+#### bd remote set
+
+Name the brain host (an ssh target such as user@host)
+
+```
+bd remote set <ssh-target> [flags]
+```
+
+**Flags:**
+
+```
+      --bin-dir string   Where the host keeps its wrappers (default $HOME/.local/bin)
+      --no-check         Save without contacting the host
+```
+
+#### bd remote status
+
+Show the configured host, reachability, latency and versions
+
+```
+bd remote status
+```
+
+#### bd remote unset
+
+Stop forwarding; use local databases again
+
+```
+bd remote unset
+```
+
 ### bd rename
 
 Rename an issue from one ID to another.
@@ -8173,145 +8449,6 @@ bd ship <capability> [flags]
 ```
       --dry-run   Preview without making changes
       --force     Ship even if issue is not closed
-```
-
-### bd store-prefix
-
-Manage the unified database's prefix-ownership record at runtime.
-
-  bd store-prefix list              show every prefix, its owning store, and
-                                    the reason the ownership was decided
-  bd store-prefix add &lt;prefix&gt;      claim a new id prefix for this store
-                                    (defaults to the wrapper's BD_NAME;
-                                    claim for another store with --store)
-  bd store-prefix release &lt;prefix&gt;  free this store's own id prefix (requires
-                                    --confirm; refuses while it carries beads
-                                    or the build decided it)
-  bd store-prefix history &lt;prefix&gt;  show the ownership trail — claims and
-                                    releases, newest first, with the reason
-                                    each act carried
-
-Prefixes are the mechanism "which store is this bead in" rides on: a bead's
-namespace is the segment of its id before the first '-'. The command refuses
-anything a reader could never scope to (a '-' inside a prefix), refuses a
-prefix another store already owns (the record is never rewritten silently),
-and is idempotent for the claiming store's own prefixes. A claimed prefix is
-usable immediately: beads mint under it ("create --prefix &lt;prefix&gt;"), explicit
-ids carry it, and every read (narrow or wide) resolves ownership from this
-same record.
-
-Release and history are the deliberate ownership-change edge
-(docs/design/brain-prefix-release.md): release deletes the row only through
-an explicit, confirmed act by the owner's own namespace, and every ownership
-change — a claim and a release alike — appends a row to the append-only
-brain_store_prefix_events audit table in the same transaction, so ownership
-is never changed silently. A release is refused while the prefix still
-carries any bead (absolute refusal, no --with-beads override) and for any
-prefix the build decided; a transfer is release-then-claim.
-
-On a legacy (per-store) database there is no namespace record to extend; the
-command refuses instead of pretending.
-
-```
-bd store-prefix
-```
-
-#### bd store-prefix add
-
-Claim an id prefix for the named store in the unified database's
-brain_store_prefixes record, so beads can mint under it immediately.
-
-The prefix defaults to the wrapper invoking this command (BD_NAME); claim for
-a different store with --store. The ownership decision is recorded with its
-reason ("operator-added"), and when this namespace's scoped config is
-addressable the prefix is appended to the store's allowed_prefixes so the
-create path accepts it in the same breath.
-
-Refusals are loud and non-silent:
-  - a '-' inside a prefix would disagree with the first-'-' bucket every
-    reader uses, so the shape refuses it;
-  - a prefix another store already owns refuses with the owner's name and the
-    reason it was decided — transfer it only after that store releases it;
-  - claiming a prefix this store already owns is a no-op (nothing changes).
-
-```
-bd store-prefix add <prefix> [flags]
-```
-
-**Flags:**
-
-```
-      --store string   Store whose namespace claims the prefix (default: the wrapper's BD_NAME)
-```
-
-#### bd store-prefix history
-
-Print the ownership trail of one id prefix from the append-only
-brain_store_prefix_events table: every claim and every release recorded from
-that table's adoption onward, newest first, with the reason each act carried.
-
-Claims are recorded from the event table's adoption onward. Runtime rows that
-existed before it have no event, and none is invented for them — the gap is
-stated where you are looking, rather than filled with a fabricated row.
-Every ownership change lands with its event in the same transaction, so no
-path changes ownership silently.
-
-```
-bd store-prefix history <prefix>
-```
-
-#### bd store-prefix list
-
-List every id prefix the unified database's brain_store_prefixes record
-knows: the prefix, the store that owns it, the reason the ownership was
-decided (build-time "declared-by-store-config"/"store-name-matches-prefix" or
-runtime "operator-added"), and the bead count observed at claim time.
-
-```
-bd store-prefix list
-```
-
-#### bd store-prefix release
-
-Free a prefix this namespace owns on the unified database's
-brain_store_prefixes record, as a deliberate act by the owning store's own
-wrapper (BD_NAME): there is no --store escape on the releasing side.
-
-The act never happens as a side effect: it refuses unless --confirm is given,
-and the confirmation is recorded in the append-only event row, so "deliberate"
-is stored, not asserted. On success the ownership row is deleted — the prefix
-returns to exactly its pre-claim state, re-claimable by anyone through the
-ordinary 'bd store-prefix add' — and a 'release' event lands in
-brain_store_prefix_events inside the same transaction, naming who released,
-when, and why (--reason, recorded verbatim; optional).
-
-Refusals are loud and none is bypassable:
-  - without --confirm: release is the one namespace verb whose mistake is
-    subtractive, so intent must be explicit;
-  - the prefix still carries beads: ABSOLUTE refusal (no --with-beads
-    override) — a prefix frees only when it carries no beads; migrate the
-    beads off it first, which is the explicit, auditable path;
-  - the prefix is build-decided ("declared-by-store-config",
-    "store-name-matches-prefix", "first-observing-source",
-    "no-source-declares-or-matches"): retracting the build's mapping decision
-    is a re-unification act, not this verb;
-  - the act is not performed as the owner's namespace;
-  - the prefix is not recorded at all — nothing to release, an error, not a
-    success-shaped no-op.
-
-To transfer a prefix to another store, release it here and claim it there.
-That unclaimed window is real — the next claim wins it — so do the two acts
-promptly and check 'bd store-prefix list' between them.
-
-```
-bd store-prefix release <prefix> [flags]
-```
-
-**Flags:**
-
-```
-      --confirm         Confirm the release: the act never happens without it, and the confirmation is recorded in the event row
-      --reason string   Why the prefix is being released (recorded verbatim in the event row; optional, max 64 characters)
 ```
 
 ### bd stores
