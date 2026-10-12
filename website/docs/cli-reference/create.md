@@ -63,6 +63,7 @@ bd create [title] [flags]
       --no-inherit-labels       Don't inherit labels from parent issue
       --notes string            Additional notes
       --parent string           Parent issue ID for hierarchical child (e.g., 'bd-a3f8e9')
+      --prefix string           Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')
   -p, --priority string         Priority (0-4 or P0-P4, 0=highest) (default "2")
       --repo string             Target repository for issue (overrides auto-routing)
       --silent                  Output only the issue ID (for scripting)

@@ -26,6 +26,7 @@ bd q [title] [flags]
 
 ```
   -l, --labels strings    Labels
+      --prefix string     Mint a fresh id under this prefix instead of the store's default (the prefix must be owned by this store's namespace; claim one with 'bd store-prefix add')
   -p, --priority string   Priority (0-4 or P0-P4) (default "2")
   -t, --type string       Issue type (default "task")
 ```

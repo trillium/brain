@@ -892,6 +892,11 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// 'brain remote …' configures client mode and talks to ssh only.
+		if isBrainRemoteVerb(cmd) {
+			skipsStoreInit = true
+		}
+
 		// 'brain unify' talks to the Dolt server, not to a local store, so
 		// it must be classified as store-free here too: a caller store that
 		// exists but cannot open would abort PersistentPreRunE before the
@@ -1603,6 +1608,13 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 }
 
 func main() {
+	// Client mode (brain remote): when a brain host is configured, run the
+	// command there and exit. Must come first — before any command, config or
+	// database machinery starts — so a client never opens a local store.
+	if handled, code := maybeForwardRemote(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
 	// BD_NAME overrides the binary name in help text (e.g. BD_NAME=ops makes
 	// "ops --help" show "ops" instead of "bd"). Useful for multi-instance
 	// setups where wrapper scripts set BEADS_DIR for routing.
