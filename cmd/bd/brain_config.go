@@ -94,5 +94,16 @@ func newBrainExfiltrator(store storage.DoltStorage) exfiltrator.Exfiltrator {
 	if root == "" {
 		return nil
 	}
-	return exfiltrator.NewMarkdownExfiltrator(root, storeSlugPersister{store: store})
+	return exfiltrator.NewMarkdownExfiltrator(root, storeSlugPersister{store: store}).
+		WithLinks(brainStoreName(root), store)
+}
+
+// brainStoreName names the store the render root belongs to: the namespace
+// (BD_NAME) when set, else the root directory's own name — the same
+// precedence brainKnowledgeRoot uses to place the root.
+func brainStoreName(root string) string {
+	if ns := os.Getenv("BD_NAME"); ns != "" {
+		return ns
+	}
+	return filepath.Base(root)
 }

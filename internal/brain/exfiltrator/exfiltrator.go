@@ -112,6 +112,16 @@ type MarkdownExfiltrator struct {
 	// into the storage layer. May be nil in tests.
 	persister SlugPersister
 
+	// store names the store the notes belong to; rendered as the
+	// `store` frontmatter key and an inline #store/<name> tag. Empty omits
+	// both. Set via WithLinks.
+	store string
+
+	// edges resolves dependency/parent targets to note names so the
+	// render can emit [[wikilinks]]. Nil renders no edge links. Set via
+	// WithLinks.
+	edges EdgeSource
+
 	// mu serializes checkpoint and slug-allocation writes. The
 	// render itself is concurrent-safe by virtue of atomic rename,
 	// but the checkpoint file and the slug-uniqueness allocation
@@ -200,7 +210,7 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		return fmt.Errorf("exfiltrator: write checkpoint for %s: %w", issue.ID, err)
 	}
 
-	body := renderMarkdown(issue)
+	body := renderMarkdownWith(issue, m.linksFor(ctx, issue))
 	if err := atomicWrite(path, []byte(body)); err != nil {
 		return fmt.Errorf("exfiltrator: write %s: %w", path, err)
 	}
@@ -486,6 +496,13 @@ func (m *MarkdownExfiltrator) pathFor(kind types.IssueType, slug string) string 
 // so future edits must keep the byte-for-byte rendering stable for a
 // given (issue snapshot) input.
 func renderMarkdown(issue *types.Issue) string {
+	return renderMarkdownWith(issue, noteLinks{})
+}
+
+// renderMarkdownWith is renderMarkdown plus the graph-edge additions: a
+// `store` frontmatter key and the generated links block (see links.go). A
+// zero noteLinks renders exactly what renderMarkdown always did.
+func renderMarkdownWith(issue *types.Issue, links noteLinks) string {
 	var b strings.Builder
 	b.Grow(len(issue.Description) + 256)
 
@@ -569,6 +586,11 @@ func renderMarkdown(issue *types.Issue) string {
 		}
 		b.WriteString("]\n")
 	}
+	if links.store != "" {
+		b.WriteString("store: ")
+		b.WriteString(yamlString(links.store))
+		b.WriteByte('\n')
+	}
 	b.WriteString("---\n\n")
 
 	if issue.Title != "" {
@@ -582,6 +604,7 @@ func renderMarkdown(issue *types.Issue) string {
 			b.WriteByte('\n')
 		}
 	}
+	writeLinksBlock(&b, links)
 	return b.String()
 }
 

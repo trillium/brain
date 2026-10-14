@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 )
 
 // Frontmatter is the parsed key/value shape of one rendered file.
@@ -217,7 +219,9 @@ func parseList(v string) ([]string, error) {
 // fileTitle is the frontmatter title being imported; beadTitle is the
 // bead's current (pre-import) title.
 func SplitBody(body []byte, fileTitle, beadTitle string) (string, error) {
-	text := strings.TrimRight(string(body), "\n")
+	// The render's generated links block (wikilinks + store tag) is not
+	// description text.
+	text := strings.TrimRight(exfiltrator.StripLinksBlock(string(body)), "\n")
 	if strings.TrimSpace(text) == "" {
 		return "", nil
 	}
