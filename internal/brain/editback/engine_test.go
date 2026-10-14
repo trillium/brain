@@ -619,3 +619,25 @@ func TestStaleSlack_SlugPersistRaceIsNotStale(t *testing.T) {
 	}
 	singleOutcome(t, rep, "applied")
 }
+
+// The render's generated wikilink/store-tag block must never read as a
+// description edit.
+func TestSplitBody_IgnoresGeneratedLinksBlock(t *testing.T) {
+	t.Parallel()
+	body := "\n# Old title\n\nBody text\n\n" +
+		exfiltrator.LinksBlockStart + "\n#store/brain\n\n- parent: [[the-epic]]\n- depends on: [[blocking-work]]\n" +
+		exfiltrator.LinksBlockEnd + "\n"
+	desc, err := SplitBody([]byte(body), "Old title", "Old title")
+	if err != nil {
+		t.Fatalf("SplitBody: %v", err)
+	}
+	if desc != "Body text" {
+		t.Errorf("description = %q, want %q", desc, "Body text")
+	}
+
+	empty := "\n# Old title\n\n" + exfiltrator.LinksBlockStart + "\n#store/brain\n" + exfiltrator.LinksBlockEnd + "\n"
+	desc, err = SplitBody([]byte(empty), "Old title", "Old title")
+	if err != nil || desc != "" {
+		t.Errorf("empty description with a links block: desc=%q err=%v", desc, err)
+	}
+}
