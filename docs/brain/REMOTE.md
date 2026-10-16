@@ -63,6 +63,15 @@ Re-run it whenever the host gains a store; `--prune` removes wrappers for
 stores the host no longer has; `--also name` adds a host wrapper that is not a
 registry store; `--dry-run` shows what would change.
 
+Before it writes anything, `brain remote install` (unless `--dry-run`) and
+`brain remote set` (unless `--no-check`) run `brain stores rewrite-wrappers` on
+the host. That rewrites only the `BEADS_DIR` line (and `BRAIN_KNOWLEDGE_ROOT`
+if it holds an absolute home path) of each existing store and alias wrapper to
+the `$HOME`-relative form, keeping every other line, and never creates a
+wrapper that is missing. It then probes each store through its wrapper. If any
+store cannot resolve a database, the command exits non-zero and lists them
+under `FAILING STORES`; `set` does not save the host in that case.
+
 Safety rules of the installer: it only ever replaces files it generated (they
 carry a `# brain-remote-wrapper:` marker; `--force` overrides for other files),
 it never writes a command called `bd`, it skips the name of the brain binary
