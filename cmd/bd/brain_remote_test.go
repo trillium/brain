@@ -442,7 +442,7 @@ func TestBrainRemoteVerbsSkipStoreAndDoltRemoteDoesNot(t *testing.T) {
 
 func TestRemoteInstallCommandEndToEnd(t *testing.T) {
 	home, hostBin := remoteEnv(t)
-	writeExec(t, filepath.Join(hostBin, "brain"), "#!/bin/sh\necho '[{\"name\":\"task\"},{\"name\":\"inbox\"}]'\n")
+	writeExec(t, filepath.Join(hostBin, "brain"), "#!/bin/sh\n[ \"$2\" = rewrite-wrappers ] && { echo '{\"total\":2,\"failed\":0,\"stores\":[{\"name\":\"task\",\"status\":\"ok\"},{\"name\":\"inbox\",\"status\":\"ok\"}]}'; exit 0; }\necho '[{\"name\":\"task\"},{\"name\":\"inbox\"}]'\n")
 	writeExec(t, filepath.Join(hostBin, "task"), "#!/bin/sh\n")
 	writeExec(t, filepath.Join(hostBin, "inbox"), "#!/bin/sh\n")
 	if err := saveRemoteConfig(&remoteConfig{Host: "me@host", BinDir: hostBin}); err != nil {
