@@ -516,7 +516,9 @@ func remoteCapture(ctx context.Context, cfg *remoteConfig, name string, args ...
 		if errors.As(err, &ee) && ee.ExitCode() == sshConnectFailed {
 			return nil, errors.New(strings.TrimSpace(unreachableMessage(cfg)) + "\n" + strings.TrimSpace(stderr.String()))
 		}
-		return nil, fmt.Errorf("%s on %s: %w: %s", name, cfg.Host, err, strings.TrimSpace(stderr.String()))
+		// stdout is returned with the error: callers that parse structured
+		// output from a failing host command (e.g. rewrite-wrappers) need it.
+		return stdout.Bytes(), fmt.Errorf("%s on %s: %w: %s", name, cfg.Host, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
@@ -810,6 +812,14 @@ var brainRemoteSetCmd = &cobra.Command{
 				FatalError("%v\n(config not saved; use --no-check to save anyway)", err)
 			}
 			fmt.Printf("host answers: %s\n", strings.TrimSpace(string(out)))
+			// The host's own store wrappers are what every forwarded command runs
+			// through; rewrite and verify them now, and refuse to save a host
+			// whose wrappers cannot resolve a database.
+			n, err := verifyHostWrappers(remoteCtx(cmd), cfg)
+			if err != nil {
+				FatalError("%v\n(config not saved; use --no-check to save anyway)", err)
+			}
+			fmt.Printf("host wrappers: %d rewritten ($HOME-relative) and verified\n", n)
 		}
 		// Persist only what the file holds; an env override is not a setting.
 		saved := *cfg
@@ -873,6 +883,15 @@ that shadows (or is shadowed by) another command on PATH.`,
 		}
 		if abs, aerr := filepath.Abs(dir); aerr == nil {
 			dir = abs
+		}
+		if !remoteInstallDryRun {
+			n, err := verifyHostWrappers(remoteCtx(cmd), cfg)
+			if err != nil {
+				FatalError("%v", err)
+			}
+			if !jsonOutput {
+				fmt.Printf("host wrappers: %d rewritten ($HOME-relative) and verified on %s\n", n, cfg.Host)
+			}
 		}
 		names, missing, err := hostStoreNames(remoteCtx(cmd), cfg)
 		if err != nil {
