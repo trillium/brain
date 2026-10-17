@@ -148,6 +148,17 @@ func loadRemoteConfig() (*remoteConfig, error) {
 	return cfg, nil
 }
 
+// renderRemoteConfig is the exact bytes 'brain remote set' writes, so a
+// --dry-run preview can show precisely what would be saved.
+func renderRemoteConfig(cfg *remoteConfig) ([]byte, error) {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	header := "# brain client mode — managed by 'brain remote'. Commands run on this host over ssh.\n"
+	return append([]byte(header), data...), nil
+}
+
 func saveRemoteConfig(cfg *remoteConfig) error {
 	path := remoteConfigFile()
 	if path == "" {
@@ -156,12 +167,11 @@ func saveRemoteConfig(cfg *remoteConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil { //nolint:gosec // same mode as stores.yaml's directory
 		return err
 	}
-	data, err := yaml.Marshal(cfg)
+	data, err := renderRemoteConfig(cfg)
 	if err != nil {
 		return err
 	}
-	header := "# brain client mode — managed by 'brain remote'. Commands run on this host over ssh.\n"
-	return os.WriteFile(path, append([]byte(header), data...), 0o644) //nolint:gosec // no secrets here
+	return os.WriteFile(path, data, 0o644) //nolint:gosec // no secrets here
 }
 
 // remoteQuote quotes s as one POSIX shell word: the result, parsed by any
@@ -764,6 +774,7 @@ var (
 	remoteInstallPrune  bool
 	remoteInstallExtra  []string
 	remoteSetNoCheck    bool
+	remoteSetDryRun     bool
 	remoteSetBinDir     string
 )
 
@@ -790,8 +801,15 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.`,
 }
 
 var brainRemoteSetCmd = &cobra.Command{
-	Use:         "set <ssh-target>",
-	Short:       "Name the brain host (an ssh target such as user@host)",
+	Use:   "set <ssh-target>",
+	Short: "Name the brain host (an ssh target such as user@host)",
+	Long: `Point this machine at a brain host and save the choice in
+~/.config/brain/remote.yaml.
+
+Without --dry-run it checks that the host answers ('brain --version' there) and
+that its store wrappers resolve a database, then writes the config. --dry-run
+shows the exact file that would be written and the read-only host check, but
+never rewrites the host's wrappers and never writes anything.`,
 	Args:        cobra.ExactArgs(1),
 	Annotations: map[string]string{"brain-remote": "1"},
 	Run: func(cmd *cobra.Command, args []string) {
@@ -799,12 +817,37 @@ var brainRemoteSetCmd = &cobra.Command{
 		if err != nil {
 			FatalError("%v", err)
 		}
+		previousHost := cfg.Host
 		cfg.Host = args[0]
 		if remoteSetBinDir != "" {
 			cfg.BinDir = remoteSetBinDir
 		}
 		if err := cfg.validate(); err != nil {
 			FatalError("%v", err)
+		}
+		if remoteSetDryRun {
+			// A preview must never touch the host: 'set' normally rewrites the
+			// host's store wrappers, which is a write, so dry-run stops short of
+			// that. It still answers the read-only question "does the host have a
+			// brain?" unless --no-check says not to.
+			if !remoteSetNoCheck {
+				out, err := remoteCapture(remoteCtx(cmd), cfg, "brain", "--version")
+				if err != nil {
+					FatalError("%v\n(dry run: nothing was written; use --no-check to preview without contacting the host)", err)
+				}
+				fmt.Printf("host answers: %s\n", strings.TrimSpace(string(out)))
+			}
+			if previousHost != "" && previousHost != cfg.Host {
+				fmt.Printf("brain: would re-point this client from %s to %s\n", previousHost, cfg.Host)
+			}
+			body, rerr := renderRemoteConfig(cfg)
+			if rerr != nil {
+				FatalError("%v", rerr)
+			}
+			fmt.Printf("(dry run) would write %s:\n\n%s\n", remoteConfigFile(), string(body))
+			fmt.Println("  next: brain remote install     # write the store command wrappers")
+			fmt.Println("  (nothing was written; run without --dry-run to save)")
+			return
 		}
 		if !remoteSetNoCheck {
 			out, err := remoteCapture(remoteCtx(cmd), cfg, "brain", "--version")
@@ -826,8 +869,12 @@ var brainRemoteSetCmd = &cobra.Command{
 		if err := saveRemoteConfig(&saved); err != nil {
 			FatalError("saving config: %v", err)
 		}
+		if previousHost != "" && previousHost != cfg.Host {
+			fmt.Printf("brain: re-pointed this client from %s to %s\n", previousHost, cfg.Host)
+		}
 		fmt.Printf("%s Brain host set to %s (%s)\n", "✓", cfg.Host, remoteConfigFile())
 		fmt.Println("  next: brain remote install     # write the store command wrappers")
+		fmt.Println("       brain remote status       # check reachability and latency")
 	},
 }
 
@@ -1046,6 +1093,7 @@ func isBrainRemoteVerb(cmd *cobra.Command) bool {
 
 func init() {
 	brainRemoteSetCmd.Flags().BoolVar(&remoteSetNoCheck, "no-check", false, "Save without contacting the host")
+	brainRemoteSetCmd.Flags().BoolVar(&remoteSetDryRun, "dry-run", false, "Preview the config and host check without writing anything")
 	brainRemoteSetCmd.Flags().StringVar(&remoteSetBinDir, "bin-dir", "", "Where the host keeps its wrappers (default $HOME/.local/bin)")
 	brainRemoteInstallCmd.Flags().StringVar(&remoteInstallDir, "dir", "", "Directory for the wrappers (default: this binary's directory)")
 	brainRemoteInstallCmd.Flags().StringVar(&remoteInstallBin, "bin", "", "Brain binary the wrappers exec (default: this binary)")

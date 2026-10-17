@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -488,5 +491,110 @@ func TestLooksLikeSSHFailure(t *testing.T) {
 		if looksLikeSSHFailure([]byte(s)) {
 			t.Errorf("%q should not read as an ssh failure", s)
 		}
+	}
+}
+
+// captureRemoteStdout captures everything fn prints to stdout.
+func captureRemoteStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	var buf bytes.Buffer
+	done := make(chan struct{})
+	go func() { _, _ = io.Copy(&buf, r); close(done) }()
+	fn()
+	_ = w.Close()
+	os.Stdout = old
+	<-done
+	_ = r.Close()
+	return buf.String()
+}
+
+func resetRemoteSetFlags(dryRun, noCheck bool) func() {
+	oldDry, oldNo := remoteSetDryRun, remoteSetNoCheck
+	remoteSetDryRun, remoteSetNoCheck = dryRun, noCheck
+	return func() { remoteSetDryRun, remoteSetNoCheck = oldDry, oldNo }
+}
+
+// 'set --dry-run' shows the exact config it would write and touches nothing:
+// no file, and (with --no-check) no ssh call at all.
+func TestRemoteSetDryRunPreviewsWithoutWriting(t *testing.T) {
+	_, _ = remoteEnv(t)
+	t.Cleanup(resetRemoteSetFlags(true, true))
+
+	out := captureRemoteStdout(t, func() {
+		brainRemoteSetCmd.Run(brainRemoteSetCmd, []string{"me@host"})
+	})
+	if _, err := os.Stat(remoteConfigFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dry run must not write the config (stat err=%v)", err)
+	}
+	for _, want := range []string{"(dry run)", remoteConfigFile(), "host: me@host", "next: brain remote install", "nothing was written"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("preview missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// 'set --dry-run' still asks the read-only "does the host answer?" question,
+// but must never run the wrapper rewrite (a write on the host).
+func TestRemoteSetDryRunChecksHostWithoutRewritingWrappers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	script, log := fakeSSH(t, t.TempDir())
+	t.Setenv(envRemoteSSH, script)
+	t.Setenv(envRemoteOff, "")
+	t.Setenv(envRemoteHost, "")
+	t.Setenv(envRemoteStore, "")
+	hostBin := filepath.Join(t.TempDir(), "hostbin")
+	if err := os.MkdirAll(hostBin, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	writeExec(t, filepath.Join(hostBin, "brain"), "#!/bin/sh\nprintf '%s\\n' \"$*\" >> "+remoteQuote(log)+"\necho 'brain v0.5.1'\n")
+	oldBin := remoteSetBinDir
+	remoteSetBinDir = hostBin
+	t.Cleanup(func() { remoteSetBinDir = oldBin })
+	t.Cleanup(resetRemoteSetFlags(true, false))
+
+	out := captureRemoteStdout(t, func() {
+		brainRemoteSetCmd.Run(brainRemoteSetCmd, []string{"me@host"})
+	})
+	if !strings.Contains(out, "host answers") {
+		t.Errorf("dry run should report the host check:\n%s", out)
+	}
+	if _, err := os.Stat(remoteConfigFile()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dry run must not write the config (stat err=%v)", err)
+	}
+	called, _ := os.ReadFile(log)
+	if !strings.Contains(string(called), "--version") {
+		t.Errorf("dry run did not check the host: %q", called)
+	}
+	if strings.Contains(string(called), "rewrite-wrappers") {
+		t.Errorf("dry run must not rewrite host wrappers: %q", called)
+	}
+}
+
+// A real 'set --no-check' saves the config and points at the next steps.
+func TestRemoteSetSavesAndHintsNextSteps(t *testing.T) {
+	_, _ = remoteEnv(t)
+	t.Cleanup(resetRemoteSetFlags(false, true))
+
+	out := captureRemoteStdout(t, func() {
+		brainRemoteSetCmd.Run(brainRemoteSetCmd, []string{"me@host"})
+	})
+	data, err := os.ReadFile(remoteConfigFile())
+	if err != nil {
+		t.Fatalf("config not saved: %v", err)
+	}
+	for _, want := range []string{"host: me@host", "next: brain remote install", "brain remote status"} {
+		if !strings.Contains(string(data)+"\n"+out, want) {
+			t.Errorf("saved config or output missing %q:\nconfig=%s\nout=%s", want, data, out)
+		}
+	}
+	if brainRemoteSetCmd.Flags().Lookup("dry-run") == nil {
+		t.Error("brain remote set must expose --dry-run")
 	}
 }
