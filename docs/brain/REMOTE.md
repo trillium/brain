@@ -79,6 +79,56 @@ itself, and it prints a note when a wrapper shadows, or is shadowed by, another
 command on `PATH` (for example Taskwarrior's `task`). Put the wrapper directory
 **after** anything you want to keep winning.
 
+## See what a client can run
+
+`brain remote commands` answers, from the live command tree rather than a
+hand-maintained list, what every command does from a client:
+
+```
+$ brain remote commands --all
+brain remote commands — what runs where
+
+mode:    client of me@my-host.example.ts.net (commands are forwarded over ssh)
+host:    me@my-host.example.ts.net
+
+Runs on the brain host (forwarded over ssh in client mode) — 126:
+  create (new)                 Create a new issue (or batch from markdown/graph JSON)
+  list                         List issues
+  …
+Runs on this machine (client-mode configuration) — 7:
+  remote                       Client mode: run brain and every store command on a brain host over ssh
+  remote set                   Name the brain host (an ssh target such as user@host)
+  …
+Host-only — run these on the machine that serves the brain — 12:
+  host                         Move the brain host role between machines (promote, verify, rollback)
+  host promote                 Move the brain host role from this machine to the target
+  …
+  why: it manages the host role, and a client has no brain database
+  fix: run it on the brain host:  ssh me@my-host.example.ts.net brain host <verb>
+
+Totals: 126 client, 7 local, 12 host-only; 12 cannot run from a client
+```
+
+The three groups are derived from the two annotations client mode already uses
+(`brain-remote` on the client-configuration verbs, `brain-host` on the host-role
+verbs) and the forwarder's own rule (`brain_remote.go`:
+`remoteForwardingActive`): `brain remote …` and `brain host …` run here,
+everything else is forwarded. A new command therefore lands in the right group
+with no table to update, and a drift test fails if the two ever disagree.
+
+- `--all` lists every subcommand, not just the top-level ones.
+- `--client <ssh-target>` describes that client instead of this machine; run on
+  the host it also says whether the client is registered (`brain host clients`).
+- `--find <text>` narrows the list to commands whose path, alias or one-line summary contains that text (case-insensitive) — e.g. `brain remote commands --find host` answers "can this client run host…?" without paging the full list. A no-match run prints `no commands match …` and lists nothing.
+- `--category client|local|host` lists only one group — `--category host` answers "which commands can't I run from here?" with the why/fix for each, `--category client` what a client can run. It composes with `--find`.
+- `--json` emits the whole thing: `mode`, `host`, `find`, `category`, `commands[]`
+  (`path`, `category`, `runs_on`, `forwarded`, `available`, `why`, `fix`) and
+  `totals`.
+
+Nothing is contacted: the answer comes from the command tree and this machine's
+`remote.yaml`/`host.yaml`. Run without a host configured, it is the same report
+with the client column saying that the commands run here.
+
 ## Add another client machine
 
 1. Make sure that machine can ssh to the host without a password prompt.
@@ -90,6 +140,10 @@ the host itself) simply has no `remote.yaml` and runs locally.
 
 ## Everyday use
 
+- `brain remote commands` shows what each command does from a client, and which
+  are host-only (`--all` for every subcommand, `--find <text>` to search by
+  path/alias/summary, `--category host` for just the ones a client cannot run,
+  `--json` for scripts).
 - `BRAIN_REMOTE=off task list` runs one command against a local database.
 - `BRAIN_REMOTE_HOST=other@host brain status` points one command at another host.
 - `brain remote disconnect` closes the shared connection; the next call reopens it.
