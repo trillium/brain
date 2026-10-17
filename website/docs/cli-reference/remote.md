@@ -63,7 +63,13 @@ bd remote install [flags]
 
 ### bd remote set
 
-Name the brain host (an ssh target such as user@host)
+Point this machine at a brain host and save the choice in
+~/.config/brain/remote.yaml.
+
+Without --dry-run it checks that the host answers ('brain --version' there) and
+that its store wrappers resolve a database, then writes the config. --dry-run
+shows the exact file that would be written and the read-only host check, but
+never rewrites the host's wrappers and never writes anything.
 
 ```
 bd remote set <ssh-target> [flags]
@@ -73,6 +79,7 @@ bd remote set <ssh-target> [flags]
 
 ```
       --bin-dir string   Where the host keeps its wrappers (default $HOME/.local/bin)
+      --dry-run          Preview the config and host check without writing anything
       --no-check         Save without contacting the host
 ```
 

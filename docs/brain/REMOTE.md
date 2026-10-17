@@ -56,6 +56,13 @@ connect_timeout: 5          # seconds (optional)
 ssh_options: []             # extra ssh -o options, e.g. ["IdentityFile=~/.ssh/brain"]
 ```
 
+`brain remote set --dry-run` prints that file exactly as it would be written,
+plus the read-only host check, and writes nothing. It deliberately does **not**
+run the wrapper rewrite (a write on the host), so it is safe to try before
+committing; `--no-check` skips even the host check. Pointing a machine that
+already has a host at a different one prints `would re-point this client from
+<old> to <new>` (and, once saved, `re-pointed …`).
+
 `brain remote install` asks the host for `brain stores list --json`, keeps the
 stores that have a wrapper in the host's `bin_dir`, and writes a small wrapper
 for each into the directory of the `brain` binary (`--dir` to choose another).
