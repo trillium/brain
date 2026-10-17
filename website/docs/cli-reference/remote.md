@@ -15,6 +15,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote clients list       show the machines connected to the host
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -28,6 +29,35 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
 ```
 bd remote [flags]
+```
+
+### bd remote clients
+
+The machines connected to the brain host: registered, and seen
+
+```
+bd remote clients [flags]
+```
+
+#### bd remote clients list
+
+Ask the brain host who is connected and show the answer here, marking this
+machine in the list.
+
+This is the same list 'brain host clients list' shows on the host itself:
+
+  registered  the ssh targets in the host's host.yaml that a promotion points
+              at the new host when the host role moves.
+  seen        clients that ran a command on the host. Each records itself the
+              first time it connects, with its version and when it last did.
+
+A client can be either or both. Running this command counts as a call to the
+host, so it refreshes this machine's own last-seen time before the list is
+read. Nothing is configured here: use 'brain host clients add &lt;ssh-target&gt;' on
+the host to register a machine a promotion should reach.
+
+```
+bd remote clients list [flags]
 ```
 
 ### bd remote disconnect

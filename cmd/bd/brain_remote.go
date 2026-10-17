@@ -175,9 +175,26 @@ func remoteQuote(s string) string {
 // follow it as positional parameters, so none of them is ever re-parsed.
 // BRAIN_REMOTE=off keeps a configured host from forwarding onward;
 // BRAIN_REMOTE_FORWARDED=1 tells the host the call came from a client, so a
-// host that has since moved can answer with where the brain went.
+// host that has since moved can answer with where the brain went. The same
+// call also names the client (see brain_client_registry.go), which is what the
+// host records so 'brain host clients list' can show who connects.
 func (c *remoteConfig) remoteScript() string {
-	return `d="` + c.binDir() + `"; PATH="$d:$PATH"; BRAIN_REMOTE=off; BRAIN_REMOTE_FORWARDED=1; export PATH BRAIN_REMOTE BRAIN_REMOTE_FORWARDED; exec "$d/$0" "$@"`
+	set := []string{envRemoteOff + "=off", envRemoteForward + "=1"}
+	names := []string{"PATH", envRemoteOff, envRemoteForward}
+	if id := clientIdentity(); id != "" {
+		set = append(set, envRemoteClient+"="+remoteQuote(id))
+		names = append(names, envRemoteClient)
+		if c.Host != "" && validClientField(c.Host) {
+			set = append(set, envRemoteClientHost+"="+remoteQuote(c.Host))
+			names = append(names, envRemoteClientHost)
+		}
+		if v := combinedVersion(); validClientField(v) {
+			set = append(set, envRemoteClientVersion+"="+remoteQuote(v))
+			names = append(names, envRemoteClientVersion)
+		}
+	}
+	return `d="` + c.binDir() + `"; PATH="$d:$PATH"; ` + strings.Join(set, "; ") +
+		`; export ` + strings.Join(names, " ") + `; exec "$d/$0" "$@"`
 }
 
 // remoteCommand builds the single string ssh sends to the host: an sh -c
@@ -775,6 +792,7 @@ var brainRemoteCmd = &cobra.Command{
   brain remote set <ssh-target>   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote clients list       show the machines connected to the host
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -944,6 +962,76 @@ that shadows (or is shadowed by) another command on PATH.`,
 	},
 }
 
+// ---------------------------------------------------------------------------
+// 'brain remote clients list' — the client-side view of who is connected
+// ---------------------------------------------------------------------------
+
+// hostClientsView is the host's answer to 'brain host clients list --json', as
+// much of it as the client-side view needs.
+type hostClientsView struct {
+	// Host is the host's own name for itself, from the host's environment.
+	Host string `json:"host"`
+	// Clients is one row per client: registered, seen connecting, or both.
+	Clients []clientRow `json:"clients"`
+	// Registered and Seen are the counts the host already worked out.
+	Registered int `json:"registered"`
+	Seen       int `json:"seen"`
+}
+
+// fetchHostClients asks the brain host who is connected. It runs the host's own
+// 'brain host clients list --json' over the same ssh connection every other
+// call uses, so the client-side view cannot drift from the host-side one. The
+// call also announces this client, so running it refreshes this machine's
+// heartbeat before the list is read.
+func fetchHostClients(ctx context.Context, cfg *remoteConfig) (*hostClientsView, error) {
+	out, err := remoteCapture(ctx, cfg, "brain", "host", "clients", "list", "--json")
+	if err != nil {
+		return nil, err
+	}
+	view := &hostClientsView{}
+	if err := json.Unmarshal(out, view); err != nil {
+		return nil, fmt.Errorf("reading the client list from %s: %w", cfg.Host, err)
+	}
+	return view, nil
+}
+
+// hostPredatesClientList reports whether a failed client-list fetch means the
+// host's brain is older than this client (it has no 'host clients list' yet).
+func hostPredatesClientList(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unknown command")
+}
+
+// clientListUnavailableError turns a fetch failure into something an operator
+// can act on. A host whose brain predates the verb is a version skew, not a
+// broken ssh connection, and saying so saves a puzzled bug report.
+func clientListUnavailableError(cfg *remoteConfig, err error) error {
+	if hostPredatesClientList(err) {
+		return fmt.Errorf("the brain on %s does not know 'host clients list' yet — upgrade brain there (this client is newer)", cfg.Host)
+	}
+	return err
+}
+
+// clientSummaryText answers "am I connected?" in one line: how many clients the
+// host knows, and where this machine stands.
+func clientSummaryText(view *hostClientsView, you string, now time.Time) string {
+	line := fmt.Sprintf("clients: %d seen, %d registered", view.Seen, view.Registered)
+	if you == "" {
+		// No $USER/hostname here, so the host cannot have recorded this
+		// machine by name: say so rather than calling it a stranger.
+		return line + "; this machine: unknown (no $USER or hostname here)"
+	}
+	i := thisClientIndex(view.Clients, you)
+	switch {
+	case i >= 0 && view.Clients[i].Seen:
+		line += fmt.Sprintf("; this machine: %s, seen %s", view.Clients[i].Client, humanAgo(view.Clients[i].LastSeen, now))
+	case i >= 0:
+		line += fmt.Sprintf("; this machine: registered as %s, never seen — run a store command here", view.Clients[i].Client)
+	default:
+		line += "; this machine: not listed — run any store command through the host to register"
+	}
+	return line
+}
+
 var brainRemoteStatusCmd = &cobra.Command{
 	Use:         "status",
 	Short:       "Show the configured host, reachability, latency and versions",
@@ -974,7 +1062,75 @@ var brainRemoteStatusCmd = &cobra.Command{
 		if _, err := remoteCapture(remoteCtx(cmd), cfg, "brain", "--version"); err == nil {
 			fmt.Printf("latency: %d ms per call on the shared connection\n", time.Since(start).Milliseconds())
 		}
+		// Best effort: a host whose brain predates 'host clients list' still
+		// gets a clean status report, just without the clients line.
+		if view, err := fetchHostClients(remoteCtx(cmd), cfg); err == nil {
+			fmt.Println(clientSummaryText(view, clientIdentity(), time.Now()))
+		}
 		fmt.Printf("local:   bd version %s (%s)\n", Version, Build)
+	},
+}
+
+var brainRemoteClientsCmd = &cobra.Command{
+	Use:         "clients",
+	Short:       "The machines connected to the brain host: registered, and seen",
+	Annotations: map[string]string{"brain-remote": "1"},
+	Run:         func(cmd *cobra.Command, _ []string) { _ = cmd.Help() },
+}
+
+var brainRemoteClientsListCmd = &cobra.Command{
+	Use: "list", Short: "List the host's clients, marking this machine", Args: cobra.NoArgs,
+	Annotations: map[string]string{"brain-remote": "1"},
+	Long: `Ask the brain host who is connected and show the answer here, marking this
+machine in the list.
+
+This is the same list 'brain host clients list' shows on the host itself:
+
+  registered  the ssh targets in the host's host.yaml that a promotion points
+              at the new host when the host role moves.
+  seen        clients that ran a command on the host. Each records itself the
+              first time it connects, with its version and when it last did.
+
+A client can be either or both. Running this command counts as a call to the
+host, so it refreshes this machine's own last-seen time before the list is
+read. Nothing is configured here: use 'brain host clients add <ssh-target>' on
+the host to register a machine a promotion should reach.`,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		cfg, err := loadRemoteConfig()
+		if err != nil {
+			return err
+		}
+		if cfg.Host == "" {
+			return errors.New("no brain host set; run 'brain remote set <ssh-target>' first, then 'brain remote install'")
+		}
+		if err := cfg.validate(); err != nil {
+			return err
+		}
+		view, err := fetchHostClients(remoteCtx(cmd), cfg)
+		if err != nil {
+			return clientListUnavailableError(cfg, err)
+		}
+		you := clientIdentity()
+		host := view.Host
+		if host == "" {
+			host = cfg.Host
+		}
+		rows := view.Clients
+		if rows == nil {
+			rows = []clientRow{} // never print null where a list belongs
+		}
+		if jsonOutput {
+			return outputJSON(map[string]any{
+				"via":         cfg.Host,
+				"this_client": you,
+				"host":        host,
+				"clients":     rows,
+				"registered":  view.Registered,
+				"seen":        view.Seen,
+			})
+		}
+		fmt.Println(clientListTextFor(host, rows, time.Now(), you))
+		return nil
 	},
 }
 
@@ -1055,7 +1211,8 @@ func init() {
 	brainRemoteInstallCmd.Flags().StringSliceVar(&remoteInstallExtra, "also", nil, "Extra command names to install (host wrappers that are not registry stores)")
 
 	brainRemoteCmd.AddCommand(brainRemoteSetCmd, brainRemoteUnsetCmd, brainRemoteInstallCmd,
-		brainRemoteStatusCmd, brainRemoteDisconnectCmd)
+		brainRemoteStatusCmd, brainRemoteClientsCmd, brainRemoteDisconnectCmd)
+	brainRemoteClientsCmd.AddCommand(brainRemoteClientsListCmd)
 	rootCmd.AddCommand(brainRemoteCmd)
 }
 

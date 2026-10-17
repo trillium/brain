@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeSSH writes a stand-in for ssh that behaves like the real one where it
@@ -488,5 +491,177 @@ func TestLooksLikeSSHFailure(t *testing.T) {
 		if looksLikeSSHFailure([]byte(s)) {
 			t.Errorf("%q should not read as an ssh failure", s)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 'brain remote clients list' — the client-side view of the host's clients
+// ---------------------------------------------------------------------------
+
+// fakeHostClients writes a fake host 'brain' that answers 'host clients list
+// --json' with payload, and fails the way an older host binary does for every
+// other invocation (including 'host clients list' when payload is empty).
+func fakeHostClients(t *testing.T, hostBin, payload string) {
+	t.Helper()
+	body := "#!/bin/sh\n"
+	if payload != "" {
+		file := filepath.Join(hostBin, "clients.json")
+		if err := os.WriteFile(file, []byte(payload), 0o644); err != nil { //nolint:gosec // test fixture
+			t.Fatal(err)
+		}
+		body += `[ "$1 $2 $3" = "host clients list" ] && exec cat ` + remoteQuote(file) + "\n"
+	}
+	body += "printf '%s\\n' 'Error: unknown command \"host\" for \"brain\"' >&2\nexit 1\n"
+	writeExec(t, filepath.Join(hostBin, "brain"), body)
+}
+
+func TestRemoteClientsListCommandEndToEnd(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	you := clientIdentity()
+	if you == "" {
+		t.Skip("no client identity available in this environment")
+	}
+	other := "trillium@mac-mini"
+	if other == you {
+		other = "someone@elsewhere"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"schema_version": 1,
+		"host":           "me@host",
+		"clients": []clientRow{
+			{Client: you, Version: "1.1.0+brain.0.5.1", LastSeen: "2026-02-14T10:29:00Z", Seen: true, Registered: true, Target: "me@laptop.ts.net", Host: "me@host.ts.net"},
+			{Client: other, Version: "1.1.0+brain.0.5.0", LastSeen: "2026-02-12T10:00:00Z", Seen: true},
+			{Client: "me@desktop.ts.net", Registered: true, Target: "me@desktop.ts.net"},
+		},
+		"registered": 2,
+		"seen":       2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fakeHostClients(t, hostBin, string(payload))
+	if err := saveRemoteConfig(&remoteConfig{Host: "me@host", BinDir: hostBin}); err != nil {
+		t.Fatal(err)
+	}
+
+	// It is reachable as 'brain remote clients list', and it is a remote verb:
+	// it must never try to open a local store.
+	cmd, _, err := rootCmd.Find([]string{"remote", "clients", "list"})
+	if err != nil || cmd == nil || cmd.Name() != "list" {
+		t.Fatalf("'remote clients list' is not in the command tree: %v %v", cmd, err)
+	}
+	if !isBrainRemoteVerb(cmd) || isBrainHostVerb(cmd) {
+		t.Errorf("'remote clients list' must be a brain-remote verb and not a host verb")
+	}
+
+	oldJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = oldJSON })
+
+	jsonOutput = false
+	out := captureStdout(t, func() error { return brainRemoteClientsListCmd.RunE(brainRemoteClientsListCmd, nil) })
+	for _, want := range []string{
+		"brain host clients — me@host",
+		"HOST",
+		"1.1.0+brain.0.5.1", "me@laptop.ts.net", "me@host.ts.net",
+		"me@desktop.ts.net", "never seen", "no (seen connecting)",
+		"← this machine",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the client-side table must show %q:\n%s", want, out)
+		}
+	}
+	// The marker belongs on this machine's row only.
+	if strings.Count(out, "← this machine") != 1 {
+		t.Errorf("exactly one row is this machine:\n%s", out)
+	}
+	if !strings.Contains(strings.SplitN(out, "\n", 4)[3], "← this machine") {
+		t.Errorf("the marker must be on this machine's row:\n%s", out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "← this machine") && !strings.HasPrefix(line, "  "+you) {
+			t.Errorf("the marker must be on this machine's row, not %q", line)
+		}
+	}
+	jsonOutput = true
+	out = captureStdout(t, func() error { return brainRemoteClientsListCmd.RunE(brainRemoteClientsListCmd, nil) })
+	var got struct {
+		SchemaVersion int         `json:"schema_version"`
+		Via           string      `json:"via"`
+		ThisClient    string      `json:"this_client"`
+		Host          string      `json:"host"`
+		Clients       []clientRow `json:"clients"`
+		Registered    int         `json:"registered"`
+		Seen          int         `json:"seen"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("--json must print one JSON object: %v\n%s", err, out)
+	}
+	if got.SchemaVersion == 0 || got.Via != "me@host" || got.ThisClient != you || got.Host != "me@host" {
+		t.Errorf("unexpected json header: %s", out)
+	}
+	if len(got.Clients) != 3 || got.Registered != 2 || got.Seen != 2 {
+		t.Errorf("unexpected json clients: %s", out)
+	}
+}
+
+func TestRemoteClientsListNoHostAndOlderHost(t *testing.T) {
+	remoteEnv(t) // HOME is a sandbox with no remote.yaml
+	if err := brainRemoteClientsListCmd.RunE(brainRemoteClientsListCmd, nil); err == nil {
+		t.Error("with no host set the command must say how to set one")
+	} else if !strings.Contains(err.Error(), "brain remote set") {
+		t.Errorf("error = %q, want it to teach 'brain remote set'", err)
+	}
+
+	_, hostBin := remoteEnv(t)
+	fakeHostClients(t, hostBin, "") // a host brain that predates 'host clients list'
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+	_, err := fetchHostClients(t.Context(), cfg)
+	if err == nil {
+		t.Fatal("expected an error from a host that does not know the verb")
+	}
+	if !hostPredatesClientList(err) {
+		t.Errorf("'unknown command' must read as an older host: %v", err)
+	}
+	msg := clientListUnavailableError(cfg, err).Error()
+	if !strings.Contains(msg, "me@host") || !strings.Contains(msg, "upgrade brain") {
+		t.Errorf("version-skew message = %q", msg)
+	}
+	// An ssh failure is not version skew and must keep its own message.
+	connErr := errors.New("brain: cannot reach the brain host me@host")
+	if got := clientListUnavailableError(cfg, connErr); got != connErr {
+		t.Errorf("an unreachable host must not be reported as version skew: %v", got)
+	}
+}
+
+func TestClientSummaryText(t *testing.T) {
+	now := time.Date(2026, 2, 14, 10, 30, 0, 0, time.UTC)
+	seen := hostClientsView{Seen: 2, Registered: 1, Clients: []clientRow{
+		{Client: "trillium@laptop", Seen: true, LastSeen: "2026-02-14T10:25:00Z", Registered: true, Target: "me@laptop.ts.net"},
+		{Client: "stranger@other", Seen: true, LastSeen: "2026-02-13T10:00:00Z"},
+		{Client: "me@desktop.ts.net", Registered: true},
+	}}
+	got := clientSummaryText(&seen, "trillium@laptop", now)
+	for _, want := range []string{"2 seen, 1 registered", "this machine: trillium@laptop, seen 5m ago"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary must mention %q: %s", want, got)
+		}
+	}
+	// Registered under a different ssh target than the name it connects with.
+	if got := clientSummaryText(&seen, "someone@desktop", now); !strings.Contains(got, "never seen — run a store command here") {
+		t.Errorf("a registered machine that has not connected must be told so: %s", got)
+	}
+	if got := clientSummaryText(&seen, "nobody@nowhere", now); !strings.Contains(got, "not listed — run any store command through the host to register") {
+		t.Errorf("an unknown machine must be told how to register: %s", got)
+	}
+	if got := clientSummaryText(&hostClientsView{}, "nobody@nowhere", now); !strings.Contains(got, "0 seen, 0 registered") {
+		t.Errorf("an empty host must still count zero: %s", got)
+	}
+}
+
+func TestClientSummaryTextWithoutIdentity(t *testing.T) {
+	now := time.Date(2026, 2, 14, 10, 30, 0, 0, time.UTC)
+	got := clientSummaryText(&hostClientsView{Seen: 1}, "", now)
+	if !strings.Contains(got, "this machine: unknown") {
+		t.Errorf("without an identity the summary must say so, not call it a stranger: %s", got)
 	}
 }

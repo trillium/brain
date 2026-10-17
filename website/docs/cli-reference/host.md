@@ -19,7 +19,7 @@ moves that role.
   brain host status                 what role this machine has, and any promotion in progress
   brain host verify                 check the host (or, on the old host, that the move holds)
   brain host rollback               put both machines back as they were
-  brain host clients …              the machines known to follow this host
+  brain host clients …              the machines that use this host, registered and seen
   brain host service …              launchd jobs that belong to the host role
 
 A promotion copies the database with Dolt's own backup (proved by hash), moves
@@ -34,7 +34,7 @@ bd host [flags]
 
 ### bd host clients
 
-The machines known to follow this host (they are updated by a promotion)
+The machines that use this host: registered, and seen connecting
 
 ```
 bd host clients [flags]
@@ -50,7 +50,20 @@ bd host clients add <ssh-target> [flags]
 
 #### bd host clients list
 
-List known clients
+List the machines that use this brain host, in two halves that are shown
+side by side:
+
+  registered  the ssh targets in host.yaml ('brain host clients add'). A
+              promotion points these at the new host when the role moves.
+  seen        clients that ran a command here through 'brain remote'. Each
+              records itself on its first call — nothing to configure on it —
+              and the record carries its version and when it last connected.
+
+A client can be either or both. A registered client that has never connected
+shows "never seen"; one that connects without being registered is listed as
+not registered (add it if a promotion should reach it). The heartbeats live in
+~/.config/brain/clients.yaml and are refreshed at most once a minute per
+client; deleting that file is safe, clients re-register themselves.
 
 ```
 bd host clients list [flags]
@@ -58,10 +71,23 @@ bd host clients list [flags]
 
 #### bd host clients remove
 
-Forget a client
+Forget a machine, by the name 'brain host clients list' shows it under.
+
+The name may be the registered ssh target, the client's own name for itself
+(user@machine), or — when only one client owns it — the machine name they
+share. Both halves of that client are removed:
+
+  registration  it is dropped from host.yaml, so a promotion no longer points
+                it at the new host.
+  heartbeat     its record in clients.yaml goes too, so the row disappears.
+                Heartbeats are the client's own report, not a block: a machine
+                that is still in use records itself again the next time it
+                runs a command here, and reappears as 'seen'.
+
+An unknown name is an error, not a silent success.
 
 ```
-bd host clients remove <ssh-target> [flags]
+bd host clients remove <ssh-target|client> [flags]
 ```
 
 ### bd host promote
