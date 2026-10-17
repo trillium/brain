@@ -193,7 +193,20 @@ stores that have a wrapper in the host's `bin_dir`, and writes a small wrapper
 for each into the directory of the `brain` binary (`--dir` to choose another).
 Re-run it whenever the host gains a store; `--prune` removes wrappers for
 stores the host no longer has; `--also name` adds a host wrapper that is not a
-registry store; `--dry-run` shows what would change.
+registry store (for example the aliases `idea`, `project`, `question`,
+`decide`); `--dry-run` shows what would change.
+
+**Old local wrappers are switched automatically.** A machine that used brain
+locally before has store wrappers of the old shape (a `#!/bin/sh` script that
+only exports `BEADS_DIR`, `BD_NAME`, `BRAIN_KNOWLEDGE_ROOT`, … and ends in
+`exec bd "$@"`). Left alone, such a wrapper keeps talking to the local store, or
+whatever `bd` resolves in that directory, instead of the host. `install`
+recognizes that shape, copies each such file into
+`<dir>.bak-remote-<YYYYMMDD-HHMMSS>/`, replaces it, and prints one
+`replaced <name> … backup <path>` line per file plus the backup directory. A
+file that is not of that shape (any extra logic, a binary, another tool) is
+left alone and reported as `skipped`; `--force` replaces it too, backing it up
+the same way. `bd` and the brain binary are never written.
 
 Before it writes anything, `brain remote install` (unless `--dry-run`) and
 `brain remote set` (unless `--no-check`) run `brain stores rewrite-wrappers` on
@@ -205,17 +218,49 @@ store cannot resolve a database, the command exits non-zero and lists them
 under `FAILING STORES`; `set` does not save the host in that case.
 
 Safety rules of the installer: it only ever replaces files it generated (they
-carry a `# brain-remote-wrapper:` marker; `--force` overrides for other files),
+carry a `# brain-remote-wrapper:` marker) or legacy local store wrappers (backed
+up first; `--force` overrides for any other file, also backed up),
 it never writes a command called `bd`, it skips the name of the brain binary
 itself, and it prints a note when a wrapper shadows, or is shadowed by, another
 command on `PATH` (for example Taskwarrior's `task`). Put the wrapper directory
 **after** anything you want to keep winning.
 
+## Verify that every store moved (`brain remote verify`)
+
+`brain remote verify` is read-only. For every store in the registry it checks
+
+1. **the pin** (client mode): the wrapper in `--dir` (default: the directory of
+   the `brain` binary) sets `BRAIN_REMOTE_STORE='<store>'`. An old local wrapper
+   is reported as `legacy local wrapper: not switched`, and a legacy wrapper
+   that is not a registry store (an alias such as `idea`) is reported with the
+   `--also` command that fixes it; backup files (`status.pre-x.bak`) are
+   ignored;
+2. **the route** (every mode): `<store> list --limit 1 --json` returns an id with
+   that store's own prefix. A store may answer with an alias prefix (`robots` →
+   `agent-`, `day` → `day-2026-11-`), but never with another store's name (the
+   misroute that sends `status` into the brain store) or a prefix another store
+   already uses. A store with no beads is `empty` (prefix not confirmed), which
+   is not a failure. One retry absorbs a momentary refusal from the host's
+   shared Dolt server.
+
+Exit status 0 means every store passed; 1 lists the failures. `--json` gives
+the same as data. Run it after every `brain remote install`, on each machine:
+
+| machine | how | what it checks |
+|---|---|---|
+| MacBook (client) | `brain remote verify` | pins + routes through ssh to the host |
+| mini0 (client) | `brain remote verify` | same |
+| mini1 (brain host) | `brain remote verify` | no `remote.yaml` there, so host mode: routes only; the local wrappers are meant to be local |
+
+If a client prints `legacy local wrapper` rows, run `brain remote install`
+(plus `--also <name>` for each alias it names) and verify again. The offline
+guard for the same rules is `go test ./cmd/bd -run 'TestInstallSwitchesEveryStoreWrapper|TestVerifyEveryStoreResolvesToItsOwnPrefix'`.
+
 ## Add another client machine
 
 1. Make sure that machine can ssh to the host without a password prompt.
 2. Install the `brain` binary there.
-3. `brain remote set <ssh-target>` then `brain remote install`.
+3. `brain remote set <ssh-target>`, `brain remote install`, then `brain remote verify`.
 
 Nothing changes on the host. A client that is also the host's own account (or
 the host itself) simply has no `remote.yaml` and runs locally.
