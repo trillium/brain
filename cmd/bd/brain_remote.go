@@ -775,6 +775,7 @@ var brainRemoteCmd = &cobra.Command{
   brain remote set <ssh-target>   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote doctor             check ssh, versions, wrappers, HOME and latency
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
