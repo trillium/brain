@@ -53,7 +53,7 @@ moves that role.
   brain host status                 what role this machine has, and any promotion in progress
   brain host verify                 check the host (or, on the old host, that the move holds)
   brain host rollback               put both machines back as they were
-  brain host clients …              the machines known to follow this host
+  brain host clients …              the machines that use this host, registered and seen
   brain host service …              launchd jobs that belong to the host role
 
 A promotion copies the database with Dolt's own backup (proved by hash), moves
@@ -130,26 +130,54 @@ to drop them (the database is kept aside on the new host, not deleted).`,
 
 var brainHostClientsCmd = &cobra.Command{
 	Use:         "clients",
-	Short:       "The machines known to follow this host (they are updated by a promotion)",
+	Short:       "The machines that use this host: registered, and seen connecting",
 	Annotations: hostAnno(),
 	Run:         func(cmd *cobra.Command, _ []string) { _ = cmd.Help() },
 }
 
 var brainHostClientsListCmd = &cobra.Command{
-	Use: "list", Short: "List known clients", Args: cobra.NoArgs, Annotations: hostAnno(),
+	Use: "list", Short: "List clients: registered, and seen connecting", Args: cobra.NoArgs, Annotations: hostAnno(),
+	Long: `List the machines that use this brain host, in two halves that are shown
+side by side:
+
+  registered  the ssh targets in host.yaml ('brain host clients add'). A
+              promotion points these at the new host when the role moves.
+  seen        clients that ran a command here through 'brain remote'. Each
+              records itself on its first call — nothing to configure on it —
+              and the record carries its version and when it last connected.
+
+A client can be either or both. A registered client that has never connected
+shows "never seen"; one that connects without being registered is listed as
+not registered (add it if a promotion should reach it). The heartbeats live in
+~/.config/brain/clients.yaml and are refreshed at most once a minute per
+client; deleting that file is safe, clients re-register themselves.`,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		home, _ := os.UserHomeDir()
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
 		cfg, err := loadHostConfig(home)
 		if err != nil {
 			return err
 		}
-		if cfg == nil || len(cfg.Clients) == 0 {
-			fmt.Println("no known clients")
-			return nil
+		reg, err := loadClientRegistry(home)
+		if err != nil {
+			return err
 		}
-		for _, c := range cfg.Clients {
-			fmt.Printf("%s  (added %s)\n", c.Target, c.Added)
+		rows := mergeClientRows(cfg, reg)
+		registered, seen := 0, 0
+		for _, r := range rows {
+			if r.Registered {
+				registered++
+			}
+			if r.Seen {
+				seen++
+			}
 		}
+		if jsonOutput {
+			return outputJSON(clientListPayload(home, clientListHost(), rows, registered, seen))
+		}
+		fmt.Println(clientListText(clientListHost(), rows, time.Now()))
 		return nil
 	},
 }
@@ -164,30 +192,105 @@ var brainHostClientsAddCmd = &cobra.Command{
 			}
 			for _, c := range cfg.Clients {
 				if c.Target == args[0] {
+					fmt.Printf("✓ %s is already registered\n", args[0])
 					return nil
 				}
 			}
 			cfg.Clients = append(cfg.Clients, hostClient{Target: args[0], Added: nowStamp()})
 			fmt.Printf("✓ %s will be pointed at the new host by a promotion\n", args[0])
+			fmt.Printf("  registered is not connected: it shows \"never seen\" until it runs a command\n")
+			fmt.Printf("  through 'brain remote' — 'brain host clients list' shows both\n")
 			return nil
 		})
 	},
 }
 
 var brainHostClientsRemoveCmd = &cobra.Command{
-	Use: "remove <ssh-target>", Short: "Forget a client", Args: cobra.ExactArgs(1), Annotations: hostAnno(),
+	Use: "remove <ssh-target|client>", Short: "Forget a client, registered or only seen", Args: cobra.ExactArgs(1), Annotations: hostAnno(),
+	Long: `Forget a machine, by the name 'brain host clients list' shows it under.
+
+The name may be the registered ssh target, the client's own name for itself
+(user@machine), or — when only one client owns it — the machine name they
+share. Both halves of that client are removed:
+
+  registration  it is dropped from host.yaml, so a promotion no longer points
+                it at the new host.
+  heartbeat     its record in clients.yaml goes too, so the row disappears.
+                Heartbeats are the client's own report, not a block: a machine
+                that is still in use records itself again the next time it
+                runs a command here, and reappears as 'seen'.
+
+An unknown name is an error, not a silent success.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return editHostConfig(func(cfg *hostConfig) error {
-			out := cfg.Clients[:0]
-			for _, c := range cfg.Clients {
-				if c.Target != args[0] {
-					out = append(out, c)
+		arg := args[0]
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		cfg, err := loadHostConfig(home)
+		if err != nil {
+			return err
+		}
+		reg, err := loadClientRegistry(home)
+		if err != nil {
+			return err
+		}
+		rows := mergeClientRows(cfg, reg)
+		matched := findClientRows(rows, arg)
+		if len(matched) == 0 {
+			return fmt.Errorf("no client named %q; 'brain host clients list' shows them", arg)
+		}
+		dropTargets, dropIDs := map[string]bool{}, map[string]bool{}
+		for _, i := range matched {
+			r := rows[i]
+			if r.Registered {
+				dropTargets[r.Target] = true
+			}
+			if r.Seen {
+				dropIDs[strings.ToLower(r.Client)] = true
+			}
+		}
+		if len(dropTargets) > 0 {
+			if err := editHostConfig(func(cfg *hostConfig) error {
+				kept := cfg.Clients[:0]
+				for _, c := range cfg.Clients {
+					if !dropTargets[c.Target] {
+						kept = append(kept, c)
+					}
+				}
+				cfg.Clients = kept
+				return nil
+			}); err != nil {
+				return err
+			}
+		}
+		if len(dropIDs) > 0 {
+			kept := reg.Clients[:0]
+			for _, c := range reg.Clients {
+				if !dropIDs[strings.ToLower(c.ID)] {
+					kept = append(kept, c)
 				}
 			}
-			cfg.Clients = out
-			fmt.Printf("✓ %s forgotten\n", args[0])
-			return nil
-		})
+			reg.Clients = kept
+			if err := saveClientRegistry(home, reg); err != nil {
+				return err
+			}
+		}
+		removed := make([]string, 0, 2)
+		if len(dropTargets) > 0 {
+			removed = append(removed, "registration")
+		}
+		if len(dropIDs) > 0 {
+			removed = append(removed, "heartbeat")
+		}
+		fmt.Printf("✓ %s forgotten (%s removed)\n", arg, strings.Join(removed, " and "))
+		if len(matched) > 1 {
+			fmt.Printf("  %d clients matched that name\n", len(matched))
+		}
+		if len(dropIDs) > 0 {
+			fmt.Printf("  it leaves 'brain host clients list' now; a machine still in use records itself again on its next call\n")
+		}
+		return nil
 	},
 }
 
@@ -454,6 +557,8 @@ func runHostStatus(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	// Heartbeats are best-effort: a damaged file must not stop 'status'.
+	seen, _ := loadClientRegistry(home)
 	rc, _ := loadRemoteConfig()
 	cur := currentPromoteID(home)
 	last := lastPromoteID(home)
@@ -466,6 +571,9 @@ func runHostStatus(cmd *cobra.Command) error {
 
 	if jsonOutput {
 		out := map[string]any{"home": home, "host": cfg, "client_of": rc.Host, "promotion_in_progress": cur}
+		if seen != nil && len(seen.Clients) > 0 {
+			out["clients_seen"] = seen.Clients
+		}
 		if st != nil {
 			out["promotion"] = map[string]any{"id": st.ID, "target": st.Target, "outcome": st.Outcome, "done": st.Done, "generation": st.Generation}
 		}
@@ -512,7 +620,15 @@ func runHostStatus(cmd *cobra.Command) error {
 		for _, c := range cfg.Clients {
 			names = append(names, c.Target)
 		}
-		fmt.Printf("clients:   %s\n", strings.Join(names, ", "))
+		fmt.Printf("clients:   %s (registered; 'brain host clients list')\n", strings.Join(names, ", "))
+	}
+	if seen != nil && len(seen.Clients) > 0 {
+		now := time.Now()
+		names := make([]string, 0, len(seen.Clients))
+		for _, c := range seen.Clients {
+			names = append(names, fmt.Sprintf("%s (%s)", c.ID, humanAgo(c.LastSeen, now)))
+		}
+		fmt.Printf("seen:      %s\n", strings.Join(names, ", "))
 	}
 	if cfg != nil && len(cfg.Services) > 0 {
 		fmt.Printf("jobs:      %s (move with the role)\n", strings.Join(cfg.Services, ", "))

@@ -293,7 +293,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd gitlab sync](#bd-gitlab-sync) — Sync issues with GitLab
 - [bd help](#bd-help) — Help about any command
 - [bd host](#bd-host) — Move the brain host role between machines (promote, verify, rollback)
-  - [bd host clients](#bd-host-clients) — The machines known to follow this host (they are updated by a promotion)
+  - [bd host clients](#bd-host-clients) — The machines that use this host: registered, and seen connecting
   - [bd host promote](#bd-host-promote) — Move the brain host role from this machine to the target
   - [bd host rollback](#bd-host-rollback) — Undo a promotion (finished or not): both machines go back as they were
   - [bd host service](#bd-host-service) — launchd jobs that belong to the host role and move with it
@@ -329,6 +329,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
+  - [bd remote clients](#bd-remote-clients) — The machines connected to the brain host: registered, and seen
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
   - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
@@ -347,6 +348,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
 - [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
@@ -6642,6 +6644,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+##### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
@@ -7405,7 +7430,7 @@ moves that role.
   brain host status                 what role this machine has, and any promotion in progress
   brain host verify                 check the host (or, on the old host, that the move holds)
   brain host rollback               put both machines back as they were
-  brain host clients …              the machines known to follow this host
+  brain host clients …              the machines that use this host, registered and seen
   brain host service …              launchd jobs that belong to the host role
 
 A promotion copies the database with Dolt's own backup (proved by hash), moves
@@ -7420,7 +7445,7 @@ bd host
 
 #### bd host clients
 
-The machines known to follow this host (they are updated by a promotion)
+The machines that use this host: registered, and seen connecting
 
 ```
 bd host clients
@@ -7436,7 +7461,20 @@ bd host clients add <ssh-target>
 
 ##### bd host clients list
 
-List known clients
+List the machines that use this brain host, in two halves that are shown
+side by side:
+
+  registered  the ssh targets in host.yaml ('brain host clients add'). A
+              promotion points these at the new host when the role moves.
+  seen        clients that ran a command here through 'brain remote'. Each
+              records itself on its first call — nothing to configure on it —
+              and the record carries its version and when it last connected.
+
+A client can be either or both. A registered client that has never connected
+shows "never seen"; one that connects without being registered is listed as
+not registered (add it if a promotion should reach it). The heartbeats live in
+~/.config/brain/clients.yaml and are refreshed at most once a minute per
+client; deleting that file is safe, clients re-register themselves.
 
 ```
 bd host clients list
@@ -7444,10 +7482,23 @@ bd host clients list
 
 ##### bd host clients remove
 
-Forget a client
+Forget a machine, by the name 'brain host clients list' shows it under.
+
+The name may be the registered ssh target, the client's own name for itself
+(user@machine), or — when only one client owns it — the machine name they
+share. Both halves of that client are removed:
+
+  registration  it is dropped from host.yaml, so a promotion no longer points
+                it at the new host.
+  heartbeat     its record in clients.yaml goes too, so the row disappears.
+                Heartbeats are the client's own report, not a block: a machine
+                that is still in use records itself again the next time it
+                runs a command here, and reappears as 'seen'.
+
+An unknown name is an error, not a silent success.
 
 ```
-bd host clients remove <ssh-target>
+bd host clients remove <ssh-target|client>
 ```
 
 #### bd host promote
@@ -8503,6 +8554,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote clients list       show the machines connected to the host
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -8516,6 +8568,35 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
 ```
 bd remote
+```
+
+#### bd remote clients
+
+The machines connected to the brain host: registered, and seen
+
+```
+bd remote clients
+```
+
+##### bd remote clients list
+
+Ask the brain host who is connected and show the answer here, marking this
+machine in the list.
+
+This is the same list 'brain host clients list' shows on the host itself:
+
+  registered  the ssh targets in the host's host.yaml that a promotion points
+              at the new host when the host role moves.
+  seen        clients that ran a command on the host. Each records itself the
+              first time it connects, with its version and when it last did.
+
+A client can be either or both. Running this command counts as a call to the
+host, so it refreshes this machine's own last-seen time before the list is
+read. Nothing is configured here: use 'brain host clients add &lt;ssh-target&gt;' on
+the host to register a machine a promotion should reach.
+
+```
+bd remote clients list
 ```
 
 #### bd remote disconnect
@@ -8892,6 +8973,29 @@ bd stores render-all [flags]
 
 ```
       --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
 ```
 
 #### bd stores set-about

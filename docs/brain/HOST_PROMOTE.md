@@ -208,6 +208,11 @@ is never rewritten into the file.
 The promotion also pushes the change to the clients it knows (`--client`,
 `brain host clients add`); the self-correction is what covers the rest.
 
+Which clients a promotion knows, and which have actually connected, are two
+different lists; `brain host clients list` shows both side by side (a client
+records itself here on its first forwarded call, with its version and when it
+last connected). See [`REMOTE.md`](REMOTE.md#who-is-connected-client-heartbeats).
+
 ## Services
 
 The Dolt server on the new host is one of: **launchd** (a LaunchAgent,

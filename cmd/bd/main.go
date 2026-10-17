@@ -1626,6 +1626,11 @@ func main() {
 		os.Exit(code)
 	}
 
+	// A call a client forwarded to this host records a heartbeat here, so
+	// 'brain host clients list' can show who connects, how recently and with
+	// what version. Best-effort and throttled: it never fails the command.
+	recordClientHeartbeat()
+
 	// Client mode (brain remote): when a brain host is configured, run the
 	// command there and exit. Must come first — before any command, config or
 	// database machinery starts — so a client never opens a local store.
