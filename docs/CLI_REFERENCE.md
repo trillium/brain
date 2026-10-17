@@ -330,6 +330,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
+  - [bd remote doctor](#bd-remote-doctor) — Diagnose this client: ssh, versions, wrappers, HOME and latency
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
   - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
   - [bd remote status](#bd-remote-status) — Show the configured host, reachability, latency and versions
@@ -347,6 +348,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
 - [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
@@ -6642,6 +6644,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+##### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
@@ -8503,6 +8528,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote doctor             check ssh, versions, wrappers, HOME and latency
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -8524,6 +8550,47 @@ Close the shared ssh connection (the next call reopens it)
 
 ```
 bd remote disconnect
+```
+
+#### bd remote doctor
+
+Check this machine's client mode and print one pass/warn/fail line per
+check, each with a concrete fix. Nothing is written: the doctor only reads this
+client's HOME, config and wrappers, and runs read-only commands on the host.
+
+Checks:
+  config    the client config path, HOME sanity (HOME must be this account's
+            own home, and the config must be inside it and owned by you —
+            catches a client that read another user's or the host's .config)
+  ssh       the configured host answers 'ssh true'
+  version   the client's and the host's combined brain versions match
+  wrappers  every store the host offers has a client wrapper carrying its own
+            BRAIN_REMOTE_STORE, and each store reports its own prefix
+  latency   a warm call on the shared ssh connection is fast enough
+
+Exit codes (the failing checks' bits are OR'd together):
+   0  every check passed (warnings allowed)
+   1  config: no host, unreadable/invalid remote.yaml, or HOME sanity failed
+   2  ssh: the host is not reachable
+   4  version: client and host brain binaries differ
+   8  wrappers: a wrapper is missing, does not carry BRAIN_REMOTE_STORE, or
+      resolves to another store's prefix
+  16  latency: a warm call took 5s or more
+  32  --strict was given and at least one check warned
+
+With --json the report is one JSON object (checks, tallies, exit_code, ok).
+
+```
+bd remote doctor [flags]
+```
+
+**Flags:**
+
+```
+      --dir string         Directory holding this client's store wrappers (default: this binary's directory)
+      --jobs int           Probe this many stores concurrently on the host (default 4)
+      --strict             Treat warnings as failures too (exit code gains bit 32)
+      --timeout duration   Bound one host operation (0 disables the bound) (default 20s)
 ```
 
 #### bd remote install
@@ -8892,6 +8959,29 @@ bd stores render-all [flags]
 
 ```
       --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
 ```
 
 #### bd stores set-about
