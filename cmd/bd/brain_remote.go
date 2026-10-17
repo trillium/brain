@@ -775,6 +775,7 @@ var brainRemoteCmd = &cobra.Command{
   brain remote set <ssh-target>   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote commands           what each command does from a client (and what is host-only)
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -941,6 +942,7 @@ that shadows (or is shadowed by) another command on PATH.`,
 		if !pathContains(os.Getenv("PATH"), dir) {
 			fmt.Printf("  note: %s is not on PATH; add it to use the wrappers by name\n", dir)
 		}
+		fmt.Println("  next: brain remote commands   # what each command does from this client")
 	},
 }
 
@@ -957,6 +959,7 @@ var brainRemoteStatusCmd = &cobra.Command{
 		fmt.Printf("config:  %s\n", remoteConfigFile())
 		if cfg.Host == "" {
 			fmt.Println("mode:    local (no brain host set; 'brain remote set <ssh-target>')")
+			fmt.Println("next:    brain remote commands   # what each command would do as a client")
 			return
 		}
 		if err := cfg.validate(); err != nil {
@@ -975,6 +978,7 @@ var brainRemoteStatusCmd = &cobra.Command{
 			fmt.Printf("latency: %d ms per call on the shared connection\n", time.Since(start).Milliseconds())
 		}
 		fmt.Printf("local:   bd version %s (%s)\n", Version, Build)
+		fmt.Println("next:    brain remote commands   # what a client can run, and what is host-only")
 	},
 }
 

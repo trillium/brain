@@ -329,6 +329,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
+  - [bd remote commands](#bd-remote-commands) — List the commands a client can run, which are host-only, and why
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
   - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
@@ -347,6 +348,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
 - [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
@@ -6642,6 +6644,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+##### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
@@ -8503,6 +8528,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote commands           what each command does from a client (and what is host-only)
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -8516,6 +8542,52 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
 ```
 bd remote
+```
+
+#### bd remote commands
+
+Show what every command does from a client, derived from the live command
+tree (not a hand-maintained list):
+
+  client  works from a client: in client mode it is forwarded to the brain host
+          over ssh and runs there, through the host's own store wrapper.
+  local   runs on this machine even in client mode: 'brain remote …' reads and
+          changes this client's configuration.
+  host    host-only: manages the machine that serves the brain. A client cannot
+          run it; the fix says where to run it instead.
+
+By default the top-level commands are listed; --all lists every subcommand.
+--client &lt;ssh-target&gt; describes that client instead of this machine (and, on
+the host, says whether it is registered there). --find &lt;text&gt; narrows the list
+to commands whose path, alias or summary contains that text, so "brain remote
+commands --find host" answers "can I run this from here?" without paging the
+whole tree. --category client|local|host lists only one group, so "brain
+remote commands --category host" shows exactly what a client cannot run,
+with the why and the fix for each. Nothing is contacted: the answer is
+computed locally from the command tree and this machine's config.
+
+```
+bd remote commands [flags]
+```
+
+**Examples:**
+
+```bash
+  brain remote commands                 # this machine
+  brain remote commands --all           # every subcommand
+  brain remote commands --client me@laptop
+  brain remote commands --find host
+  brain remote commands --category host
+  brain remote commands --json
+```
+
+**Flags:**
+
+```
+      --all               List every subcommand, not just the top-level commands
+      --category string   Only list commands in this category: client, local, or host
+      --client string     Describe this client (an ssh target) instead of this machine
+      --find string       Only list commands whose path, alias or summary contains this text (case-insensitive)
 ```
 
 #### bd remote disconnect
@@ -8892,6 +8964,29 @@ bd stores render-all [flags]
 
 ```
       --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
 ```
 
 #### bd stores set-about
