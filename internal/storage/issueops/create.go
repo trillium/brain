@@ -698,25 +698,24 @@ func PersistDependenciesWithOptionsResult(ctx context.Context, tx *sql.Tx, issue
 				dep.IssueID = issue.ID
 			}
 
-			kind := ClassifyDepTarget(ctx, tx, dep, false)
-
-			if kind != DepTargetExternal {
-				lookupTable := "issues"
-				if kind == DepTargetWisp {
-					lookupTable = "wisps"
-				}
-				var exists int
-				//nolint:gosec // G201: lookupTable is one of two hardcoded constants
-				if err := tx.QueryRowContext(ctx,
-					fmt.Sprintf("SELECT 1 FROM %s WHERE id = ?", lookupTable),
-					dep.DependsOnID).Scan(&exists); err != nil {
-					if err == sql.ErrNoRows {
-						recordSkippedDependency(opts, dep, "target not found")
-						continue
-					}
-					return result, fmt.Errorf("failed to check dependency target %s for %s: %w", dep.DependsOnID, dep.IssueID, err)
-				}
+			// Store-aware classification: a target this database holds is a
+			// real edge whichever store's namespace carries it
+			// (ProbeDepTarget).
+			probe, err := ProbeDepTarget(ctx, tx, dep.IssueID, dep.DependsOnID)
+			if err != nil {
+				return result, fmt.Errorf("failed to check dependency target %s for %s: %w", dep.DependsOnID, dep.IssueID, err)
 			}
+			// The probe already resolved the target, so a row this database
+			// holds needs no second existence check — it also carries the
+			// target's issue_type for the wisp/external decision. A target the
+			// source's own namespace names but this database does not hold is
+			// skipped exactly as before; only another store's unheld id stays a
+			// text reference.
+			if !probe.Hold && probe.SameNamespace {
+				recordSkippedDependency(opts, dep, "target not found")
+				continue
+			}
+			kind := probe.Kind
 
 			if err := CheckDependencyCycleInTx(ctx, tx, dep, nil); err != nil {
 				if opts.SkipDependencyValidationErrors {

@@ -4,48 +4,26 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// isCrossPrefixDep returns true if the two bead IDs have different prefixes,
-// meaning the target lives in a different rig's database.
-func isCrossPrefixDep(sourceID, targetID string) bool {
-	return types.ExtractPrefix(sourceID) != types.ExtractPrefix(targetID)
-}
-
 // AddDependency adds a dependency between two issues.
 // Delegates SQL work to issueops.AddDependencyInTx; handles Dolt versioning
-// and cache invalidation.
+// and cache invalidation. The target is classified inside that call, from the
+// database itself — a cross-store target this database holds becomes a real
+// edge (issueops.ProbeDepTarget).
 func (s *DoltStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
-	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
-
 	// Route to wisp_dependencies if the source is an active wisp.
 	if s.isActiveWisp(ctx, dep.IssueID) {
-		return s.addWispDependency(ctx, dep, actor, isCrossPrefix)
-	}
-
-	targetTable := "issues"
-	kind := issueops.DepTargetIssue
-	switch {
-	case isCrossPrefix, strings.HasPrefix(dep.DependsOnID, "external:"):
-		kind = issueops.DepTargetExternal
-	default:
-		if s.isActiveWisp(ctx, dep.DependsOnID) {
-			targetTable = "wisps"
-			kind = issueops.DepTargetWisp
-		}
+		return s.addWispDependency(ctx, dep, actor)
 	}
 
 	if err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
 		opts := issueops.AddDependencyOpts{
-			SourceTable:   "issues",
-			TargetTable:   targetTable,
-			WriteTable:    "dependencies",
-			IsCrossPrefix: isCrossPrefix,
-			TargetKind:    &kind,
+			SourceTable: "issues",
+			WriteTable:  "dependencies",
 		}
 		return issueops.AddDependencyInTx(ctx, tx, dep, actor, opts)
 	}); err != nil {

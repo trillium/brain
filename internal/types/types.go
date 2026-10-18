@@ -1317,7 +1317,7 @@ type IssueFilter struct {
 	LabelPattern  string   // Glob pattern for label matching (e.g., "tech-*")
 	LabelRegex    string   // Regex pattern for label matching (e.g., "tech-(debt|legacy)")
 	TitleSearch   string
-	IDs           []string // Filter by specific issue IDs
+	IDs           []string // Filter by specific issue IDs (an id-addressed read: the namespace scope does not apply)
 	IDPrefix      string   // Filter by ID prefix (e.g., "bd-" to match "bd-abc123")
 	SpecIDPrefix  string   // Filter by spec_id prefix
 	Limit         int
@@ -1359,7 +1359,18 @@ type IssueFilter struct {
 	// namespaces. A bead's namespace is its id prefix, so each namespace
 	// contributes one `id LIKE '<prefix>-%'` clause. Nil/empty = unscoped
 	// (the pre-unification behaviour; a legacy database has one namespace).
+	// Scoping applies to listings; an id-addressed read is never scoped (see
+	// IDLookup and IDs).
 	Namespaces []string
+
+	// IDLookup marks a read that is addressed by id but cannot name the ids in
+	// advance — a partial-id search, whose input is a hash fragment rather than
+	// a complete id. The namespace scope is skipped for it, so any store's bead
+	// resolves: an id-addressed read resolves any id, while lists stay narrow
+	// (docs/design/brain-single-database.md). IDs is the same rule for a read
+	// that can name its ids; both are how `task show brain-c56qg` reaches a
+	// bead the task namespace does not own.
+	IDLookup bool
 
 	// Source repo filtering (for multi-repo support)
 	SourceRepo *string // Filter by source_repo field (nil = any)

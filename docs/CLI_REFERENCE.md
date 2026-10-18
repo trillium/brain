@@ -88,6 +88,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd dep add](#bd-dep-add) — Add a dependency
   - [bd dep cycles](#bd-dep-cycles) — Detect dependency cycles
   - [bd dep list](#bd-dep-list) — List dependencies or dependents of one or more issues
+  - [bd dep reclassify](#bd-dep-reclassify) — Turn external text dependency links into real edges where the target lives here
   - [bd dep relate](#bd-dep-relate) — Create a bidirectional relates_to link between issues
   - [bd dep remove](#bd-dep-remove) — Remove a dependency
   - [bd dep tree](#bd-dep-tree) — Show dependency tree
@@ -347,6 +348,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
 - [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
@@ -2372,6 +2374,45 @@ bd dep list [issue-id...] [flags]
 ```
       --direction string   Direction: 'down' (dependencies), 'up' (dependents) (default "down")
   -t, --type string        Filter by dependency type (e.g., tracks, blocks, parent-child)
+```
+
+#### bd dep reclassify
+
+Find dependency rows whose target is stored as text in depends_on_external
+and make the ones this database actually holds into real edges.
+
+An edge whose target this database holds belongs in depends_on_issue_id (or
+depends_on_wisp_id). A text row is invisible to every graph reader: nothing
+traverses it, nothing blocks on it, and 'bd ready' lists a blocked bead as
+ready. On the unified database every store's beads share one issues table, so
+most text rows are this case — a cross-store edge filed as foreign because the
+two ids carried different prefixes (see docs/design/brain-single-database.md,
+and issueops.ProbeDepTarget for the rule that replaced the prefix comparison).
+
+What this command does with each text row:
+  - target this database holds  → move it into its typed column (a real edge);
+  - target of a pair that already carries a real edge of the same type
+                               → remove the redundant text row (one edge, one id);
+  - target of a pair that already carries a real edge of a DIFFERENT type
+                               → left alone and reported: a pair carries one
+                                 type, so which one survives is your call;
+  - target this database holds nowhere, and the "external:..." form
+                               → left exactly as it is: depends_on_external is
+                                 for genuinely foreign targets.
+
+Without --apply nothing is written: the command prints the plan, every row it
+would touch, and the exact command that would apply it. With --apply the whole
+repair is one Dolt commit (staging only the edge table and issues), so it is
+one 'dolt revert' away.
+
+```
+bd dep reclassify [flags]
+```
+
+**Flags:**
+
+```
+      --apply   Apply the repair (default: dry run, nothing written)
 ```
 
 #### bd dep relate
@@ -6642,6 +6683,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+##### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
@@ -8892,6 +8956,29 @@ bd stores render-all [flags]
 
 ```
       --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
 ```
 
 #### bd stores set-about

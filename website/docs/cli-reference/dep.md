@@ -117,6 +117,45 @@ bd dep list [issue-id...] [flags]
   -t, --type string        Filter by dependency type (e.g., tracks, blocks, parent-child)
 ```
 
+### bd dep reclassify
+
+Find dependency rows whose target is stored as text in depends_on_external
+and make the ones this database actually holds into real edges.
+
+An edge whose target this database holds belongs in depends_on_issue_id (or
+depends_on_wisp_id). A text row is invisible to every graph reader: nothing
+traverses it, nothing blocks on it, and 'bd ready' lists a blocked bead as
+ready. On the unified database every store's beads share one issues table, so
+most text rows are this case — a cross-store edge filed as foreign because the
+two ids carried different prefixes (see docs/design/brain-single-database.md,
+and issueops.ProbeDepTarget for the rule that replaced the prefix comparison).
+
+What this command does with each text row:
+  - target this database holds  → move it into its typed column (a real edge);
+  - target of a pair that already carries a real edge of the same type
+                               → remove the redundant text row (one edge, one id);
+  - target of a pair that already carries a real edge of a DIFFERENT type
+                               → left alone and reported: a pair carries one
+                                 type, so which one survives is your call;
+  - target this database holds nowhere, and the "external:..." form
+                               → left exactly as it is: depends_on_external is
+                                 for genuinely foreign targets.
+
+Without --apply nothing is written: the command prints the plan, every row it
+would touch, and the exact command that would apply it. With --apply the whole
+repair is one Dolt commit (staging only the edge table and issues), so it is
+one 'dolt revert' away.
+
+```
+bd dep reclassify [flags]
+```
+
+**Flags:**
+
+```
+      --apply   Apply the repair (default: dry run, nothing written)
+```
+
 ### bd dep relate
 
 Create a loose 'see also' relationship between two issues.

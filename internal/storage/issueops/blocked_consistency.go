@@ -35,6 +35,21 @@ var ErrBlockedRecomputeDirtyGraph = errors.New("is_blocked recompute needs a cle
 // working set the recompute will read. Returns a wrapped
 // ErrBlockedRecomputeDirtyGraph naming the dirty tables, or nil when clean.
 func GuardBlockedRecomputeWorkingSet(ctx context.Context, tx DBTX) error {
+	dirty, err := dirtyGraphTables(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("check working set before is_blocked recompute: %w", err)
+	}
+	if len(dirty) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: commit or discard pending changes to %s first",
+		ErrBlockedRecomputeDirtyGraph, strings.Join(dirty, ", "))
+}
+
+// dirtyGraphTables answers which of the committable graph tables carry
+// uncommitted working-set changes, sorted by name. Both working-set guards
+// share it so "clean" means the same thing to both.
+func dirtyGraphTables(ctx context.Context, tx DBTX) ([]string, error) {
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(blockedRecomputeGraphTables)), ",")
 	args := make([]any, len(blockedRecomputeGraphTables))
 	for i, t := range blockedRecomputeGraphTables {
@@ -43,7 +58,7 @@ func GuardBlockedRecomputeWorkingSet(ctx context.Context, tx DBTX) error {
 	rows, err := tx.QueryContext(ctx,
 		"SELECT DISTINCT table_name FROM dolt_status WHERE table_name IN ("+placeholders+")", args...)
 	if err != nil {
-		return fmt.Errorf("check working set before is_blocked recompute: %w", err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -51,19 +66,15 @@ func GuardBlockedRecomputeWorkingSet(ctx context.Context, tx DBTX) error {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return fmt.Errorf("check working set before is_blocked recompute: %w", err)
+			return nil, err
 		}
 		dirty = append(dirty, name)
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("check working set before is_blocked recompute: %w", err)
-	}
-	if len(dirty) == 0 {
-		return nil
+		return nil, err
 	}
 	sort.Strings(dirty)
-	return fmt.Errorf("%w: commit or discard pending changes to %s first",
-		ErrBlockedRecomputeDirtyGraph, strings.Join(dirty, ", "))
+	return dirty, nil
 }
 
 // RecomputeAllIsBlockedInTx recomputes the denormalized is_blocked column for

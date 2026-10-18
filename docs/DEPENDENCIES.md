@@ -162,9 +162,23 @@ with another store's prefix is an ordinary bead:
 brain dep add brain-abc task-xyz --type related
 ```
 
-`dep add` still persists a target that is not a local row in the
-`depends_on_external` column. Readers (`dep list`, including `--json`,
-`brain related`, and `show --json`) look the target up in the shared table:
+Which column the edge is written to is decided by the database, not by the two
+ids' prefixes:
+
+- **A target this database holds** — any store's bead — is written to
+  `depends_on_issue_id` (or `depends_on_wisp_id` when the target is a wisp). The
+  graph traverses it, and a `blocks` edge blocks its source, whether or not the
+  two ids share a prefix.
+- **A target no store here has minted** is accepted and persisted as a text
+  reference in `depends_on_external` (a typo, a deleted bead, or a bead another
+  store has not created yet). `bd dep reclassify` lists those rows and turns
+  the ones this database does hold into real edges; `bd dep reclassify --apply`
+  does it in one Dolt commit.
+- **An `external:<project>:<capability>` reference** is foreign by
+  construction, always stays a text reference, and is never reclassified.
+
+Readers (`dep list`, including `--json`, `brain related`, and `show --json`)
+look a text target up in the shared table:
 
 - A bare ID (`task-xyz`) shows the real bead.
 - A legacy `external:<store>:<id>` value is resolved to `<id>` before the
@@ -174,7 +188,8 @@ brain dep add brain-abc task-xyz --type related
   JSON carries `"title": "(not found)"` and `"unresolved": true`. `dep add` does
   not reject such a target.
 
-Graph traversal treats cross-store targets as leaves.
+Graph traversal reaches the target of every real edge; a text reference is a
+leaf (there is no local row to read a status from).
 
 ## Gates
 
