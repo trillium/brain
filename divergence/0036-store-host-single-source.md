@@ -16,10 +16,16 @@ touches:
   - cmd/bd/brain_stores_test.go
   - cmd/bd/brain_stores_create_test.go
   - cmd/bd/brain_stores_doctor_test.go
+  - cmd/bd/brain_stores_rewrite_test.go
+  - cmd/bd/main.go
+  - cmd/bd/bootstrap.go
+  - internal/doltserver/doltserver.go
+  - internal/doltserver/doltserver_test.go
   - divergence/0036-store-host-single-source.md
 upstream_rebase_notes: |
   Upstream bd has no brain federation registry, no `brain stores` verb, and no
-  shared store-host config. Two upstream files are edited, both additively:
+  shared store-host config. The upstream files edited are additive or
+  one-priority-change each:
 
   - `internal/configfile/configfile.go`: `GetDoltServerHost` and
     `GetDoltServerPort` gain one extra resolution layer (the shared store-host
@@ -27,13 +33,19 @@ upstream_rebase_notes: |
     Upstream's chain is otherwise untouched; upstream has no such file, so
     `StoreHostFromFile()` returns ok=false and the functions behave exactly as
     upstream does.
+  - `internal/doltserver/doltserver.go`: `DefaultConfig` reads the same file
+    for the port, after the env override. Without the file the port file /
+    config.yaml / metadata chain is unchanged.
+  - `cmd/bd/main.go`: `rootCmd.PersistentPreRunE` rejects a present-but-unusable
+    shared file before any command runs.
+  - `cmd/bd/bootstrap.go`: `serverClonePort` no longer prefers a raw per-store
+    metadata port over the shared file.
   - `cmd/bd/brain_stores*.go` are brain-only files (resolve `ours`).
 
-  On an upstream rebase, take upstream's `configfile.go` and re-apply the two
-  inserted `if h, _, ok := StoreHostFromFile(); ok { … }` /
-  `if _, p, ok := StoreHostFromFile(); ok { … }` blocks, or drop them: without
-  the file layer every store falls back to its own baked `dolt_server_host`,
-  which is the pre-0036 behaviour.
+  On an upstream rebase, take upstream's versions of the four files above and
+  re-apply the small inserted blocks, or drop them: without the file layer
+  every store falls back to its own baked `dolt_server_host`, which is the
+  pre-0036 behaviour.
 ---
 
 # Why
@@ -69,13 +81,17 @@ a silent `127.0.0.1`.
    host/port for this process (process env wins per key, then the file), names
    the file when it is missing, and refuses a half-written or unparseable file
    rather than falling through to a default. `StoreHostFromFile()` is the
-   best-effort form used by host resolution.
+   best-effort form used by host resolution, and `ValidateStoreHostFile()` is
+   the check bd runs before any command: a present-but-unusable file stops bd
+   with an error naming the file.
 
 2. **`internal/configfile/configfile.go`** — `GetDoltServerHost` and
    `GetDoltServerPort` consult the shared file above the per-store pins, so bd
    itself reads it at run time and a store carrying a stale
    `dolt_server_host` cannot drag reads back to the old host. Removing the file
-   restores per-store resolution exactly.
+   restores per-store resolution exactly. `internal/doltserver`'s
+   `DefaultConfig` reads the same file for the port, so a host and a port the
+   store-open paths compose always come from the same source.
 
 3. **`cmd/bd/brain_stores.go`** — `brain stores create` resolves the server
    from the environment, then the shared file, and refuses loudly when neither
@@ -87,16 +103,25 @@ a silent `127.0.0.1`.
 
 4. **`cmd/bd/brain_stores_rewrite.go`** — `brain stores rewrite-wrappers` is
    now the one step that repoints a machine's stores: it adds the run-time
-   host block to server-mode wrappers, drops baked host pins, heals registry
-   paths recorded under another home and persists them.
+   host block to server-mode wrappers and drops baked host pins, leaving the
+   block's own runtime exports intact. Registry entries are never rewritten.
 
-5. **`cmd/bd/brain_stores_doctor.go`** — the doctor heals registry paths before
-   probing (a registry written on another machine no longer reads as "every
-   store is broken"), reports which entries it healed, and checks the wrapper's
-   own `BEADS_DIR` against the registry so a wrapper that resolves a *different*
-   store fails loudly instead of answering from the wrong one (the
-   `robots-bfenw` / `robots-3pfky` misroute class, which a read probe cannot
-   see).
+5. **`cmd/bd/brain_stores_doctor.go`** — the doctor probes every entry exactly
+   as the registry records it: an entry whose path names another machine's home
+   (or no longer exists) is reported by that store's result, never guessed at
+   or rewritten. It also checks the wrapper's own `BEADS_DIR` against the
+   registry so a wrapper that resolves a *different* store fails loudly instead
+   of answering from the wrong one (the `robots-bfenw` / `robots-3pfky`
+   misroute class, which a read probe cannot see).
+
+## Rollback
+
+Delete `~/.config/brain/store-host.env` (or unset the two
+`BEADS_DOLT_SERVER_*` variables) and per-store `metadata.json` / port-file
+resolution applies again exactly as before: an absent shared file is not an
+error. Regenerate the wrappers with `brain stores rewrite-wrappers` from the
+previous build if a wrapper's runtime block must be removed; no store data,
+launchd job, or shim was changed by this PR.
 
 # Why this is closer to the brain spec
 

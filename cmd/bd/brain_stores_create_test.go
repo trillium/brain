@@ -111,7 +111,6 @@ func TestResolveCreateServer(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
-		t.Setenv("BRAIN_STORE_HOST_FILE", "")
 		dir := filepath.Join(home, ".config", "brain")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir: %v", err)
@@ -136,7 +135,6 @@ func TestResolveCreateServer(t *testing.T) {
 		t.Setenv("HOME", home)
 		t.Setenv("USERPROFILE", home)
 		clearEnv(t)
-		t.Setenv("BRAIN_STORE_HOST_FILE", "")
 		old := createStoreEmbedded
 		createStoreEmbedded = false
 		defer func() { createStoreEmbedded = old }()
@@ -242,6 +240,31 @@ func TestResolveCreateServer(t *testing.T) {
 	})
 }
 
+// TestRootCmd_StopsOnUnusableSharedStoreHostFile proves the bd-level contract:
+// every command stops when the machine's shared store host config exists but
+// cannot be used, naming the file instead of falling back to a per-store host.
+func TestRootCmd_StopsOnUnusableSharedStoreHostFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	dir := filepath.Join(home, ".config", "brain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	hostFile := filepath.Join(dir, configfile.StoreHostFileName)
+	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.1.2.3\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	err := rootCmd.PersistentPreRunE(rootCmd, nil)
+	if err == nil {
+		t.Fatal("expected bd to stop when the shared store host config is unusable")
+	}
+	if !strings.Contains(err.Error(), hostFile) {
+		t.Errorf("error must name the file %q; got: %v", hostFile, err)
+	}
+}
+
 func TestBuildServerStoreConfig(t *testing.T) {
 	cfg := buildServerStoreConfig("friction", "127.0.0.1", 3307, "abc-123")
 	if !cfg.IsDoltServerMode() {
@@ -330,28 +353,6 @@ func TestWriteServerStoreWrapper_ResolvesHostAtRunTime(t *testing.T) {
 			t.Errorf("wrapper missing %q. Got:\n%s", want, got)
 		}
 	}
-
-	// The host is resolved at run time from the one shared config file, so the
-	// wrapper must name that file's env override and keys — never bake a host.
-	for _, want := range []string{
-		configfile.StoreHostFileEnvVar,
-		configfile.StoreHostFileName,
-		configfile.StoreHostKeyHost,
-		configfile.StoreHostKeyPort,
-		"_store_host_file=",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("wrapper must name %q so the shared config can be read at run time. Got:\n%s", want, got)
-		}
-	}
-	for _, unwanted := range []string{
-		"export BEADS_DOLT_SERVER_HOST=127.0.0.1",
-		"export BEADS_DOLT_SERVER_PORT=3307",
-	} {
-		if strings.Contains(got, unwanted) {
-			t.Errorf("wrapper must not bake %q; the host comes from the shared config. Got:\n%s", unwanted, got)
-		}
-	}
 }
 
 // TestServerStoreWrapper_RuntimeHostResolution runs the generated wrapper for
@@ -365,7 +366,6 @@ func TestServerStoreWrapper_RuntimeHostResolution(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	t.Setenv(configfile.StoreHostFileEnvVar, "")
 
 	wp, err := writeServerStoreWrapper("friction", filepath.Join(home, "data", "friction", ".beads"), "", "127.0.0.1", 3307, "brain_unified")
 	if err != nil {
@@ -426,6 +426,24 @@ func TestServerStoreWrapper_RuntimeHostResolution(t *testing.T) {
 	}
 	if !strings.Contains(out, "host=127.0.0.9 port=3399") {
 		t.Errorf("a process env value must win over the shared config; got: %s", out)
+	}
+
+	// A canonical wrapper that already carries the runtime block must survive
+	// the repoint pass: the block's own exports are the resolution, so they are
+	// never stripped and the child still receives the file's host and port.
+	repointed, err := rewriteWrapperInPlace(wp, true)
+	if err != nil {
+		t.Fatalf("rewriteWrapperInPlace: %v", err)
+	}
+	if repointed {
+		t.Error("canonical wrapper reported as repointed; the runtime block was rewritten")
+	}
+	out, code = run()
+	if code != 0 {
+		t.Fatalf("wrapper failed after the repoint pass (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "host=10.9.9.9 port=3311 mode=1") {
+		t.Errorf("the repoint pass must leave the runtime host block intact; got: %s", out)
 	}
 }
 

@@ -31,11 +31,6 @@ const (
 	// StoreHostFileName is the basename of the shared store-host config.
 	StoreHostFileName = "store-host.env"
 
-	// StoreHostFileEnvVar overrides the shared file's path. It exists so the
-	// generated wrappers and bd always agree on which file is authoritative
-	// (a test or a staged migration can point both at the same file).
-	StoreHostFileEnvVar = "BRAIN_STORE_HOST_FILE"
-
 	// StoreHostKeyHost and StoreHostKeyPort are the only keys this file
 	// defines. Other lines are ignored so the file stays usable as a shell
 	// fragment.
@@ -50,11 +45,8 @@ const (
 var ErrStoreHostMissing = errors.New("shared store host config missing")
 
 // DefaultStoreHostPath returns the shared store-host config path for this
-// user: $BRAIN_STORE_HOST_FILE when set, else ~/.config/brain/store-host.env.
+// user: ~/.config/brain/store-host.env, one file per machine.
 func DefaultStoreHostPath() string {
-	if p := strings.TrimSpace(os.Getenv(StoreHostFileEnvVar)); p != "" {
-		return p
-	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
@@ -80,14 +72,14 @@ func Resolve() (StoreHost, error) {
 	envPort := strings.TrimSpace(os.Getenv(StoreHostKeyPort))
 
 	path := DefaultStoreHostPath()
-	fileHost, filePort := "", 0
-	if envHost == "" || envPort == "" {
-		h, p, err := loadStoreHostFile(path)
-		if err != nil {
-			return StoreHost{}, err
-		}
-		fileHost, filePort = h, p
+	h, p, err := loadStoreHostFile(path)
+	if err != nil && !errors.Is(err, ErrStoreHostMissing) {
+		return StoreHost{}, err
 	}
+	if errors.Is(err, ErrStoreHostMissing) && (envHost == "" || envPort == "") {
+		return StoreHost{}, err
+	}
+	fileHost, filePort := h, p
 
 	out := StoreHost{Host: envHost, Port: 0}
 	if out.Host == "" {
@@ -118,9 +110,10 @@ func Resolve() (StoreHost, error) {
 }
 
 // StoreHostFromFile reports the host/port the shared file defines, ignoring the
-// process environment. ok is false when the file is absent (or when
-// DefaultStoreHostPath cannot be resolved), so this is safe to call from
-// host-resolution paths that have already consulted the environment.
+// process environment. ok is false when the file is absent, unreadable, or does
+// not define both keys, so this is safe to call from host-resolution paths that
+// have already consulted the environment; bd validates a present-but-unusable
+// file before any command runs (ValidateStoreHostFile).
 func StoreHostFromFile() (host string, port int, ok bool) {
 	h, p, err := loadStoreHostFile(DefaultStoreHostPath())
 	if err != nil {
@@ -173,6 +166,19 @@ func loadStoreHostFile(path string) (string, int, error) {
 		return "", 0, fmt.Errorf("%s does not define both %s and %s", path, StoreHostKeyHost, StoreHostKeyPort)
 	}
 	return host, port, nil
+}
+
+// ValidateStoreHostFile reports a shared store-host config that exists but
+// cannot be used: a missing key, an unparseable port, or an unreadable file.
+// bd calls it before any command so such a file is a loud failure naming the
+// file instead of a silent fallback to a per-store host. An absent file is not
+// an error — that path keeps its per-store behaviour.
+func ValidateStoreHostFile() error {
+	_, _, err := loadStoreHostFile(DefaultStoreHostPath())
+	if err == nil || errors.Is(err, ErrStoreHostMissing) {
+		return nil
+	}
+	return err
 }
 
 // parseStoreHostLine parses one KEY=VALUE line, accepting an optional leading

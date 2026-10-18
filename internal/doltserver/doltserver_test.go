@@ -1014,6 +1014,36 @@ func TestDefaultConfigPortFileTakesPrecedence(t *testing.T) {
 	}
 }
 
+// TestDefaultConfig_SharedStoreHostFileSuppliesPort locks the one-config-source
+// contract: when the shared store host file exists, its port is the port a
+// store-open path composes with the host that same file supplies — never a
+// per-store port from another source.
+func TestDefaultConfig_SharedStoreHostFileSuppliesPort(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("GT_ROOT", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+
+	dir := t.TempDir()
+	if err := writePortFile(dir, 14567); err != nil {
+		t.Fatal(err)
+	}
+	hostDir := filepath.Join(home, ".config", "brain")
+	if err := os.MkdirAll(hostDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(hostDir, configfile.StoreHostFileName),
+		[]byte("BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg := DefaultConfig(dir); cfg.Port != 3311 {
+		t.Errorf("DefaultConfig port = %d, want the shared file's 3311", cfg.Port)
+	}
+}
+
 func TestReadPortFile_Empty(t *testing.T) {
 	// ReadPortFile on a directory with no port file should return 0.
 	dir := t.TempDir()

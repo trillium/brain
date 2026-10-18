@@ -44,6 +44,41 @@ func TestGeneratedWrappersAreHomeRelative(t *testing.T) {
 	}
 }
 
+// A wrapper that baked a host pin is repointed once: the pin is dropped, the
+// runtime block is installed, and a second pass changes nothing — including
+// the block it just installed.
+func TestRewriteWrapperInPlace_RepointsOnceAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old")
+	body := "#!/bin/sh\nexport BEADS_DIR=\"/data/x/.beads\"\n" +
+		"export BEADS_DOLT_SERVER_HOST=10.0.0.1\n" +
+		"export BEADS_DOLT_SERVER_PORT=3307\n" +
+		"exec bd \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // test wrapper
+		t.Fatalf("write: %v", err)
+	}
+
+	repointed, err := rewriteWrapperInPlace(path, true)
+	if err != nil || !repointed {
+		t.Fatalf("rewriteWrapperInPlace = %v, %v; want a repoint", repointed, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(after), "export BEADS_DOLT_SERVER_HOST=10.0.0.1") {
+		t.Errorf("baked host pin survived the repoint:\n%s", after)
+	}
+	if !strings.Contains(string(after), `export BEADS_DOLT_SERVER_HOST="$_want_host"`) {
+		t.Errorf("runtime block missing after the repoint:\n%s", after)
+	}
+
+	again, err := rewriteWrapperInPlace(path, true)
+	if err != nil || again {
+		t.Fatalf("second rewrite = %v, %v; want an unchanged no-op", again, err)
+	}
+}
+
 func TestShellPathExpr(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 	for in, want := range map[string]string{
