@@ -484,10 +484,15 @@ func DefaultConfig(beadsDir string) *Config {
 
 	// A brain federation store takes its port from the same shared store host
 	// config its host comes from, so the pair is never mixed. An unrelated bd
-	// project keeps the port file / config.yaml / metadata chain below.
+	// project keeps the port file / config.yaml / metadata chain below. A
+	// present-but-unusable shared file resolves no port at all rather than a
+	// stale one.
 	if configfile.IsFederationStore(storeDir) {
 		if _, p, ok := configfile.StoreHostFromFile(); ok {
 			cfg.Port = p
+			return cfg
+		}
+		if configfile.ValidateStoreHostFile() != nil {
 			return cfg
 		}
 	}

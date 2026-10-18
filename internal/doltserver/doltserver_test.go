@@ -1027,6 +1027,20 @@ func writeSharedStoreHost(t *testing.T, home, body string) {
 	}
 }
 
+// writeBrainRegistryAt names the store in the brain registry under home, which
+// is what makes the shared store host file govern it.
+func writeBrainRegistryAt(t *testing.T, home, name, storeRoot string) {
+	t.Helper()
+	dir := filepath.Join(home, ".config", "brain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "stores:\n  " + name + ":\n    path: \"" + storeRoot + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestDefaultConfig_FederationStoreUsesSharedStoreHostFilePort locks the
 // one-config-source contract for a brain federation store: its port comes from
 // the same shared file its host comes from, above the per-project port file.
@@ -1035,43 +1049,57 @@ func TestDefaultConfig_FederationStoreUsesSharedStoreHostFilePort(t *testing.T) 
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("GT_ROOT", "")
-	t.Setenv(configfile.SharedServerEnvVar, "")
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 	config.ResetForTesting()
 
-	dir := t.TempDir()
-	if err := writePortFile(dir, 14567); err != nil {
+	storeRoot := filepath.Join(home, "data", "task")
+	beadsDir := filepath.Join(storeRoot, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&configfile.Config{GlobalDoltDatabase: "beads_global"}).Save(dir); err != nil {
+	if err := writePortFile(beadsDir, 14567); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&configfile.Config{DoltMode: configfile.DoltModeServer}).Save(beadsDir); err != nil {
 		t.Fatalf("writing metadata.json: %v", err)
 	}
+	writeBrainRegistryAt(t, home, "task", storeRoot)
 	writeSharedStoreHost(t, home, "BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n")
 
-	if cfg := DefaultConfig(dir); cfg.Port != 3311 {
+	if cfg := DefaultConfig(beadsDir); cfg.Port != 3311 {
 		t.Errorf("DefaultConfig port = %d, want the shared file's 3311", cfg.Port)
 	}
 }
 
 // TestDefaultConfig_UnrelatedProjectKeepsItsPortFile: the shared store host
-// file governs brain federation stores only, so an unrelated project keeps its
-// own port file above it.
+// file governs brain federation stores only. An upstream 'bd init
+// --shared-server' project carries the same shared-server markers, so it must
+// keep its own port file above the brain file.
 func TestDefaultConfig_UnrelatedProjectKeepsItsPortFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("GT_ROOT", "")
-	t.Setenv(configfile.SharedServerEnvVar, "")
 	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
 	config.ResetForTesting()
 
-	dir := t.TempDir()
-	if err := writePortFile(dir, 14567); err != nil {
+	beadsDir := filepath.Join(home, "projects", "unrelated", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if err := writePortFile(beadsDir, 14567); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&configfile.Config{
+		DoltMode:           configfile.DoltModeServer,
+		GlobalDoltDatabase: "beads_global",
+		GlobalProjectID:    "00000000-0000-0000-0000-000000000000",
+	}).Save(beadsDir); err != nil {
+		t.Fatalf("writing metadata.json: %v", err)
 	}
 	writeSharedStoreHost(t, home, "BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n")
 
-	if cfg := DefaultConfig(dir); cfg.Port != 14567 {
+	if cfg := DefaultConfig(beadsDir); cfg.Port != 14567 {
 		t.Errorf("DefaultConfig port = %d, want the project's own port file 14567", cfg.Port)
 	}
 }

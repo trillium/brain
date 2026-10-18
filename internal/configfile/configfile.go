@@ -53,6 +53,10 @@ type Config struct {
 	// upgrade notifications firing after git operations reset metadata.json.
 	// bd-tok: This field is kept for backwards compatibility when reading old configs.
 	LastBdVersion string `json:"last_bd_version,omitempty"`
+
+	// beadsDir is the .beads directory this config was loaded from. It is not
+	// serialized; federation-store resolution needs it (see IsFederationStore).
+	beadsDir string `json:"-"`
 }
 
 func DefaultConfig() *Config {
@@ -94,6 +98,7 @@ func Load(beadsDir string) (*Config, error) {
 		// Remove legacy file (best effort: migration already saved to new location)
 		_ = os.Remove(legacyPath)
 
+		cfg.beadsDir = beadsDir
 		return &cfg, nil
 	}
 	if err != nil {
@@ -104,6 +109,7 @@ func Load(beadsDir string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	cfg.beadsDir = beadsDir
 
 	return &cfg, nil
 }
@@ -311,6 +317,11 @@ func (c *Config) GetDoltServerHost() string {
 		if h, _, ok := StoreHostFromFile(); ok {
 			return h
 		}
+		// A present-but-unusable shared file must not fall through to a
+		// per-store host: return no host rather than a stale one.
+		if err := ValidateStoreHostFile(); err != nil {
+			return ""
+		}
 	}
 	if c.DoltServerHost != "" {
 		return c.DoltServerHost
@@ -344,6 +355,11 @@ func (c *Config) GetDoltServerPort() int {
 	if c.IsFederationStore() {
 		if _, p, ok := StoreHostFromFile(); ok {
 			return p
+		}
+		// A present-but-unusable shared file must not fall through to a
+		// per-store port: return no port rather than a stale one.
+		if err := ValidateStoreHostFile(); err != nil {
+			return 0
 		}
 	}
 	if c.DoltServerPort > 0 {
