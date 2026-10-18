@@ -365,7 +365,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(wp)
+		data, err := os.ReadFile(wp) //nolint:gosec // G304: wp is a registry-derived wrapper path
 		if err != nil || !strings.Contains(string(data), aliasWrapperHeader) {
 			continue
 		}

@@ -44,7 +44,7 @@ const (
 	StoreHostKeyHost            = "BEADS_DOLT_SERVER_HOST"
 	StoreHostKeyPort            = "BEADS_DOLT_SERVER_PORT"
 	StoreHostKeyUser            = "BEADS_DOLT_SERVER_USER"
-	StoreHostKeyCredentialsFile = "BEADS_CREDENTIALS_FILE"
+	StoreHostKeyCredentialsFile = "BEADS_CREDENTIALS_FILE" //nolint:gosec // G101: an env key name for a file path, not a credential
 )
 
 // ErrStoreHostMissing reports that the shared store-host config is not there.
