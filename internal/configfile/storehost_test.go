@@ -7,17 +7,23 @@ import (
 	"testing"
 )
 
-// writeStoreHost points BRAIN_STORE_HOST_FILE at a temp file with the given
-// body and returns its path.
+// writeStoreHost points HOME at a temp dir, writes the machine's shared
+// store-host file there with the given body (nothing when body is empty), and
+// returns the file's path.
 func writeStoreHost(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), StoreHostFileName)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := filepath.Join(home, ".config", "brain", StoreHostFileName)
 	if body != "" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatalf("writing store host file: %v", err)
 		}
 	}
-	t.Setenv(StoreHostFileEnvVar, path)
 	t.Setenv(StoreHostKeyHost, "")
 	t.Setenv(StoreHostKeyPort, "")
 	return path
@@ -94,6 +100,45 @@ func TestResolve_RefusesHalfWrittenAndMalformedFiles(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), path) {
 			t.Errorf("error must name the file; got: %v", err)
+		}
+	})
+
+	t.Run("a half-written file refuses even with a full env override", func(t *testing.T) {
+		writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\n")
+		t.Setenv(StoreHostKeyHost, "127.0.0.9")
+		t.Setenv(StoreHostKeyPort, "3399")
+		if _, err := Resolve(); err == nil {
+			t.Fatal("expected an error for a present-but-unusable shared file")
+		}
+	})
+}
+
+// TestValidateStoreHostFile is the contract 'bd' enforces before any command
+// runs: a shared file that exists but cannot be used stops bd with an error
+// naming the file, while an absent file leaves per-store resolution intact.
+func TestValidateStoreHostFile(t *testing.T) {
+	t.Run("absent file is not an error", func(t *testing.T) {
+		writeStoreHost(t, "")
+		if err := ValidateStoreHostFile(); err != nil {
+			t.Fatalf("ValidateStoreHostFile: %v", err)
+		}
+	})
+
+	t.Run("unusable file names the file", func(t *testing.T) {
+		path := writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\n")
+		err := ValidateStoreHostFile()
+		if err == nil {
+			t.Fatal("expected an error for a file without a port")
+		}
+		if !strings.Contains(err.Error(), path) {
+			t.Errorf("error must name the file; got: %v", err)
+		}
+	})
+
+	t.Run("valid file is not an error", func(t *testing.T) {
+		writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		if err := ValidateStoreHostFile(); err != nil {
+			t.Fatalf("ValidateStoreHostFile: %v", err)
 		}
 	})
 }

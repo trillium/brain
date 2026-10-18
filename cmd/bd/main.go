@@ -692,6 +692,13 @@ var rootCmd = &cobra.Command{
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// A shared store host config that exists but cannot be used is a
+		// machine-level defect: stop before any command runs rather than
+		// resolving a host from a per-store default.
+		if err := configfile.ValidateStoreHostFile(); err != nil {
+			return err
+		}
+
 		// A frozen or moved brain host refuses the commands it must not run
 		// (brain host promote); first, before any state is touched.
 		if err := hostRoleGate(cmd); err != nil {

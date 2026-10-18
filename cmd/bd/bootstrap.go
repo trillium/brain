@@ -908,14 +908,6 @@ func cloneViaServer(ctx context.Context, beadsDir, remoteURL, dbName string, cfg
 }
 
 func serverClonePort(beadsDir string, cfg *configfile.Config) int {
-	if cfg != nil && cfg.DoltServerPort > 0 {
-		return cfg.DoltServerPort
-	}
-	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
-		if port, err := strconv.Atoi(p); err == nil && port > 0 {
-			return port
-		}
-	}
 	if p := os.Getenv("BEADS_DOLT_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil && port > 0 {
 			return port

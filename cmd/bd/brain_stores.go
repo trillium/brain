@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -114,21 +115,11 @@ func readStoresFile(path string) (stores map[string]storeEntry, found bool, err 
 
 // loadStoresRegistry reads the registry file. A missing file is an empty
 // registry; a present-but-unreadable or unparseable one is an error, so a
-// later save cannot persist an empty registry over unknown state.
+// later save cannot persist an empty registry over unknown state. Every path
+// is returned exactly as recorded: a store's identity is never guessed from a
+// directory that happens to exist — an entry whose path is foreign or missing
+// is reported by 'brain stores doctor', never rewritten here.
 func loadStoresRegistry() (map[string]storeEntry, error) {
-	merged, err := loadRawStoresRegistry()
-	if err != nil {
-		return nil, err
-	}
-	healRegistryPaths(merged)
-	return merged, nil
-}
-
-// loadRawStoresRegistry reads the registry exactly as recorded on disk: every
-// path is the literal value the last writer saved, with no machine-local
-// healing. Only loadStoresRegistry (and the callers that must persist what
-// they read) should use this.
-func loadRawStoresRegistry() (map[string]storeEntry, error) {
 	stores, _, err := readStoresFile(storesYamlFile())
 	if err != nil {
 		return nil, err
@@ -137,56 +128,6 @@ func loadRawStoresRegistry() (map[string]storeEntry, error) {
 		stores = make(map[string]storeEntry)
 	}
 	return stores, nil
-}
-
-// healRegistryPaths resolves every entry whose recorded path describes another
-// machine's home to this machine's equivalent (see resolveStorePath) and
-// returns the healed names, sorted, for reporting.
-//
-// The registry is written by whichever machine last ran a 'brain stores' write,
-// so it keeps describing the home it was written in — the live mini1 registry
-// still lists /Users/<other>/data/<store>/.beads for every store while the
-// wrappers (made portable by 'brain stores rewrite-wrappers') resolve this
-// machine's $HOME copies. That mismatch is why a whole federation can read as
-// 'registered but does not answer a read': the store answers, the registration
-// points somewhere else. Healing is a resolution, never a rewrite: an entry
-// whose recorded path exists is left exactly as recorded.
-func healRegistryPaths(stores map[string]storeEntry) []string {
-	var healed []string
-	for _, name := range sortedKeys(stores) {
-		entry := stores[name]
-		p, ok := resolveStorePath(entry.Path)
-		if !ok {
-			continue
-		}
-		entry.Path = p
-		stores[name] = entry
-		healed = append(healed, name)
-	}
-	return healed
-}
-
-// persistHealedRegistryPaths rewrites the registry file when any entry's
-// recorded path describes another machine's home while this machine's
-// equivalent exists (see resolveStorePath), and returns the healed names. It is
-// the write half of the healing loadStoresRegistry does in memory: a registry
-// carried to another machine (or another home) keeps working immediately, and
-// the file stops describing paths that do not exist here the next time a
-// federation verb runs. Nothing is written when no entry heals, so a registry
-// whose paths are all real is untouched byte for byte.
-func persistHealedRegistryPaths() ([]string, error) {
-	recorded, err := loadRawStoresRegistry()
-	if err != nil {
-		return nil, err
-	}
-	healed := healRegistryPaths(recorded)
-	if len(healed) == 0 {
-		return nil, nil
-	}
-	if err := saveStoresRegistry(recorded); err != nil {
-		return nil, err
-	}
-	return healed, nil
 }
 
 func saveStoresRegistry(stores map[string]storeEntry) error {
@@ -230,8 +171,8 @@ var brainStoresAddCmd = &cobra.Command{
 		name := strings.ToLower(strings.TrimSpace(args[0]))
 		beadsDir := expandPath(args[1])
 
-		if name == "" || strings.ContainsAny(name, " ./\\") {
-			FatalError("store name must be a simple identifier (no spaces, slashes, or dots): %q", name)
+		if err := validateStoreName("store name", name); err != nil {
+			FatalError("%v", err)
 		}
 
 		stores, err := loadStoresRegistry()
@@ -504,23 +445,23 @@ var brainStoresCreateCmd = &cobra.Command{
 	Short: "Provision a new connected store (dolt init + entries dir + wrapper + registry)",
 	Long: `Provision a new connected store end-to-end. Does, in order:
 
-  1. Provision the Dolt store. The store is provisioned on the federation's
-     shared Dolt sql-server whenever one can be found and proven to answer:
-     the shared-server pins the caller's wrapper exported (BEADS_DOLT_*)
-     first, else the server the registered stores' metadata.json already
-     resolves to, else 127.0.0.1:3307. A candidate that does not answer is a
-     loud refusal, never a store silently pinned to a host that cannot be
-     read — and never a silent fallback to an embedded store. Pass --embedded
-     to ask for the embedded shape explicitly; then metadata.json
-     (dolt_mode=server) and config.yaml are written first, and
+  1. Provision the Dolt store on the federation's shared Dolt sql-server. The
+     server comes from BEADS_DOLT_SERVER_HOST/PORT in the process environment
+     first, else from the shared store host config
+     (~/.config/brain/store-host.env). A missing file, or a server that does
+     not answer, is a loud refusal: never a store silently pinned to a host
+     that cannot be read, and never a silent fallback to an embedded store.
+     Pass --embedded to ask for the embedded shape explicitly; then
+     metadata.json (dolt_mode=server) and config.yaml are written first, and
      'dolt init' runs in <path>/.beads.
   2. Write <path>/.beads/config.yaml (issue-prefix + BD_NAME), in either
      shape.
   3. Create <path>/entries/ for exfiltrated markdown.
-  4. Write a CLI wrapper at ~/.local/bin/<name>. On a shared server the
-     wrapper exports the four server pins (mirroring the review/brain
-     wrappers); embedded stores get the minimal BEADS_DIR/BD_NAME wrapper.
-     Either way it exec's bd.
+  4. Write a CLI wrapper at ~/.local/bin/<name>. A shared-server wrapper
+     resolves the Dolt host and port from the shared store host config at run
+     time (a process env value of either key wins) and refuses loudly when
+     that file is missing; embedded stores get the minimal BEADS_DIR/BD_NAME
+     wrapper. Either way it exec's bd.
   5. Register the store in ~/.config/brain/stores.yaml.
   6. Regenerate ~/.config/brain/stores.env.
 
@@ -543,8 +484,8 @@ Examples:
 
 func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	name := strings.ToLower(strings.TrimSpace(args[0]))
-	if name == "" || strings.ContainsAny(name, " ./\\") {
-		FatalError("store name must be a simple identifier (no spaces, slashes, or dots): %q", name)
+	if err := validateStoreName("store name", name); err != nil {
+		FatalError("%v", err)
 	}
 
 	path := createStorePath
@@ -603,7 +544,7 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	provisioned := ""
 	if embedded {
 		fmt.Fprintf(os.Stderr,
-			"%s No shared Dolt sql-server answered, so %q is being provisioned as an EMBEDDED store at %s.\n"+
+			"%s %q is being provisioned as an EMBEDDED store at %s (--embedded).\n"+
 				"    Its reads auto-start a private local server instead of reaching the federation's.\n",
 			ui.RenderWarn("⚠"), name, beadsDir)
 		if err := initDoltStore(beadsDir); err != nil {
@@ -1149,11 +1090,11 @@ BD_NAME: %q
 // missing file is a loud refusal that names it rather than a silent 127.0.0.1.
 //
 // The literal env var and file names here must stay in sync with
-// configfile.StoreHostFileEnvVar / configfile.StoreHostFileName; generated
-// wrapper tests assert the agreement.
+// configfile.StoreHostFileName / configfile.StoreHostKeyHost /
+// configfile.StoreHostKeyPort; generated wrapper tests assert the agreement.
 const sharedServerHostBlock = `# The federation's one source for the Dolt server; a process env value of the
 # same name wins over the file, and a missing file is a loud refusal below.
-_store_host_file="${BRAIN_STORE_HOST_FILE:-$HOME/.config/brain/store-host.env}"
+_store_host_file="$HOME/.config/brain/store-host.env"
 _want_host="${BEADS_DOLT_SERVER_HOST:-}"
 _want_port="${BEADS_DOLT_SERVER_PORT:-}"
 if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
@@ -1482,8 +1423,8 @@ func runBrainStoresAlias(_ *cobra.Command, args []string) {
 	if existing == "" || alias == "" {
 		FatalError("both <existing-store> and <new-name> are required")
 	}
-	if strings.ContainsAny(alias, " ./\\") {
-		FatalError("alias name must be a simple identifier (no spaces, slashes, dots): %q", alias)
+	if err := validateStoreName("alias name", alias); err != nil {
+		FatalError("%v", err)
 	}
 	if alias == existing {
 		FatalError("alias %q is the same as the existing store name", alias)
@@ -1604,8 +1545,8 @@ func runBrainStoresRename(_ *cobra.Command, args []string) {
 	if oldName == "" || newName == "" {
 		FatalError("both <old-name> and <new-name> are required")
 	}
-	if strings.ContainsAny(newName, " ./\\") {
-		FatalError("new name must be a simple identifier (no spaces, slashes, dots): %q", newName)
+	if err := validateStoreName("new name", newName); err != nil {
+		FatalError("%v", err)
 	}
 	if oldName == newName {
 		FatalError("old and new names are the same")
@@ -1822,6 +1763,21 @@ var brainStoresEnvCmd = &cobra.Command{
 	},
 }
 
+// storeNameRe is the shape every store, alias, and rename name must have: a
+// name is interpolated into generated wrappers and shell exports, so it stays
+// a safe identifier.
+var storeNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
+
+func validateStoreName(kind, name string) error {
+	if name == "" {
+		return fmt.Errorf("%s must not be empty", kind)
+	}
+	if !storeNameRe.MatchString(name) {
+		return fmt.Errorf("%s must be a simple identifier of lowercase letters, digits, '-' and '_', starting alphanumeric: %q", kind, name)
+	}
+	return nil
+}
+
 // expandPath expands ~ and cleans the path.
 func expandPath(p string) string {
 	if strings.HasPrefix(p, "~/") {
@@ -1830,52 +1786,6 @@ func expandPath(p string) string {
 		}
 	}
 	return filepath.Clean(p)
-}
-
-// resolveStorePath resolves a registry path for the machine it is read on: a
-// leading ~ is expanded, and a path recorded under another person's home is
-// healed to this machine's own equivalent — but only when the recorded path
-// has gone and the equivalent exists. It reports whether it healed.
-//
-// The healing is the registry's half of the same machine-portability fix the
-// wrappers already have (homeRelativeValue / 'brain stores rewrite-wrappers'):
-// a store registered as /Users/alice/data/task/.beads is still the store at
-// $HOME/data/task/.beads after the store directory (or the whole registry)
-// moves to another machine or home. Nothing is guessed: a recorded path that
-// still exists always wins, and a path with no existing home equivalent is
-// left alone so a genuinely missing store keeps reporting as missing.
-func resolveStorePath(recorded string) (string, bool) {
-	p := expandPath(recorded)
-	if _, err := os.Stat(p); err == nil {
-		return p, false
-	}
-	healed, ok := healForeignHomePath(p)
-	if !ok {
-		return p, false
-	}
-	return healed, true
-}
-
-// healForeignHomePath maps an absolute path under any /Users/<x> or /home/<x>
-// home to this machine's home equivalent, and only when that equivalent
-// exists. It never maps the current home onto itself.
-func healForeignHomePath(p string) (string, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" || home == "/" {
-		return p, false
-	}
-	m := foreignHomeRe.FindStringSubmatch(p)
-	if m == nil {
-		return p, false
-	}
-	candidate := filepath.Clean(home + m[1])
-	if candidate == filepath.Clean(p) {
-		return p, false
-	}
-	if _, err := os.Stat(candidate); err != nil {
-		return p, false
-	}
-	return candidate, true
 }
 
 func init() {

@@ -270,11 +270,14 @@ func TestDoctorRegistrySentinel(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Registry-path healing and wrapper misroute detection: the two ways a
+// Registry paths as recorded and wrapper misroute detection: the two ways a
 // registered store silently stops being the store it says it is.
 // ---------------------------------------------------------------------------
 
-func TestProbeStore_HealedRegistryPathIsHealthy(t *testing.T) {
+// A registry carried from another machine names that machine's home. The probe
+// reports the registry path as recorded — it never guesses a $HOME-equivalent
+// folder and never rewrites the entry.
+func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
 	home := isolatedHome(t)
 	binDir := filepath.Join(home, ".local", "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -287,23 +290,20 @@ func TestProbeStore_HealedRegistryPathIsHealthy(t *testing.T) {
 	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil { //nolint:gosec
 		t.Fatalf("writing wrapper: %v", err)
 	}
-	// This machine's copy of the store exists; the registry still names the
-	// home the registry was written in.
+	// A coincidental $HOME copy must not be adopted as the store.
 	real := filepath.Join(home, "data", "task", ".beads")
 	if err := os.MkdirAll(real, 0o755); err != nil {
 		t.Fatalf("mkdir store: %v", err)
 	}
+	recorded := "/Users/someone-else/data/task/.beads"
 
-	h := probeStore("unused", "task", storeEntry{Path: "/Users/someone-else/data/task/.beads"}, 10*time.Second)
+	h := probeStore("unused", "task", storeEntry{Path: recorded}, 10*time.Second)
 
-	if h.Status != "ok" {
-		t.Fatalf("status = %q, want ok — the store answers from a healed registry path (reason=%q)", h.Status, h.Reason)
+	if h.Path != recorded {
+		t.Errorf("resolved path = %q, want the recorded %q", h.Path, recorded)
 	}
-	if h.Path != real {
-		t.Errorf("resolved path = %q, want the healed %q", h.Path, real)
-	}
-	if h.Recorded != "/Users/someone-else/data/task/.beads" {
-		t.Errorf("recorded path = %q, want the value the registry held", h.Recorded)
+	if h.Status != "warn" || !strings.Contains(h.Reason, "registry path missing") {
+		t.Fatalf("status = %q reason = %q, want a stale-path warning", h.Status, h.Reason)
 	}
 }
 

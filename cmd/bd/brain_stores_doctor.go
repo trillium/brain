@@ -49,15 +49,14 @@ var storeUnreadableRe = regexp.MustCompile(`(?mi)^Error: no beads database found
 
 // storeHealth is the per-store result of a doctor probe.
 type storeHealth struct {
-	Name     string `json:"name"`
-	Path     string `json:"path"`
-	Recorded string `json:"recorded_path,omitempty"` // registry value when Path was healed
-	Wrapper  string `json:"wrapper,omitempty"`       // CLI wrapper actually probed, if any
-	Probe    string `json:"probe"`                   // "wrapper" | "direct"
-	Status   string `json:"status"`                  // "ok" | "warn" | "fail"
-	Reason   string `json:"reason,omitempty"`        // one-line human cause
-	Detail   string `json:"detail,omitempty"`        // first lines of the failing output
-	Millis   int64  `json:"ms"`
+	Name    string `json:"name"`
+	Path    string `json:"path"`
+	Wrapper string `json:"wrapper,omitempty"` // CLI wrapper actually probed, if any
+	Probe   string `json:"probe"`             // "wrapper" | "direct"
+	Status  string `json:"status"`            // "ok" | "warn" | "fail"
+	Reason  string `json:"reason,omitempty"`  // one-line human cause
+	Detail  string `json:"detail,omitempty"`  // first lines of the failing output
+	Millis  int64  `json:"ms"`
 }
 
 var brainStoresDoctorCmd = &cobra.Command{
@@ -104,22 +103,16 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 		runBrainStoresDoctorFleet(cmd)
 		return
 	}
-	// Read the registry as recorded, then probe this machine's RESOLVED copy of
-	// each store: a registry carried over from another machine names that
-	// machine's home, and blaming the store for it is how a whole federation
-	// reads as 'registered but does not answer a read' while every store is
-	// fine (robots-1nri, robots-1o77, robots-1ypiy).
-	raw, err := loadRawStoresRegistry()
+	// Read the registry exactly as recorded and probe each entry as it stands:
+	// an entry whose path names another home, or no longer exists, is reported
+	// by that store's own result — never guessed at or rewritten
+	// (robots-1nri, robots-1o77, robots-1ypiy).
+	stores, err := loadStoresRegistry()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
 		fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
 		os.Exit(1)
 	}
-	stores := make(map[string]storeEntry, len(raw))
-	for name, entry := range raw {
-		stores[name] = entry
-	}
-	healed := healRegistryPaths(stores)
 	if len(stores) == 0 {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
 		return
@@ -151,10 +144,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			// probeStore heals the recorded entry itself, so the probe and the
-			// reported path are this machine's copy while the registry keeps
-			// what it recorded until a federation verb persists the healing.
-			r := probeStore(self, name, raw[name], timeout)
+			r := probeStore(self, name, stores[name], timeout)
 			// A wrapper that resolves a different store than the registry names
 			// answers reads from the wrong place and sends writes there, which a
 			// plain read probe cannot see (robots-bfenw, robots-3pfky,
@@ -191,17 +181,12 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			"failed":   failCount,
 			"total":    len(results),
 			"failing":  failed,
-			"healed":   healed,
 			"ms":       elapsed.Milliseconds(),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(summary)
 	} else {
-		if len(healed) > 0 {
-			fmt.Fprintf(os.Stderr, "Registry: healed %d path(s) recorded under another home: %s\n",
-				len(healed), strings.Join(healed, " "))
-		}
 		width := 0
 		for _, r := range results {
 			if len(r.Name) > width {
@@ -215,9 +200,6 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 				line += "  " + r.Reason
 			}
 			fmt.Fprintln(os.Stderr, line)
-			if r.Recorded != "" {
-				fmt.Fprintf(os.Stderr, "      registry path healed: %s (recorded %s)\n", r.Path, r.Recorded)
-			}
 			if r.Detail != "" && r.Status == "fail" {
 				for _, dl := range strings.Split(r.Detail, "\n") {
 					fmt.Fprintf(os.Stderr, "      %s\n", dl)
@@ -250,11 +232,8 @@ func doctorExitCode(failCount, warnCount int) int {
 // outcome. It never returns an error: every failure mode is folded into the
 // returned storeHealth so one broken store cannot abort the federation walk.
 func probeStore(self, name string, entry storeEntry, timeout time.Duration) storeHealth {
-	beadsDir, healed := resolveStorePath(entry.Path)
+	beadsDir := expandPath(entry.Path)
 	h := storeHealth{Name: name, Path: beadsDir}
-	if healed {
-		h.Recorded = expandPath(entry.Path)
-	}
 
 	wrapper, wrapperOK := storeWrapperPath(name)
 	h.Wrapper = wrapper
@@ -361,7 +340,7 @@ func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason 
 	if !ok {
 		return "", ""
 	}
-	mine, _ := resolveStorePath(stores[name].Path)
+	mine := expandPath(stores[name].Path)
 	if pinned == filepath.Clean(mine) {
 		return "", ""
 	}
@@ -369,7 +348,7 @@ func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason 
 		if other == name {
 			continue
 		}
-		op, _ := resolveStorePath(stores[other].Path)
+		op := expandPath(stores[other].Path)
 		if op == pinned {
 			return "fail", fmt.Sprintf("wrapper %s resolves %s, the %q store, not this store at %s", wrapper, pinned, other, mine)
 		}

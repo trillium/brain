@@ -116,7 +116,7 @@ func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err er
 // of any baked host pin. It is idempotent: an already-canonical wrapper with no
 // baked pin is returned unchanged.
 func canonicalizeWrapperHost(body string) (string, bool) {
-	stripped := bakedServerPinRe.ReplaceAllString(body, "")
+	stripped := stripBakedServerPins(body)
 	changed := stripped != body
 	if strings.Contains(stripped, "_store_host_file=") {
 		return stripped, changed
@@ -132,6 +132,21 @@ func canonicalizeWrapperHost(body string) (string, bool) {
 		return stripped + sharedServerHostBlock, true
 	}
 	return stripped[:idx+1] + sharedServerHostBlock + stripped[idx+1:], true
+}
+
+// stripBakedServerPins drops the host/port pins older wrappers baked in,
+// wherever they sit. The runtime block's own two exports are never dropped:
+// they read the value the block resolved and so are the resolution this verb
+// exists to install, not a baked pin.
+func stripBakedServerPins(body string) string {
+	var b strings.Builder
+	for _, line := range strings.SplitAfter(body, "\n") {
+		if bakedServerPinRe.MatchString(line) && !strings.Contains(line, "$_want_") {
+			continue
+		}
+		b.WriteString(line)
+	}
+	return b.String()
 }
 
 // wrapperTarget is one existing wrapper to rewrite and verify.
@@ -215,7 +230,7 @@ func serverModeForEntry(entry storeEntry) bool {
 	if entry.Path == "" {
 		return false
 	}
-	beadsDir, _ := resolveStorePath(entry.Path)
+	beadsDir := expandPath(entry.Path)
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil || cfg == nil {
 		return false
@@ -287,25 +302,19 @@ server-mode store's wrapper is also repointed at the shared store host config
 missing and any baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped, because a
 leftover pin would win over the file. Embedded stores keep their minimal
 wrapper, and forwarding wrappers installed by 'brain remote install' are left
-alone. Registry entries recorded under another machine's home are healed to
-this machine's equivalent and persisted, so a registry copied between machines
-stops describing paths that do not exist here. Stores with no wrapper are
-skipped. Each wrapper is then read through the way 'brain stores doctor' does.
+alone. Registry entries are left exactly as recorded: an entry whose path names
+another machine's home is reported by 'brain stores doctor'. Stores with no
+wrapper are skipped. Each wrapper is then read through the way 'brain stores
+doctor' does.
 
 This is the one step that repoints a host's stores at the federation's shared
-server. It prints what it changed and how many registry paths it healed.
+server. It prints what it changed.
 
 Exits non-zero, naming every store that failed, if any wrapper cannot be
 written or does not resolve a database. 'brain remote set' and
 'brain remote install' run this on the brain host.`,
 	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, _ []string) {
-		if healed, herr := persistHealedRegistryPaths(); herr != nil {
-			FatalError("persisting healed registry paths: %v", herr)
-		} else if len(healed) > 0 {
-			fmt.Printf("  healed %d registry path(s) recorded under another home: %s\n", len(healed), strings.Join(healed, " "))
-		}
-
 		stores, err := loadStoresRegistry()
 		if err != nil {
 			FatalError("loading registry: %v", err)

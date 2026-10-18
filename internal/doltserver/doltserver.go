@@ -449,7 +449,8 @@ func ReadPortFile(beadsDir string) int {
 }
 
 // DefaultConfig returns config with sensible defaults.
-// Priority: env var > port file > config.yaml / global config > metadata.json.
+// Priority: env var > shared store host config > port file > config.yaml /
+// global config > metadata.json.
 // Returns port 0 when no source provides a port, meaning Start() should
 // allocate an ephemeral port from the OS.
 //
@@ -476,6 +477,14 @@ func DefaultConfig(beadsDir string) *Config {
 			cfg.Port = port
 			return cfg
 		}
+	}
+
+	// The federation's one shared store host config supplies the port when the
+	// environment does not, so a host read from that file is never paired with
+	// a port from a different source.
+	if _, p, ok := configfile.StoreHostFromFile(); ok {
+		cfg.Port = p
+		return cfg
 	}
 
 	// Check the port file (gitignored, local-only) — this is the primary
