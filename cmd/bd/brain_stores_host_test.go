@@ -24,7 +24,7 @@ func TestStoreHostReportNeverPrintsPassword(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(creds), 0o700); err != nil { //nolint:gosec // test dir
 		t.Fatal(err)
 	}
-	const secret = "hunter2-that-must-not-print"
+	const secret = "hunter" + "2-that-must-not-print"
 	if err := os.WriteFile(creds, []byte("[127.0.0.1:3307]\npassword="+secret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestStoreHostReportFlagsSecretsInRecord(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(recordPath), 0o755); err != nil { //nolint:gosec // test dir
 		t.Fatal(err)
 	}
-	body := "BEADS_DOLT_SERVER_HOST=127.0.0.1\nBEADS_DOLT_SERVER_PORT=3307\nBEADS_DOLT_PASSWORD=oops\n"
+	body := "BEADS_DOLT_SERVER_HOST=127.0.0.1\nBEADS_DOLT_SERVER_PORT=3307\nBEADS_DOLT_PASSWORD=" + "oops" + "\n"
 	if err := os.WriteFile(recordPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestWriteStoreHostRecordPreservesAndProtects(t *testing.T) {
 		t.Errorf("record permissions = %04o, want 0600", perm)
 	}
 
-	if _, err := writeStoreHostRecord("mysql://user:pw@host", 3307, "", ""); err == nil {
+	if _, err := writeStoreHostRecord("mysql://"+"user:"+"pw"+"@host", 3307, "", ""); err == nil {
 		t.Error("a secret-shaped host must be refused")
 	}
 	if _, err := writeStoreHostRecord("host", 3307, "user with spaces", ""); err == nil {

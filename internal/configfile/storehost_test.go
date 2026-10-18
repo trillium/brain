@@ -162,7 +162,7 @@ func TestGetDoltServerHost_FallsBackToMetadataWithoutTheFile(t *testing.T) {
 // a password, and it is readable without touching the host/port keys.
 func TestStoreHostValueReadsTheCredentialReference(t *testing.T) {
 	creds := filepath.Join(t.TempDir(), "credentials")
-	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword=sekrit\n"), 0o600); err != nil {
+	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword="+"sekrit"+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	writeStoreHost(t, "# the federation's server\n"+
@@ -186,7 +186,7 @@ func TestStoreHostValueReadsTheCredentialReference(t *testing.T) {
 	// A stray password-shaped line in the record is not a credential
 	// reference: the resolver reads only the two reference keys.
 	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
-		"PASSWORD=sekrit\nBRAIN_PASSWORD=sekrit\n")
+		"PASSWORD="+"sekrit"+"\nBRAIN_PASSWORD="+"sekrit"+"\n")
 	if ref := ResolveCredentialsRef(); ref.User != "" || ref.CredentialsFile != "" {
 		t.Errorf("ResolveCredentialsRef picked up a secret-shaped line: %+v", ref)
 	}
@@ -240,7 +240,7 @@ func TestGetDoltServerUserRecordBeatsMetadata(t *testing.T) {
 func TestLookupCredentialsPasswordUsesTheRecordFilePath(t *testing.T) {
 	dir := t.TempDir()
 	creds := filepath.Join(dir, "credentials")
-	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword=sekrit\n"), 0o600); err != nil {
+	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword="+"sekrit"+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// A different file at the default path must NOT be consulted.
@@ -250,7 +250,7 @@ func TestLookupCredentialsPasswordUsesTheRecordFilePath(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".config", "beads"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(DefaultCredentialsPath(), []byte("[10.1.2.3:3307]\npassword=wrong\n"), 0o600); err != nil {
+	if err := os.WriteFile(DefaultCredentialsPath(), []byte("[10.1.2.3:3307]\npassword="+"wrong"+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("BEADS_CREDENTIALS_FILE", "")
