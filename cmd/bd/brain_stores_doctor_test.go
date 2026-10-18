@@ -312,22 +312,29 @@ func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
 // A store whose metadata pins its own Dolt host or port diverges from the
 // shared server on a bare bd run, so the doctor reports it as informational:
 // it is shown, but it does not make --strict fail.
-// TestTallyStoreHealth_InformationalDoesNotWarn locks the exit contract: an
-// informational metadata-pin finding is shown, but --strict does not fail on it.
+// TestTallyStoreHealth_InformationalDoesNotWarn locks the exit and summary
+// contract: an informational metadata-pin finding still counts as an answered
+// (and ok) store, but --strict does not fail on it.
 func TestTallyStoreHealth_InformationalDoesNotWarn(t *testing.T) {
 	oldStrict := storesDoctorStrict
 	storesDoctorStrict = true
 	defer func() { storesDoctorStrict = oldStrict }()
 
-	ok, warn, fail, info, _ := tallyStoreHealth([]storeHealth{{Status: "info"}, {Status: "ok"}})
-	if warn != 0 {
-		t.Errorf("warn = %d, want 0 for an informational finding", warn)
+	tally := tallyStoreHealth([]storeHealth{{Status: "info"}, {Status: "ok"}, {Status: "warn"}})
+	if tally.warn != 1 {
+		t.Errorf("warn = %d, want only the warned store", tally.warn)
 	}
-	if ok != 1 || info != 1 {
-		t.Errorf("ok/info = %d/%d, want 1/1", ok, info)
+	if tally.ok != 1 || tally.info != 1 {
+		t.Errorf("ok/info = %d/%d, want 1/1", tally.ok, tally.info)
 	}
-	if code := doctorExitCode(fail, warn); code != 0 {
-		t.Errorf("an informational finding must not fail --strict; exit = %d", code)
+	if tally.answered != 3 {
+		t.Errorf("answered = %d, want 3 (ok, informational and warned stores all answered)", tally.answered)
+	}
+	if tally.ok+tally.info != 2 {
+		t.Errorf("ok+informational = %d, want 2 stores reported ok", tally.ok+tally.info)
+	}
+	if code := doctorExitCode(0, 0); code != 0 {
+		t.Errorf("an informational finding alone must not fail --strict; exit = %d", code)
 	}
 }
 

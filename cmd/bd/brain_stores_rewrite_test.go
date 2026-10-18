@@ -51,11 +51,13 @@ func TestGeneratedWrappersAreHomeRelative(t *testing.T) {
 // file, so a repointed wrapper's runtime block can resolve a host when probed.
 func writeSharedStoreHostEnv(t *testing.T, home string) {
 	t.Helper()
-	dir := filepath.Join(home, ".config", "brain")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	path := configfile.DefaultStoreHostPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, configfile.StoreHostFileName),
+	if err := os.WriteFile(path,
 		[]byte("BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n"), 0o600); err != nil {
 		t.Fatalf("write store-host.env: %v", err)
 	}
@@ -196,6 +198,81 @@ func TestRewriteAllStoreWrappers_BlockCoversEveryBdInvocation(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "host=10.9.9.9 port=3311") {
 		t.Errorf("the earlier bd call got %q, want the shared file's host and port", strings.TrimSpace(string(out)))
+	}
+}
+
+// A pin that is the only statement of a branch must be neutralized, not
+// deleted: deleting the line leaves a wrapper that no longer parses.
+func TestRewriteWrapperInPlace_NeutralizesMultiLineConditionalPin(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX shell to validate with")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "inbox")
+	body := "#!/bin/sh\n" +
+		"export BEADS_DIR=\"$HOME/data/inbox/.beads\"\n" +
+		"if [ -z \"${BEADS_DOLT_SERVER_HOST+x}\" ]; then\n" +
+		"  export BEADS_DOLT_SERVER_HOST=127.0.0.1\n" +
+		"fi\n" +
+		"exec bd \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // test wrapper
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := rewriteWrapperInPlace(path, true); err != nil {
+		t.Fatalf("rewriteWrapperInPlace: %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(after), "BEADS_DOLT_SERVER_HOST=127.0.0.1") {
+		t.Errorf("the stale pin survived:\n%s", after)
+	}
+	if !strings.Contains(string(after), "then\n") || !strings.Contains(string(after), "fi\n") {
+		t.Errorf("the branch structure was damaged:\n%s", after)
+	}
+	if err := checkShellSyntax(string(after)); err != nil {
+		t.Errorf("the rewritten wrapper does not parse: %v\n%s", err, after)
+	}
+	if pin, found := bakedServerPinIn(path); found {
+		t.Errorf("a pin %q is still detected after the rewrite:\n%s", pin, after)
+	}
+}
+
+// The writer must never install a wrapper that does not parse: a candidate that
+// fails `sh -n` is refused, the live file is left alone, and the backup stays.
+func TestRewriteWrapperInPlace_RefusesUnparseableCandidate(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("no POSIX shell to validate with")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken")
+	body := "#!/bin/sh\n" +
+		"export BEADS_DIR=\"/Users/someone/data/broken/.beads\"\n" +
+		"if true; then\n" +
+		"fi\n" +
+		"exec bd \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // test wrapper
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := rewriteWrapperInPlace(path, true)
+	if err == nil {
+		t.Fatal("expected the unparseable candidate to be refused")
+	}
+	if !strings.Contains(err.Error(), "does not parse") {
+		t.Errorf("error = %v, want a syntax refusal", err)
+	}
+	after, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatalf("read: %v", readErr)
+	}
+	if string(after) != body {
+		t.Errorf("the live wrapper was overwritten:\n%s", after)
+	}
+	if got := backupPaths(t, dir); len(got) != 1 {
+		t.Errorf("backups = %v, want the repoint backup left in place", got)
 	}
 }
 
@@ -410,7 +487,7 @@ func TestRequireSharedStoreHostFile(t *testing.T) {
 		t.Fatal("a process env value alone must not satisfy the precondition")
 	}
 
-	hostFile := filepath.Join(home, ".config", "brain", configfile.StoreHostFileName)
+	hostFile := configfile.DefaultStoreHostPath()
 	if err := os.MkdirAll(filepath.Dir(hostFile), 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

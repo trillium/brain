@@ -42,6 +42,10 @@ const (
 // The brain verbs turn this into a loud refusal naming the path.
 var ErrStoreHostMissing = errors.New("shared store host config missing")
 
+// storeHostRelPath is the shared store-host config path relative to a user's
+// home directory. Every path this package reports is built from it.
+var storeHostRelPath = filepath.Join(".config", "brain", StoreHostFileName)
+
 // DefaultStoreHostPath returns the shared store-host config path for this
 // user: ~/.config/brain/store-host.env, one file per machine.
 func DefaultStoreHostPath() string {
@@ -49,74 +53,35 @@ func DefaultStoreHostPath() string {
 	if err != nil || home == "" {
 		return ""
 	}
-	return filepath.Join(home, ".config", "brain", StoreHostFileName)
+	return filepath.Join(home, storeHostRelPath)
 }
 
-// StoreHost is the resolved Dolt sql-server the federation lives on.
-type StoreHost struct {
-	Host string
-	Port int
-	// HostSource and PortSource name where each value came from: "env" or
-	// "file".
-	HostSource string
-	PortSource string
-	// Source is "env" when both values came from the process environment,
-	// "file" when both came from the shared file, and "mixed" when they came
-	// from different layers.
-	Source string
+// StoreHostHomeRelativePath returns the shared store-host config path in the
+// "$HOME/…" form a generated wrapper uses, so the wrapper stays valid on any
+// machine.
+func StoreHostHomeRelativePath() string {
+	return "$HOME/" + filepath.ToSlash(storeHostRelPath)
 }
 
-// Resolve returns the store host/port for this process: a process env value
-// wins per key, the shared file supplies what the environment does not, and a
-// missing file is ErrStoreHostMissing (never a silent 127.0.0.1). A file that
-// exists but does not define both keys, or defines an unusable port, is an
-// error naming the file — a half-written config is a defect to fix, not a
-// fallback.
-func Resolve() (StoreHost, error) {
-	envHost := strings.TrimSpace(os.Getenv(StoreHostKeyHost))
-	envPort := strings.TrimSpace(os.Getenv(StoreHostKeyPort))
+// StoreHostPathDisplay returns the shared store-host config path for messages:
+// the resolved absolute path, or its "~"-relative form when the home directory
+// cannot be resolved.
+func StoreHostPathDisplay() string {
+	if path := DefaultStoreHostPath(); path != "" {
+		return path
+	}
+	return "~/" + filepath.ToSlash(storeHostRelPath)
+}
 
-	path := DefaultStoreHostPath()
-	h, p, err := loadStoreHostFile(path)
-	if err != nil && !errors.Is(err, ErrStoreHostMissing) {
-		return StoreHost{}, err
+// StoreHostFromFile reports the host/port the shared file defines, ignoring the
+// process environment. ok is false when the file is absent or unusable;
+// ValidateStoreHostFile distinguishes those cases for callers that must refuse.
+func StoreHostFromFile() (host string, port int, ok bool) {
+	h, p, err := loadStoreHostFile(DefaultStoreHostPath())
+	if err != nil {
+		return "", 0, false
 	}
-	if errors.Is(err, ErrStoreHostMissing) && (envHost == "" || envPort == "") {
-		return StoreHost{}, err
-	}
-	fileHost, filePort := h, p
-
-	out := StoreHost{Host: envHost, Port: 0}
-	if out.Host == "" {
-		out.Host = fileHost
-		out.HostSource = "file"
-	} else {
-		out.HostSource = "env"
-	}
-	if envPort != "" {
-		p, err := strconv.Atoi(envPort)
-		if err != nil || p <= 0 {
-			return StoreHost{}, fmt.Errorf("%s=%q is not a valid port", StoreHostKeyPort, envPort)
-		}
-		out.Port = p
-		out.PortSource = "env"
-	} else {
-		out.Port = filePort
-		out.PortSource = "file"
-	}
-
-	switch {
-	case out.HostSource == "env" && out.PortSource == "env":
-		out.Source = "env"
-	case out.HostSource == "file" && out.PortSource == "file":
-		out.Source = "file"
-	default:
-		out.Source = "mixed"
-	}
-	if out.Host == "" || out.Port <= 0 {
-		return StoreHost{}, fmt.Errorf("%s does not define both %s and %s", path, StoreHostKeyHost, StoreHostKeyPort)
-	}
-	return out, nil
+	return h, p, true
 }
 
 // ValidateStoreHostFile reports a shared store-host config that exists but

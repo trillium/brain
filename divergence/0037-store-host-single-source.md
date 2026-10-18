@@ -69,21 +69,28 @@ reads back to the old host *through its wrapper*.
 # What changed
 
 1. **`internal/configfile/storehost.go`** — the reader the brain verbs use.
-   `Resolve()` gives the host/port for this process (process env wins per key,
-   then the file), reporting per-key provenance so a host from the environment
-   and a port from the file is labelled `mixed` rather than claimed as the
-   file's. A missing file is `ErrStoreHostMissing`; a file that exists but does
-   not define both keys, or defines an unusable port, is an error naming the
-   file. `ValidateStoreHostFile()` is the same check without a fallback, for
-   verbs that must refuse before they touch anything.
+   `StoreHostFromFile()` gives the host/port the file defines (ignoring the
+   process environment), `StoreHostHomeRelativePath()` gives the `$HOME/…` form
+   the generated wrappers use, and `DefaultStoreHostPath()` /
+   `StoreHostPathDisplay()` give the absolute and message forms of the same
+   path, so only one definition of the path and the two key names exists. A
+   missing file is `ErrStoreHostMissing`; a file that exists but does not
+   define both keys, or defines an unusable port, is an error naming the file.
+   `ValidateStoreHostFile()` is the same check without a fallback, for verbs
+   that must refuse before they touch anything.
 
 2. **`cmd/bd/brain_stores.go`** — `brain stores create` requires the shared
-   file up front (a process env value alone does not satisfy it), resolves the
-   server from it, and refuses loudly when the server does not answer. The
-   generated shared-server wrapper carries a run-time block that reads the file
-   and exports both variables, and stops with a clear error naming the file
-   (and the unusable key) when the file is missing or unusable — including a
-   non-numeric port.
+   file up front and provisions on the server that file names — never on a
+   process env value: the generated wrapper reads the file at run time, so
+   provisioning anywhere else would register a store its own wrapper cannot
+   reach. A `BEADS_DOLT_SERVER_*` value in the environment that differs from
+   the file is refused, naming both. A missing file, or a server that does not
+   answer, is a loud refusal. The generated shared-server wrapper carries a
+   run-time block that reads the file and exports both variables, and stops
+   with a clear error naming the file (and the unusable key) when the file is
+   missing or unusable — including a non-numeric port. The block's shell text
+   is rendered from those same constants rather than repeating the path and key
+   names.
 
 3. **`cmd/bd/brain_stores_rewrite.go`** — `brain stores rewrite-wrappers` also
    requires the file up front, so it can never repoint the fleet into wrappers
@@ -91,20 +98,23 @@ reads back to the old host *through its wrapper*.
    its store's metadata: a store with its own `.beads` directory but no
    `metadata.json` is the deliberately embedded shape and is skipped with a
    note, a wrapper it cannot classify is reported, and neither is ever `ok`. It
-   strips whole-line baked host/port pins, detects pins in shapes it cannot
-   safely rewrite (a conditional default, a command list) and fails the wrapper
-   while one survives, and installs the run-time block *before the first
-   statement that can reach a bd invocation*, moving a block an older build
-   left above the last `exec` into that position. Every rewritten wrapper is
-   first copied to `<wrapper>.bak-repoint-<timestamp>`, a plain non-executable
-   data file so host promotion never mistakes it for a wrapper.
+   drops whole-line baked host/port pins at top level and neutralizes an
+   indented one in place (it may be the only statement of a branch), detects
+   pins in shapes it cannot safely rewrite (a command list) and fails the
+   wrapper while one survives, and installs the run-time block *before the
+   first statement that can reach a bd invocation*, moving a block an older
+   build left above the last `exec` into that position. Every candidate rewrite
+   is validated with `sh -n` before it replaces the live file: a wrapper that
+   does not parse is left unchanged, with the `<wrapper>.bak-repoint-<timestamp>`
+   copy (a plain non-executable data file, so host promotion never mistakes it
+   for a wrapper) still in place.
 
 4. **`cmd/bd/brain_stores_doctor.go`** — the doctor reports any store whose
    `metadata.json` pins its own `dolt_server_host`/`dolt_server_port`: the
    wrapper reads the shared file, but a bare bd run in the store directory
    would use the pin and silently diverge from the federation's one server. The
-   finding is informational — shown with the store's other results, but it does
-   not make `--strict` fail.
+   finding is informational — shown with the store's other results, counted as
+   an answered store in the summary, and never a `--strict` failure.
 
 ## Rollback
 

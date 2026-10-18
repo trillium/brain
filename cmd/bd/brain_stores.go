@@ -477,15 +477,17 @@ var brainStoresCreateCmd = &cobra.Command{
 	Short: "Provision a new connected store (dolt init + entries dir + wrapper + registry)",
 	Long: `Provision a new connected store end-to-end. Does, in order:
 
-  1. Provision the Dolt store on the federation's shared Dolt sql-server. The
-     shared store host config (~/.config/brain/store-host.env) must already
-     exist; BEADS_DOLT_SERVER_HOST/PORT in the process environment override
-     the values it holds. A missing file, or a server that does not answer,
-     is a loud refusal: never a store silently pinned to a host that cannot
-     be read, and never a silent fallback to an embedded store. Pass
-     --embedded to ask for the embedded shape explicitly; then metadata.json
-     (dolt_mode=server) and config.yaml are written first, and 'dolt init'
-     runs in <path>/.beads.
+  1. Provision the Dolt store on the federation's shared Dolt sql-server, the
+     server the shared store host config (~/.config/brain/store-host.env)
+     names. That file must already exist and be usable. A BEADS_DOLT_SERVER_*
+     value in the process environment must match it: a differing value is
+     refused, because the wrapper reads the file at run time and would reach a
+     server other than the one the store was provisioned on. A missing file, or
+     a server that does not answer, is a loud refusal: never a store silently
+     pinned to a host that cannot be read, and never a silent fallback to an
+     embedded store. Pass --embedded to ask for the embedded shape explicitly;
+     then metadata.json (dolt_mode=server) and config.yaml are written first,
+     and 'dolt init' runs in <path>/.beads.
   2. Write <path>/.beads/config.yaml (issue-prefix + BD_NAME), in either
      shape.
   3. Create <path>/entries/ for exfiltrated markdown.
@@ -675,15 +677,14 @@ func initDoltStore(beadsDir string) error {
 // verb's output so an operator can see the federation's one config source was
 // followed rather than guessed at.
 const (
-	createServerEnv      = "env"
 	createServerFile     = "file"
-	createServerMixed    = "mixed"
 	createServerEmbedded = "embedded"
 )
 
 // createServerTarget names the Dolt sql-server a new store is provisioned on,
 // and where that choice came from. Source == createServerEmbedded means the
-// operator asked for the embedded shape with --embedded.
+// operator asked for the embedded shape with --embedded; otherwise the shared
+// store host config named the server.
 type createServerTarget struct {
 	Host   string
 	Port   int
@@ -692,16 +693,10 @@ type createServerTarget struct {
 
 // describe renders the target for the verb's output.
 func (t createServerTarget) describe() string {
-	switch t.Source {
-	case createServerEmbedded:
+	if t.Source == createServerEmbedded {
 		return "embedded (--embedded: no shared server is used)"
-	case createServerEnv:
-		return fmt.Sprintf("%s:%d (BEADS_DOLT_SERVER_HOST/PORT in the environment)", t.Host, t.Port)
-	case createServerMixed:
-		return fmt.Sprintf("%s:%d (a BEADS_DOLT_SERVER_* environment value and %s)", t.Host, t.Port, configfile.DefaultStoreHostPath())
-	default:
-		return fmt.Sprintf("%s:%d (%s)", t.Host, t.Port, configfile.DefaultStoreHostPath())
 	}
+	return fmt.Sprintf("%s:%d (%s)", t.Host, t.Port, configfile.StoreHostPathDisplay())
 }
 
 // serverProbe proves a candidate server answers and reports the unified
@@ -718,57 +713,57 @@ func probeCreateServer(ctx context.Context, probe serverProbe, host string, port
 }
 
 // resolveCreateServer decides which Dolt sql-server a new store is provisioned
-// on. The host is the federation's one per-machine fact, so it comes from the
-// shared store host config (~/.config/brain/store-host.env) or, overriding it,
-// from BEADS_DOLT_SERVER_HOST/PORT in the process environment — never from a
-// per-store default and never from the asker's imagination. The shared file
-// must exist: the wrapper 'brain stores create' generates resolves its host
-// from that file at run time and refuses without it, so a store created
-// against an environment-only server would be unreadable from any ordinary
-// shell. A missing file is a loud refusal naming the file: silently
-// provisioning against 127.0.0.1 is how a store ends up registered but
-// unreadable (robots-1nri, robots-1ypiy, task-d3cz, task-8m5x). The server must
-// answer before the store is written against it, and the embedded
-// (auto-starting) shape is only reachable by asking for it with --embedded.
+// on. It is the server the shared store host config names — never a process env
+// value: the wrapper 'brain stores create' generates reads the file at run
+// time, so provisioning anywhere else would register a store that its own
+// wrapper cannot reach. A process env value that differs from the file is a
+// loud refusal naming both. A missing or unusable file is a loud refusal naming
+// the file: silently provisioning against 127.0.0.1 is how a store ends up
+// registered but unreadable (robots-1nri, robots-1ypiy, task-d3cz, task-8m5x).
+// The server must answer before the store is written against it, and the
+// embedded (auto-starting) shape is only reachable by asking for it with
+// --embedded.
 func resolveCreateServer(ctx context.Context, probe serverProbe) (createServerTarget, error) {
 	if createStoreEmbedded {
 		return createServerTarget{Source: createServerEmbedded}, nil
 	}
 
-	path := configfile.DefaultStoreHostPath()
-	if path == "" {
-		path = "~/.config/brain/" + configfile.StoreHostFileName
-	}
-	if _, err := os.Stat(path); err != nil {
+	path := configfile.StoreHostPathDisplay()
+	fileHost, filePort, ok := configfile.StoreHostFromFile()
+	if !ok {
+		if err := configfile.ValidateStoreHostFile(); err != nil {
+			return createServerTarget{}, fmt.Errorf(
+				"the shared Dolt sql-server config is unusable: %v\n"+
+					"Fix %s (keys %s and %s), then re-run. Pass --embedded only for a store that should run its own local Dolt.",
+				err, path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort)
+		}
 		return createServerTarget{}, fmt.Errorf(
 			"no shared Dolt sql-server is configured for this machine: %s does not exist.\n"+
 				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s, then re-run. Pass --embedded only for a store that should run its own local Dolt.",
 			path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort, path)
 	}
 
-	sh, err := configfile.Resolve()
-	if err != nil {
+	if envHost := strings.TrimSpace(os.Getenv(configfile.StoreHostKeyHost)); envHost != "" && envHost != fileHost {
 		return createServerTarget{}, fmt.Errorf(
-			"no shared Dolt sql-server is configured for this machine: %v\n"+
-				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s, then re-run. Pass --embedded only for a store that should run its own local Dolt.",
-			err, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort, path)
+			"%s=%s in the process environment differs from %s=%s in %s.\n"+
+				"A store is provisioned on the server its own wrapper will read, which is the shared file; export the file's value (or unset the variable) and re-run.",
+			configfile.StoreHostKeyHost, envHost, configfile.StoreHostKeyHost, fileHost, path)
+	}
+	if envPort := strings.TrimSpace(os.Getenv(configfile.StoreHostKeyPort)); envPort != "" && envPort != strconv.Itoa(filePort) {
+		return createServerTarget{}, fmt.Errorf(
+			"%s=%s in the process environment differs from %s=%d in %s.\n"+
+				"A store is provisioned on the server its own wrapper will read, which is the shared file; export the file's value (or unset the variable) and re-run.",
+			configfile.StoreHostKeyPort, envPort, configfile.StoreHostKeyPort, filePort, path)
 	}
 
-	if perr := probeCreateServer(ctx, probe, sh.Host, sh.Port); perr != nil {
+	if perr := probeCreateServer(ctx, probe, fileHost, filePort); perr != nil {
 		return createServerTarget{}, fmt.Errorf(
 			"the shared Dolt sql-server %s:%d did not answer: %v\n"+
 				"Refusing to create a store whose every read would fail. Start that server or repoint %s, then re-run.",
-			sh.Host, sh.Port, perr, configfile.DefaultStoreHostPath())
+			fileHost, filePort, perr, path)
 	}
 
-	source := createServerFile
-	switch sh.Source {
-	case "env":
-		source = createServerEnv
-	case "mixed":
-		source = createServerMixed
-	}
-	return createServerTarget{Host: sh.Host, Port: sh.Port, Source: source}, nil
+	return createServerTarget{Host: fileHost, Port: filePort, Source: createServerFile}, nil
 }
 
 // buildServerStoreConfig constructs the metadata.json contents for a new
@@ -1008,44 +1003,60 @@ BD_NAME: %q
 // store lives. A process env value of either key overrides the file, and a
 // missing file is a loud refusal that names it rather than a silent 127.0.0.1.
 //
-// The literal env var and file names here must stay in sync with
+// The literal env var and file names in the template are rendered from
 // configfile.StoreHostFileName / configfile.StoreHostKeyHost /
-// configfile.StoreHostKeyPort; generated wrapper tests assert the agreement.
-const sharedServerHostBlock = `# The federation's one source for the Dolt server; a process env value of the
+// configfile.StoreHostKeyPort below, so the shell text and the Go reader share
+// one definition.
+// sharedServerHostBlockTemplate is the shell text of the run-time host block
+// every generated shared-server wrapper carries: it reads the shared store host
+// config and exports both variables, stopping with a clear error naming the
+// file (and the unusable key) when it is missing or unusable. The placeholders
+// are rendered from the configfile constants so the shell text and the Go
+// reader share one definition.
+const sharedServerHostBlockTemplate = `# The federation's one source for the Dolt server; a process env value of the
 # same name wins over the file, and a missing file is a loud refusal below.
-_store_host_file="$HOME/.config/brain/store-host.env"
-_want_host="${BEADS_DOLT_SERVER_HOST:-}"
-_want_port="${BEADS_DOLT_SERVER_PORT:-}"
+_store_host_file="{hostfile}"
+_want_host="${{keyhost}:-}"
+_want_port="${{keyport}:-}"
 if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
   if [ ! -f "$_store_host_file" ]; then
     echo "beads: missing shared store host config: $_store_host_file" >&2
-    echo "beads: write BEADS_DOLT_SERVER_HOST=<host> and BEADS_DOLT_SERVER_PORT=<port> there, or export them for this shell" >&2
+    echo "beads: write {keyhost}=<host> and {keyport}=<port> there, or export them for this shell" >&2
     exit 78
   fi
   . "$_store_host_file"
-  [ -n "$_want_host" ] || _want_host="${BEADS_DOLT_SERVER_HOST:-}"
-  [ -n "$_want_port" ] || _want_port="${BEADS_DOLT_SERVER_PORT:-}"
+  [ -n "$_want_host" ] || _want_host="${{keyhost}:-}"
+  [ -n "$_want_port" ] || _want_port="${{keyport}:-}"
 fi
 if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
-  echo "beads: $_store_host_file does not define BEADS_DOLT_SERVER_HOST and BEADS_DOLT_SERVER_PORT" >&2
+  echo "beads: $_store_host_file does not define {keyhost} and {keyport}" >&2
   exit 78
 fi
 case "$_want_port" in
   *[!0-9]*)
-    echo "beads: $_store_host_file defines an unusable BEADS_DOLT_SERVER_PORT: $_want_port" >&2
+    echo "beads: $_store_host_file defines an unusable {keyport}: $_want_port" >&2
     exit 78
     ;;
 esac
-export BEADS_DOLT_SERVER_HOST="$_want_host"
-export BEADS_DOLT_SERVER_PORT="$_want_port"
+export {keyhost}="$_want_host"
+export {keyport}="$_want_port"
 unset _store_host_file _want_host _want_port
 `
+
+// sharedServerHostBlock is sharedServerHostBlockTemplate rendered from the
+// configfile constants (path and key names), so only one definition of each
+// exists.
+var sharedServerHostBlock = strings.NewReplacer(
+	"{hostfile}", configfile.StoreHostHomeRelativePath(),
+	"{keyhost}", configfile.StoreHostKeyHost,
+	"{keyport}", configfile.StoreHostKeyPort,
+).Replace(sharedServerHostBlockTemplate)
 
 // serverStoreWrapperTemplate is the canonical shared-server store wrapper:
 // header, the runtime host block, the store's own identity, server mode, exec.
 // The block sits at the canonical offset 'brain stores rewrite-wrappers'
 // installs it at, so a freshly created wrapper needs no repoint.
-const serverStoreWrapperTemplate = `#!/bin/sh
+var serverStoreWrapperTemplate = `#!/bin/sh
 # Auto-generated by 'brain stores create {name}'.
 # Shared-server store, provisioned against {host}:{port}. The Dolt host and port
 # are read from the shared store host config at RUN TIME (see below), so
