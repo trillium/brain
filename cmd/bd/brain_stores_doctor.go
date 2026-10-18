@@ -359,21 +359,18 @@ func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason 
 	return "warn", fmt.Sprintf("wrapper %s pins %s; the registry says %s", wrapper, pinned, mine)
 }
 
-// wrapperBeadsDir reads the BEADS_DIR a wrapper pins, with $HOME/~ expanded so
-// it can be compared with a registry path. Reports false when the wrapper pins
-// no BEADS_DIR (then bd's own discovery decides the store, which no probe here
-// can predict).
+// wrapperBeadsDir reads the BEADS_DIR a wrapper effectively assigns, with
+// $HOME/~ expanded so it can be compared with a registry path. Comment lines
+// documenting an override are not assignments. Reports false when the wrapper
+// assigns no BEADS_DIR (then bd's own discovery decides the store, which no
+// probe here can predict).
 func wrapperBeadsDir(wrapperPath string) (string, bool) {
 	data, err := os.ReadFile(wrapperPath) //nolint:gosec // the store's own wrapper
 	if err != nil {
 		return "", false
 	}
-	m := wrapperBeadsRe.FindSubmatch(data)
-	if m == nil {
-		return "", false
-	}
-	v := strings.Trim(string(m[1]), `"'`)
-	if v == "" {
+	v, ok := wrapperAssignedValue(string(data), wrapperBeadsAssignRe)
+	if !ok || v == "" {
 		return "", false
 	}
 	return expandWrapperHome(v), true

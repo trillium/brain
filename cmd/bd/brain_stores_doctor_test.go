@@ -307,6 +307,36 @@ func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
 	}
 }
 
+// A comment that documents an override is not the wrapper's effective
+// BEADS_DIR: the doctor must compare the assignment the wrapper actually makes.
+func TestWrapperBeadsDir_SkipsCommentedOverrides(t *testing.T) {
+	home := isolatedHome(t)
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	wrapper := filepath.Join(binDir, "inbox")
+	body := "#!/bin/sh\n# BEADS_DIR=/tmp/itest/.beads INBOX_EVENTS_FILE=/tmp/x inbox list\n" +
+		"export BEADS_DIR=\"$HOME/data/inbox/.beads\"\nexec bd \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil { //nolint:gosec
+		t.Fatalf("writing wrapper: %v", err)
+	}
+
+	want := filepath.Join(home, "data", "inbox", ".beads")
+	got, ok := wrapperBeadsDir(wrapper)
+	if !ok || got != want {
+		t.Fatalf("wrapperBeadsDir = %q, %v; want %q", got, ok, want)
+	}
+
+	stores := map[string]storeEntry{"inbox": {Path: want}}
+	if status, reason := wrapperMisroute("inbox", stores); status != "" {
+		t.Fatalf("a commented override must not misroute the store: %s (%s)", status, reason)
+	}
+}
+
 // writeWrapperForStore writes a wrapper pinning BEADS_DIR to a literal path.
 func writeWrapperForStore(t *testing.T, home, name, beadsDir string) {
 	t.Helper()

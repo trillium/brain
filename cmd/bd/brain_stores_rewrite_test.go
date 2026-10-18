@@ -233,6 +233,67 @@ func TestRewriteAllStoreWrappers_RepointsFromTheWrappersOwnBeadsDir(t *testing.T
 	}
 }
 
+// A host pin written in a shape the rewrite cannot safely replace (a
+// conditional default, not a whole-line assignment) must make the wrapper fail
+// rather than be reported verified: the operator must never be told the repoint
+// happened while the stale host survives (task-8m5x).
+func TestRewriteAllStoreWrappers_ReportsConditionalPinAsFailure(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "bd"), "#!/bin/sh\necho ok\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	writeSharedStoreHostEnv(t, home)
+
+	beadsDir := filepath.Join(home, "data", "inbox", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&configfile.Config{DoltMode: configfile.DoltModeServer}).Save(beadsDir); err != nil {
+		t.Fatal(err)
+	}
+	wdir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(wdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, filepath.Join(wdir, "inbox"),
+		"#!/bin/sh\nif [ -z \"${BEADS_DOLT_SERVER_HOST+x}\" ]; then BEADS_DOLT_SERVER_HOST=127.0.0.1; fi\nexport BEADS_DOLT_SERVER_HOST\nexec bd \"$@\"\n")
+
+	res := rewriteAllStoreWrappers("bd", map[string]storeEntry{"inbox": {Path: beadsDir}}, 1, 10*time.Second)
+	if len(res) != 1 {
+		t.Fatalf("results = %+v, want one wrapper", res)
+	}
+	if res[0].Status != "fail" || !strings.Contains(res[0].Reason, "baked Dolt host pin remains") {
+		t.Fatalf("results = %+v, want a failure naming the surviving pin", res)
+	}
+}
+
+func TestBakedServerPinLine_RecognizesWrapperShapes(t *testing.T) {
+	pins := []string{
+		"export BEADS_DOLT_SERVER_HOST=10.0.0.1",
+		"BEADS_DOLT_SERVER_PORT=3307",
+		`if [ -z "${BEADS_DOLT_SERVER_HOST+x}" ]; then BEADS_DOLT_SERVER_HOST=127.0.0.1; fi`,
+		"exec env BEADS_DOLT_SERVER_HOST=10.0.0.1 bd list",
+	}
+	for _, pin := range pins {
+		if !bakedServerPinLine(pin) {
+			t.Errorf("bakedServerPinLine(%q) = false, want a pin", pin)
+		}
+	}
+	notPins := []string{
+		`export BEADS_DOLT_SERVER_HOST="$_want_host"`,
+		"export BEADS_DOLT_SERVER_HOST",
+		`_want_host="${BEADS_DOLT_SERVER_HOST:-}"`,
+		"# BEADS_DOLT_SERVER_HOST=127.0.0.1 documents the old default",
+		`[ "$BEADS_DOLT_SERVER_HOST" = "127.0.0.1" ]`,
+	}
+	for _, line := range notPins {
+		if bakedServerPinLine(line) {
+			t.Errorf("bakedServerPinLine(%q) = true, want not a pin", line)
+		}
+	}
+}
+
 func hostWithRewriteResult(t *testing.T, stdout string, code int) *remoteConfig {
 	t.Helper()
 	_, hostBin := remoteEnv(t)

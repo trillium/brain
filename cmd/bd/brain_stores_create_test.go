@@ -276,28 +276,88 @@ func TestResolveCreateServer(t *testing.T) {
 	})
 }
 
-// TestRootCmd_StopsOnUnusableSharedStoreHostFile proves the bd-level contract:
-// every command stops when the machine's shared store host config exists but
-// cannot be used, naming the file instead of falling back to a per-store host.
-func TestRootCmd_StopsOnUnusableSharedStoreHostFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+// writeBrainRegistryEntry names the store in the brain registry under home.
+func writeBrainRegistryEntry(t *testing.T, home, name, storeRoot string) {
+	t.Helper()
 	dir := filepath.Join(home, ".config", "brain")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	hostFile := filepath.Join(dir, configfile.StoreHostFileName)
-	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.1.2.3\n"), 0o600); err != nil {
+	body := "stores:\n  " + name + ":\n    path: \"" + storeRoot + "\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write registry: %v", err)
+	}
+}
+
+// writeStoreMetadata writes the metadata.json that makes a directory a beads
+// project.
+func writeStoreMetadata(t *testing.T, beadsDir string, cfg *configfile.Config) {
+	t.Helper()
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := cfg.Save(beadsDir); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+}
+
+func writeUnusableStoreHostFile(t *testing.T, home string) string {
+	t.Helper()
+	path := filepath.Join(home, ".config", "brain", configfile.StoreHostFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("BEADS_DOLT_SERVER_HOST=10.1.2.3\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
+	return path
+}
 
-	err := rootCmd.PersistentPreRunE(rootCmd, nil)
+// TestFederationStoreHostFileGate_StopsFederationStore: the shared store host
+// config is a defect only for the federation stores that read it; those
+// commands stop and the file is named.
+func TestFederationStoreHostFileGate_StopsFederationStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	storeRoot := filepath.Join(home, "data", "task")
+	beadsDir := filepath.Join(storeRoot, ".beads")
+	writeStoreMetadata(t, beadsDir, &configfile.Config{DoltMode: configfile.DoltModeServer})
+	writeBrainRegistryEntry(t, home, "task", storeRoot)
+
+	if err := federationStoreHostFileGate(beadsDir); err != nil {
+		t.Fatalf("an absent shared file must not fail a federation store: %v", err)
+	}
+
+	hostFile := writeUnusableStoreHostFile(t, home)
+	err := federationStoreHostFileGate(beadsDir)
 	if err == nil {
 		t.Fatal("expected bd to stop when the shared store host config is unusable")
 	}
 	if !strings.Contains(err.Error(), hostFile) {
 		t.Errorf("error must name the file %q; got: %v", hostFile, err)
+	}
+}
+
+// TestFederationStoreHostFileGate_LeavesUnrelatedStoreAlone: an unrelated bd
+// project never reads the brain file, so a defect in it must not fail that
+// project's commands.
+func TestFederationStoreHostFileGate_LeavesUnrelatedStoreAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	beadsDir := filepath.Join(home, "projects", "unrelated", ".beads")
+	writeStoreMetadata(t, beadsDir, &configfile.Config{
+		DoltMode:           configfile.DoltModeServer,
+		GlobalDoltDatabase: "beads_global",
+		GlobalProjectID:    "00000000-0000-0000-0000-000000000000",
+	})
+	writeUnusableStoreHostFile(t, home)
+
+	if err := federationStoreHostFileGate(beadsDir); err != nil {
+		t.Errorf("an unrelated project must not fail on a defective brain file: %v", err)
 	}
 }
 

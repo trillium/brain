@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/config"
+	"gopkg.in/yaml.v3"
 )
 
 // The brain federation keeps the Dolt sql-server it talks to in ONE shared file
@@ -42,11 +44,19 @@ const (
 	// fragment.
 	StoreHostKeyHost = "BEADS_DOLT_SERVER_HOST"
 	StoreHostKeyPort = "BEADS_DOLT_SERVER_PORT"
-
-	// SharedServerEnvVar selects bd's shared-server mode for this process — the
-	// mode every generated brain store wrapper selects.
-	SharedServerEnvVar = "BEADS_DOLT_SHARED_SERVER"
 )
+
+// Brain store registry locations: the canonical file and the pre-migration one.
+// The registry is the authority for which stores the federation has.
+const (
+	brainRegistryRelPath       = ".config/brain/stores.yaml"
+	brainRegistryLegacyRelPath = ".config/pai/stores.yaml"
+)
+
+// foreignHomeRe matches an absolute path under another user's home
+// (/Users/<x>/… or /home/<x>/…) so a registry written on another machine still
+// names this machine's copy of a store.
+var foreignHomeRe = regexp.MustCompile(`^/(?:Users|home)/[^/]+(/.*)?$`)
 
 // ErrStoreHostMissing reports that the shared store-host config is not there.
 // Callers that must not silently fall back to a default server (the generated
@@ -120,52 +130,175 @@ func Resolve() (StoreHost, error) {
 	return out, nil
 }
 
-// SharedServerSelected reports whether this process runs in bd's shared-server
-// mode (the BEADS_DOLT_SHARED_SERVER env var or config.yaml's
-// dolt.shared-server) — the mode every generated brain store wrapper selects.
-func SharedServerSelected() bool {
-	if v := os.Getenv(SharedServerEnvVar); v == "1" || strings.EqualFold(v, "true") {
-		return true
-	}
-	return config.GetBool("dolt.shared-server")
+// brainStoreRegistry is the on-disk shape of the brain store registry
+// (~/.config/brain/stores.yaml). Only the recorded path is needed here.
+type brainStoreRegistry struct {
+	Stores map[string]brainStoreRecord `yaml:"stores"`
 }
 
-// IsFederationStore reports whether the store at beadsDir is a brain federation
-// store: one in bd's shared-server mode, which is what the generated store
-// wrappers select and what 'brain stores create' provisions (metadata.json's
-// global_dolt_database / global_project_id, the shared-server env, or
-// config.yaml's dolt.shared-server).
+type brainStoreRecord struct {
+	Path string `yaml:"path"`
+}
+
+// UnmarshalYAML accepts the legacy scalar form (a bare path) as well as the
+// current mapping form.
+func (r *brainStoreRecord) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		r.Path = value.Value
+		return nil
+	}
+	type raw brainStoreRecord
+	var out raw
+	if err := value.Decode(&out); err != nil {
+		return err
+	}
+	*r = brainStoreRecord(out)
+	return nil
+}
+
+// IsFederationStore reports whether beadsDir is a brain federation store: one
+// the brain store registry (~/.config/brain/stores.yaml, legacy
+// ~/.config/pai/stores.yaml) names, by store name or by a recorded path that
+// resolves to this store. The registry is written by whichever machine last ran
+// a 'brain stores' write, so a recorded path is compared with any user's home
+// prefix reduced to $HOME.
 //
 // The shared store-host config governs only these stores. An unrelated bd
-// project keeps its own resolution (port file, then config.yaml, then
-// metadata.json) exactly as upstream.
+// project — including an upstream 'bd init --shared-server' project, whose
+// shared-server markers the registry does not carry — keeps its own resolution
+// (port file, then config.yaml, then metadata.json).
 func IsFederationStore(beadsDir string) bool {
-	if SharedServerSelected() {
-		return true
-	}
 	if beadsDir == "" {
 		return false
 	}
-	if _, err := os.Stat(ConfigPath(beadsDir)); err != nil {
+	local, err := filepath.Abs(beadsDir)
+	if err != nil {
+		local = filepath.Clean(beadsDir)
+	}
+	names := federationStoreNames(local)
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
 		return false
 	}
-	cfg, err := Load(beadsDir)
-	if err != nil || cfg == nil {
-		return false
+	for _, rel := range []string{brainRegistryRelPath, brainRegistryLegacyRelPath} {
+		reg, ok := readBrainStoreRegistry(filepath.Join(home, rel))
+		if !ok {
+			continue
+		}
+		for name, record := range reg.Stores {
+			if names[name] {
+				return true
+			}
+			if recordedPathResolvesTo(record.Path, local) {
+				return true
+			}
+		}
 	}
-	return cfg.IsFederationStore()
+	return false
 }
 
-// IsFederationStore reports whether this config describes a brain federation
-// store (see IsFederationStore(beadsDir)).
+// IsFederationStore reports whether the store this config was loaded from is a
+// brain federation store (see IsFederationStore(beadsDir)). A config built
+// without a store directory (DefaultConfig) is never a federation store.
 func (c *Config) IsFederationStore() bool {
-	if SharedServerSelected() {
-		return true
-	}
 	if c == nil {
 		return false
 	}
-	return c.GlobalDoltDatabase != "" || c.GlobalProjectID != ""
+	return IsFederationStore(c.beadsDir)
+}
+
+// federationStoreNames returns the names that can identify the store at
+// beadsDir: the store directory's name, and the name the store's own
+// config.yaml declares.
+func federationStoreNames(beadsDir string) map[string]bool {
+	names := map[string]bool{}
+	base := filepath.Base(beadsDir)
+	if base == ".beads" {
+		base = filepath.Base(filepath.Dir(beadsDir))
+	}
+	if base != "" && base != "." && base != string(filepath.Separator) {
+		names[base] = true
+	}
+	if beadsDir == "" {
+		return names
+	}
+	for _, key := range []string{"BD_NAME", "issue-prefix"} {
+		if v := strings.TrimSpace(config.GetStringFromDir(beadsDir, key)); v != "" {
+			names[v] = true
+		}
+	}
+	return names
+}
+
+// recordedPathResolvesTo reports whether a registry-recorded store path names
+// beadsDir. A recorded path may point at the .beads directory or at the store
+// root that contains one, and it may name another machine's home.
+func recordedPathResolvesTo(recorded, beadsDir string) bool {
+	recorded = strings.TrimSpace(recorded)
+	if recorded == "" {
+		return false
+	}
+	recorded = expandRecordedHome(recorded)
+	for _, candidate := range []string{recorded, filepath.Join(recorded, ".beads")} {
+		if filepath.Clean(candidate) == filepath.Clean(beadsDir) {
+			return true
+		}
+	}
+	recordedRel, recordedOK := homeRelativePath(recorded)
+	localRel, localOK := homeRelativePath(beadsDir)
+	if !recordedOK || !localOK {
+		return false
+	}
+	return recordedRel == localRel ||
+		filepath.Join(recordedRel, ".beads") == localRel ||
+		filepath.Join(localRel, ".beads") == recordedRel
+}
+
+// expandRecordedHome expands a leading ~ / $HOME / ${HOME} a registry path may
+// use, so a registry need not be pre-resolved.
+func expandRecordedHome(p string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	p = strings.ReplaceAll(p, "${HOME}", home)
+	p = strings.ReplaceAll(p, "$HOME", home)
+	if p == "~" {
+		return home
+	}
+	if strings.HasPrefix(p, "~/") {
+		return filepath.Join(home, p[2:])
+	}
+	return p
+}
+
+// homeRelativePath reduces a path under a user's home — this machine's home or
+// any /Users/<x> or /home/<x> home — to its home-relative form.
+func homeRelativePath(p string) (string, bool) {
+	p = filepath.Clean(p)
+	if home, err := os.UserHomeDir(); err == nil && home != "" && home != "/" &&
+		(p == home || strings.HasPrefix(p, home+"/")) {
+		return p[len(home):], true
+	}
+	if m := foreignHomeRe.FindStringSubmatch(p); m != nil {
+		return m[1], true
+	}
+	return "", false
+}
+
+// readBrainStoreRegistry reads one registry file; ok is false when it is
+// absent or unreadable, which leaves the store unrecognized rather than an
+// error.
+func readBrainStoreRegistry(path string) (brainStoreRegistry, bool) {
+	data, err := os.ReadFile(path) //nolint:gosec // operator-owned registry, fixed path
+	if err != nil {
+		return brainStoreRegistry{}, false
+	}
+	var reg brainStoreRegistry
+	if err := yaml.Unmarshal(data, &reg); err != nil {
+		return brainStoreRegistry{}, false
+	}
+	return reg, true
 }
 
 // StoreHostFromFile reports the host/port the shared file defines, ignoring the

@@ -40,7 +40,8 @@ upstream_rebase_notes: |
     for the port, after the env override, for a federation store only. Without
     the file the port file / config.yaml / metadata chain is unchanged.
   - `cmd/bd/main.go`: `rootCmd.PersistentPreRunE` rejects a present-but-unusable
-    shared file before any command runs.
+    shared file for a brain federation store, and leaves an unrelated project's
+    commands alone.
   - `cmd/bd/bootstrap.go`: `serverClonePort` and `bootstrapServerPort` take the
     shared file's port for a federation store, and `serverClonePort` keeps the
     documented BEADS_DOLT_SERVER_PORT-before-BEADS_DOLT_PORT precedence.
@@ -78,13 +79,18 @@ run time by bd and by every generated store wrapper, with the process
 environment overriding it. Missing file = a clear error naming the file, never
 a silent `127.0.0.1`.
 
-The file is **brain-federation-scoped**. It governs the stores the federation
-provisions — the shared-server-mode stores `brain stores create` writes and
-every generated store wrapper selects (`IsFederationStore`) — and leaves an
-unrelated bd project on upstream's resolution order (port file, then
-config.yaml, then metadata.json). Otherwise a stale brain file could silently
-repoint every project on the machine, reopening the cross-project leakage
-class `GH#2372` closed.
+The file is **brain-federation-scoped**. `IsFederationStore` answers from the
+brain store registry (`~/.config/brain/stores.yaml`, legacy
+`~/.config/pai/stores.yaml`): a store is a federation store when the registry
+names it by store name or records a path that resolves to its `.beads`
+directory, comparing any user's home prefix as `$HOME` because the registry is
+written by whichever machine last ran a `brain stores` write. An unrelated bd
+project — including an upstream `bd init --shared-server` project, whose
+shared-server markers (`dolt.shared-server`, `global_dolt_database`)
+`buildServerStoreConfig` also writes — keeps upstream's resolution order (port
+file, then config.yaml, then metadata.json). Otherwise a stale brain file could
+silently repoint every project on the machine, reopening the cross-project
+leakage class `GH#2372` closed.
 
 # What changed
 
@@ -93,18 +99,22 @@ class `GH#2372` closed.
    the file when it is missing, and refuses a half-written or unparseable file
    rather than falling through to a default. `StoreHostFromFile()` is the
    best-effort form used by host resolution, and `ValidateStoreHostFile()` is
-   the check bd runs before any command: a present-but-unusable file stops bd
-   with an error naming the file.
+   the check bd runs for a brain federation store: a present-but-unusable file
+   stops that store's command with an error naming the file. The
+   federation-store predicate (`IsFederationStore`, by registry name or
+   recorded path) lives here too.
 
 2. **`internal/configfile/configfile.go`** — `GetDoltServerHost` and
    `GetDoltServerPort` consult the shared file above the per-store pins for a
-   brain federation store (`internal/configfile/storehost.go`'s
-   `IsFederationStore`), so bd itself reads it at run time and a store carrying
-   a stale `dolt_server_host` cannot drag reads back to the old host. An
-   unrelated bd project keeps its own port file / config.yaml / metadata
-   resolution. `internal/doltserver`'s `DefaultConfig` reads the same file for
-   the port of those same stores, so a host and a port the store-open paths
-   compose always come from the same source.
+   brain federation store, so bd itself reads it at run time and a store
+   carrying a stale `dolt_server_host` cannot drag reads back to the old host.
+   `Load` records the `.beads` directory it read, which is what
+   `IsFederationStore` consults the brain registry with. A present-but-unusable
+   file resolves no host at all rather than a per-store one. An unrelated bd
+   project keeps its own port file / config.yaml / metadata resolution.
+   `internal/doltserver`'s `DefaultConfig` reads the same file for the port of
+   those same stores, so a host and a port the store-open paths compose always
+   come from the same source.
 
 3. **`cmd/bd/brain_stores.go`** — `brain stores create` resolves the server
    from the environment, then the shared file, and refuses loudly when the
@@ -124,7 +134,10 @@ class `GH#2372` closed.
    wrapper's own `BEADS_DIR` (the way 'brain stores doctor' does), so a
    registry that still names another machine's home cannot hide a stale baked
    pin, and reports a wrapper it cannot classify as unclassified rather than
-   `ok`. Registry entries are never rewritten.
+   `ok`. A pin written in a shape it cannot safely rewrite (a conditional or a
+   command list, not a whole-line assignment) makes the wrapper fail rather
+   than be reported verified, and the verb refuses to touch any wrapper until
+   the shared file exists. Registry entries are never rewritten.
 
 5. **`cmd/bd/brain_stores_doctor.go`** — the doctor probes every entry exactly
    as the registry records it: an entry whose path names another machine's home
