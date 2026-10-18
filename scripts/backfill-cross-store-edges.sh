@@ -21,7 +21,7 @@
 #   scripts/backfill-cross-store-edges.sh --apply      # repair, one commit
 #   BD_NAME=brain scripts/backfill-cross-store-edges.sh --json
 #
-# Usage: backfill-cross-store-edges.sh [--dry-run | --apply] [--json] [bd-binary]
+# Usage: backfill-cross-store-edges.sh [--dry-run | --apply] [--json] [--bd path]
 
 set -euo pipefail
 
