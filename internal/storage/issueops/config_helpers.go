@@ -155,10 +155,18 @@ func getConfigKeysInTx(ctx context.Context, tx DBTX, keys ...string) (map[string
 		placeholders[i] = "?"
 		args[i] = k
 	}
-	//nolint:gosec // G201: only ? placeholders are formatted in.
 	sc := UnifiedScopeForTx(ctx, tx)
 	table, store := sc.customTable(utConfig)
-	q := fmt.Sprintf("SELECT `key`, value FROM %s %sWHERE `key` IN (%s)", table, store, strings.Join(placeholders, ","))
+	// store is the namespace predicate the selector already rendered: "" on a
+	// legacy table, "WHERE `store` = ? " when scoped. The key-list predicate
+	// must AND onto it, never be appended as a second WHERE.
+	inList := strings.Join(placeholders, ",")
+	condition := "WHERE `key` IN (" + inList + ")"
+	if store != "" {
+		condition = store + "AND `key` IN (" + inList + ")"
+	}
+	//nolint:gosec // G201: only ? placeholders are formatted in.
+	q := fmt.Sprintf("SELECT `key`, value FROM %s %s", table, condition)
 	args = append(sc.customTableArgs(), args...)
 	rows, err := tx.QueryContext(ctx, q, args...)
 	if err != nil {
