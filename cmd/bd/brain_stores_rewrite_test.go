@@ -308,3 +308,59 @@ func TestWrapperPlanReportsDrift(t *testing.T) {
 		t.Errorf("canonical plan not clean: %+v", canonical)
 	}
 }
+
+// A pinned server-mode wrapper must never be converted into one that cannot
+// resolve a host: with no record and no env host, the rewrite refuses and the
+// wrapper is left byte-for-byte alone.
+func TestRewriteRefusesRepointWithoutResolvableHost(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(configfile.StoreHostFileEnvVar, filepath.Join(home, "absent-store-host.env"))
+	t.Setenv(configfile.StoreHostKeyHost, "")
+	t.Setenv(configfile.StoreHostKeyPort, "")
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "bd"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"), []byte(`{"dolt_mode":"server"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wdir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(wdir, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(wdir, "task")
+	original := "#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/task/.beads\"\nexport BEADS_DOLT_SERVER_HOST=127.0.0.1\nexport BEADS_DOLT_SERVER_PORT=3307\nexec bd \"$@\"\n"
+	writeExec(t, wrapper, original)
+
+	res := rewriteAllStoreWrappers(rewriteRunOptions{
+		self: "bd", stores: map[string]storeEntry{"task": {Path: beadsDir}}, jobs: 1, timeout: 10 * time.Second, backup: true,
+	})
+	if len(res) != 1 || res[0].Status != "fail" || !strings.Contains(res[0].Reason, "brain stores host set") {
+		t.Fatalf("expected a refusal naming the fix, got %+v", res)
+	}
+	if res[0].Changed || res[0].Backup != "" {
+		t.Errorf("a refused rewrite must not change or back up: %+v", res[0])
+	}
+	if got, _ := os.ReadFile(wrapper); string(got) != original {
+		t.Errorf("wrapper was modified despite the refusal:\n%s", got)
+	}
+}
+
+// A baked pin is reported as drift only where the repair applies, so the
+// doctor's FAIL and --fix agree: an embedded wrapper's pin is neither.
+func TestWrapperPlanIgnoresPinsOnEmbeddedWrappers(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(configfile.StoreHostFileEnvVar, writeScratchStoreHostRecord(t, home))
+	wrapper := filepath.Join(home, "emb")
+	writeExec(t, wrapper, "#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/emb/.beads\"\nexport BEADS_DOLT_SERVER_HOST=127.0.0.1\nexec bd \"$@\"\n")
+	plan := wrapperPlanFor(wrapperTarget{name: "emb", wrapper: wrapper, beadsDir: home, exists: true}, "bd")
+	if plan.BakedPin || plan.changed || len(plan.Drifts) != 0 {
+		t.Errorf("embedded wrapper pin should be neither drift nor a change: %+v", plan)
+	}
+}

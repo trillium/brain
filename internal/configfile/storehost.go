@@ -278,19 +278,20 @@ func ParseStoreHostLine(line string) (key, value string, ok bool) {
 	}
 	line = strings.TrimPrefix(line, "export ")
 	line = strings.TrimSpace(line)
-	if idx := strings.Index(line, "#"); idx >= 0 {
-		line = strings.TrimSpace(line[:idx])
-	}
 	key, value, found := strings.Cut(line, "=")
 	if !found {
 		return "", "", false
 	}
 	key = strings.TrimSpace(key)
 	value = strings.TrimSpace(value)
-	if len(value) >= 2 {
-		if (value[0] == '"' && value[len(value)-1] == '"') || (value[0] == '\'' && value[len(value)-1] == '\'') {
-			value = value[1 : len(value)-1]
+	if value != "" && (value[0] == '"' || value[0] == '\'') {
+		if end := strings.IndexByte(value[1:], value[0]); end >= 0 {
+			value = value[1 : end+1]
 		}
+	} else if idx := strings.Index(value, " #"); idx >= 0 {
+		value = value[:idx]
+	} else if idx := strings.Index(value, "\t#"); idx >= 0 {
+		value = value[:idx]
 	}
 	if key == "" {
 		return "", "", false

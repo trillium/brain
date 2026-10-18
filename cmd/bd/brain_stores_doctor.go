@@ -196,6 +196,7 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 		planned[name] = wrapperPlanFor(t, "bd")
 	}
 
+	convergence := map[string]wrapperRewrite{}
 	if storesDoctorFix {
 		if path, werr := ensureStoreHostRecordFromEnv(); werr != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", werr)
@@ -207,7 +208,7 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 		// The repair is 'brain stores rewrite-wrappers' itself — one convergence
 		// path, so a repair can never do a different thing than the verb that
 		// reports the drift. It backs up everything it rewrites.
-		_, _, cerr := convergeStoreWrappers(rewriteRunOptions{
+		converged, _, cerr := convergeStoreWrappers(rewriteRunOptions{
 			self:     self,
 			stores:   stores,
 			jobs:     storesDoctorJobs,
@@ -219,6 +220,9 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", cerr)
 			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
 			os.Exit(1)
+		}
+		for _, c := range converged {
+			convergence[c.Name] = c
 		}
 	}
 
@@ -252,8 +256,16 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 				case storesDoctorFix:
 					// The convergence already ran: a plan that wanted a change
 					// was applied, so this store's drift is cleared.
-					r.Repaired = p.changed
-					if !p.changed && r.Status == "ok" {
+					c, ran := convergence[name]
+					switch {
+					case ran && c.Status != "ok" && c.Reason != "":
+						if r.Status != "fail" {
+							r.Status = "fail"
+							r.Reason = "HOST DRIFT NOT REPAIRED: " + c.Reason
+						}
+					case ran && c.Changed:
+						r.Repaired = true
+					case r.Status == "ok":
 						r.Status = "warn"
 						r.Reason = "host drift could not be cleared: " + p.Drifts[0]
 					}

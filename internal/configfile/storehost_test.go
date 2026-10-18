@@ -266,3 +266,18 @@ func TestLookupCredentialsPasswordUsesTheRecordFilePath(t *testing.T) {
 		t.Errorf("password = %q, want the env-referenced file to win", got)
 	}
 }
+
+func TestParseStoreHostLine_HashInsideQuotesIsKept(t *testing.T) {
+	cases := map[string]string{
+		`BRAIN_STORE_PASSWORD_FILE="/p/a#b/pw"`:         "/p/a#b/pw",
+		`BRAIN_STORE_PASSWORD_FILE='/p/a#b/pw' # note`:  "/p/a#b/pw",
+		`export BRAIN_STORE_PASSWORD_FILE=/p/pw # note`: "/p/pw",
+		`BRAIN_STORE_PASSWORD_FILE=/p/a#b`:              "/p/a#b",
+	}
+	for line, want := range cases {
+		_, got, ok := ParseStoreHostLine(line)
+		if !ok || got != want {
+			t.Errorf("%s: got %q ok=%v, want %q", line, got, ok, want)
+		}
+	}
+}

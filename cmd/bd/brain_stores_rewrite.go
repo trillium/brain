@@ -210,7 +210,7 @@ func wrapperPlanFor(t wrapperTarget, bdBinary string) plannedWrapper {
 	}
 	body := string(current)
 	hadBlock := strings.Contains(body, "_store_host_file=")
-	if _, removed := stripBakedServerPins(body); removed {
+	if _, removed := stripBakedServerPins(body); removed && t.serverMode {
 		p.BakedPin = true
 	}
 	body, homeChanged := relativizeWrapperHome(body)
@@ -418,6 +418,12 @@ type rewriteRunOptions struct {
 	bdBinary string
 }
 
+// hostRefusal is why a repoint must not be applied: the rewritten wrapper
+// resolves its host at run time and exits 78 when neither the environment nor
+// the record names one, which would turn a working pinned wrapper into a hard
+// failure with the old pin surviving only in a backup.
+const hostRefusal = "no store-host record and no BEADS_DOLT_SERVER_HOST/PORT in the environment, so a repointed wrapper could not resolve a host (run 'brain stores host set --host <host> --port <port>' first)"
+
 // rewriteAllStoreWrappers converges every store and alias wrapper: home paths
 // become $HOME-relative, server-mode wrappers resolve their Dolt host from the
 // shared store host record, and a registered store without a wrapper gets the
@@ -455,6 +461,14 @@ func rewriteOneWrapper(opts rewriteRunOptions, run string, t wrapperTarget) wrap
 	plan := wrapperPlanFor(t, opts.bdBinary)
 	r.Generated, r.Repointed, r.Changed = plan.generated, plan.repointed, plan.changed
 	r.WouldWrite = opts.dryRun && plan.changed
+
+	if plan.repointed && !plan.generated {
+		if _, err := configfile.Resolve(); err != nil {
+			r.Status, r.Reason = "fail", hostRefusal
+			r.Changed, r.Repointed, r.WouldWrite = false, false, false
+			return r
+		}
+	}
 
 	if plan.dirMissing && plan.generated {
 		r.Status = "fail"
