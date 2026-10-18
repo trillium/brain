@@ -38,9 +38,18 @@ func DefaultCredentialsPath() string {
 //
 // The file path is determined by:
 //  1. BEADS_CREDENTIALS_FILE env var (if set)
-//  2. Default platform path (see DefaultCredentialsPath)
+//  2. BEADS_CREDENTIALS_FILE in the shared store-host record
+//     (~/.config/brain/store-host.env) — the federation's one per-machine
+//     credential reference, so a machine can point at a password file shared
+//     by every store without baking the path into each wrapper
+//  3. Default platform path (see DefaultCredentialsPath)
 func LookupCredentialsPassword(host string, port int) string {
 	credFile := os.Getenv("BEADS_CREDENTIALS_FILE")
+	if credFile == "" {
+		if p, ok := StoreHostValue(StoreHostKeyCredentialsFile); ok {
+			credFile = p
+		}
+	}
 	if credFile == "" {
 		credFile = DefaultCredentialsPath()
 	}

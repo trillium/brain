@@ -402,10 +402,31 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 // the health probe for the whole federation: requiring a healthy store to run it
 // would make it useless in exactly the situation it exists to detect.
 func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
-	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+	if cmd == nil || cmd.Parent() == nil {
 		return false
 	}
-	return cmd.Name() == "doctor"
+	name := cmd.Name()
+	switch cmd.Parent().Name() {
+	case "stores":
+		// The connection verbs run when no store can be opened (robots-r1zd5:
+		// every store failing 'Access denied'): doctor reports, host reads and
+		// writes the record, rewrite-wrappers converges the wrappers by name.
+		// None of them reads the caller's store, and aborting on a broken
+		// caller store is exactly what they exist to survive.
+		switch name {
+		case "doctor", "host", "rewrite-wrappers", "orphans":
+			return true
+		}
+	case "host":
+		// 'brain stores host set' — the record's writer.
+		if g := cmd.Parent().Parent(); g != nil && g.Name() == "stores" && name == "set" {
+			return true
+		}
+	case "brain":
+		// 'brain doctor' is the same probe as 'brain stores doctor'.
+		return name == "doctor"
+	}
+	return false
 }
 
 // unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand

@@ -242,6 +242,19 @@ func readStoresFile(path string) (stores map[string]storeEntry, found bool, err 
 }
 
 func loadStoresRegistry() (map[string]storeEntry, error) {
+	merged, err := loadRawStoresRegistry()
+	if err != nil {
+		return nil, err
+	}
+	healRegistryPaths(merged)
+	return merged, nil
+}
+
+// loadRawStoresRegistry reads the registry exactly as recorded on disk: every
+// path is the literal value the last writer saved, with no machine-local
+// healing. Only loadStoresRegistry (and the callers that must persist what
+// they read) should use this.
+func loadRawStoresRegistry() (map[string]storeEntry, error) {
 	merged := make(map[string]storeEntry)
 	// Legacy first so canonical entries overwrite on conflict. The legacy
 	// read is best-effort: a corrupt/unreadable legacy file must never break
@@ -265,6 +278,56 @@ func loadStoresRegistry() (map[string]storeEntry, error) {
 		merged[name] = entry
 	}
 	return merged, nil
+}
+
+// healRegistryPaths resolves every entry whose recorded path describes another
+// machine's home to this machine's equivalent (see resolveStorePath) and
+// returns the healed names, sorted, for reporting.
+//
+// The registry is written by whichever machine last ran a 'brain stores' write,
+// so it keeps describing the home it was written in — the live mini1 registry
+// still lists /Users/<other>/data/<store>/.beads for every store while the
+// wrappers (made portable by 'brain stores rewrite-wrappers') resolve this
+// machine's $HOME copies. That mismatch is why a whole federation can read as
+// 'registered but does not answer a read': the store answers, the registration
+// points somewhere else. Healing is a resolution, never a rewrite: an entry
+// whose recorded path exists is left exactly as recorded.
+func healRegistryPaths(stores map[string]storeEntry) []string {
+	var healed []string
+	for _, name := range sortedKeys(stores) {
+		entry := stores[name]
+		p, ok := resolveStorePath(entry.Path)
+		if !ok {
+			continue
+		}
+		entry.Path = p
+		stores[name] = entry
+		healed = append(healed, name)
+	}
+	return healed
+}
+
+// persistHealedRegistryPaths rewrites the registry file when any entry's
+// recorded path describes another machine's home while this machine's
+// equivalent exists (see resolveStorePath), and returns the healed names. It is
+// the write half of the healing loadStoresRegistry does in memory: a registry
+// carried to another machine (or another home) keeps working immediately, and
+// the file stops describing paths that do not exist here the next time a
+// federation verb runs. Nothing is written when no entry heals, so a registry
+// whose paths are all real is untouched byte for byte.
+func persistHealedRegistryPaths() ([]string, error) {
+	recorded, err := loadRawStoresRegistry()
+	if err != nil {
+		return nil, err
+	}
+	healed := healRegistryPaths(recorded)
+	if len(healed) == 0 {
+		return nil, nil
+	}
+	if err := saveStoresRegistry(recorded); err != nil {
+		return nil, err
+	}
+	return healed, nil
 }
 
 func saveStoresRegistry(stores map[string]storeEntry) error {
@@ -464,6 +527,7 @@ var (
 	createStoreBinary   string
 	createStoreInitName string
 	createStoreInitMail string
+	createStoreEmbedded bool
 )
 
 var brainStoresCreateCmd = &cobra.Command{
@@ -471,30 +535,39 @@ var brainStoresCreateCmd = &cobra.Command{
 	Short: "Provision a new connected store (dolt init + entries dir + wrapper + registry)",
 	Long: `Provision a new connected store end-to-end. Does, in order:
 
-  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
-     as exported by the brain wrapper) the store is created as a database in the
-     running shared dolt sql-server: metadata.json (dolt_mode=server) and
-     config.yaml are written first, then bd CREATEs the database and initializes
-     the schema. Without the server pins it falls back to an embedded 'dolt init'
-     in <path>/.beads/.
-  2. Create <path>/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/<name>. In shared-server mode the
-     wrapper exports the four server pins (mirroring the review/brain wrappers);
-     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
-  4. Register the store in ~/.config/brain/stores.yaml.
-  5. Regenerate ~/.config/brain/stores.env.
+  1. Provision the Dolt store. The store is provisioned on the federation's
+     shared Dolt sql-server whenever one can be found and proven to answer:
+     the shared-server pins the caller's wrapper exported (BEADS_DOLT_*)
+     first, else the server the registered stores' metadata.json already
+     resolves to, else 127.0.0.1:3307. A candidate that does not answer is a
+     loud refusal, never a store silently pinned to a host that cannot be
+     read — and never a silent fallback to an embedded store. Pass --embedded
+     to ask for the embedded shape explicitly; then metadata.json
+     (dolt_mode=server) and config.yaml are written first, and
+     'dolt init' runs in <path>/.beads.
+  2. Write <path>/.beads/config.yaml (issue-prefix + BD_NAME), in either
+     shape.
+  3. Create <path>/entries/ for exfiltrated markdown.
+  4. Write a CLI wrapper at ~/.local/bin/<name>. On a shared server the
+     wrapper exports the four server pins (mirroring the review/brain
+     wrappers); embedded stores get the minimal BEADS_DIR/BD_NAME wrapper.
+     Either way it exec's bd.
+  5. Register the store in ~/.config/brain/stores.yaml.
+  6. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/<name>. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
 
 If any step fails after files have been written, the verb leaves the
 partial state in place and exits non-zero — re-running with the same
-arguments resumes idempotently.
+arguments resumes idempotently. An abandoned server-side store must be
+dropped by hand on the shared server; the verb never drops a database.
 
 Examples:
   brain stores create recipes
   brain stores create recipes --path /Volumes/extra/recipes
-  brain stores create recipes --bd-binary /opt/homebrew/bin/bd`,
+  brain stores create recipes --bd-binary /opt/homebrew/bin/bd
+  brain stores create scratch --embedded`,
 	Args: cobra.ExactArgs(1),
 	Run:  runBrainStoresCreate,
 }
@@ -517,27 +590,48 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	beadsDir := filepath.Join(path, ".beads")
 	entriesDir := filepath.Join(path, "entries")
 
-	// Step 1: provision the Dolt store. In shared-server mode (the brain
-	// federation default — the brain wrapper exports BEADS_DOLT_SERVER_MODE=1
-	// and the server pins at create time) the store is either a namespace of
-	// the unified database (when the server hosts one — the post-cutover
-	// shape) or its own database in the running shared dolt sql-server (the
-	// pre-cutover shape), never an embedded .beads/.dolt repo unless those
-	// pins are absent. this is the one command an operator types to "make a
-	// boop store": afterwards 'boop list/ready/create' address the boop
-	// namespace, whatever the substrate is.
-	host, port, shared := resolveSharedServerCreate()
+	// Step 1: decide WHERE the store is provisioned, then provision it. A
+	// store written against a Dolt server that does not answer is registered
+	// but unreadable for as long as nobody notices (robots-1nri, robots-1ypiy,
+	// task-d3cz, task-8m5x), so every candidate server must answer before it
+	// is written into the new store's metadata.json and wrapper, and the
+	// embedded (auto-starting) shape is only reachable by asking for it.
+	stores, err := loadStoresRegistry()
+	if err != nil {
+		FatalError("loading registry: %v", err)
+	}
+
+	ctx := context.Background()
+	target, terr := resolveCreateServer(ctx, probeUnifiedDatabaseOnServer)
+	if terr != nil {
+		FatalError("%v", terr)
+	}
+
+	embedded := target.Source == createServerEmbedded
 	provisioned := ""
-	if shared {
-		pdb, perr := provisionServerStore(context.Background(), name, beadsDir, host, port)
+	if embedded {
+		fmt.Fprintf(os.Stderr,
+			"%s No shared Dolt sql-server answered, so %q is being provisioned as an EMBEDDED store at %s.\n"+
+				"    Its reads auto-start a private local server instead of reaching the federation's.\n",
+			ui.RenderWarn("⚠"), name, beadsDir)
+		if err := initDoltStore(beadsDir); err != nil {
+			FatalError("dolt init at %s: %v", beadsDir, err)
+		}
+	} else {
+		pdb, perr := provisionServerStore(ctx, name, beadsDir, target.Host, target.Port)
 		if perr != nil {
 			FatalError("provisioning server store at %s: %v", beadsDir, perr)
 		}
 		provisioned = pdb
-	} else {
-		if err := initDoltStore(beadsDir); err != nil {
-			FatalError("dolt init at %s: %v", beadsDir, err)
-		}
+	}
+
+	// config.yaml is part of a working store in either shape: it carries the
+	// issue prefix and the store's BD_NAME, and 'brain stores create' used to
+	// leave it out on the path that did not go through the Dolt sql-server, so
+	// the store needed a hand-written config.yaml before any command worked
+	// (task-d3cz).
+	if err := writeStoreConfigYaml(beadsDir, name); err != nil {
+		FatalError("writing config.yaml at %s: %v", beadsDir, err)
 	}
 
 	// Step 2: entries/ sibling for exfiltration.
@@ -552,8 +646,8 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	if !createStoreNoWrap {
 		var wp string
 		var werr error
-		if shared {
-			wp, werr = writeServerStoreWrapper(name, beadsDir, createStoreBinary, host, port, provisioned)
+		if !embedded {
+			wp, werr = writeServerStoreWrapper(name, beadsDir, createStoreBinary, target.Host, target.Port, provisioned)
 		} else {
 			wp, werr = writeStoreWrapper(name, beadsDir, createStoreBinary)
 		}
@@ -564,10 +658,6 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	}
 
 	// Step 4: register in stores.yaml.
-	stores, err := loadStoresRegistry()
-	if err != nil {
-		FatalError("loading registry: %v", err)
-	}
 	entry := stores[name] // preserve any existing about blurb on re-run
 	entry.Path = beadsDir
 	stores[name] = entry
@@ -590,6 +680,7 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 			"wrapper":     wrapperPath,
 			"registry":    storesYamlFile(),
 			"env_file":    envPath,
+			"server":      target.describe(),
 		}
 		outputJSON(payload)
 		return
@@ -601,6 +692,7 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	if wrapperPath != "" {
 		fmt.Printf("    wrapper:  %s\n", wrapperPath)
 	}
+	fmt.Printf("    server:   %s\n", target.describe())
 	fmt.Printf("    registry: %s\n", storesYamlFile())
 	fmt.Printf("    env:      %s\n", envPath)
 }
@@ -637,27 +729,88 @@ func initDoltStore(beadsDir string) error {
 	return nil
 }
 
-// resolveSharedServerCreate detects whether 'brain stores create' is running in
-// brain shared-server mode. The brain wrapper exports BEADS_DOLT_SERVER_MODE=1 (or
-// BEADS_DOLT_SHARED_SERVER=1) plus the server host/port at create time; when
-// present, a new store must be provisioned as a database in the running shared
-// dolt sql-server rather than as an embedded .beads/.dolt repo. Returns the
-// resolved host, port, and whether shared-server mode is active.
-func resolveSharedServerCreate() (host string, port int, shared bool) {
-	if os.Getenv("BEADS_DOLT_SERVER_MODE") != "1" && os.Getenv("BEADS_DOLT_SHARED_SERVER") != "1" {
-		return "", 0, false
+// Where a newly provisioned store's server choice came from. Surfaced in the
+// verb's output so an operator can see the federation's one config source was
+// followed rather than guessed at.
+const (
+	createServerEnv      = "env"
+	createServerFile     = "file"
+	createServerEmbedded = "embedded"
+)
+
+// createServerTarget names the Dolt sql-server a new store is provisioned on,
+// and where that choice came from. Source == createServerEmbedded means the
+// operator asked for the embedded shape with --embedded.
+type createServerTarget struct {
+	Host   string
+	Port   int
+	Source string
+}
+
+// describe renders the target for the verb's output.
+func (t createServerTarget) describe() string {
+	switch t.Source {
+	case createServerEmbedded:
+		return "embedded (--embedded: no shared server is used)"
+	case createServerEnv:
+		return fmt.Sprintf("%s:%d (BEADS_DOLT_SERVER_HOST/PORT in the environment)", t.Host, t.Port)
+	default:
+		return fmt.Sprintf("%s:%d (%s)", t.Host, t.Port, configfile.DefaultStoreHostPath())
 	}
-	host = os.Getenv("BEADS_DOLT_SERVER_HOST")
-	if host == "" {
-		host = "127.0.0.1"
+}
+
+// serverProbe proves a candidate server answers and reports the unified
+// database it hosts. probeUnifiedDatabaseOnServer is the real one; it is a
+// parameter so the choice can be tested without a live server.
+type serverProbe func(ctx context.Context, host string, port int) (string, bool, error)
+
+func probeCreateServer(ctx context.Context, probe serverProbe, host string, port int) error {
+	if probe == nil {
+		probe = probeUnifiedDatabaseOnServer
 	}
-	port = dolt.DefaultSQLPort
-	if v := os.Getenv("BEADS_DOLT_SERVER_PORT"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			port = n
+	_, _, err := probe(ctx, host, port)
+	return err
+}
+
+// resolveCreateServer decides which Dolt sql-server a new store is provisioned
+// on. The host is the federation's one per-machine fact, so it comes from the
+// shared store host config (~/.config/brain/store-host.env) or, overriding it,
+// from BEADS_DOLT_SERVER_HOST/PORT in the process environment — never from a
+// per-store default and never from the asker's imagination. A missing file is a
+// loud refusal naming the file: silently provisioning against 127.0.0.1 is how
+// a store ends up registered but unreadable (robots-1nri, robots-1ypiy,
+// task-d3cz, task-8m5x). The server must answer before the store is written
+// against it, and the embedded (auto-starting) shape is only reachable by
+// asking for it with --embedded.
+func resolveCreateServer(ctx context.Context, probe serverProbe) (createServerTarget, error) {
+	if createStoreEmbedded {
+		return createServerTarget{Source: createServerEmbedded}, nil
+	}
+
+	sh, err := configfile.Resolve()
+	if err != nil {
+		path := configfile.DefaultStoreHostPath()
+		if path == "" {
+			path = "~/.config/brain/" + configfile.StoreHostFileName
 		}
+		return createServerTarget{}, fmt.Errorf(
+			"no shared Dolt sql-server is configured for this machine: %v\n"+
+				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s (or export the same two variables), then re-run. Pass --embedded only for a store that should run its own local Dolt.",
+			err, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort, path)
 	}
-	return host, port, true
+
+	if perr := probeCreateServer(ctx, probe, sh.Host, sh.Port); perr != nil {
+		return createServerTarget{}, fmt.Errorf(
+			"the shared Dolt sql-server %s:%d did not answer: %v\n"+
+				"Refusing to create a store whose every read would fail. Start that server or repoint %s, then re-run.",
+			sh.Host, sh.Port, perr, configfile.DefaultStoreHostPath())
+	}
+
+	source := createServerFile
+	if sh.Source == "env" {
+		source = createServerEnv
+	}
+	return createServerTarget{Host: sh.Host, Port: sh.Port, Source: source}, nil
 }
 
 // buildServerStoreConfig constructs the metadata.json contents for a new
@@ -888,11 +1041,66 @@ BD_NAME: %q
 	return nil
 }
 
-// writeServerStoreWrapper writes a CLI wrapper at ~/.local/bin/<name> for a
-// shared-server store. Unlike writeStoreWrapper, it exports the four shared-server
-// pins (mirroring the review/brain wrappers) so bd resolves in server mode and
-// never falls back to embedded mode or mis-discovers a sibling database. It also
-// exports BRAIN_KNOWLEDGE_ROOT/BRAIN_EXFIL_FLAT to match the federation canon.
+// sharedServerHostBlock is the runtime host resolution every generated
+// shared-server store wrapper carries. It deliberately does NOT bake a Dolt
+// host or port: the federation's server is one fact per machine, kept in the
+// shared store host config (~/.config/brain/store-host.env), and it is read
+// here at run time. Repointing a machine — or moving the whole federation — is
+// then one file edit, and no wrapper can disagree with another about where the
+// store lives. A process env value of either key overrides the file, and a
+// missing file is a loud refusal that names it rather than a silent 127.0.0.1.
+//
+// The literal env var and file names here must stay in sync with
+// configfile.StoreHostFileEnvVar / configfile.StoreHostFileName; generated
+// wrapper tests assert the agreement.
+const sharedServerHostBlock = `# The federation's one source for the Dolt server; a process env value of the
+# same name wins over the file, and a missing file is a loud refusal below.
+_store_host_file="${BRAIN_STORE_HOST_FILE:-$HOME/.config/brain/store-host.env}"
+_want_host="${BEADS_DOLT_SERVER_HOST:-}"
+_want_port="${BEADS_DOLT_SERVER_PORT:-}"
+if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
+  if [ ! -f "$_store_host_file" ]; then
+    echo "beads: missing shared store host config: $_store_host_file" >&2
+    echo "beads: write BEADS_DOLT_SERVER_HOST=<host> and BEADS_DOLT_SERVER_PORT=<port> there, or export them for this shell" >&2
+    exit 78
+  fi
+  . "$_store_host_file"
+  [ -n "$_want_host" ] || _want_host="${BEADS_DOLT_SERVER_HOST:-}"
+  [ -n "$_want_port" ] || _want_port="${BEADS_DOLT_SERVER_PORT:-}"
+fi
+if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
+  echo "beads: $_store_host_file does not define BEADS_DOLT_SERVER_HOST and BEADS_DOLT_SERVER_PORT" >&2
+  exit 78
+fi
+export BEADS_DOLT_SERVER_HOST="$_want_host"
+export BEADS_DOLT_SERVER_PORT="$_want_port"
+unset _store_host_file _want_host _want_port
+`
+
+// serverStoreWrapperTemplate is the canonical shared-server store wrapper:
+// header, the store's own identity, server mode, the runtime host block, exec.
+// serverStoreWrapperProvenanceLine is the header comment renderServerStoreWrapperBody
+// replaces: host/port are provenance only, never baked into a variable.
+const serverStoreWrapperProvenanceLine = "# Shared-server store, provisioned against {host}:{port}. The Dolt host and port\n# are read from the shared store host config at RUN TIME (see below), so\n# repointing this machine or the federation never rewrites this wrapper;\n"
+
+const serverStoreWrapperTemplate = `#!/bin/sh
+# Auto-generated by 'brain stores create {name}'.
+` + serverStoreWrapperProvenanceLine + `# dolt_database={database} comes from .beads/metadata.json.
+export BEADS_DIR={beadsdir}
+export BD_NAME="{name}"
+export BRAIN_KNOWLEDGE_ROOT={knowledgeroot}
+export BRAIN_EXFIL_FLAT=1
+export BEADS_DOLT_SERVER_MODE=1
+export BEADS_DOLT_SHARED_SERVER=1
+` + sharedServerHostBlock + `exec {bd} "$@"
+`
+
+// writeServerStoreWrapper writes the canonical shared-server store wrapper at
+// ~/.local/bin/<name>. host/port are the server the store was provisioned
+// against and appear in the header comment as provenance only: the wrapper
+// resolves the server from the shared config at run time, so no host is baked
+// in. It also exports BRAIN_KNOWLEDGE_ROOT/BRAIN_EXFIL_FLAT to match the
+// federation canon.
 // serverDatabase names the Dolt database the wrapper's metadata.json resolves
 // to (the store's own database pre-cutover, the unified database after); it
 // appears in the header comment only — bd reads the database from
@@ -907,6 +1115,20 @@ func writeServerStoreWrapper(name, beadsDir, bdBinary, host string, port int, se
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", binDir, err)
 	}
+	body := renderServerStoreWrapperBody(name, beadsDir, bdBinary, host, port, serverDatabase)
+	wrapperPath := filepath.Join(binDir, name)
+	if err := os.WriteFile(wrapperPath, []byte(body), 0o755); err != nil { //nolint:gosec
+		return "", fmt.Errorf("writing %s: %w", wrapperPath, err)
+	}
+	return wrapperPath, nil
+}
+
+// renderServerStoreWrapperBody builds the canonical shared-server wrapper body.
+// host/port and serverDatabase only ever appear in the header comment, as
+// provenance: the executable lines resolve the server from the shared config at
+// run time. host/port may be unknown (a rewrite that has no live server to
+// name); the provenance line is then omitted rather than printing a fake value.
+func renderServerStoreWrapperBody(name, beadsDir, bdBinary, host string, port int, serverDatabase string) string {
 	if bdBinary == "" {
 		bdBinary = "bd"
 	}
@@ -919,26 +1141,21 @@ func writeServerStoreWrapper(name, beadsDir, bdBinary, host string, port int, se
 	if filepath.Base(knowledgeRoot) != name {
 		knowledgeRoot = filepath.Join(knowledgeRoot, name)
 	}
-	wrapperPath := filepath.Join(binDir, name)
-	body := fmt.Sprintf(`#!/bin/sh
-# Auto-generated by 'brain stores create %s'.
-# Server-mode store on the shared Dolt sql-server (%s:%d); dolt_database=%s.
-# The explicit shared-server pins mirror the review/brain wrappers so bd never
-# falls back to embedded mode or mis-discovers a sibling database.
-export BEADS_DIR=%s
-export BD_NAME=%q
-export BRAIN_KNOWLEDGE_ROOT=%s
-export BRAIN_EXFIL_FLAT=1
-export BEADS_DOLT_SERVER_MODE=1
-export BEADS_DOLT_SERVER_HOST=%s
-export BEADS_DOLT_SERVER_PORT=%d
-export BEADS_DOLT_SHARED_SERVER=1
-exec %s "$@"
-`, name, host, port, serverDatabase, shellPathExpr(beadsDir), name, shellPathExpr(knowledgeRoot), host, port, bdBinary)
-	if err := os.WriteFile(wrapperPath, []byte(body), 0o755); err != nil { //nolint:gosec
-		return "", fmt.Errorf("writing %s: %w", wrapperPath, err)
+	template := serverStoreWrapperTemplate
+	provenance := fmt.Sprintf("# Shared-server store, provisioned against %s:%d. The Dolt host and port\n# are read from the shared store host config at RUN TIME (see below), so\n# repointing this machine or the federation never rewrites this wrapper;\n", host, port)
+	if host == "" || port <= 0 {
+		provenance = "# Shared-server store. The Dolt host and port are read from the\n# shared store host config at RUN TIME (see below), so repointing this machine\n# or the federation never rewrites this wrapper;\n"
 	}
-	return wrapperPath, nil
+	template = strings.Replace(template, serverStoreWrapperProvenanceLine, provenance, 1)
+	return strings.NewReplacer(
+		"{name}", name,
+		"{host}", host,
+		"{port}", strconv.Itoa(port),
+		"{database}", serverDatabase,
+		"{beadsdir}", shellPathExpr(beadsDir),
+		"{knowledgeroot}", shellPathExpr(knowledgeRoot),
+		"{bd}", bdBinary,
+	).Replace(template)
 }
 
 // shellPathExpr renders a path as a double-quoted sh word for a generated
@@ -970,19 +1187,24 @@ func writeStoreWrapper(name, beadsDir, bdBinary string) (string, error) {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", binDir, err)
 	}
-	if bdBinary == "" {
-		bdBinary = "bd"
-	}
 	wrapperPath := filepath.Join(binDir, name)
-	body := fmt.Sprintf(`#!/bin/sh
-# Auto-generated by 'brain stores create %s'.
-# Pins this CLI variant to its own store, then delegates to bd.
-exec env BEADS_DIR=%s BD_NAME=%q %s "$@"
-`, name, shellPathExpr(beadsDir), name, bdBinary)
+	body := renderStoreWrapperBody(name, beadsDir, bdBinary)
 	if err := os.WriteFile(wrapperPath, []byte(body), 0o755); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing %s: %w", wrapperPath, err)
 	}
 	return wrapperPath, nil
+}
+
+// renderStoreWrapperBody builds the minimal (embedded-store) wrapper body.
+func renderStoreWrapperBody(name, beadsDir, bdBinary string) string {
+	if bdBinary == "" {
+		bdBinary = "bd"
+	}
+	return fmt.Sprintf(`#!/bin/sh
+# Auto-generated by 'brain stores create %s'.
+# Pins this CLI variant to its own store, then delegates to bd.
+exec env BEADS_DIR=%s BD_NAME=%q %s "$@"
+`, name, shellPathExpr(beadsDir), name, bdBinary)
 }
 
 // regenerateStoresEnv writes ~/.config/brain/stores.env from the registry,
@@ -1482,6 +1704,52 @@ func expandPath(p string) string {
 	return filepath.Clean(p)
 }
 
+// resolveStorePath resolves a registry path for the machine it is read on: a
+// leading ~ is expanded, and a path recorded under another person's home is
+// healed to this machine's own equivalent — but only when the recorded path
+// has gone and the equivalent exists. It reports whether it healed.
+//
+// The healing is the registry's half of the same machine-portability fix the
+// wrappers already have (homeRelativeValue / 'brain stores rewrite-wrappers'):
+// a store registered as /Users/alice/data/task/.beads is still the store at
+// $HOME/data/task/.beads after the store directory (or the whole registry)
+// moves to another machine or home. Nothing is guessed: a recorded path that
+// still exists always wins, and a path with no existing home equivalent is
+// left alone so a genuinely missing store keeps reporting as missing.
+func resolveStorePath(recorded string) (string, bool) {
+	p := expandPath(recorded)
+	if _, err := os.Stat(p); err == nil {
+		return p, false
+	}
+	healed, ok := healForeignHomePath(p)
+	if !ok {
+		return p, false
+	}
+	return healed, true
+}
+
+// healForeignHomePath maps an absolute path under any /Users/<x> or /home/<x>
+// home to this machine's home equivalent, and only when that equivalent
+// exists. It never maps the current home onto itself.
+func healForeignHomePath(p string) (string, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" || home == "/" {
+		return p, false
+	}
+	m := foreignHomeRe.FindStringSubmatch(p)
+	if m == nil {
+		return p, false
+	}
+	candidate := filepath.Clean(home + m[1])
+	if candidate == filepath.Clean(p) {
+		return p, false
+	}
+	if _, err := os.Stat(candidate); err != nil {
+		return p, false
+	}
+	return candidate, true
+}
+
 func init() {
 	brainStoresCreateCmd.Flags().StringVar(&createStorePath, "path", "",
 		"Filesystem root for the new store (default: $HOME/data/<name>)")
@@ -1493,6 +1761,8 @@ func init() {
 		"--name arg to pass to 'dolt init' (skipped if empty)")
 	brainStoresCreateCmd.Flags().StringVar(&createStoreInitMail, "dolt-email", "",
 		"--email arg to pass to 'dolt init' (skipped if empty)")
+	brainStoresCreateCmd.Flags().BoolVar(&createStoreEmbedded, "embedded", false,
+		"Create an embedded (self-starting) store even when a shared Dolt sql-server is known")
 
 	brainStoresRenderAllCmd.Flags().BoolVar(&renderAllStoresJSON, "json", false,
 		"Emit a structured JSON object instead of per-store text summaries")
