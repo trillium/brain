@@ -1,6 +1,6 @@
 ---
 id: 0037
-title: one shared store-host config — the Dolt server is one fact per machine, read at run time
+title: one shared store-host file for the brain federation, read at run time
 isc: []
 status: landed
 created: 2026-10-18
@@ -9,7 +9,6 @@ commits: []
 touches:
   - internal/configfile/storehost.go
   - internal/configfile/storehost_test.go
-  - internal/configfile/configfile.go
   - cmd/bd/brain_stores.go
   - cmd/bd/brain_stores_doctor.go
   - cmd/bd/brain_stores_rewrite.go
@@ -17,39 +16,19 @@ touches:
   - cmd/bd/brain_stores_create_test.go
   - cmd/bd/brain_stores_doctor_test.go
   - cmd/bd/brain_stores_rewrite_test.go
-  - cmd/bd/main.go
-  - cmd/bd/bootstrap.go
-  - internal/doltserver/doltserver.go
-  - internal/doltserver/doltserver_test.go
   - divergence/0037-store-host-single-source.md
   - divergence/README.md
 upstream_rebase_notes: |
-  Upstream bd has no brain federation registry, no `brain stores` / `brain
-  remote` verbs, and no shared store-host config. Brain-only paths (resolve
-  `ours`): `cmd/bd/brain_stores*.go`, `internal/configfile/storehost.go`.
+  Every path here is brain-only (resolve `ours`): `cmd/bd/brain_stores*.go` and
+  the new `internal/configfile/storehost.go`. No upstream file is edited, and
+  core bd resolution is untouched: `GetDoltServerHost`/`GetDoltServerPort`,
+  `doltserver.DefaultConfig`, and `bd`'s pre-run all behave exactly as
+  upstream. The wrappers this change generates export BEADS_DOLT_SERVER_HOST
+  and BEADS_DOLT_SERVER_PORT, which upstream bd already honours.
 
-  Upstream files edited, each a small insertion:
-
-  - `internal/configfile/configfile.go`: `GetDoltServerHost` and
-    `GetDoltServerPort` gain one extra resolution layer (the shared store-host
-    file) between the process environment and the per-store metadata pins, for
-    a store `IsFederationStore` recognizes. Upstream's chain is otherwise
-    untouched; with no shared file `StoreHostFromFile()` returns ok=false and
-    the functions behave exactly as upstream does.
-  - `internal/doltserver/doltserver.go`: `DefaultConfig` reads the same file
-    for the port, after the env override, for a federation store only. Without
-    the file the port file / config.yaml / metadata chain is unchanged.
-  - `cmd/bd/main.go`: `rootCmd.PersistentPreRunE` rejects a present-but-unusable
-    shared file for a brain federation store, and leaves an unrelated project's
-    commands alone.
-  - `cmd/bd/bootstrap.go`: `serverClonePort` and `bootstrapServerPort` take the
-    shared file's port for a federation store, and `serverClonePort` keeps the
-    documented BEADS_DOLT_SERVER_PORT-before-BEADS_DOLT_PORT precedence.
-
-  On an upstream rebase, take upstream's versions of those four files and
-  re-apply the small insertions, or drop them: without the file layer every
-  store falls back to its own baked `dolt_server_host`, which is the pre-0037
-  behaviour.
+  On an upstream rebase nothing needs re-applying to upstream files. If the
+  shared-file layer is dropped entirely, the brain wrappers fall back to the
+  host/port each store's metadata.json pins (the pre-0037 behaviour).
 ---
 
 # Why
@@ -75,92 +54,81 @@ is invisible until a store silently answers from the wrong place or times out.
 The captain's scope update (2026-10-18, firstmate inbox 001) named the fix:
 one shared file per machine, `~/.config/brain/store-host.env`, holding
 `BEADS_DOLT_SERVER_HOST` and `BEADS_DOLT_SERVER_PORT` as `KEY=VALUE`, read at
-run time by bd and by every generated store wrapper, with the process
-environment overriding it. Missing file = a clear error naming the file, never
-a silent `127.0.0.1`.
+run time by the generated store wrappers, with the process environment
+overriding it. Missing file = a clear error naming the file, never a silent
+`127.0.0.1`.
 
-The file is **brain-federation-scoped**. `IsFederationStore` answers from the
-brain store registry (`~/.config/brain/stores.yaml`, legacy
-`~/.config/pai/stores.yaml`): a store is a federation store when the registry
-names it by store name or records a path that resolves to its `.beads`
-directory, comparing any user's home prefix as `$HOME` because the registry is
-written by whichever machine last ran a `brain stores` write. An unrelated bd
-project — including an upstream `bd init --shared-server` project, whose
-shared-server markers (`dolt.shared-server`, `global_dolt_database`)
-`buildServerStoreConfig` also writes — keeps upstream's resolution order (port
-file, then config.yaml, then metadata.json). Otherwise a stale brain file could
-silently repoint every project on the machine, reopening the cross-project
-leakage class `GH#2372` closed.
+The change is deliberately **brain-scoped**: only the brain verbs read the
+file, and only the wrappers this federation generates use it. Core bd keeps
+its upstream precedence (port file, then config.yaml, then metadata.json), so
+no unrelated project can be repointed by a stale brain file. A wrapper pins
+nothing: it reads the file at run time, so repointing the federation is one
+file edit, and a store carrying a stale `dolt_server_host` cannot quietly drag
+reads back to the old host *through its wrapper*.
 
 # What changed
 
-1. **`internal/configfile/storehost.go`** — the reader. `Resolve()` gives the
-   host/port for this process (process env wins per key, then the file), names
-   the file when it is missing, and refuses a half-written or unparseable file
-   rather than falling through to a default. `StoreHostFromFile()` is the
-   best-effort form used by host resolution, and `ValidateStoreHostFile()` is
-   the check bd runs for a brain federation store: a present-but-unusable file
-   stops that store's command with an error naming the file. The
-   federation-store predicate (`IsFederationStore`, by registry name or
-   recorded path) lives here too.
+1. **`internal/configfile/storehost.go`** — the reader the brain verbs use.
+   `Resolve()` gives the host/port for this process (process env wins per key,
+   then the file), reporting per-key provenance so a host from the environment
+   and a port from the file is labelled `mixed` rather than claimed as the
+   file's. A missing file is `ErrStoreHostMissing`; a file that exists but does
+   not define both keys, or defines an unusable port, is an error naming the
+   file. `ValidateStoreHostFile()` is the same check without a fallback, for
+   verbs that must refuse before they touch anything.
 
-2. **`internal/configfile/configfile.go`** — `GetDoltServerHost` and
-   `GetDoltServerPort` consult the shared file above the per-store pins for a
-   brain federation store, so bd itself reads it at run time and a store
-   carrying a stale `dolt_server_host` cannot drag reads back to the old host.
-   `Load` records the `.beads` directory it read, which is what
-   `IsFederationStore` consults the brain registry with. A present-but-unusable
-   file resolves no host at all rather than a per-store one. An unrelated bd
-   project keeps its own port file / config.yaml / metadata resolution.
-   `internal/doltserver`'s `DefaultConfig` reads the same file for the port of
-   those same stores, so a host and a port the store-open paths compose always
-   come from the same source.
+2. **`cmd/bd/brain_stores.go`** — `brain stores create` requires the shared
+   file up front (a process env value alone does not satisfy it), resolves the
+   server from it, and refuses loudly when the server does not answer. The
+   generated shared-server wrapper carries a run-time block that reads the file
+   and exports both variables, and stops with a clear error naming the file
+   (and the unusable key) when the file is missing or unusable — including a
+   non-numeric port.
 
-3. **`cmd/bd/brain_stores.go`** — `brain stores create` resolves the server
-   from the environment, then the shared file, and refuses loudly when the
-   file is missing or the server does not answer. It refuses an
-   environment-only server too: the wrapper it writes resolves its host from
-   the shared file at run time, so a store created without that file would be
-   unreadable from any ordinary shell. The embedded (self-starting) shape is
-   only reachable with `--embedded`, and `config.yaml` is written in both
-   shapes (task-d3cz's missing file). Generated shared-server wrappers no
-   longer bake a host: they read the shared config at run time and exit 78
-   naming it when it is missing.
+3. **`cmd/bd/brain_stores_rewrite.go`** — `brain stores rewrite-wrappers` also
+   requires the file up front, so it can never repoint the fleet into wrappers
+   that refuse. It classifies a wrapper from the wrapper's own `BEADS_DIR` and
+   its store's metadata (an unclassified wrapper is reported, never `ok`),
+   strips whole-line baked host/port pins, detects pins in shapes it cannot
+   safely rewrite (a conditional default, a command list) and fails the wrapper
+   while one survives, and installs the run-time block *before the first
+   statement that can reach a bd invocation* so every path in the wrapper — not
+   just the final `exec` — resolves the shared server. Every rewritten wrapper
+   is first copied to `<wrapper>.bak`.
 
-4. **`cmd/bd/brain_stores_rewrite.go`** — `brain stores rewrite-wrappers` is
-   now the one step that repoints a machine's stores: it adds the run-time
-   host block to server-mode wrappers and drops baked host pins, leaving the
-   block's own runtime exports intact. It classifies a wrapper from the
-   wrapper's own `BEADS_DIR` (the way 'brain stores doctor' does), so a
-   registry that still names another machine's home cannot hide a stale baked
-   pin, and reports a wrapper it cannot classify as unclassified rather than
-   `ok`. A pin written in a shape it cannot safely rewrite (a conditional or a
-   command list, not a whole-line assignment) makes the wrapper fail rather
-   than be reported verified, and the verb refuses to touch any wrapper until
-   the shared file exists. Registry entries are never rewritten.
-
-5. **`cmd/bd/brain_stores_doctor.go`** — the doctor probes every entry exactly
-   as the registry records it: an entry whose path names another machine's home
-   (or no longer exists) is reported by that store's result, never guessed at
-   or rewritten. It also checks the wrapper's own `BEADS_DIR` against the
-   registry so a wrapper that resolves a *different* store fails loudly instead
-   of answering from the wrong one (the `robots-bfenw` / `robots-3pfky`
-   misroute class, which a read probe cannot see).
+4. **`cmd/bd/brain_stores_doctor.go`** — the doctor reports any store whose
+   `metadata.json` pins its own `dolt_server_host`/`dolt_server_port`: the
+   wrapper reads the shared file, but a bare bd run in the store directory
+   would use the pin and silently diverge from the federation's one server.
 
 ## Rollback
 
-Delete `~/.config/brain/store-host.env`: per-store `metadata.json` / port-file
-resolution applies again exactly as before (an absent shared file is not an
-error), and an unrelated bd project was never governed by the file. Regenerate
-the wrappers with `brain stores rewrite-wrappers` from the previous build if a
-wrapper's runtime block must be removed; no store data, launchd job, or shim was
-changed by this PR.
+The repoint is reversible; do not simply delete the file, because every
+repointed wrapper exits 78 while the file is absent.
+
+1. **Restore the file** (preferred): put `BEADS_DOLT_SERVER_HOST=<host>` and
+   `BEADS_DOLT_SERVER_PORT=<port>` back in
+   `~/.config/brain/store-host.env`. Every wrapper resolves again with no
+   wrapper change.
+2. **Or export the two variables** in the environment that invokes the tools.
+   A process env value of either key wins over the file, so exports alone make
+   the wrappers work even with the file gone.
+3. **Or restore a wrapper** from the `<wrapper>.bak` copy the repoint pass
+   wrote next to it (`cp ~/.local/bin/<store>.bak ~/.local/bin/<store>`); the
+   backup is the exact pre-repoint file. A wrapper is never rewritten without
+   first writing that copy.
+
+Deleting the file and restarting every store's `dolt sql-server` is not a
+rollback: the wrappers would still refuse, and a store's own server is not what
+the federation reads.
 
 # Why this is closer to the brain spec
 
 `VISION.md` §"One federation, one surface" says the federation converges on one
 database on one machine, and §"A silent failure is the defect class" says a
 database that cannot be reached is a loud failure. Both are served by moving
-the server's location into one readable, overridable fact per machine: there is
-nothing left to disagree with, repointing is one file edit, and a missing or
-stale host produces a named error instead of an empty store.
+the server's location into one readable, overridable fact per machine that the
+federation's own wrappers read: there is nothing left to disagree with,
+repointing is one file edit, a missing or unusable host produces a named error
+instead of an empty store, and the doctor surfaces any store whose own metadata
+would still drag a bare run to the old host.

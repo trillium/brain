@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/configfile"
 )
 
 func TestBrainStoresDoctorCmd_Registered(t *testing.T) {
@@ -304,6 +306,44 @@ func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
 	}
 	if h.Status != "warn" || !strings.Contains(h.Reason, "registry path missing") {
 		t.Fatalf("status = %q reason = %q, want a stale-path warning", h.Status, h.Reason)
+	}
+}
+
+// A store whose metadata pins its own Dolt host or port diverges from the
+// shared server on a bare bd run, so the doctor reports it.
+func TestMetadataServerPin_ReportsPinnedStore(t *testing.T) {
+	home := isolatedHome(t)
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWrapperForStore(t, home, "task", beadsDir)
+	if err := (&configfile.Config{DoltServerHost: "10.0.0.1", DoltServerPort: 3307}).Save(beadsDir); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	status, reason := metadataServerPin("task", storeEntry{Path: beadsDir})
+	if status != "warn" {
+		t.Fatalf("status = %q, want warn (reason=%q)", status, reason)
+	}
+	if !strings.Contains(reason, "dolt_server_host=10.0.0.1") || !strings.Contains(reason, "dolt_server_port=3307") {
+		t.Errorf("reason = %q, want both pins named", reason)
+	}
+}
+
+// A store whose metadata carries no server pin is not reported.
+func TestMetadataServerPin_IgnoresUnpinnedStore(t *testing.T) {
+	home := isolatedHome(t)
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := (&configfile.Config{}).Save(beadsDir); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	if status, reason := metadataServerPin("task", storeEntry{Path: beadsDir}); status != "" {
+		t.Fatalf("status = %q (%s), want no finding", status, reason)
 	}
 }
 

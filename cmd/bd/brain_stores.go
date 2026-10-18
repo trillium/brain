@@ -478,14 +478,14 @@ var brainStoresCreateCmd = &cobra.Command{
 	Long: `Provision a new connected store end-to-end. Does, in order:
 
   1. Provision the Dolt store on the federation's shared Dolt sql-server. The
-     server comes from BEADS_DOLT_SERVER_HOST/PORT in the process environment
-     first, else from the shared store host config
-     (~/.config/brain/store-host.env), which must already exist. A missing
-     file, or a server that does not answer, is a loud refusal: never a store
-     silently pinned to a host that cannot be read, and never a silent
-     fallback to an embedded store. Pass --embedded to ask for the embedded
-     shape explicitly; then metadata.json (dolt_mode=server) and config.yaml
-     are written first, and 'dolt init' runs in <path>/.beads.
+     shared store host config (~/.config/brain/store-host.env) must already
+     exist; BEADS_DOLT_SERVER_HOST/PORT in the process environment override
+     the values it holds. A missing file, or a server that does not answer,
+     is a loud refusal: never a store silently pinned to a host that cannot
+     be read, and never a silent fallback to an embedded store. Pass
+     --embedded to ask for the embedded shape explicitly; then metadata.json
+     (dolt_mode=server) and config.yaml are written first, and 'dolt init'
+     runs in <path>/.beads.
   2. Write <path>/.beads/config.yaml (issue-prefix + BD_NAME), in either
      shape.
   3. Create <path>/entries/ for exfiltrated markdown.
@@ -1030,6 +1030,12 @@ if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
   echo "beads: $_store_host_file does not define BEADS_DOLT_SERVER_HOST and BEADS_DOLT_SERVER_PORT" >&2
   exit 78
 fi
+case "$_want_port" in
+  *[!0-9]*)
+    echo "beads: $_store_host_file defines an unusable BEADS_DOLT_SERVER_PORT: $_want_port" >&2
+    exit 78
+    ;;
+esac
 export BEADS_DOLT_SERVER_HOST="$_want_host"
 export BEADS_DOLT_SERVER_PORT="$_want_port"
 unset _store_host_file _want_host _want_port

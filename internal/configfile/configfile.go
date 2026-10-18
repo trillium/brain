@@ -53,10 +53,6 @@ type Config struct {
 	// upgrade notifications firing after git operations reset metadata.json.
 	// bd-tok: This field is kept for backwards compatibility when reading old configs.
 	LastBdVersion string `json:"last_bd_version,omitempty"`
-
-	// beadsDir is the .beads directory this config was loaded from. It is not
-	// serialized; federation-store resolution needs it (see IsFederationStore).
-	beadsDir string `json:"-"`
 }
 
 func DefaultConfig() *Config {
@@ -98,7 +94,6 @@ func Load(beadsDir string) (*Config, error) {
 		// Remove legacy file (best effort: migration already saved to new location)
 		_ = os.Remove(legacyPath)
 
-		cfg.beadsDir = beadsDir
 		return &cfg, nil
 	}
 	if err != nil {
@@ -109,7 +104,6 @@ func Load(beadsDir string) (*Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
-	cfg.beadsDir = beadsDir
 
 	return &cfg, nil
 }
@@ -300,28 +294,14 @@ func (c *Config) GetDoltMode() string {
 }
 
 // GetDoltServerHost returns the Dolt server host.
-// Priority: BEADS_DOLT_SERVER_HOST env var > the shared store-host config
-// (~/.config/brain/store-host.env, see storehost.go) > metadata.json
-// dolt_server_host > config.yaml / global config dolt.host >
-// DefaultDoltServerHost.
-// The shared file sits above the per-store pins on purpose: the federation's
-// server is one fact per machine, so repointing it is one file edit, and a
-// store that still carries a stale dolt_server_host cannot quietly drag reads
-// back to the old host. It governs brain federation stores only; an unrelated
-// bd project keeps its own per-store resolution (see IsFederationStore).
+// Priority: BEADS_DOLT_SERVER_HOST env var > metadata.json dolt_server_host
+// > config.yaml / global config dolt.host > DefaultDoltServerHost.
+// The config.yaml layer mirrors the dolt.port fix (GH#2073) so a shared
+// team / user-level Dolt server can be configured once without per-clone
+// metadata.json edits.
 func (c *Config) GetDoltServerHost() string {
 	if h := os.Getenv("BEADS_DOLT_SERVER_HOST"); h != "" {
 		return h
-	}
-	if c.IsFederationStore() {
-		if h, _, ok := StoreHostFromFile(); ok {
-			return h
-		}
-		// A present-but-unusable shared file must not fall through to a
-		// per-store host: return no host rather than a stale one.
-		if err := ValidateStoreHostFile(); err != nil {
-			return ""
-		}
 	}
 	if c.DoltServerHost != "" {
 		return c.DoltServerHost
@@ -339,8 +319,7 @@ func (c *Config) GetDoltServerHost() string {
 //
 // GetDoltServerPort returns the Dolt server port.
 // Checks BEADS_DOLT_SERVER_PORT env var first, then BEADS_DOLT_PORT (orchestrator sets this),
-// then the shared store-host config (~/.config/brain/store-host.env) for a
-// brain federation store, then config/metadata, then default.
+// then config, then default.
 func (c *Config) GetDoltServerPort() int {
 	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil {
@@ -350,16 +329,6 @@ func (c *Config) GetDoltServerPort() int {
 	if p := os.Getenv("BEADS_DOLT_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil {
 			return port
-		}
-	}
-	if c.IsFederationStore() {
-		if _, p, ok := StoreHostFromFile(); ok {
-			return p
-		}
-		// A present-but-unusable shared file must not fall through to a
-		// per-store port: return no port rather than a stale one.
-		if err := ValidateStoreHostFile(); err != nil {
-			return 0
 		}
 	}
 	if c.DoltServerPort > 0 {

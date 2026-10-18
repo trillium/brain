@@ -448,14 +448,6 @@ func bootstrapServerPort(beadsDir string, cfg *configfile.Config, isSharedServer
 		}
 	}
 
-	// A brain federation store takes its port from the same shared file its
-	// host comes from, so the pair is never mixed.
-	if configfile.IsFederationStore(beadsDir) {
-		if _, port, ok := configfile.StoreHostFromFile(); ok {
-			return port
-		}
-	}
-
 	if isSharedServer {
 		if sharedDir, err := doltserver.SharedServerDir(); err == nil {
 			if port := doltserver.ReadPortFile(sharedDir); port > 0 {
@@ -916,6 +908,9 @@ func cloneViaServer(ctx context.Context, beadsDir, remoteURL, dbName string, cfg
 }
 
 func serverClonePort(beadsDir string, cfg *configfile.Config) int {
+	if cfg != nil && cfg.DoltServerPort > 0 {
+		return cfg.DoltServerPort
+	}
 	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil && port > 0 {
 			return port

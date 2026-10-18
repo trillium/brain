@@ -99,12 +99,18 @@ func relativizeWrapperHome(body string) (string, bool) {
 	return out, changed
 }
 
+// wrapperBackupSuffix names the copy 'brain stores rewrite-wrappers' leaves of a
+// wrapper before it is rewritten, so an operator can restore it if the repoint
+// must be rolled back.
+const wrapperBackupSuffix = ".bak"
+
 // rewriteWrapperInPlace makes an existing wrapper's home paths $HOME-relative,
 // and — for a store whose metadata.json declares server mode — makes it resolve
 // the Dolt host from the shared store host config at run time: the runtime block
 // is added when missing and baked host/port pins are dropped, since a leftover
 // pin would win over the file. Every other line (route sourcing, comments) is
-// preserved.
+// preserved. The pre-rewrite file is copied to <path>.bak first, so the change
+// is reversible.
 func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -124,6 +130,9 @@ func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err er
 	if err != nil {
 		return repointed, err
 	}
+	if err := os.WriteFile(path+wrapperBackupSuffix, data, info.Mode().Perm()); err != nil { //nolint:gosec // the wrapper's own backup
+		return repointed, fmt.Errorf("writing %s: %w", path+wrapperBackupSuffix, err)
+	}
 	return repointed, os.WriteFile(path, []byte(out), info.Mode().Perm()) //nolint:gosec // preserving the wrapper's own mode
 }
 
@@ -136,27 +145,62 @@ func canonicalizeWrapperHost(body string) (string, bool) {
 	if strings.Contains(stripped, "_store_host_file=") {
 		return stripped, changed
 	}
-	// Insert above the exec line so the block stays last-but-one and any
-	// route/preflight lines above keep their order (the routing shim's own
-	// comment requires host exports to sit below its probe).
-	idx := strings.LastIndex(stripped, "\nexec ")
-	if idx < 0 {
-		if !strings.HasSuffix(stripped, "\n") {
-			stripped += "\n"
+	idx := wrapperHostBlockOffset(stripped)
+	return stripped[:idx] + sharedServerHostBlock + stripped[idx:], true
+}
+
+// wrapperHostBlockOffset is where the run-time host block must be inserted:
+// after the shebang, the leading comment block and any route-sourcing lines,
+// and before the first statement that can reach a bd invocation. The block has
+// to run before every bd call in the wrapper, not just the last exec.
+func wrapperHostBlockOffset(body string) int {
+	offset := 0
+	for _, line := range strings.SplitAfter(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		isRouteSource := strings.HasPrefix(trimmed, ". ") || trimmed == "." || strings.HasPrefix(trimmed, "source ")
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || isRouteSource {
+			offset += len(line)
+			continue
 		}
-		return stripped + sharedServerHostBlock, true
+		break
 	}
-	return stripped[:idx+1] + sharedServerHostBlock + stripped[idx+1:], true
+	return offset
 }
 
 // lineAssignedValue returns the value an effective line assigns to the variable
-// re matches, or ok=false when the line only reads it.
+// re matches, or ok=false when the line only reads it or names it in prose
+// inside a quoted string.
 func lineAssignedValue(line string, re *regexp.Regexp) (string, bool) {
-	m := re.FindStringSubmatch(line)
-	if m == nil {
-		return "", false
+	for _, loc := range re.FindAllStringSubmatchIndex(line, -1) {
+		if insideShellQuotes(line, loc[2]) {
+			continue
+		}
+		return strings.Trim(line[loc[2]:loc[3]], wrapperQuoteTrim), true
 	}
-	return strings.Trim(m[1], wrapperQuoteTrim), true
+	return "", false
+}
+
+// insideShellQuotes reports whether pos in line sits inside a quoted shell
+// string, so a key named in an echo or a comment is not read as an assignment.
+func insideShellQuotes(line string, pos int) bool {
+	double, single := false, false
+	for i := 0; i < pos && i < len(line); i++ {
+		switch line[i] {
+		case '\\':
+			if !single {
+				i++
+			}
+		case '\'':
+			if !double {
+				single = !single
+			}
+		case '"':
+			if !single {
+				double = !double
+			}
+		}
+	}
+	return double || single
 }
 
 // wrapperAssignedValue returns the value the wrapper body assigns to the
@@ -193,16 +237,8 @@ func bakedServerPinLine(line string) bool {
 // stripBakedServerPins drops the pure-assignment host/port pins older wrappers
 // baked in. A pin inside a conditional or a command list is left alone:
 // arbitrary shell cannot be rewritten safely, so the post-rewrite check reports
-// it as a failure instead. The run-time host block is never scanned: its prose
-// names the two keys.
+// it as a failure instead.
 func stripBakedServerPins(body string) string {
-	if i := strings.Index(body, sharedServerHostBlock); i >= 0 {
-		return stripServerPinLines(body[:i]) + body[i:]
-	}
-	return stripServerPinLines(body)
-}
-
-func stripServerPinLines(body string) string {
 	var b strings.Builder
 	for _, line := range strings.SplitAfter(body, "\n") {
 		trimmed := strings.TrimSpace(line)
@@ -261,7 +297,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		return targets
 	}
 	for _, e := range ents {
-		if e.IsDir() || seen[e.Name()] {
+		if e.IsDir() || seen[e.Name()] || strings.HasSuffix(e.Name(), wrapperBackupSuffix) {
 			continue
 		}
 		wp, ok := storeWrapperPath(e.Name())
@@ -322,18 +358,13 @@ func classifyWrapper(entry storeEntry, wrapperPath string) (serverMode, classifi
 	return false, false
 }
 
-// bakedServerPinIn reports the first baked host/port pin a wrapper carries,
-// outside the run-time host block (whose prose names the two keys).
+// bakedServerPinIn reports the first baked host/port pin a wrapper carries.
 func bakedServerPinIn(wrapperPath string) (string, bool) {
 	data, err := os.ReadFile(wrapperPath) //nolint:gosec // the store's own wrapper
 	if err != nil {
 		return "", false
 	}
-	body := string(data)
-	if i := strings.Index(body, sharedServerHostBlock); i >= 0 {
-		body = body[:i] + body[i+len(sharedServerHostBlock):]
-	}
-	for _, line := range strings.SplitAfter(body, "\n") {
+	for _, line := range strings.SplitAfter(string(data), "\n") {
 		if bakedServerPinLine(line) {
 			return strings.TrimSpace(line), true
 		}
@@ -407,16 +438,22 @@ var brainStoresRewriteWrappersCmd = &cobra.Command{
 	Short: "Make every store/alias CLI wrapper $HOME-relative, resolve the Dolt host from the shared config, and verify each resolves a database",
 	Long: `Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
 ~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
-"$HOME/\u2026" in place, preserving every other env pin and the exec line. A
-server-mode store's wrapper is also repointed at the shared store host config
-(~/.config/brain/store-host.env): the run-time host block is added when it is
-missing and any baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped, because a
-leftover pin would win over the file. Embedded stores keep their minimal
-wrapper, and forwarding wrappers installed by 'brain remote install' are left
-alone. Registry entries are left exactly as recorded: an entry whose path names
-another machine's home is reported by 'brain stores doctor'. Stores with no
-wrapper are skipped. Each wrapper is then read through the way 'brain stores
-doctor' does.
+"$HOME/\u2026" in place, preserving every other line. A server-mode store's
+wrapper is also repointed at the shared store host config
+(~/.config/brain/store-host.env): the run-time host block is installed before
+the wrapper's first bd invocation path (never only above the final exec) and
+any whole-line baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped. A wrapper that
+still contains a host or port assignment the verb cannot safely rewrite is
+reported as failed, not verified. Each rewritten wrapper is first copied to
+<wrapper>.bak, so the repoint can be rolled back.
+
+The shared file must already exist: this verb refuses up front rather than
+repointing the fleet into wrappers that would refuse every invocation. Embedded
+stores keep their minimal wrapper, and forwarding wrappers installed by 'brain
+remote install' are left alone. Registry entries are left exactly as recorded:
+an entry whose path names another machine's home is reported by 'brain stores
+doctor'. Stores with no wrapper are skipped. Each wrapper is then read through
+the way 'brain stores doctor' does.
 
 This is the one step that repoints a host's stores at the federation's shared
 server. It prints what it changed.

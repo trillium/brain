@@ -622,20 +622,6 @@ func resolveChangeDirBeadsDir(path string) (string, error) {
 	return beadsDir, nil
 }
 
-// federationStoreHostFileGate reports the machine's shared store host config
-// error when the store this command resolves is a brain federation store. An
-// unrelated bd project never reads that file, so a defect in it must not fail
-// that project's commands. A missing file is not an error.
-func federationStoreHostFileGate(beadsDir string) error {
-	if _, err := os.Stat(configfile.DefaultStoreHostPath()); err != nil {
-		return nil
-	}
-	if !configfile.IsFederationStore(beadsDir) {
-		return nil
-	}
-	return configfile.ValidateStoreHostFile()
-}
-
 func applyChangeDirSelection() error {
 	if strings.TrimSpace(changeDir) == "" {
 		return nil
@@ -1052,16 +1038,6 @@ var rootCmd = &cobra.Command{
 		}
 
 		beadsDir := resolveCommandBeadsDir(dbPath)
-
-		// A shared store host config that exists but cannot be used is a defect
-		// only for the brain federation stores that read it; stop those before
-		// the store is opened rather than resolving a host from a per-store
-		// default. An unrelated project's commands, and the store-free
-		// diagnostic commands, are unaffected.
-		if err := federationStoreHostFileGate(beadsDir); err != nil {
-			return err
-		}
-
 		prepareSelectedCommandContext(beadsDir, true)
 		refreshBoundCommandConfig(cmd)
 		if _, err := getDoltAutoCommitMode(); err != nil {
