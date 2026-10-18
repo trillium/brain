@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -140,7 +141,36 @@ func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err er
 	if err := os.WriteFile(backup, data, 0o600); err != nil { //nolint:gosec // the backup is a data copy, deliberately not executable
 		return repointed, fmt.Errorf("writing %s: %w", backup, err)
 	}
+	if err := checkShellSyntax(out); err != nil {
+		return repointed, fmt.Errorf("rewritten wrapper does not parse (%v); %s is unchanged and backed up at %s", err, path, backup)
+	}
 	return repointed, os.WriteFile(path, []byte(out), info.Mode().Perm()) //nolint:gosec // preserving the wrapper's own mode
+}
+
+// checkShellSyntax validates a candidate wrapper with `sh -n` before it
+// replaces the live file. A host without a POSIX shell cannot be validated.
+func checkShellSyntax(body string) error {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		return nil
+	}
+	tmp, err := os.CreateTemp("", "bd-repoint-*.sh")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }()
+	if _, err := tmp.WriteString(body); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	out, err := exec.Command(sh, "-n", tmp.Name()).CombinedOutput() //nolint:gosec // sh from PATH, our own temp file
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // canonicalizeWrapperHost gives a wrapper the shared-host runtime block at the
@@ -246,17 +276,28 @@ func bakedServerPinLine(line string) bool {
 }
 
 // stripBakedServerPins drops the pure-assignment host/port pins older wrappers
-// baked in. A pin inside a conditional or a command list is left alone:
+// baked in. A top-level assignment is a complete statement and the line goes
+// away; an indented one may be the only statement of a branch or loop, so it is
+// neutralized in place instead. A pin inside a command list is left alone:
 // arbitrary shell cannot be rewritten safely, so the post-rewrite check reports
 // it as a failure instead.
 func stripBakedServerPins(body string) string {
 	var b strings.Builder
 	for _, line := range strings.SplitAfter(body, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "#") && !strings.Contains(line, "$_want_") && strippableServerPinRe.MatchString(trimmed) {
+		if strings.HasPrefix(trimmed, "#") || strings.Contains(line, "$_want_") || !strippableServerPinRe.MatchString(trimmed) {
+			b.WriteString(line)
 			continue
 		}
-		b.WriteString(line)
+		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+		if indent == "" {
+			continue
+		}
+		b.WriteString(indent)
+		b.WriteString(":")
+		if strings.HasSuffix(line, "\n") {
+			b.WriteString("\n")
+		}
 	}
 	return b.String()
 }
@@ -469,11 +510,8 @@ func failedRewrites(rs []wrapperRewrite) []wrapperRewrite {
 // value alone does not satisfy this) or present but unusable. The error names
 // the file and the keys the generated block needs.
 func requireSharedStoreHostFile() error {
-	path := configfile.DefaultStoreHostPath()
-	if path == "" {
-		path = "~/.config/brain/" + configfile.StoreHostFileName
-	}
-	if _, err := os.Stat(path); err != nil {
+	path := configfile.StoreHostPathDisplay()
+	if _, err := os.Stat(configfile.DefaultStoreHostPath()); err != nil {
 		return fmt.Errorf("shared store host config %s does not exist: write %s=<host> and %s=<port> there before repointing wrappers, then re-run",
 			path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort)
 	}

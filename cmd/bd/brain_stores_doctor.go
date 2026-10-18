@@ -55,7 +55,7 @@ type storeHealth struct {
 	Path    string `json:"path"`
 	Wrapper string `json:"wrapper,omitempty"` // CLI wrapper actually probed, if any
 	Probe   string `json:"probe"`             // "wrapper" | "direct"
-	Status  string `json:"status"`            // "ok" | "warn" | "fail"
+	Status  string `json:"status"`            // "ok" | "info" | "warn" | "fail"
 	Reason  string `json:"reason,omitempty"`  // one-line human cause
 	Detail  string `json:"detail,omitempty"`  // first lines of the failing output
 	Millis  int64  `json:"ms"`
@@ -172,17 +172,18 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	wg.Wait()
 	elapsed := time.Since(started)
 
-	okCount, warnCount, failCount, infoCount, failed := tallyStoreHealth(results)
+	tally := tallyStoreHealth(results)
 
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
 			"stores":        results,
-			"ok":            okCount,
-			"warnings":      warnCount,
-			"informational": infoCount,
-			"failed":        failCount,
+			"ok":            tally.ok + tally.info,
+			"answered":      tally.answered,
+			"warnings":      tally.warn,
+			"informational": tally.info,
+			"failed":        tally.fail,
 			"total":         len(results),
-			"failing":       failed,
+			"failing":       tally.failed,
 			"ms":            elapsed.Milliseconds(),
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -209,36 +210,47 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			}
 		}
 		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings, %d informational) in %.1fs\n",
-			okCount+warnCount, len(results), failCount, warnCount, infoCount, elapsed.Seconds())
-		if failCount > 0 {
-			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(failed, " "))
+			tally.answered, len(results), tally.fail, tally.warn, tally.info, elapsed.Seconds())
+		if tally.fail > 0 {
+			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(tally.failed, " "))
 		}
 	}
 
-	if code := doctorExitCode(failCount, warnCount); code != 0 {
+	if code := doctorExitCode(tally.fail, tally.warn); code != 0 {
 		os.Exit(code)
 	}
 }
 
-// tallyStoreHealth folds probe results into the counts the exit code and the
-// summary use. Informational findings are counted separately from warnings, so
-// --strict does not fail on them.
-func tallyStoreHealth(results []storeHealth) (okCount, warnCount, failCount, infoCount int, failed []string) {
-	failed = make([]string, 0, len(results))
+// storeTally folds the doctor's probe results into the summary and exit
+// counts. A store labelled informational still answered the read, so it counts
+// as answered and ok; it is not a warning, so --strict does not fail on it.
+type storeTally struct {
+	ok       int
+	warn     int
+	fail     int
+	info     int
+	answered int
+	failed   []string
+}
+
+func tallyStoreHealth(results []storeHealth) storeTally {
+	var t storeTally
+	t.failed = make([]string, 0, len(results))
 	for _, r := range results {
 		switch r.Status {
 		case "fail":
-			failCount++
-			failed = append(failed, r.Name)
+			t.fail++
+			t.failed = append(t.failed, r.Name)
 		case "warn":
-			warnCount++
+			t.warn++
 		case "info":
-			infoCount++
+			t.info++
 		default:
-			okCount++
+			t.ok++
 		}
 	}
-	return okCount, warnCount, failCount, infoCount, failed
+	t.answered = t.ok + t.info + t.warn
+	return t
 }
 
 // doctorExitCode maps probe tallies to the process exit code. Kept separate
