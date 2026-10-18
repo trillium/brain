@@ -480,12 +480,12 @@ var brainStoresCreateCmd = &cobra.Command{
   1. Provision the Dolt store on the federation's shared Dolt sql-server. The
      server comes from BEADS_DOLT_SERVER_HOST/PORT in the process environment
      first, else from the shared store host config
-     (~/.config/brain/store-host.env). A missing file, or a server that does
-     not answer, is a loud refusal: never a store silently pinned to a host
-     that cannot be read, and never a silent fallback to an embedded store.
-     Pass --embedded to ask for the embedded shape explicitly; then
-     metadata.json (dolt_mode=server) and config.yaml are written first, and
-     'dolt init' runs in <path>/.beads.
+     (~/.config/brain/store-host.env), which must already exist. A missing
+     file, or a server that does not answer, is a loud refusal: never a store
+     silently pinned to a host that cannot be read, and never a silent
+     fallback to an embedded store. Pass --embedded to ask for the embedded
+     shape explicitly; then metadata.json (dolt_mode=server) and config.yaml
+     are written first, and 'dolt init' runs in <path>/.beads.
   2. Write <path>/.beads/config.yaml (issue-prefix + BD_NAME), in either
      shape.
   3. Create <path>/entries/ for exfiltrated markdown.
@@ -677,6 +677,7 @@ func initDoltStore(beadsDir string) error {
 const (
 	createServerEnv      = "env"
 	createServerFile     = "file"
+	createServerMixed    = "mixed"
 	createServerEmbedded = "embedded"
 )
 
@@ -696,6 +697,8 @@ func (t createServerTarget) describe() string {
 		return "embedded (--embedded: no shared server is used)"
 	case createServerEnv:
 		return fmt.Sprintf("%s:%d (BEADS_DOLT_SERVER_HOST/PORT in the environment)", t.Host, t.Port)
+	case createServerMixed:
+		return fmt.Sprintf("%s:%d (a BEADS_DOLT_SERVER_* environment value and %s)", t.Host, t.Port, configfile.DefaultStoreHostPath())
 	default:
 		return fmt.Sprintf("%s:%d (%s)", t.Host, t.Port, configfile.DefaultStoreHostPath())
 	}
@@ -718,26 +721,36 @@ func probeCreateServer(ctx context.Context, probe serverProbe, host string, port
 // on. The host is the federation's one per-machine fact, so it comes from the
 // shared store host config (~/.config/brain/store-host.env) or, overriding it,
 // from BEADS_DOLT_SERVER_HOST/PORT in the process environment — never from a
-// per-store default and never from the asker's imagination. A missing file is a
-// loud refusal naming the file: silently provisioning against 127.0.0.1 is how
-// a store ends up registered but unreadable (robots-1nri, robots-1ypiy,
-// task-d3cz, task-8m5x). The server must answer before the store is written
-// against it, and the embedded (auto-starting) shape is only reachable by
-// asking for it with --embedded.
+// per-store default and never from the asker's imagination. The shared file
+// must exist: the wrapper 'brain stores create' generates resolves its host
+// from that file at run time and refuses without it, so a store created
+// against an environment-only server would be unreadable from any ordinary
+// shell. A missing file is a loud refusal naming the file: silently
+// provisioning against 127.0.0.1 is how a store ends up registered but
+// unreadable (robots-1nri, robots-1ypiy, task-d3cz, task-8m5x). The server must
+// answer before the store is written against it, and the embedded
+// (auto-starting) shape is only reachable by asking for it with --embedded.
 func resolveCreateServer(ctx context.Context, probe serverProbe) (createServerTarget, error) {
 	if createStoreEmbedded {
 		return createServerTarget{Source: createServerEmbedded}, nil
 	}
 
+	path := configfile.DefaultStoreHostPath()
+	if path == "" {
+		path = "~/.config/brain/" + configfile.StoreHostFileName
+	}
+	if _, err := os.Stat(path); err != nil {
+		return createServerTarget{}, fmt.Errorf(
+			"no shared Dolt sql-server is configured for this machine: %s does not exist.\n"+
+				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s, then re-run. Pass --embedded only for a store that should run its own local Dolt.",
+			path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort, path)
+	}
+
 	sh, err := configfile.Resolve()
 	if err != nil {
-		path := configfile.DefaultStoreHostPath()
-		if path == "" {
-			path = "~/.config/brain/" + configfile.StoreHostFileName
-		}
 		return createServerTarget{}, fmt.Errorf(
 			"no shared Dolt sql-server is configured for this machine: %v\n"+
-				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s (or export the same two variables), then re-run. Pass --embedded only for a store that should run its own local Dolt.",
+				"Write it once as\n  %s=<host>\n  %s=<port>\nin %s, then re-run. Pass --embedded only for a store that should run its own local Dolt.",
 			err, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort, path)
 	}
 
@@ -749,8 +762,11 @@ func resolveCreateServer(ctx context.Context, probe serverProbe) (createServerTa
 	}
 
 	source := createServerFile
-	if sh.Source == "env" {
+	switch sh.Source {
+	case "env":
 		source = createServerEnv
+	case "mixed":
+		source = createServerMixed
 	}
 	return createServerTarget{Host: sh.Host, Port: sh.Port, Source: source}, nil
 }

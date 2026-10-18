@@ -27,7 +27,7 @@ var (
 type wrapperRewrite struct {
 	Name    string `json:"name"`
 	Wrapper string `json:"wrapper,omitempty"`
-	Status  string `json:"status"` // "ok" | "fail"
+	Status  string `json:"status"` // "ok" | "unclassified" | "fail"
 	Reason  string `json:"reason,omitempty"`
 	// Repointed is true when the wrapper was rewritten to resolve its Dolt
 	// host from the shared store host config at run time (a baked host pin was
@@ -134,14 +134,19 @@ func canonicalizeWrapperHost(body string) (string, bool) {
 	return stripped[:idx+1] + sharedServerHostBlock + stripped[idx+1:], true
 }
 
+// bakedServerPinLine reports whether a wrapper line is a baked host/port pin.
+// The runtime block's own two exports read $_want_ and so are the resolution
+// this verb exists to install, not a baked pin.
+func bakedServerPinLine(line string) bool {
+	return bakedServerPinRe.MatchString(line) && !strings.Contains(line, "$_want_")
+}
+
 // stripBakedServerPins drops the host/port pins older wrappers baked in,
-// wherever they sit. The runtime block's own two exports are never dropped:
-// they read the value the block resolved and so are the resolution this verb
-// exists to install, not a baked pin.
+// wherever they sit.
 func stripBakedServerPins(body string) string {
 	var b strings.Builder
 	for _, line := range strings.SplitAfter(body, "\n") {
-		if bakedServerPinRe.MatchString(line) && !strings.Contains(line, "$_want_") {
+		if bakedServerPinLine(line) {
 			continue
 		}
 		b.WriteString(line)
@@ -153,11 +158,15 @@ func stripBakedServerPins(body string) string {
 type wrapperTarget struct {
 	name  string
 	entry storeEntry
-	// serverMode is true when the store's own metadata.json declares the
-	// shared server, i.e. the wrapper should resolve its host from the shared
-	// store host config rather than from a baked pin. An embedded store keeps
-	// its minimal wrapper.
+	// serverMode is true when the wrapper should resolve its host from the
+	// shared store host config rather than from a baked pin: its own store
+	// declares the shared server, or it already carries a baked server pin.
+	// An embedded store keeps its minimal wrapper.
 	serverMode bool
+	// classified is false when neither the wrapper's own store's metadata.json
+	// nor a baked pin says which shape this wrapper is. Such a wrapper is
+	// reported as unclassified, never as repointed or ok.
+	classified bool
 }
 
 // collectWrapperTargets returns every registry store that has a wrapper plus
@@ -174,11 +183,12 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		// A forwarding wrapper ('brain remote install') hands the command to
 		// another machine and never opens a store here: rewriting it would
 		// break the forwarding it exists for.
-		self, canon := canonicalWrapperFor(name, wp, stores[name], serverModeForEntry(stores[name]))
+		self, canon := canonicalWrapperFor(name, wp, stores[name])
 		seen[name] = true
 		if !canon {
 			continue
 		}
+		self.serverMode, self.classified = classifyWrapper(stores[name], wp)
 		targets = append(targets, self)
 	}
 	home, err := os.UserHomeDir()
@@ -206,8 +216,9 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		if m := wrapperBeadsRe.FindStringSubmatch(string(data)); m != nil {
 			entry.Path = expandWrapperHome(m[1])
 		}
-		self, canon := canonicalWrapperFor(e.Name(), wp, entry, serverModeForEntry(entry))
+		self, canon := canonicalWrapperFor(e.Name(), wp, entry)
 		if canon {
+			self.serverMode, self.classified = classifyWrapper(entry, wp)
 			targets = append(targets, self)
 		}
 	}
@@ -217,25 +228,52 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 // canonicalWrapperFor builds the rewrite target for one wrapper, or reports
 // false when the wrapper is one this verb must not touch (a forwarding wrapper
 // installed by 'brain remote install').
-func canonicalWrapperFor(name, wrapperPath string, entry storeEntry, serverMode bool) (wrapperTarget, bool) {
+func canonicalWrapperFor(name, wrapperPath string, entry storeEntry) (wrapperTarget, bool) {
 	if isRemoteWrapper(wrapperPath) {
 		return wrapperTarget{}, false
 	}
-	return wrapperTarget{name, entry, serverMode}, true
+	return wrapperTarget{name: name, entry: entry}, true
 }
 
-// serverModeForEntry reports whether the store's own metadata.json declares the
-// shared Dolt sql-server (never an embedded, self-starting store).
-func serverModeForEntry(entry storeEntry) bool {
-	if entry.Path == "" {
-		return false
+// classifyWrapper decides whether a wrapper should resolve its host from the
+// shared store host config, the way 'brain stores doctor' identifies a store:
+// from the wrapper's own BEADS_DIR first, then the registry path. A wrapper
+// that already carries a baked host pin is a shared-server wrapper whatever its
+// store's metadata says. classified is false when neither answers, so the verb
+// reports the wrapper instead of counting it repointed.
+func classifyWrapper(entry storeEntry, wrapperPath string) (serverMode, classified bool) {
+	if _, found := bakedServerPinIn(wrapperPath); found {
+		return true, true
 	}
-	beadsDir := expandPath(entry.Path)
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		return false
+	paths := make([]string, 0, 2)
+	if beadsDir, ok := wrapperBeadsDir(wrapperPath); ok {
+		paths = append(paths, beadsDir)
 	}
-	return strings.EqualFold(cfg.DoltMode, configfile.DoltModeServer)
+	if entry.Path != "" {
+		paths = append(paths, expandPath(entry.Path))
+	}
+	for _, beadsDir := range paths {
+		cfg, err := configfile.Load(beadsDir)
+		if err != nil || cfg == nil {
+			continue
+		}
+		return strings.EqualFold(cfg.DoltMode, configfile.DoltModeServer), true
+	}
+	return false, false
+}
+
+// bakedServerPinIn reports the first baked host/port pin a wrapper carries.
+func bakedServerPinIn(wrapperPath string) (string, bool) {
+	data, err := os.ReadFile(wrapperPath) //nolint:gosec // the store's own wrapper
+	if err != nil {
+		return "", false
+	}
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		if bakedServerPinLine(line) {
+			return strings.TrimSpace(line), true
+		}
+	}
+	return "", false
 }
 
 // rewriteAllStoreWrappers makes every existing store and alias wrapper
@@ -265,12 +303,20 @@ func rewriteAllStoreWrappers(self string, stores map[string]storeEntry, jobs int
 				results[i] = r
 				return
 			}
+			if pin, found := bakedServerPinIn(wp); found {
+				r.Status, r.Reason = "fail", "baked Dolt host pin remains: "+pin
+				results[i] = r
+				return
+			}
 			h := probeStore(self, t.name, t.entry, timeout)
 			switch {
 			case h.Status == "fail":
 				r.Status, r.Reason = "fail", "wrapper does not resolve a database: "+h.Reason
 			case h.Probe != "wrapper":
 				r.Status, r.Reason = "fail", "wrapper not executable after rewrite"
+			case !t.classified:
+				r.Status = "unclassified"
+				r.Reason = "no readable .beads/metadata.json and no baked host pin, so the wrapper was not repointed"
 			default:
 				r.Status = "ok"
 			}
@@ -335,18 +381,26 @@ written or does not resolve a database. 'brain remote set' and
 			outputJSON(map[string]any{"total": len(results), "failed": len(failed), "repointed": repointed, "stores": results})
 		} else {
 			for _, r := range results {
-				if r.Status != "ok" {
+				switch r.Status {
+				case "ok":
+					note := ""
+					if r.Repointed {
+						note = "  (host now read from the shared store host config)"
+					}
+					fmt.Printf("  ok    %-18s %s%s\n", r.Name, r.Wrapper, note)
+				case "unclassified":
+					fmt.Printf("  WARN  %-18s %s\n", r.Name, r.Reason)
+				default:
 					fmt.Printf("  FAIL  %-18s %s\n", r.Name, r.Reason)
-					continue
 				}
-				note := ""
-				if r.Repointed {
-					note = "  (host now read from the shared store host config)"
-				}
-				fmt.Printf("  ok    %-18s %s%s\n", r.Name, r.Wrapper, note)
 			}
-			fmt.Printf("%d/%d wrappers rewritten and verified (%d repointed at the shared store host config)\n",
-				len(results)-len(failed), len(results), repointed)
+			if len(failed) == 0 {
+				fmt.Printf("%d/%d wrappers rewritten and verified (%d repointed at the shared store host config)\n",
+					len(results), len(results), repointed)
+			} else {
+				fmt.Printf("%d/%d wrappers rewritten; %d not verified — see above\n",
+					len(results)-len(failed), len(results), len(failed))
+			}
 		}
 		if len(failed) > 0 {
 			var n []string
@@ -375,7 +429,7 @@ func verifyHostWrappers(ctx context.Context, cfg *remoteConfig) (total int, err 
 	}
 	if failed := failedRewrites(results); len(failed) > 0 {
 		var b strings.Builder
-		fmt.Fprintf(&b, "%d of %d store wrappers on %s failed to resolve a database:", len(failed), len(results), cfg.Host)
+		fmt.Fprintf(&b, "%d of %d store wrappers on %s did not pass the repoint/verify pass:", len(failed), len(results), cfg.Host)
 		for _, r := range failed {
 			fmt.Fprintf(&b, "\n  %s: %s", r.Name, r.Reason)
 		}

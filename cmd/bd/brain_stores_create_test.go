@@ -182,6 +182,46 @@ func TestResolveCreateServer(t *testing.T) {
 		}
 	})
 
+	t.Run("an env-only config without the shared file is refused", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3399")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		_, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err == nil {
+			t.Fatal("expected a refusal: the generated wrapper resolves its host from the shared file, which does not exist")
+		}
+		want := filepath.Join(home, ".config", "brain", "store-host.env")
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the file %q; got: %v", want, err)
+		}
+		if !strings.Contains(err.Error(), "BEADS_DOLT_SERVER_HOST") || !strings.Contains(err.Error(), "BEADS_DOLT_SERVER_PORT") {
+			t.Errorf("error must name both keys to write; got: %v", err)
+		}
+	})
+
+	t.Run("a host from the environment and a port from the file is labelled mixed", func(t *testing.T) {
+		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		got, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err != nil {
+			t.Fatalf("resolveCreateServer: %v", err)
+		}
+		if got.Host != "127.0.0.1" || got.Port != 3307 || got.Source != createServerMixed {
+			t.Errorf("target = %+v, want 127.0.0.1:3307 labelled %q", got, createServerMixed)
+		}
+	})
+
 	t.Run("a server that does not answer is refused, never baked", func(t *testing.T) {
 		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
 		clearEnv(t)

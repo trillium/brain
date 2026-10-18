@@ -165,11 +165,16 @@ func TestStoreHostFromFile_MissingFileIsNotAnError(t *testing.T) {
 
 // TestGetDoltServerHost_SharedFileBeatsPerStoreMetadata is the contract behind
 // 'one config source': the federation's server is one fact per machine, so a
-// store that still carries a stale dolt_server_host must not drag reads back to
-// the old host.
+// federation store that still carries a stale dolt_server_host must not drag
+// reads back to the old host.
 func TestGetDoltServerHost_SharedFileBeatsPerStoreMetadata(t *testing.T) {
 	writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n")
-	cfg := &Config{Backend: BackendDolt, DoltMode: DoltModeServer, DoltServerHost: "10.0.0.1", DoltServerPort: 3300}
+	t.Setenv(SharedServerEnvVar, "")
+	cfg := &Config{
+		Backend: BackendDolt, DoltMode: DoltModeServer,
+		DoltServerHost: "10.0.0.1", DoltServerPort: 3300,
+		GlobalDoltDatabase: "beads_global",
+	}
 
 	if got := cfg.GetDoltServerHost(); got != "10.9.9.9" {
 		t.Errorf("GetDoltServerHost = %q, want the shared file's 10.9.9.9", got)
@@ -188,12 +193,66 @@ func TestGetDoltServerHost_SharedFileBeatsPerStoreMetadata(t *testing.T) {
 	}
 }
 
+// TestGetDoltServerHost_UnrelatedProjectKeepsItsOwnPins is the scoping
+// contract: the shared file names the brain federation's server, so an
+// unrelated bd project keeps its own port/config/metadata resolution.
+func TestGetDoltServerHost_UnrelatedProjectKeepsItsOwnPins(t *testing.T) {
+	writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n")
+	t.Setenv(SharedServerEnvVar, "")
+	cfg := &Config{Backend: BackendDolt, DoltMode: DoltModeServer, DoltServerHost: "10.0.0.1", DoltServerPort: 3300}
+
+	if got := cfg.GetDoltServerHost(); got != "10.0.0.1" {
+		t.Errorf("GetDoltServerHost = %q, want the project's own 10.0.0.1", got)
+	}
+	if got := cfg.GetDoltServerPort(); got != 3300 {
+		t.Errorf("GetDoltServerPort = %d, want the project's own 3300", got)
+	}
+}
+
+// TestIsFederationStore_SharedServerSelection covers the marker that makes a
+// store a federation store when its metadata cannot be read.
+func TestIsFederationStore_SharedServerSelection(t *testing.T) {
+	writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n")
+
+	t.Setenv(SharedServerEnvVar, "1")
+	if !IsFederationStore(filepath.Join(t.TempDir(), ".beads")) {
+		t.Error("shared-server mode must mark the store as a federation store")
+	}
+
+	t.Setenv(SharedServerEnvVar, "")
+	if IsFederationStore(filepath.Join(t.TempDir(), ".beads")) {
+		t.Error("an ordinary store directory must not be a federation store")
+	}
+}
+
+// TestResolve_MixedLayersAreLabelledMixed: the host and the port may come from
+// different layers, and the label must say so rather than claim the file.
+func TestResolve_MixedLayersAreLabelledMixed(t *testing.T) {
+	writeStoreHost(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+
+	t.Setenv(StoreHostKeyHost, "127.0.0.9")
+	got, err := Resolve()
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Host != "127.0.0.9" || got.Port != 3307 {
+		t.Fatalf("Resolve = %s:%d, want 127.0.0.9:3307", got.Host, got.Port)
+	}
+	if got.Source != "mixed" {
+		t.Errorf("Source = %q, want mixed for a host from the environment and a port from the file", got.Source)
+	}
+}
+
 // TestGetDoltServerHost_FallsBackToMetadataWithoutTheFile keeps every store
 // that predates the shared config working: no file means the per-store pins are
 // still the answer.
 func TestGetDoltServerHost_FallsBackToMetadataWithoutTheFile(t *testing.T) {
 	writeStoreHost(t, "")
-	cfg := &Config{Backend: BackendDolt, DoltMode: DoltModeServer, DoltServerHost: "10.0.0.1", DoltServerPort: 3300}
+	cfg := &Config{
+		Backend: BackendDolt, DoltMode: DoltModeServer,
+		DoltServerHost: "10.0.0.1", DoltServerPort: 3300,
+		GlobalDoltDatabase: "beads_global",
+	}
 
 	if got := cfg.GetDoltServerHost(); got != "10.0.0.1" {
 		t.Errorf("GetDoltServerHost = %q, want the metadata pin 10.0.0.1", got)
