@@ -1,0 +1,27 @@
+{
+  "id": "b942abf6d",
+  "name": "Build fixed bd",
+  "command": "cd /Users/mini1/.no-mistakes/worktrees/5a812a8ac0ef/01M56BJYNS1QHECG4W36ETT6WC && CGO_ENABLED=0 go build -tags gms_pure_go -o /tmp/brainlive/bin/bd-fixed ./cmd/bd && echo BUILD_FIXED_OK && /tmp/brainlive/bin/bd-fixed version 2>&1 | head -5",
+  "status": "completed",
+  "outputPath": ".pi/tasks/01a14ccc-7900-72dc-9a19-49e7d7c74814-55857/b942abf6d.output",
+  "cwd": "/Users/mini1/.no-mistakes/worktrees/5a812a8ac0ef/01M56BJYNS1QHECG4W36ETT6WC",
+  "startTime": 1792289952889,
+  "endTime": 1792289972645,
+  "exitCode": 0,
+  "signal": null,
+  "pid": 55520,
+  "bytesWritten": 157,
+  "isAgent": false,
+  "surviveReload": false,
+  "notified": true,
+  "notifyOnCompletion": true,
+  "triggerOnCompletion": true,
+  "shellPolicy": {
+    "policy": "inherit",
+    "executable": "/bin/zsh",
+    "argvPrefix": [
+      "-c"
+    ],
+    "dialect": "posix"
+  }
+}

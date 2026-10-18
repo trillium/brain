@@ -1,0 +1,6 @@
+BUILD_PREFIX_OK
+bd version 1.1.0-rc.1+brain.0.5.1 (dev)
+
+Warning: multiple 'bd' binaries found in PATH:
+  /Users/mini1/.local/bin/bd
+  /Users/mini1/go/bin/bd

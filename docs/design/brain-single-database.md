@@ -170,8 +170,8 @@ holds `kv.membead.*` and `kv.memory.*` entries, and they migrate into
 
 So that `bd` can open the unified database at all, the unified database's own
 `config` and `metadata` tables are seeded from the **template store** (default:
-the store with the most beads). Follow-up work: teach the config layer to read
-`brain_unified_config` so a wrapper can address its own settings without a
+the store with the most beads); the config layer reads `brain_unified_config`
+(see readiness item 3 below) so a wrapper addresses its own settings without a
 separate database.
 
 ### What cannot be preserved
