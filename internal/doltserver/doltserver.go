@@ -449,8 +449,10 @@ func ReadPortFile(beadsDir string) int {
 }
 
 // DefaultConfig returns config with sensible defaults.
-// Priority: env var > shared store host config > port file > config.yaml /
-// global config > metadata.json.
+// Priority: env var > port file > config.yaml / global config > metadata.json
+// for an ordinary project. A brain federation store (see
+// configfile.IsFederationStore) instead takes its port from the shared store
+// host config first, so the port matches the host that same file supplies.
 // Returns port 0 when no source provides a port, meaning Start() should
 // allocate an ephemeral port from the OS.
 //
@@ -458,6 +460,7 @@ func ReadPortFile(beadsDir string) int {
 // the server is listening on. Consulting it here ensures that commands
 // connecting to an already-running server use the correct port.
 func DefaultConfig(beadsDir string) *Config {
+	storeDir := beadsDir
 	// In shared mode, use the shared server directory for port resolution
 	if IsSharedServerMode() {
 		if sharedDir, err := SharedServerDir(); err == nil {
@@ -479,12 +482,14 @@ func DefaultConfig(beadsDir string) *Config {
 		}
 	}
 
-	// The federation's one shared store host config supplies the port when the
-	// environment does not, so a host read from that file is never paired with
-	// a port from a different source.
-	if _, p, ok := configfile.StoreHostFromFile(); ok {
-		cfg.Port = p
-		return cfg
+	// A brain federation store takes its port from the same shared store host
+	// config its host comes from, so the pair is never mixed. An unrelated bd
+	// project keeps the port file / config.yaml / metadata chain below.
+	if configfile.IsFederationStore(storeDir) {
+		if _, p, ok := configfile.StoreHostFromFile(); ok {
+			cfg.Port = p
+			return cfg
+		}
 	}
 
 	// Check the port file (gitignored, local-only) — this is the primary

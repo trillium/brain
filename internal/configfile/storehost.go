@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/config"
 )
 
 // The brain federation keeps the Dolt sql-server it talks to in ONE shared file
@@ -16,6 +18,10 @@ import (
 // host, or moving a whole federation, is then one file edit and no wrapper
 // rewrite, and no tool that reads the file can disagree with another about
 // which server the federation lives on.
+//
+// The file governs brain federation stores only (see IsFederationStore). An
+// unrelated bd project keeps its own per-project resolution: port file, then
+// config.yaml, then metadata.json.
 //
 // The file is KEY=VALUE, one per line, deliberately shell-sourceable so the
 // generated store wrappers can `. "$file"` it at run time:
@@ -36,6 +42,10 @@ const (
 	// fragment.
 	StoreHostKeyHost = "BEADS_DOLT_SERVER_HOST"
 	StoreHostKeyPort = "BEADS_DOLT_SERVER_PORT"
+
+	// SharedServerEnvVar selects bd's shared-server mode for this process — the
+	// mode every generated brain store wrapper selects.
+	SharedServerEnvVar = "BEADS_DOLT_SHARED_SERVER"
 )
 
 // ErrStoreHostMissing reports that the shared store-host config is not there.
@@ -58,7 +68,8 @@ func DefaultStoreHostPath() string {
 type StoreHost struct {
 	Host string
 	Port int
-	// Source names where each value came from: "env", "file", or "" when unset.
+	// Source names where the values came from: "env", "file", or "mixed" when
+	// the host and the port come from different layers.
 	Source string
 }
 
@@ -98,15 +109,63 @@ func Resolve() (StoreHost, error) {
 	switch {
 	case envHost != "" && envPort != "":
 		out.Source = "env"
+	case envHost != "" || envPort != "":
+		out.Source = "mixed"
 	case fileHost != "" && filePort > 0:
 		out.Source = "file"
-	case out.Host != "" && out.Port > 0:
-		out.Source = "mixed"
 	}
 	if out.Host == "" || out.Port <= 0 {
 		return StoreHost{}, fmt.Errorf("%s does not define both %s and %s", path, StoreHostKeyHost, StoreHostKeyPort)
 	}
 	return out, nil
+}
+
+// SharedServerSelected reports whether this process runs in bd's shared-server
+// mode (the BEADS_DOLT_SHARED_SERVER env var or config.yaml's
+// dolt.shared-server) — the mode every generated brain store wrapper selects.
+func SharedServerSelected() bool {
+	if v := os.Getenv(SharedServerEnvVar); v == "1" || strings.EqualFold(v, "true") {
+		return true
+	}
+	return config.GetBool("dolt.shared-server")
+}
+
+// IsFederationStore reports whether the store at beadsDir is a brain federation
+// store: one in bd's shared-server mode, which is what the generated store
+// wrappers select and what 'brain stores create' provisions (metadata.json's
+// global_dolt_database / global_project_id, the shared-server env, or
+// config.yaml's dolt.shared-server).
+//
+// The shared store-host config governs only these stores. An unrelated bd
+// project keeps its own resolution (port file, then config.yaml, then
+// metadata.json) exactly as upstream.
+func IsFederationStore(beadsDir string) bool {
+	if SharedServerSelected() {
+		return true
+	}
+	if beadsDir == "" {
+		return false
+	}
+	if _, err := os.Stat(ConfigPath(beadsDir)); err != nil {
+		return false
+	}
+	cfg, err := Load(beadsDir)
+	if err != nil || cfg == nil {
+		return false
+	}
+	return cfg.IsFederationStore()
+}
+
+// IsFederationStore reports whether this config describes a brain federation
+// store (see IsFederationStore(beadsDir)).
+func (c *Config) IsFederationStore() bool {
+	if SharedServerSelected() {
+		return true
+	}
+	if c == nil {
+		return false
+	}
+	return c.GlobalDoltDatabase != "" || c.GlobalProjectID != ""
 }
 
 // StoreHostFromFile reports the host/port the shared file defines, ignoring the

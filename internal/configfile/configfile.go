@@ -301,13 +301,16 @@ func (c *Config) GetDoltMode() string {
 // The shared file sits above the per-store pins on purpose: the federation's
 // server is one fact per machine, so repointing it is one file edit, and a
 // store that still carries a stale dolt_server_host cannot quietly drag reads
-// back to the old host. Remove the file to fall back to per-store metadata.
+// back to the old host. It governs brain federation stores only; an unrelated
+// bd project keeps its own per-store resolution (see IsFederationStore).
 func (c *Config) GetDoltServerHost() string {
 	if h := os.Getenv("BEADS_DOLT_SERVER_HOST"); h != "" {
 		return h
 	}
-	if h, _, ok := StoreHostFromFile(); ok {
-		return h
+	if c.IsFederationStore() {
+		if h, _, ok := StoreHostFromFile(); ok {
+			return h
+		}
 	}
 	if c.DoltServerHost != "" {
 		return c.DoltServerHost
@@ -325,8 +328,8 @@ func (c *Config) GetDoltServerHost() string {
 //
 // GetDoltServerPort returns the Dolt server port.
 // Checks BEADS_DOLT_SERVER_PORT env var first, then BEADS_DOLT_PORT (orchestrator sets this),
-// then the shared store-host config (~/.config/brain/store-host.env), then
-// config/metadata, then default.
+// then the shared store-host config (~/.config/brain/store-host.env) for a
+// brain federation store, then config/metadata, then default.
 func (c *Config) GetDoltServerPort() int {
 	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil {
@@ -338,8 +341,10 @@ func (c *Config) GetDoltServerPort() int {
 			return port
 		}
 	}
-	if _, p, ok := StoreHostFromFile(); ok {
-		return p
+	if c.IsFederationStore() {
+		if _, p, ok := StoreHostFromFile(); ok {
+			return p
+		}
 	}
 	if c.DoltServerPort > 0 {
 		return c.DoltServerPort

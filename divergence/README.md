@@ -130,3 +130,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0034](0034-review-fixes-hooks-outbox-backup.md) | small fixes from the adversarial review of the 2026-10-07..09 changes | proposed |
 | [0035](0035-brain-host-promote.md) | brain host promote — move the brain host role between machines, and clients that correct themselves | proposed |
 | [0036](0036-config-keys-single-where.md) | one WHERE on the scoped key-list config read | proposed |
+| [0037](0037-store-host-single-source.md) | one shared store-host config — the Dolt server is one fact per machine, read at run time | landed |
