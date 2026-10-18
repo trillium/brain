@@ -256,6 +256,75 @@ func TestUnifiedScopedCustomTablesLegacy(t *testing.T) {
 	}
 }
 
+// TestGetConfigKeysInTxSingleWhere pins the scoped key-list read. The unified
+// selector already renders the namespace predicate (`WHERE `store` = ? `), so
+// the key predicate must AND onto it. Before the fix the two concatenated into
+// `... WHERE `store` = ? WHERE `key` IN (?,?)`, which the server rejects as a
+// syntax error, so every scoped call silently fell back to YAML. The exact
+// statement expectation fails on that shape, and the lookup must return
+// exactly the requested keys for both the scoped and legacy statements.
+func TestGetConfigKeysInTxSingleWhere(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("scoped", func(t *testing.T) {
+		pinScope(t, UnifiedScope{Unified: true, Store: "task"})
+		mock, db := newMock(t)
+		tx := txOf(ctx, t, mock, db)
+
+		mock.ExpectQuery(regexp.QuoteMeta(
+			"SELECT `key`, value FROM brain_unified_config WHERE `store` = ? AND `key` IN (?,?)")).
+			WithArgs("task", "status.custom", "types.custom").
+			WillReturnRows(sqlmock.NewRows([]string{"key", "value"}).
+				AddRow("status.custom", "review:active").
+				AddRow("types.custom", `["gate"]`))
+
+		got, err := getConfigKeysInTx(ctx, tx, "status.custom", "types.custom")
+		if err != nil {
+			t.Fatalf("getConfigKeysInTx scoped: %v", err)
+		}
+		want := map[string]string{"status.custom": "review:active", "types.custom": `["gate"]`}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("scoped lookup = %v, want %v", got, want)
+		}
+
+		mock.ExpectRollback()
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("scoped statements: %v", err)
+		}
+	})
+
+	t.Run("legacy", func(t *testing.T) {
+		pinScope(t, UnifiedScope{})
+		mock, db := newMock(t)
+		tx := txOf(ctx, t, mock, db)
+
+		mock.ExpectQuery(regexp.QuoteMeta(
+			"SELECT `key`, value FROM config WHERE `key` IN (?,?)")).
+			WithArgs("status.custom", "types.custom").
+			WillReturnRows(sqlmock.NewRows([]string{"key", "value"}).
+				AddRow("status.custom", "review:active"))
+
+		got, err := getConfigKeysInTx(ctx, tx, "status.custom", "types.custom")
+		if err != nil {
+			t.Fatalf("getConfigKeysInTx legacy: %v", err)
+		}
+		if !reflect.DeepEqual(got, map[string]string{"status.custom": "review:active"}) {
+			t.Fatalf("legacy lookup = %v", got)
+		}
+
+		mock.ExpectRollback()
+		if err := tx.Rollback(); err != nil {
+			t.Fatal(err)
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("legacy statements: %v", err)
+		}
+	})
+}
+
 // TestUnifiedScopeWithoutNamespaceDegrades pins the degradation rule: unified
 // database but no wrapper name means the template-seeded single-valued tables
 // are addressed — the pre-cutover behaviour — rather than a guessed namespace.
