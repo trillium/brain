@@ -96,6 +96,79 @@ func TestRewriteWrapperInPlace_RepointsOnceAndIsIdempotent(t *testing.T) {
 	}
 }
 
+// A wrapper that is rewritten is backed up first, so the repoint is reversible:
+// the *.bak copy is the pre-rewrite file.
+func TestRewriteWrapperInPlace_BacksUpBeforeRewriting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old")
+	body := "#!/bin/sh\nexport BEADS_DIR=\"/data/x/.beads\"\n" +
+		"export BEADS_DOLT_SERVER_HOST=10.0.0.1\n" +
+		"exec bd \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil { //nolint:gosec // test wrapper
+		t.Fatalf("write: %v", err)
+	}
+
+	if _, err := rewriteWrapperInPlace(path, true); err != nil {
+		t.Fatalf("rewriteWrapperInPlace: %v", err)
+	}
+	backup, err := os.ReadFile(path + wrapperBackupSuffix)
+	if err != nil {
+		t.Fatalf("reading backup: %v", err)
+	}
+	if string(backup) != body {
+		t.Errorf("backup = %q, want the pre-rewrite wrapper", backup)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading wrapper: %v", err)
+	}
+	if string(after) == body {
+		t.Error("wrapper was not rewritten")
+	}
+}
+
+// The run-time host block must run before EVERY bd invocation, not just the
+// final exec: a wrapper with an earlier bd call (the fleet's inbox create-emit
+// shape) must hand the shared server to that call too.
+func TestRewriteAllStoreWrappers_BlockCoversEveryBdInvocation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "bd"), "#!/bin/sh\necho \"host=$BEADS_DOLT_SERVER_HOST port=$BEADS_DOLT_SERVER_PORT\"\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	writeSharedStoreHostEnv(t, home)
+
+	beadsDir := filepath.Join(home, "data", "inbox", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&configfile.Config{DoltMode: configfile.DoltModeServer}).Save(beadsDir); err != nil {
+		t.Fatal(err)
+	}
+	wdir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(wdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, filepath.Join(wdir, "inbox"),
+		"#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/inbox/.beads\"\n"+
+			"if [ \"${1:-}\" = \"create\" ]; then\n  bd \"$@\"\n  exit $?\nfi\nexec bd \"$@\"\n")
+
+	res := rewriteAllStoreWrappers("bd", map[string]storeEntry{"inbox": {Path: beadsDir}}, 1, 10*time.Second)
+	if len(res) != 1 || res[0].Status != "ok" {
+		t.Fatalf("results = %+v, want the wrapper verified ok", res)
+	}
+
+	cmd := exec.Command(filepath.Join(wdir, "inbox"), "create") //nolint:gosec // the wrapper under test
+	cmd.Env = []string{"HOME=" + home, "PATH=" + binDir + ":" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("running the rewritten wrapper: %v (%s)", err, out)
+	}
+	if !strings.Contains(string(out), "host=10.9.9.9 port=3311") {
+		t.Errorf("the earlier bd call got %q, want the shared file's host and port", strings.TrimSpace(string(out)))
+	}
+}
+
 func TestShellPathExpr(t *testing.T) {
 	t.Setenv("HOME", "/home/u")
 	for in, want := range map[string]string{
@@ -181,6 +254,22 @@ func TestRewriteAllStoreWrappersVerifiesEach(t *testing.T) {
 	}
 	if f := failedRewrites(res); len(f) != 1 || f[0].Name != "gone" {
 		t.Errorf("failedRewrites = %+v", f)
+	}
+
+	// The *.bak copies a repoint leaves behind are not wrappers themselves.
+	for _, n := range []string{"good", "gd"} {
+		if _, err := os.Stat(filepath.Join(wdir, n+wrapperBackupSuffix)); err != nil {
+			t.Errorf("%s%s missing: %v", n, wrapperBackupSuffix, err)
+		}
+	}
+	res = rewriteAllStoreWrappers("bd", stores, 2, 10*time.Second)
+	for _, r := range res {
+		if strings.HasSuffix(r.Name, wrapperBackupSuffix) {
+			t.Errorf("backup %q was treated as a wrapper", r.Name)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(wdir, "good"+wrapperBackupSuffix+wrapperBackupSuffix)); err == nil {
+		t.Error("a backup of a backup was created")
 	}
 }
 
@@ -286,6 +375,7 @@ func TestBakedServerPinLine_RecognizesWrapperShapes(t *testing.T) {
 		`_want_host="${BEADS_DOLT_SERVER_HOST:-}"`,
 		"# BEADS_DOLT_SERVER_HOST=127.0.0.1 documents the old default",
 		`[ "$BEADS_DOLT_SERVER_HOST" = "127.0.0.1" ]`,
+		`echo "beads: write BEADS_DOLT_SERVER_HOST=<host> and BEADS_DOLT_SERVER_PORT=<port> there, or export them for this shell" >&2`,
 	}
 	for _, line := range notPins {
 		if bakedServerPinLine(line) {

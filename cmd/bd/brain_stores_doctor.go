@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/configfile"
 )
 
 // defaultStoreProbeTimeout bounds a single store read so one wedged store
@@ -152,6 +154,16 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			// store's own readability is still reported when the read works.
 			if status, reason := wrapperMisroute(name, stores); status != "" && r.Status != "fail" {
 				r.Status, r.Reason = status, reason
+			}
+			// A store whose metadata.json pins its own Dolt host or port reads
+			// from the shared file through its wrapper but diverges from the
+			// federation on a bare bd run in the store directory.
+			if status, reason := metadataServerPin(name, stores[name]); status != "" && r.Status != "fail" {
+				if r.Reason == "" {
+					r.Status, r.Reason = status, reason
+				} else {
+					r.Status, r.Reason = "warn", r.Reason+"; "+reason
+				}
 			}
 			results[i] = r
 		}(i, name)
@@ -357,6 +369,38 @@ func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason 
 		return "fail", fmt.Sprintf("wrapper %s resolves %s, which does not exist (registry says %s)", wrapper, pinned, mine)
 	}
 	return "warn", fmt.Sprintf("wrapper %s pins %s; the registry says %s", wrapper, pinned, mine)
+}
+
+// metadataServerPin reports a store whose metadata.json pins its own Dolt host
+// or port. The generated wrapper resolves the shared store host config, but a
+// bare bd run in the store directory would use the pinned value instead and
+// silently diverge from the federation's one server.
+func metadataServerPin(name string, entry storeEntry) (status, reason string) {
+	beadsDir := expandPath(entry.Path)
+	if wrapper, ok := storeWrapperPath(name); ok {
+		if pinned, ok := wrapperBeadsDir(wrapper); ok {
+			beadsDir = pinned
+		}
+	}
+	if beadsDir == "" {
+		return "", ""
+	}
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		return "", ""
+	}
+	var pins []string
+	if cfg.DoltServerHost != "" {
+		pins = append(pins, "dolt_server_host="+cfg.DoltServerHost)
+	}
+	if cfg.DoltServerPort > 0 {
+		pins = append(pins, "dolt_server_port="+strconv.Itoa(cfg.DoltServerPort))
+	}
+	if len(pins) == 0 {
+		return "", ""
+	}
+	return "warn", fmt.Sprintf("%s pins %s in metadata.json; a bare bd run would use it instead of the shared store host config",
+		beadsDir, strings.Join(pins, ", "))
 }
 
 // wrapperBeadsDir reads the BEADS_DIR a wrapper effectively assigns, with
