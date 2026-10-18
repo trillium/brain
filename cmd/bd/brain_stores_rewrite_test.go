@@ -97,7 +97,8 @@ func TestRewriteWrapperInPlace_RepointsOnceAndIsIdempotent(t *testing.T) {
 }
 
 // A wrapper that is rewritten is backed up first, so the repoint is reversible:
-// the *.bak copy is the pre-rewrite file.
+// the .bak-repoint-<timestamp> copy is the pre-rewrite file, and it carries no
+// exec bit so host promotion never installs it.
 func TestRewriteWrapperInPlace_BacksUpBeforeRewriting(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "old")
@@ -111,12 +112,23 @@ func TestRewriteWrapperInPlace_BacksUpBeforeRewriting(t *testing.T) {
 	if _, err := rewriteWrapperInPlace(path, true); err != nil {
 		t.Fatalf("rewriteWrapperInPlace: %v", err)
 	}
-	backup, err := os.ReadFile(path + wrapperBackupSuffix)
+	backups := backupPaths(t, dir)
+	if len(backups) != 1 {
+		t.Fatalf("backups = %v, want exactly one", backups)
+	}
+	backup, err := os.ReadFile(backups[0])
 	if err != nil {
 		t.Fatalf("reading backup: %v", err)
 	}
 	if string(backup) != body {
 		t.Errorf("backup = %q, want the pre-rewrite wrapper", backup)
+	}
+	info, err := os.Stat(backups[0])
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if info.Mode()&0o111 != 0 {
+		t.Errorf("backup is executable (mode %v); host promotion would install it", info.Mode())
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
@@ -127,9 +139,26 @@ func TestRewriteWrapperInPlace_BacksUpBeforeRewriting(t *testing.T) {
 	}
 }
 
+// backupPaths returns the repoint backup files in dir.
+func backupPaths(t *testing.T, dir string) []string {
+	t.Helper()
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	var out []string
+	for _, e := range ents {
+		if strings.Contains(e.Name(), wrapperBackupMarker) {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	return out
+}
+
 // The run-time host block must run before EVERY bd invocation, not just the
 // final exec: a wrapper with an earlier bd call (the fleet's inbox create-emit
-// shape) must hand the shared server to that call too.
+// shape) must hand the shared server to that call too — and a block an older
+// build left above the last exec must be moved to that position.
 func TestRewriteAllStoreWrappers_BlockCoversEveryBdInvocation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -151,7 +180,8 @@ func TestRewriteAllStoreWrappers_BlockCoversEveryBdInvocation(t *testing.T) {
 	}
 	writeExec(t, filepath.Join(wdir, "inbox"),
 		"#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/inbox/.beads\"\n"+
-			"if [ \"${1:-}\" = \"create\" ]; then\n  bd \"$@\"\n  exit $?\nfi\nexec bd \"$@\"\n")
+			"if [ \"${1:-}\" = \"create\" ]; then\n  bd \"$@\"\n  exit $?\nfi\n"+
+			sharedServerHostBlock+"exec bd \"$@\"\n")
 
 	res := rewriteAllStoreWrappers("bd", map[string]storeEntry{"inbox": {Path: beadsDir}}, 1, 10*time.Second)
 	if len(res) != 1 || res[0].Status != "ok" {
@@ -256,20 +286,19 @@ func TestRewriteAllStoreWrappersVerifiesEach(t *testing.T) {
 		t.Errorf("failedRewrites = %+v", f)
 	}
 
-	// The *.bak copies a repoint leaves behind are not wrappers themselves.
-	for _, n := range []string{"good", "gd"} {
-		if _, err := os.Stat(filepath.Join(wdir, n+wrapperBackupSuffix)); err != nil {
-			t.Errorf("%s%s missing: %v", n, wrapperBackupSuffix, err)
-		}
+	// The backups a repoint leaves behind are not wrappers themselves.
+	firstBackups := backupPaths(t, wdir)
+	if len(firstBackups) == 0 {
+		t.Fatal("no repoint backups were written")
 	}
 	res = rewriteAllStoreWrappers("bd", stores, 2, 10*time.Second)
 	for _, r := range res {
-		if strings.HasSuffix(r.Name, wrapperBackupSuffix) {
+		if strings.Contains(r.Name, wrapperBackupMarker) {
 			t.Errorf("backup %q was treated as a wrapper", r.Name)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(wdir, "good"+wrapperBackupSuffix+wrapperBackupSuffix)); err == nil {
-		t.Error("a backup of a backup was created")
+	if got := backupPaths(t, wdir); len(got) != len(firstBackups) {
+		t.Errorf("backups = %v after a second pass, want %d and no backup of a backup", got, len(firstBackups))
 	}
 }
 
@@ -357,6 +386,49 @@ func TestRewriteAllStoreWrappers_ReportsConditionalPinAsFailure(t *testing.T) {
 	}
 }
 
+// TestRequireSharedStoreHostFile locks the up-front refusal: the repoint verb
+// must not touch a wrapper until the shared file exists, and a process env value
+// alone does not satisfy that.
+func TestRequireSharedStoreHostFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(configfile.StoreHostKeyHost, "")
+	t.Setenv(configfile.StoreHostKeyPort, "")
+
+	err := requireSharedStoreHostFile()
+	if err == nil {
+		t.Fatal("expected a refusal when the shared file is absent")
+	}
+	if !strings.Contains(err.Error(), configfile.StoreHostKeyHost) || !strings.Contains(err.Error(), configfile.StoreHostKeyPort) {
+		t.Errorf("the refusal must name both keys; got: %v", err)
+	}
+
+	t.Setenv(configfile.StoreHostKeyHost, "10.0.0.1")
+	t.Setenv(configfile.StoreHostKeyPort, "3307")
+	if err := requireSharedStoreHostFile(); err == nil {
+		t.Fatal("a process env value alone must not satisfy the precondition")
+	}
+
+	hostFile := filepath.Join(home, ".config", "brain", configfile.StoreHostFileName)
+	if err := os.MkdirAll(filepath.Dir(hostFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.0.0.1\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := requireSharedStoreHostFile(); err == nil {
+		t.Fatal("a present-but-unusable file must surface the validation error")
+	}
+
+	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.0.0.1\nBEADS_DOLT_SERVER_PORT=3307\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if err := requireSharedStoreHostFile(); err != nil {
+		t.Errorf("a usable file must pass: %v", err)
+	}
+}
+
 func TestBakedServerPinLine_RecognizesWrapperShapes(t *testing.T) {
 	pins := []string{
 		"export BEADS_DOLT_SERVER_HOST=10.0.0.1",
@@ -381,6 +453,76 @@ func TestBakedServerPinLine_RecognizesWrapperShapes(t *testing.T) {
 		if bakedServerPinLine(line) {
 			t.Errorf("bakedServerPinLine(%q) = true, want not a pin", line)
 		}
+	}
+}
+
+// A wrapper written by an older build carries the run-time block immediately
+// above the last exec, so an earlier bd call (the fleet's emit-hook shape) never
+// saw the shared server. The repoint pass must move the block to the canonical
+// position even though '_store_host_file=' is already present.
+func TestCanonicalizeWrapperHost_RepositionsAnExistingBlock(t *testing.T) {
+	old := "#!/bin/sh\n" +
+		"export BEADS_DIR=\"$HOME/data/inbox/.beads\"\n" +
+		"if [ \"${1:-}\" = create ]; then\n" +
+		"  bd \"$@\"\n" +
+		"fi\n" +
+		sharedServerHostBlock +
+		"exec bd \"$@\"\n"
+
+	out, changed := canonicalizeWrapperHost(old)
+	if !changed {
+		t.Fatal("an existing block in the old position must be repositioned")
+	}
+	blockStart := strings.Index(out, sharedServerHostBlock)
+	firstBD := strings.Index(out, "bd \"$@\"")
+	if blockStart < 0 || firstBD < 0 || blockStart > firstBD {
+		t.Fatalf("the runtime block must precede the first bd call:\n%s", out)
+	}
+
+	again, changedAgain := canonicalizeWrapperHost(out)
+	if changedAgain || again != out {
+		t.Fatalf("a second canonicalize pass changed the wrapper again:\n%s", again)
+	}
+}
+
+// A store provisioned with --embedded has no metadata.json by design: it keeps
+// its minimal wrapper and is reported as skipped, not as a failure, so
+// 'brain remote set/install' does not fail on a host that has one.
+func TestRewriteAllStoreWrappers_SkipsEmbeddedStore(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "bd"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+	writeSharedStoreHostEnv(t, home)
+
+	beadsDir := filepath.Join(home, "data", "scratch", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("issue-prefix: scratch\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wdir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(wdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, filepath.Join(wdir, "scratch"),
+		"#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/scratch/.beads\"\nexec bd \"$@\"\n")
+
+	res := rewriteAllStoreWrappers("bd", map[string]storeEntry{"scratch": {Path: beadsDir}}, 1, 10*time.Second)
+	if len(res) != 1 || res[0].Status != "embedded" {
+		t.Fatalf("results = %+v, want the embedded store reported as skipped", res)
+	}
+	if f := failedRewrites(res); len(f) != 0 {
+		t.Errorf("failedRewrites = %+v, want embedded skipped", f)
+	}
+	body, err := os.ReadFile(filepath.Join(wdir, "scratch"))
+	if err != nil {
+		t.Fatalf("reading wrapper: %v", err)
+	}
+	if strings.Contains(string(body), "_store_host_file=") {
+		t.Errorf("an embedded store's wrapper must not get the runtime host block:\n%s", body)
 	}
 }
 

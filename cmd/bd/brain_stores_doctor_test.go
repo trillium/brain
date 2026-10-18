@@ -310,7 +310,27 @@ func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
 }
 
 // A store whose metadata pins its own Dolt host or port diverges from the
-// shared server on a bare bd run, so the doctor reports it.
+// shared server on a bare bd run, so the doctor reports it as informational:
+// it is shown, but it does not make --strict fail.
+// TestTallyStoreHealth_InformationalDoesNotWarn locks the exit contract: an
+// informational metadata-pin finding is shown, but --strict does not fail on it.
+func TestTallyStoreHealth_InformationalDoesNotWarn(t *testing.T) {
+	oldStrict := storesDoctorStrict
+	storesDoctorStrict = true
+	defer func() { storesDoctorStrict = oldStrict }()
+
+	ok, warn, fail, info, _ := tallyStoreHealth([]storeHealth{{Status: "info"}, {Status: "ok"}})
+	if warn != 0 {
+		t.Errorf("warn = %d, want 0 for an informational finding", warn)
+	}
+	if ok != 1 || info != 1 {
+		t.Errorf("ok/info = %d/%d, want 1/1", ok, info)
+	}
+	if code := doctorExitCode(fail, warn); code != 0 {
+		t.Errorf("an informational finding must not fail --strict; exit = %d", code)
+	}
+}
+
 func TestMetadataServerPin_ReportsPinnedStore(t *testing.T) {
 	home := isolatedHome(t)
 	beadsDir := filepath.Join(home, "data", "task", ".beads")
@@ -323,8 +343,8 @@ func TestMetadataServerPin_ReportsPinnedStore(t *testing.T) {
 	}
 
 	status, reason := metadataServerPin("task", storeEntry{Path: beadsDir})
-	if status != "warn" {
-		t.Fatalf("status = %q, want warn (reason=%q)", status, reason)
+	if status != "info" {
+		t.Fatalf("status = %q, want info (reason=%q)", status, reason)
 	}
 	if !strings.Contains(reason, "dolt_server_host=10.0.0.1") || !strings.Contains(reason, "dolt_server_port=3307") {
 		t.Errorf("reason = %q, want both pins named", reason)

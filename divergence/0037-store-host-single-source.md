@@ -88,18 +88,23 @@ reads back to the old host *through its wrapper*.
 3. **`cmd/bd/brain_stores_rewrite.go`** — `brain stores rewrite-wrappers` also
    requires the file up front, so it can never repoint the fleet into wrappers
    that refuse. It classifies a wrapper from the wrapper's own `BEADS_DIR` and
-   its store's metadata (an unclassified wrapper is reported, never `ok`),
+   its store's metadata: a store with its own `.beads` directory but no
+   `metadata.json` is the deliberately embedded shape and is skipped with a
+   note, a wrapper it cannot classify is reported, and neither is ever `ok`. It
    strips whole-line baked host/port pins, detects pins in shapes it cannot
    safely rewrite (a conditional default, a command list) and fails the wrapper
    while one survives, and installs the run-time block *before the first
-   statement that can reach a bd invocation* so every path in the wrapper — not
-   just the final `exec` — resolves the shared server. Every rewritten wrapper
-   is first copied to `<wrapper>.bak`.
+   statement that can reach a bd invocation*, moving a block an older build
+   left above the last `exec` into that position. Every rewritten wrapper is
+   first copied to `<wrapper>.bak-repoint-<timestamp>`, a plain non-executable
+   data file so host promotion never mistakes it for a wrapper.
 
 4. **`cmd/bd/brain_stores_doctor.go`** — the doctor reports any store whose
    `metadata.json` pins its own `dolt_server_host`/`dolt_server_port`: the
    wrapper reads the shared file, but a bare bd run in the store directory
-   would use the pin and silently diverge from the federation's one server.
+   would use the pin and silently diverge from the federation's one server. The
+   finding is informational — shown with the store's other results, but it does
+   not make `--strict` fail.
 
 ## Rollback
 
@@ -113,8 +118,9 @@ repointed wrapper exits 78 while the file is absent.
 2. **Or export the two variables** in the environment that invokes the tools.
    A process env value of either key wins over the file, so exports alone make
    the wrappers work even with the file gone.
-3. **Or restore a wrapper** from the `<wrapper>.bak` copy the repoint pass
-   wrote next to it (`cp ~/.local/bin/<store>.bak ~/.local/bin/<store>`); the
+3. **Or restore a wrapper** from its `.bak-repoint-<timestamp>` copy, written
+   next to it by the repoint pass
+   (`cp ~/.local/bin/<store>.bak-repoint-<timestamp> ~/.local/bin/<store>`); the
    backup is the exact pre-repoint file. A wrapper is never rewritten without
    first writing that copy.
 
