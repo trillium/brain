@@ -141,6 +141,16 @@ What this command does with each text row:
                                → left exactly as it is: depends_on_external is
                                  for genuinely foreign targets.
 
+A row whose target becomes a real blocking edge is also checked for cycles over
+the current graph (text rows included, as the write path traverses it); rows
+that would close one are named in the plan and still reclassified.
+
+A dependency whose cross-store target is not held when it is persisted (bulk
+import or any batch) is kept as a text reference in depends_on_external, never
+dropped. Within one batch every issue is created before any dependency row is
+persisted, so only cross-batch references land as text; once the target exists,
+this same command repairs them.
+
 Without --apply nothing is written: the command prints the plan, every row it
 would touch, and the exact command that would apply it. With --apply the whole
 repair is one Dolt commit (staging only the edge table and issues), so it is

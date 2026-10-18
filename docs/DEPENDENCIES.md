@@ -174,6 +174,12 @@ ids' prefixes:
   store has not created yet). `bd dep reclassify` lists those rows and turns
   the ones this database does hold into real edges; `bd dep reclassify --apply`
   does it in one Dolt commit.
+- **Bulk import and batch persistence** keep such a not-yet-held reference as
+  text instead of dropping it. Within one batch every issue is created before
+  any dependency row is persisted, so only cross-batch references land as
+  text; `bd dep reclassify` repairs them once the target exists. The dry run
+  also names any row that would close a cycle when made real (the repair still
+  applies it).
 - **An `external:<project>:<capability>` reference** is foreign by
   construction, always stays a text reference, and is never reclassified.
 

@@ -27,6 +27,7 @@ set -euo pipefail
 
 BD_BIN="bd"
 DRY_RUN_EXPLICIT=false
+APPLY=false
 ARGS=()
 
 while [ "$#" -gt 0 ]; do
@@ -36,6 +37,7 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --apply)
+            APPLY=true
             ARGS+=("--apply")
             shift
             ;;
@@ -59,6 +61,11 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+if [ "$APPLY" = true ] && [ "$DRY_RUN_EXPLICIT" = true ]; then
+    echo "Error: --dry-run and --apply are mutually exclusive" >&2
+    exit 2
+fi
+
 if ! command -v "$BD_BIN" >/dev/null 2>&1; then
     echo "Error: '$BD_BIN' not found on PATH; run this where a store wrapper is installed" >&2
     exit 1
@@ -66,10 +73,10 @@ fi
 
 # Say which store's database this will act on before acting on it.
 STORE_LABEL="${BD_NAME:-no BD_NAME set (the local workspace store)}"
-if [ "${#ARGS[@]}" -gt 0 ] && [ "${ARGS[0]}" = "--apply" ]; then
+if [ "$APPLY" = true ]; then
     echo "Applying the external-target repair to the store behind: ${STORE_LABEL}" >&2
     echo "One Dolt commit; revert it with: bd dolt revert <hash>" >&2
-elif [ "$DRY_RUN_EXPLICIT" = true ] || [ "${#ARGS[@]}" -eq 0 ]; then
+else
     echo "Dry run (nothing written) against the store behind: ${STORE_LABEL}" >&2
 fi
 

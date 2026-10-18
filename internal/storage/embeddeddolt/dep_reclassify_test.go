@@ -349,3 +349,38 @@ func TestExternalDepReclassifyRefusesDirtyWorkingSet(t *testing.T) {
 		}
 	})
 }
+
+// TestExternalDepReclassifyNamesCycleAndStillApplies pins the read-only cycle
+// report: a text blocking row whose target already reaches its source over a
+// real edge is named in the plan, and the repair still moves it.
+func TestExternalDepReclassifyNamesCycleAndStillApplies(t *testing.T) {
+	te := newTestEnv(t, "cy")
+	ctx := t.Context()
+	seedEmbeddedIssue(t, ctx, te, "cy-a")
+	seedEmbeddedIssue(t, ctx, te, "other-b")
+
+	if err := te.store.AddDependency(ctx, &types.Dependency{IssueID: "other-b", DependsOnID: "cy-a", Type: types.DepBlocks}, "tester"); err != nil {
+		t.Fatalf("seed real edge: %v", err)
+	}
+
+	withRawSQL(t, te, func(db *sql.DB) {
+		seedExternalDepRow(t, ctx, db, depid.New("cy-a", "other-b"), "cy-a", "other-b", types.DepBlocks)
+
+		plan, err := issueops.PlanExternalDepReclassify(ctx, db)
+		if err != nil {
+			t.Fatalf("PlanExternalDepReclassify: %v", err)
+		}
+		if len(plan.Cycles) != 1 || plan.Cycles[0].IssueID != "cy-a" || plan.Cycles[0].Target != "other-b" {
+			t.Fatalf("Cycles = %#v, want cy-a -> other-b", plan.Cycles)
+		}
+
+		applied := applyReclassify(t, ctx, db)
+		if applied.Reclassified() != 1 {
+			t.Errorf("Reclassified() = %d, want 1 (cycle rows still apply)", applied.Reclassified())
+		}
+		moved := readDepRow(t, ctx, db, "cy-a", "other-b")
+		if !moved.issueTarget.Valid || moved.externalTarget.Valid {
+			t.Errorf("cycle row = (issue %#v, external %#v), want the typed column only", moved.issueTarget, moved.externalTarget)
+		}
+	})
+}

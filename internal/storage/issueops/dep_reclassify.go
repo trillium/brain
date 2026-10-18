@@ -85,6 +85,11 @@ type DepReclassifyPlan struct {
 	// and reported, because choosing which type survives is the operator's
 	// call, not the repair's.
 	TypeConflicts []DepReclassifyRow
+	// Cycles are the Reclassify rows of a blocking type whose target, once a
+	// real edge, can already reach the source over the current graph (text
+	// rows included, the write path's traversal). Read-only information: the
+	// repair still reclassifies them.
+	Cycles []DepReclassifyRow
 	// Explicit counts rows whose target carries the "external:" prefix: foreign
 	// by construction, never touched.
 	Explicit int
@@ -128,7 +133,20 @@ func PlanExternalDepReclassify(ctx context.Context, q DBTX) (DepReclassifyPlan, 
 			return DepReclassifyPlan{}, err
 		}
 	}
+	for _, row := range plan.Reclassify {
+		if row.DepType != types.DepBlocks && row.DepType != types.DepConditionalBlocks {
+			continue
+		}
+		var reachable int
+		if err := q.QueryRowContext(ctx, cycleReachabilityQuery(cycleDetectionTables()), row.Target, row.IssueID).Scan(&reachable); err != nil {
+			return DepReclassifyPlan{}, fmt.Errorf("checking %s -> %s for a cycle: %w", row.IssueID, row.Target, err)
+		}
+		if reachable > 0 {
+			plan.Cycles = append(plan.Cycles, row)
+		}
+	}
 	sortPlanRows(plan.Reclassify)
+	sortPlanRows(plan.Cycles)
 	sortPlanRows(plan.Collapse)
 	sortPlanRows(plan.TypeConflicts)
 	return plan, nil
