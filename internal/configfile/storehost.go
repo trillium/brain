@@ -36,11 +36,15 @@ const (
 	// (a test or a staged migration can point both at the same file).
 	StoreHostFileEnvVar = "BRAIN_STORE_HOST_FILE"
 
-	// StoreHostKeyHost and StoreHostKeyPort are the only keys this file
-	// defines. Other lines are ignored so the file stays usable as a shell
-	// fragment.
-	StoreHostKeyHost = "BEADS_DOLT_SERVER_HOST"
-	StoreHostKeyPort = "BEADS_DOLT_SERVER_PORT"
+	// StoreHostKeyHost and StoreHostKeyPort name the server; the other two keys
+	// are the CREDENTIAL REFERENCE. The record never holds a secret: it names
+	// the MySQL user and the path of the password file, and bd resolves the
+	// password from that file at run time (see LookupCredentialsPassword).
+	// Unrelated lines are ignored so the file stays usable as a shell fragment.
+	StoreHostKeyHost            = "BEADS_DOLT_SERVER_HOST"
+	StoreHostKeyPort            = "BEADS_DOLT_SERVER_PORT"
+	StoreHostKeyUser            = "BEADS_DOLT_SERVER_USER"
+	StoreHostKeyCredentialsFile = "BEADS_CREDENTIALS_FILE"
 )
 
 // ErrStoreHostMissing reports that the shared store-host config is not there.
@@ -117,6 +121,64 @@ func Resolve() (StoreHost, error) {
 	return out, nil
 }
 
+// StoreHostValue returns one raw value from the shared store-host file,
+// ignoring the process environment. ok is false when the file is absent or
+// does not define the key, so callers keep their own fallback chain. It is the
+// accessor behind the record's credential reference (the MySQL user and the
+// password file's path) — never a password.
+func StoreHostValue(key string) (string, bool) {
+	values, err := ReadStoreHostValues(DefaultStoreHostPath())
+	if err != nil {
+		return "", false
+	}
+	v, ok := values[key]
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
+}
+
+// CredentialsRef is the credential REFERENCE the federation's store-host record
+// carries: which MySQL user to connect as and which file holds the password.
+// The password itself is never in the record, never printed, and never in git.
+// An empty field means the record names nothing and the caller falls back to
+// bd's own defaults (user "root", ~/.config/beads/credentials).
+//
+// FileExists reports whether CredentialsFile is present, so a caller can tell
+// "no reference configured" from "the referenced file is missing" without ever
+// reading a password.
+type CredentialsRef struct {
+	User            string
+	CredentialsFile string
+	FileExists      bool
+}
+
+// ResolveCredentialsRef returns the credential reference for this process: a
+// process env value wins per key, the shared file supplies what the environment
+// does not, and path existence is reported for the credentials file. It never
+// reads or returns a password.
+func ResolveCredentialsRef() CredentialsRef {
+	ref := CredentialsRef{
+		User:            strings.TrimSpace(os.Getenv(StoreHostKeyUser)),
+		CredentialsFile: strings.TrimSpace(os.Getenv(StoreHostKeyCredentialsFile)),
+	}
+	values, err := ReadStoreHostValues(DefaultStoreHostPath())
+	if err == nil {
+		if ref.User == "" {
+			ref.User = values[StoreHostKeyUser]
+		}
+		if ref.CredentialsFile == "" {
+			ref.CredentialsFile = values[StoreHostKeyCredentialsFile]
+		}
+	}
+	if ref.CredentialsFile != "" {
+		if _, statErr := os.Stat(ref.CredentialsFile); statErr == nil {
+			ref.FileExists = true
+		}
+	}
+	return ref
+}
+
 // StoreHostFromFile reports the host/port the shared file defines, ignoring the
 // process environment. ok is false when the file is absent (or when
 // DefaultStoreHostPath cannot be resolved), so this is safe to call from
@@ -127,6 +189,37 @@ func StoreHostFromFile() (host string, port int, ok bool) {
 		return "", 0, false
 	}
 	return h, p, true
+}
+
+// ReadStoreHostValues parses one store-host file into its keys, skipping lines
+// the format does not define. A missing file (or an unresolvable path) returns
+// ErrStoreHostMissing so callers can name the path that should exist.
+func ReadStoreHostValues(path string) (map[string]string, error) {
+	if path == "" {
+		return nil, fmt.Errorf("%w: %s", ErrStoreHostMissing, StoreHostFileName)
+	}
+	f, err := os.Open(path) //nolint:gosec // operator-owned config path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %s", ErrStoreHostMissing, path)
+		}
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	values := make(map[string]string)
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		key, value, ok := ParseStoreHostLine(sc.Text())
+		if !ok {
+			continue
+		}
+		values[key] = value
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return values, nil
 }
 
 // loadStoreHostFile reads one store-host file. A missing file (or an
@@ -151,7 +244,7 @@ func loadStoreHostFile(path string) (string, int, error) {
 	lineNo := 0
 	for sc.Scan() {
 		lineNo++
-		key, value, ok := parseStoreHostLine(sc.Text())
+		key, value, ok := ParseStoreHostLine(sc.Text())
 		if !ok {
 			continue
 		}
@@ -175,10 +268,10 @@ func loadStoreHostFile(path string) (string, int, error) {
 	return host, port, nil
 }
 
-// parseStoreHostLine parses one KEY=VALUE line, accepting an optional leading
+// ParseStoreHostLine parses one KEY=VALUE line, accepting an optional leading
 // `export`, surrounding quotes, and `#` comments. Blank lines and anything
 // without '=' are skipped so the file stays a valid shell fragment.
-func parseStoreHostLine(line string) (key, value string, ok bool) {
+func ParseStoreHostLine(line string) (key, value string, ok bool) {
 	line = strings.TrimSpace(line)
 	if line == "" || strings.HasPrefix(line, "#") {
 		return "", "", false

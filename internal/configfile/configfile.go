@@ -338,9 +338,14 @@ func (c *Config) GetDoltServerSocket() string {
 }
 
 // GetDoltServerUser returns the Dolt server MySQL user.
-// Checks BEADS_DOLT_SERVER_USER env var first, then config, then default.
+// Checks BEADS_DOLT_SERVER_USER env var first, then the shared store-host
+// record (~/.config/brain/store-host.env, the federation's one per-machine
+// host/credential reference), then the store's own config, then the default.
 func (c *Config) GetDoltServerUser() string {
 	if u := os.Getenv("BEADS_DOLT_SERVER_USER"); u != "" {
+		return u
+	}
+	if u, ok := StoreHostValue(StoreHostKeyUser); ok {
 		return u
 	}
 	if c.DoltServerUser != "" {
@@ -402,7 +407,6 @@ func (c *Config) GetDoltServerPasswordForPort(port int) string {
 	}
 	return ""
 }
-
 // GetDoltServerTLS returns whether TLS is enabled for server connections.
 // Required for Hosted Dolt instances.
 // Checks BEADS_DOLT_SERVER_TLS env var first ("1" or "true"), then config.

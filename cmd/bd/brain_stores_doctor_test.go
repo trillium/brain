@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/configfile"
 )
 
 func TestBrainStoresDoctorCmd_Registered(t *testing.T) {
@@ -387,5 +389,126 @@ func TestWrapperMisroute_SkipsForwardingWrapper(t *testing.T) {
 	stores := map[string]storeEntry{"task": {Path: filepath.Join(home, "data", "task", ".beads")}}
 	if status, reason := wrapperMisroute("task", stores); status != "" {
 		t.Fatalf("forwarding wrapper judged as %q (%s)", status, reason)
+	}
+}
+
+// storeHostRecordForTest points the doctor at a scratch store-host record.
+func storeHostRecordForTest(t *testing.T, home string) string {
+	t.Helper()
+	path := writeScratchStoreHostRecord(t, home)
+	t.Setenv(configfile.StoreHostFileEnvVar, path)
+	return path
+}
+
+// doctorFlagsForTest restores the doctor's package-level flag state after a test
+// that calls runBrainStoresDoctor directly.
+func doctorFlagsForTest(t *testing.T) {
+	t.Helper()
+	priorJSON, priorJobs, priorTimeout := storesDoctorJSON, storesDoctorJobs, storesDoctorTimeout
+	priorStrict, priorFix := storesDoctorStrict, storesDoctorFix
+	storesDoctorJSON, storesDoctorStrict = false, false
+	storesDoctorJobs = 1
+	storesDoctorTimeout = 5 * time.Second
+	t.Cleanup(func() {
+		storesDoctorJSON, storesDoctorJobs, storesDoctorTimeout = priorJSON, priorJobs, priorTimeout
+		storesDoctorStrict, storesDoctorFix = priorStrict, priorFix
+	})
+}
+
+// 'brain doctor --fix' is the repair half of the drift check: it converges a
+// machine whose wrapper pins a host onto the one store-host record, backs up
+// what it rewrites, and reports the drift it cleared. In the default dry-run
+// mode the same walk reports the drift and every file is left alone.
+func TestDoctorFixRepointsDriftedWrapper(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell wrappers are not the Windows shape")
+	}
+	home := isolatedHome(t)
+	doctorFlagsForTest(t)
+	noStoreHostProbe(t)
+	storeHostRecordForTest(t, home)
+
+	// bd stand-in: the wrapper resolves the store through the record, so the
+	// probe only needs to succeed; the drift is in the wrapper's own pins.
+	binDir := t.TempDir()
+	stubBd := filepath.Join(binDir, "bd")
+	if err := os.WriteFile(stubBd, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil { //nolint:gosec // test stub
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+":"+os.Getenv("PATH"))
+
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "metadata.json"),
+		[]byte(`{"dolt_mode":"server","dolt_database":"brain_unified"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveStoresRegistry(map[string]storeEntry{"task": {Path: beadsDir}}); err != nil {
+		t.Fatal(err)
+	}
+
+	wrapper := filepath.Join(home, ".local", "bin", "task")
+	if err := os.MkdirAll(filepath.Dir(wrapper), 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	// A server-mode wrapper that reads the shared record from nowhere: no
+	// run-time host block and no pin, so the store falls back to its own
+	// metadata instead of the one record. It still answers, which is what makes
+	// this drift invisible without an explicit check.
+	original := "#!/bin/sh\nexport BEADS_DIR=\"$HOME/data/task/.beads\"\nexec bd \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(original), 0o755); err != nil { //nolint:gosec // test wrapper
+		t.Fatal(err)
+	}
+
+	// The dry run (the default) reports the drift, names the fix, and writes
+	// nothing: it is a warning, so it does not fail the run without --strict.
+	storesDoctorFix = false
+	dryRun := captureStderr(t, func() { runBrainStoresDoctor(nil, nil) })
+	if !strings.Contains(dryRun, "host drift found") || !strings.Contains(dryRun, "brain doctor --fix") {
+		t.Errorf("dry run did not report the drift and the fix:\n%s", dryRun)
+	}
+	body, err := os.ReadFile(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != original {
+		t.Errorf("a dry run rewrote the wrapper:\n%s", body)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "state", "brain", "wrapper-backups")); err == nil {
+		t.Error("a dry run wrote a backup")
+	}
+
+	// --fix: the wrapper is converged on the record (and backed up).
+	storesDoctorFix = true
+	fixed := captureStderr(t, func() { runBrainStoresDoctor(nil, nil) })
+	if !strings.Contains(fixed, "host drift repaired") {
+		t.Errorf("--fix did not report the repair:\n%s", fixed)
+	}
+	body, err = os.ReadFile(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if _, removed := stripBakedServerPins(text); removed {
+		t.Errorf("the baked pin survived --fix:\n%s", text)
+	}
+	if !strings.Contains(text, "_store_host_file=") {
+		t.Errorf("--fix did not add the shared host block:\n%s", text)
+	}
+	backups, err := filepath.Glob(filepath.Join(home, ".local", "state", "brain", "wrapper-backups", "*", "task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("backups = %v, want exactly one", backups)
+	}
+	backed, err := os.ReadFile(backups[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(backed) != original {
+		t.Errorf("backup is not the pre-fix wrapper:\n%s", backed)
 	}
 }

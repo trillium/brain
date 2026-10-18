@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,56 @@ var (
 	storesDoctorJobs    int
 	storesDoctorTimeout time.Duration
 	storesDoctorStrict  bool
+	storesDoctorFix     bool
 )
+
+// storeConnectionDoctorShort / Long describe the store-connection check. The
+// verb is reachable as both 'brain doctor' and 'brain stores doctor': the
+// captain's ask (task-lt59w) names 'brain doctor', and the stores subcommand is
+// where federation verbs already live.
+const storeConnectionDoctorShort = "Check every store resolves a database, and that every wrapper reads the one store-host record"
+
+const storeConnectionDoctorLong = `Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/<name> is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+The same walk checks the CONNECTION itself: that the store-host record exists
+and names a server that answers, and that each wrapper reads that record rather
+than a baked host pin. A wrapper pinning BEADS_DOLT_SERVER_HOST/PORT is how a
+host drifts to a stale local Dolt daemon and starts failing every store with
+'Access denied' (robots-r1zd5): the pin wins over the record and nothing
+re-reads it.
+
+This verb is a DRY RUN by default: it reports what drifts and the exact command
+that repairs it. With --fix it converges this machine — rewriting/generating
+the wrappers that do not read the record (backing up the ones it changes), and
+writing the record from the process environment when the record is missing and
+BEADS_DOLT_SERVER_HOST/PORT are set. --fix never touches a Dolt daemon and never
+opens a store for writing.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store or a drifted host surfaces within a day rather than a
+week.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: <names>' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.`
 
 // doctorRegistrySentinel names the failure when the registry itself cannot be
 // read. Scheduler contract (see brain/scripts/stores-doctor.sh, legacy
@@ -59,40 +109,34 @@ type storeHealth struct {
 	Reason   string `json:"reason,omitempty"`        // one-line human cause
 	Detail   string `json:"detail,omitempty"`        // first lines of the failing output
 	Millis   int64  `json:"ms"`
+	// Drift lists why this store's wrapper does not read the federation's one
+	// store-host record (baked host pin, no run-time host block, hardcoded
+	// home path). Empty means the wrapper already reads it.
+	Drift []string `json:"drift,omitempty"`
+	// Repaired is true when this run (--fix) rewrote the wrapper to clear the
+	// drift. Without --fix, drift is reported and the exact fix command is
+	// printed instead.
+	Repaired bool `json:"repaired,omitempty"`
 }
 
-var brainStoresDoctorCmd = &cobra.Command{
-	Use:   "doctor",
-	Short: "Assert every store in the registry answers a read",
-	Long: `Walk every store registered in ~/.config/brain/stores.yaml and assert it
-answers a read. The registry is the source of truth for which stores must
-work; anything registered but unreadable is a provisioning bug.
-
-Each store is probed the way an agent would reach it: its CLI wrapper at
-~/.local/bin/<name> is invoked with 'list --limit 1'. Stores registered
-with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
-as a warning so the missing wrapper stays visible.
-
-A store fails when the probe exits non-zero, times out, or prints
-'no beads database found' — the signature of a half-provisioned store that
-was registered but never initialized. Such a store is silently non-functional
-for as long as nobody happens to use it; for queue-shaped stores (staleness,
-review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
-so the failure is invisible by construction until something asserts it.
-
-Run it from a scheduler (launchd/cron) or a session-start probe so a
-half-provisioned store surfaces within a day rather than a week.
-
-Exit codes:
-  0 — every store answered a read
-  1 — at least one store failed (or, with --strict, produced a warning)
-
-Every exit 1 is accompanied by a 'FAILING STORES: <names>' line so a
-scheduler can attribute the failure. When the registry itself is unreadable
-no store names are known, so the line carries the __registry__ sentinel.`,
-	Args: cobra.NoArgs,
-	Run:  runBrainStoresDoctor,
+// newStoreConnectionDoctorCmd builds one instance of the store-connection
+// doctor. Two instances exist ('brain doctor' and 'brain stores doctor'), so
+// each needs its own *cobra.Command even though they share the run function and
+// the flag variables behind it.
+func newStoreConnectionDoctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: storeConnectionDoctorShort,
+		Long:  storeConnectionDoctorLong,
+		Args:  cobra.NoArgs,
+		Run:   runBrainStoresDoctor,
+	}
 }
+
+var (
+	brainStoresDoctorCmd = newStoreConnectionDoctorCmd()
+	brainDoctorCmd       = newStoreConnectionDoctorCmd()
+)
 
 func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 	// Read the registry as recorded, then probe this machine's RESOLVED copy of
@@ -130,6 +174,45 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 		timeout = defaultStoreProbeTimeout
 	}
 
+	// Plan every wrapper's drift BEFORE any repair, so a --fix run reports what
+	// it found and changed, not only its post-repair state. Planning writes
+	// nothing, so this is the same code path 'brain stores rewrite-wrappers'
+	// uses to decide what to write.
+	targets := make(map[string]wrapperTarget)
+	for _, t := range collectWrapperTargets(stores) {
+		targets[t.name] = t
+	}
+	planned := make(map[string]plannedWrapper, len(targets))
+	for name, t := range targets {
+		planned[name] = wrapperPlanFor(t, "bd")
+	}
+
+	if storesDoctorFix {
+		if path, werr := ensureStoreHostRecordFromEnv(); werr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", werr)
+			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
+			os.Exit(1)
+		} else if path != "" {
+			fmt.Fprintf(os.Stderr, "Record: wrote %s from BEADS_DOLT_SERVER_HOST/PORT\n", path)
+		}
+		// The repair is 'brain stores rewrite-wrappers' itself — one convergence
+		// path, so a repair can never do a different thing than the verb that
+		// reports the drift. It backs up everything it rewrites.
+		_, _, cerr := convergeStoreWrappers(rewriteRunOptions{
+			self:     self,
+			stores:   stores,
+			jobs:     storesDoctorJobs,
+			timeout:  timeout,
+			backup:   true,
+			bdBinary: "bd",
+		})
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", cerr)
+			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
+			os.Exit(1)
+		}
+	}
+
 	names := sortedKeys(stores)
 	results := make([]storeHealth, len(names))
 	sem := make(chan struct{}, storesDoctorJobs)
@@ -153,6 +236,27 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 			// store's own readability is still reported when the read works.
 			if status, reason := wrapperMisroute(name, stores); status != "" && r.Status != "fail" {
 				r.Status, r.Reason = status, reason
+			}
+			if p, ok := planned[name]; ok && len(p.Drifts) > 0 {
+				r.Drift = p.Drifts
+				switch {
+				case storesDoctorFix:
+					// The convergence already ran: a plan that wanted a change
+					// was applied, so this store's drift is cleared.
+					r.Repaired = p.changed
+					if !p.changed && r.Status == "ok" {
+						r.Status = "warn"
+						r.Reason = "host drift could not be cleared: " + p.Drifts[0]
+					}
+				case r.Status == "fail":
+					// Keep the store's own failure; the drift is additional.
+				case p.BakedPin:
+					r.Status = "fail"
+					r.Reason = "HOST DRIFT: " + p.Drifts[0]
+				default:
+					r.Status = "warn"
+					r.Reason = "HOST DRIFT: " + p.Drifts[0]
+				}
 			}
 			results[i] = r
 		}(i, name)
@@ -183,6 +287,8 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 			"total":    len(results),
 			"failing":  failed,
 			"healed":   healed,
+			"fix":      storesDoctorFix,
+			"dry_run":  !storesDoctorFix,
 			"ms":       elapsed.Milliseconds(),
 		}
 		enc := json.NewEncoder(os.Stdout)
@@ -193,6 +299,7 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 			fmt.Fprintf(os.Stderr, "Registry: healed %d path(s) recorded under another home: %s\n",
 				len(healed), strings.Join(healed, " "))
 		}
+		fmt.Fprintln(os.Stderr, storeHostRecordSummary())
 		width := 0
 		for _, r := range results {
 			if len(r.Name) > width {
@@ -209,6 +316,13 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 			if r.Recorded != "" {
 				fmt.Fprintf(os.Stderr, "      registry path healed: %s (recorded %s)\n", r.Path, r.Recorded)
 			}
+			for _, d := range r.Drift {
+				state := "found"
+				if r.Repaired {
+					state = "repaired"
+				}
+				fmt.Fprintf(os.Stderr, "      host drift %s: %s\n", state, d)
+			}
 			if r.Detail != "" && r.Status == "fail" {
 				for _, dl := range strings.Split(r.Detail, "\n") {
 					fmt.Fprintf(os.Stderr, "      %s\n", dl)
@@ -217,6 +331,10 @@ func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
 		}
 		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings) in %.1fs\n",
 			okCount+warnCount, len(results), failCount, warnCount, elapsed.Seconds())
+		if drifted := driftedStores(results); len(drifted) > 0 && !storesDoctorFix {
+			fmt.Fprintf(os.Stderr, "Host drift on %d store(s): %s  — dry run: repair with 'brain doctor --fix' (or 'brain stores rewrite-wrappers')\n",
+				len(drifted), strings.Join(drifted, " "))
+		}
 		if failCount > 0 {
 			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(failed, " "))
 		}
@@ -428,15 +546,33 @@ func headLines(b []byte, n int) string {
 	return strings.Join(lines, "\n")
 }
 
+// driftedStores names the stores whose wrappers do not read the shared
+// store-host record, sorted, for the one-line repair hint.
+func driftedStores(results []storeHealth) []string {
+	var out []string
+	for _, r := range results {
+		if len(r.Drift) > 0 && !r.Repaired {
+			out = append(out, r.Name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func init() {
-	brainStoresDoctorCmd.Flags().BoolVar(&storesDoctorJSON, "json", false,
-		"Emit a structured JSON object instead of per-store text lines")
-	brainStoresDoctorCmd.Flags().IntVar(&storesDoctorJobs, "jobs", 8,
-		"Probe this many stores concurrently")
-	brainStoresDoctorCmd.Flags().DurationVar(&storesDoctorTimeout, "timeout", defaultStoreProbeTimeout,
-		"Per-store read timeout")
-	brainStoresDoctorCmd.Flags().BoolVar(&storesDoctorStrict, "strict", false,
-		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
+	for _, cmd := range []*cobra.Command{brainStoresDoctorCmd, brainDoctorCmd} {
+		cmd.Flags().BoolVar(&storesDoctorJSON, "json", false,
+			"Emit a structured JSON object instead of per-store text lines")
+		cmd.Flags().IntVar(&storesDoctorJobs, "jobs", 8,
+			"Probe this many stores concurrently")
+		cmd.Flags().DurationVar(&storesDoctorTimeout, "timeout", defaultStoreProbeTimeout,
+			"Per-store read timeout")
+		cmd.Flags().BoolVar(&storesDoctorStrict, "strict", false,
+			"Exit non-zero on warnings too (missing wrapper, stale registry path)")
+		cmd.Flags().BoolVar(&storesDoctorFix, "fix", false,
+			"Repair what drifted: converge every wrapper on the shared store-host record (backing up what it changes) and write the record from BEADS_DOLT_SERVER_HOST/PORT when it is missing. Without --fix, the run writes nothing.")
+	}
 
 	brainStoresCmd.AddCommand(brainStoresDoctorCmd)
+	brainCmd.AddCommand(brainDoctorCmd)
 }

@@ -157,3 +157,112 @@ func TestGetDoltServerHost_FallsBackToMetadataWithoutTheFile(t *testing.T) {
 		t.Errorf("GetDoltServerPort = %d, want the metadata pin 3300", got)
 	}
 }
+
+// The record carries a credential REFERENCE (user + password-file path), never
+// a password, and it is readable without touching the host/port keys.
+func TestStoreHostValueReadsTheCredentialReference(t *testing.T) {
+	creds := filepath.Join(t.TempDir(), "credentials")
+	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword=sekrit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeStoreHost(t, "# the federation's server\n"+
+		StoreHostKeyHost+"=10.1.2.3\n"+
+		StoreHostKeyPort+"=3307\n"+
+		StoreHostKeyUser+"=brain\n"+
+		StoreHostKeyCredentialsFile+"="+creds+"\n"+
+		"UNRELATED=ignored\n")
+	t.Setenv(StoreHostKeyUser, "")
+	t.Setenv(StoreHostKeyCredentialsFile, "")
+
+	got, ok := StoreHostValue(StoreHostKeyUser)
+	if !ok || got != "brain" {
+		t.Errorf("StoreHostValue(user) = %q, %v; want brain", got, ok)
+	}
+	ref := ResolveCredentialsRef()
+	if ref.User != "brain" || ref.CredentialsFile != creds || !ref.FileExists {
+		t.Errorf("ResolveCredentialsRef = %+v; want brain + %s present", ref, creds)
+	}
+
+	// A stray password-shaped line in the record is not a credential
+	// reference: the resolver reads only the two reference keys.
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
+		"PASSWORD=sekrit\nBRAIN_PASSWORD=sekrit\n")
+	if ref := ResolveCredentialsRef(); ref.User != "" || ref.CredentialsFile != "" {
+		t.Errorf("ResolveCredentialsRef picked up a secret-shaped line: %+v", ref)
+	}
+
+	// A referenced file that is not there is reported as missing, not as an
+	// empty reference: the operator needs to know which of the two it is.
+	missing := filepath.Join(t.TempDir(), "nope")
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
+		StoreHostKeyCredentialsFile+"="+missing+"\n")
+	ref = ResolveCredentialsRef()
+	if ref.CredentialsFile != missing || ref.FileExists {
+		t.Errorf("ResolveCredentialsRef = %+v; want %s reported missing", ref, missing)
+	}
+}
+
+func TestResolveCredentialsRefProcessEnvWins(t *testing.T) {
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
+		StoreHostKeyUser+"=from-file\n")
+	t.Setenv(StoreHostKeyUser, "from-env")
+
+	if ref := ResolveCredentialsRef(); ref.User != "from-env" {
+		t.Errorf("user = %q, want the process env to win", ref.User)
+	}
+}
+
+// bd itself (not just the generated wrappers) reads the record's user and
+// password-file path, so a store carrying a stale metadata pin cannot drag a
+// read back to a server the machine's record no longer names.
+func TestGetDoltServerUserRecordBeatsMetadata(t *testing.T) {
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
+		StoreHostKeyUser+"=brain\n")
+	t.Setenv(StoreHostKeyUser, "")
+
+	cfg := &Config{DoltServerUser: "from-metadata"}
+	if got := cfg.GetDoltServerUser(); got != "brain" {
+		t.Errorf("GetDoltServerUser = %q, want brain (the shared record)", got)
+	}
+
+	// Without the record (or its user), the store's own value still applies.
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n")
+	if got := cfg.GetDoltServerUser(); got != "from-metadata" {
+		t.Errorf("GetDoltServerUser = %q, want from-metadata", got)
+	}
+	if got := (&Config{}).GetDoltServerUser(); got != DefaultDoltServerUser {
+		t.Errorf("GetDoltServerUser with nothing configured = %q, want %q", got, DefaultDoltServerUser)
+	}
+}
+
+// The password file the record references is the one consulted, and the
+// password itself never passes through the record.
+func TestLookupCredentialsPasswordUsesTheRecordFilePath(t *testing.T) {
+	dir := t.TempDir()
+	creds := filepath.Join(dir, "credentials")
+	if err := os.WriteFile(creds, []byte("[10.1.2.3:3307]\npassword=sekrit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A different file at the default path must NOT be consulted.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(DefaultCredentialsPath(), []byte("[10.1.2.3:3307]\npassword=wrong\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_CREDENTIALS_FILE", "")
+
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+
+		StoreHostKeyCredentialsFile+"="+creds+"\n")
+	if got := LookupCredentialsPassword("10.1.2.3", 3307); got != "sekrit" {
+		t.Errorf("password = %q, want sekrit (from the file the record names)", got)
+	}
+	// The env still wins over the record, as everywhere else.
+	t.Setenv("BEADS_CREDENTIALS_FILE", DefaultCredentialsPath())
+	if got := LookupCredentialsPassword("10.1.2.3", 3307); got != "wrong" {
+		t.Errorf("password = %q, want the env-referenced file to win", got)
+	}
+}

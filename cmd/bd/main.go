@@ -402,10 +402,18 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 // the health probe for the whole federation: requiring a healthy store to run it
 // would make it useless in exactly the situation it exists to detect.
 func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
-	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+	if cmd == nil || cmd.Parent() == nil {
 		return false
 	}
-	return cmd.Name() == "doctor"
+	// 'brain doctor' and 'brain stores doctor' are the same connection probe
+	// reachable two ways, and both exist to run from a directory with no beads
+	// database — that is often exactly the broken state being reported.
+	switch cmd.Parent().Name() {
+	case "stores", "brain":
+		return cmd.Name() == "doctor"
+	default:
+		return false
+	}
 }
 
 // unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand
