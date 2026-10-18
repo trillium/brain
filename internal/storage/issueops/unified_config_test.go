@@ -4,10 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"reflect"
 	"regexp"
-	"strings"
 	"sync"
 	"testing"
 
@@ -258,60 +256,19 @@ func TestUnifiedScopedCustomTablesLegacy(t *testing.T) {
 	}
 }
 
-// singleWhereMatcher is a sqlmock query matcher that records each distinct
-// statement the code under test issues and rejects any statement carrying more
-// than one WHERE clause. It delegates the real matching to the default regexp
-// matcher so expected statements stay exact. sqlmock calls Match once per
-// remaining expectation for a given statement, so distinct statements are
-// deduped before they are recorded.
-type singleWhereMatcher struct {
-	mu   sync.Mutex
-	seen []string
-}
-
-func (m *singleWhereMatcher) Match(expectedSQL, actualSQL string) error {
-	m.mu.Lock()
-	dup := false
-	for _, s := range m.seen {
-		if s == actualSQL {
-			dup = true
-			break
-		}
-	}
-	if !dup {
-		m.seen = append(m.seen, actualSQL)
-	}
-	m.mu.Unlock()
-	if n := strings.Count(strings.ToUpper(actualSQL), "WHERE"); n > 1 {
-		return fmt.Errorf("statement has %d WHERE clauses, want exactly one: %s", n, actualSQL)
-	}
-	return sqlmock.QueryMatcherRegexp.Match(expectedSQL, actualSQL)
-}
-
-func newSingleWhereMock(t *testing.T) (*singleWhereMatcher, sqlmock.Sqlmock, *sql.DB) {
-	t.Helper()
-	m := &singleWhereMatcher{}
-	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(m))
-	if err != nil {
-		t.Fatalf("sqlmock: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return m, mock, db
-}
-
 // TestGetConfigKeysInTxSingleWhere pins the scoped key-list read. The unified
 // selector already renders the namespace predicate (`WHERE `store` = ? `), so
 // the key predicate must AND onto it. Before the fix the two concatenated into
 // `... WHERE `store` = ? WHERE `key` IN (?,?)`, which the server rejects as a
-// syntax error, so every scoped call silently fell back to YAML. The test
-// fails on that shape (the matcher rejects a second WHERE) and checks that the
-// scoped read returns exactly the requested keys.
+// syntax error, so every scoped call silently fell back to YAML. The exact
+// statement expectation fails on that shape, and the lookup must return
+// exactly the requested keys for both the scoped and legacy statements.
 func TestGetConfigKeysInTxSingleWhere(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("scoped", func(t *testing.T) {
 		pinScope(t, UnifiedScope{Unified: true, Store: "task"})
-		m, mock, db := newSingleWhereMock(t)
+		mock, db := newMock(t)
 		tx := txOf(ctx, t, mock, db)
 
 		mock.ExpectQuery(regexp.QuoteMeta(
@@ -337,17 +294,11 @@ func TestGetConfigKeysInTxSingleWhere(t *testing.T) {
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("scoped statements: %v", err)
 		}
-		if len(m.seen) != 1 {
-			t.Fatalf("want one statement, got %q", m.seen)
-		}
-		if n := strings.Count(strings.ToUpper(m.seen[0]), "WHERE"); n != 1 {
-			t.Fatalf("want exactly one WHERE, got %d in %q", n, m.seen[0])
-		}
 	})
 
 	t.Run("legacy", func(t *testing.T) {
 		pinScope(t, UnifiedScope{})
-		m, mock, db := newSingleWhereMock(t)
+		mock, db := newMock(t)
 		tx := txOf(ctx, t, mock, db)
 
 		mock.ExpectQuery(regexp.QuoteMeta(
@@ -370,9 +321,6 @@ func TestGetConfigKeysInTxSingleWhere(t *testing.T) {
 		}
 		if err := mock.ExpectationsWereMet(); err != nil {
 			t.Fatalf("legacy statements: %v", err)
-		}
-		if len(m.seen) != 1 || strings.Count(strings.ToUpper(m.seen[0]), "WHERE") != 1 {
-			t.Fatalf("legacy shape = %q", m.seen)
 		}
 	})
 }
