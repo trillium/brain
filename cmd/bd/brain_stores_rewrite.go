@@ -331,6 +331,14 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		beadsDir, _ := resolveStorePath(stores[name].Path)
 		seen[name] = true
 		_, statErr := os.Stat(wp)
+		if statErr != nil && remoteClientHost() != "" {
+			// A client reaches its stores through forwarding wrappers written
+			// by 'brain remote install'. Generating a local store wrapper here
+			// would point the command at a store this machine does not serve,
+			// so a missing wrapper is left to the client verb that owns it —
+			// and 'brain doctor' reports it (registry-vs-wrapper census).
+			continue
+		}
 		targets = append(targets, wrapperTarget{
 			name:       name,
 			wrapper:    wp,

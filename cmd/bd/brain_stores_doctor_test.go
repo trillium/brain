@@ -30,9 +30,28 @@ func TestStoresCommandCanRunWithoutStore(t *testing.T) {
 		t.Error("stores doctor must run without a beads database — it is the probe for the case where there isn't one")
 	}
 
-	storesList, _, _ := rootCmd.Find([]string{"brain", "stores", "list"})
-	if storesList != nil && storesCommandCanRunWithoutStore(storesList) {
-		t.Error("only 'doctor' is exempt from store resolution, not every stores subcommand")
+	// The connection verbs are exempt; a store-touching verb is not.
+	for _, argv := range [][]string{
+		{"brain", "stores", "host"},
+		{"brain", "stores", "host", "set"},
+		{"brain", "stores", "rewrite-wrappers"},
+	} {
+		cmd, _, err := rootCmd.Find(argv)
+		if err != nil || cmd == nil {
+			t.Fatalf("rootCmd.Find(%v) failed: %v", argv, err)
+		}
+		if !storesCommandCanRunWithoutStore(cmd) {
+			t.Errorf("%v must run without a beads database — a broken caller store is what it repairs", argv)
+		}
+	}
+	for _, argv := range [][]string{
+		{"brain", "stores", "list"},
+		{"brain", "stores", "env"},
+	} {
+		cmd, _, _ := rootCmd.Find(argv)
+		if cmd != nil && storesCommandCanRunWithoutStore(cmd) {
+			t.Errorf("%v must not be exempt from store resolution", argv)
+		}
 	}
 
 	topDoctor, _, _ := rootCmd.Find([]string{"doctor"})
@@ -216,6 +235,51 @@ func TestProbeStore_FailsOnTimeout(t *testing.T) {
 	}
 	if elapsed > 10*time.Second {
 		t.Errorf("probe took %s — a wedged store must not hang the federation walk", elapsed)
+	}
+}
+
+// A store read that prints advisories and then fails is reported by its CAUSE,
+// not by the first warning: the reader has to act on the error line, and the
+// warning is often unrelated (store permissions, credentials-file mode).
+func TestProbeStoreReportsTheErrorNotThePrecedingWarning(t *testing.T) {
+	isolatedHome(t)
+	// The exact shape a real failed read has (observed against a stale server):
+	// two advisories, then Error 1045 from the server the wrapper resolved.
+	stub := fakeBd(t, `echo "Warning: /tmp/x/.beads has permissions 0755 (recommended: 0700). Run: chmod 700 /tmp/x/.beads"
+echo "WARNING: credentials file /tmp/c has overly permissive permissions (0644)."
+echo "Consider running: chmod 600 /tmp/c"
+echo "Error: failed to open database: failed to check if database \"brain_unified\" exists on server 127.0.0.1:47111: Error 1045 (28000): Access denied for user 'brain'" >&2
+exit 1`)
+
+	h := probeStore(stub, "task", storeEntry{Path: "/nonexistent/task/.beads"}, 10*time.Second)
+	if h.Status != "fail" {
+		t.Fatalf("status = %q, want fail", h.Status)
+	}
+	if !strings.Contains(h.Reason, "Error 1045") || !strings.Contains(h.Reason, "127.0.0.1:47111") {
+		t.Errorf("reason must name the real failure: %q", h.Reason)
+	}
+	if strings.Contains(h.Reason, "permissions") {
+		t.Errorf("reason blamed a warning instead of the error: %q", h.Reason)
+	}
+	// The advisories are still available as detail, not thrown away.
+	if !strings.Contains(h.Detail, "Warning:") {
+		t.Errorf("detail lost the advisories: %q", h.Detail)
+	}
+}
+
+func TestFailureLinePrefersTheErrorLine(t *testing.T) {
+	in := []byte("\nWarning: something advisory\n\nError: the real cause\nmore text\n")
+	if got := failureLine(in); got != "Error: the real cause" {
+		t.Errorf("failureLine = %q", got)
+	}
+	if got := failureLine([]byte("\n  first\nsecond\n")); got != "first" {
+		t.Errorf("failureLine without an error line = %q, want the first non-empty line", got)
+	}
+	if got := failureLine(nil); got != "" {
+		t.Errorf("failureLine(nil) = %q", got)
+	}
+	if got := failureLine([]byte("Fatal: boom\n")); got != "Fatal: boom" {
+		t.Errorf("failureLine = %q", got)
 	}
 }
 

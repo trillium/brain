@@ -407,6 +407,7 @@ func (c *Config) GetDoltServerPasswordForPort(port int) string {
 	}
 	return ""
 }
+
 // GetDoltServerTLS returns whether TLS is enabled for server connections.
 // Required for Hosted Dolt instances.
 // Checks BEADS_DOLT_SERVER_TLS env var first ("1" or "true"), then config.

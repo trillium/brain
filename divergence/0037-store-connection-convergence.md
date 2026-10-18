@@ -14,6 +14,7 @@ touches:
   - cmd/bd/brain_stores_rewrite.go
   - cmd/bd/brain_stores_doctor.go
   - cmd/bd/brain_stores.go
+  - cmd/bd/brain_stores_census.go
   - cmd/bd/main.go
   - divergence/0037-store-connection-convergence.md
 upstream_rebase_notes: |
@@ -97,7 +98,28 @@ Two further defects were found while building this, both in the 0036 code:
      `stripBakedServerPins` is the single place that decides what a pin is — it
      drops a literal host/port and never the block's own `$_want_host`
      resolution. Defect (1) above is fixed there, with a regression test.
-4. **`cmd/bd/brain_stores_doctor.go`** — the doctor now checks the *connection*
+4. **`cmd/bd/brain_stores_census.go` (new)** — the registry-vs-wrapper count
+   check. `brain doctor` counts the two lists that must describe the same
+   federation and reports each side. A *registered store with no wrapper* is a
+   store nothing can reach under the name it is registered under (a warning; the
+   convergence verb generates it). A *generated wrapper with no registry entry*
+   is a CLI in PATH resolving a store the federation does not know about (a
+   failure — nothing repairs it automatically, because removing a file is
+   destructive and the wrapper may be the only evidence a store still exists).
+   Two shapes are deliberately not orphans: a symlink (a hand-made alias,
+   `tasks -> task`) and a backup copy in the bin directory
+   (`<store>.pre-<date>`, `<store>.bak`), counted separately with "move it out
+   of PATH" advice rather than "delete the store's wrapper". `brain stores
+   orphans` exposes the same census on its own.
+
+   On a CLIENT machine (remote.yaml names a host) a missing wrapper is NOT
+   generated locally: a client reaches its stores through forwarding wrappers
+   written by `brain remote install`, and a locally generated store wrapper
+   would point the command at a store this machine does not serve. The census
+   names the client's own verb instead, and `collectWrapperTargets` skips
+   generation there.
+
+5. **`cmd/bd/brain_stores_doctor.go`** — the doctor now checks the *connection*
    the way it checks the stores: the record's existence and liveliness are one
    line, and each server-mode wrapper is checked against the record (baked pin →
    fail; no run-time block → warn; hardcoded home path → drift) using the same
@@ -107,7 +129,37 @@ Two further defects were found while building this, both in the 0036 code:
    while `BEADS_DOLT_SERVER_HOST/PORT` are set, persists it. The verb is
    registered twice — `brain doctor` (the name in the captain's ask) and `brain
    stores doctor` — and both are exempt from store resolution, since a broken
-   store connection is precisely when it must run.
+   store connection is precisely when it must run. Three further fixes came out
+   of running it against a real host:
+   - the doctor reports the *cause* of a failed store read (`failureLine`), not
+     the first line: bd prints advisories (store permissions, credentials-file
+     mode) before the error that stopped it, and reporting the advisory sent the
+     operator to a warning that stopped nothing while `Error 1045 Access denied
+     for user 'brain'` sat unread — robots-r1zd5's exact class;
+   - a machine that is a *client* says so: `localInspectionNote` and the
+     `client_of` JSON field state that the wrapper counts describe THIS machine,
+     since a client forwards store commands to its host by default
+     (`BRAIN_REMOTE=off` runs them here);
+   - `brain stores host`, `host set`, `rewrite-wrappers` and `orphans` join
+     `doctor` as commands that run without a beads database: they are the verbs
+     for a machine whose stores cannot be opened.
+
+# Verified against a real host
+
+A scratch HOME (`/tmp/bsc-run.sh`) exercises the whole path with a built binary:
+a drifted wrapper (baked loopback pin), a registered store with no wrapper, and a
+converged store. Dry runs report every finding — "3 repointed, 1 generated",
+"Wrappers: 2/3 registered stores have a wrapper" — with a content hash proving
+nothing was written; `doctor --fix` drops the pin, adds the run-time block,
+generates the missing wrapper, and backs up what it changed byte-for-byte; a
+second run reports zero changes (idempotent).
+
+On the macbook host itself (read-only, `BRAIN_REMOTE=off`): **55/55 registered
+stores have a wrapper, 0 true orphans, 7 backup copies in PATH** — and, showing
+exactly why the follow-up items exist, the same command *without*
+`BRAIN_REMOTE=off` reaches a different binary: the client forwards it to the
+brain host, whose installed build predates these verbs (0 of the 3 new
+subcommands), while the local build has all 3.
 
 # Why this is closer to the brain spec
 
