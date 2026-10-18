@@ -1,6 +1,6 @@
 # divergence/
 
-This directory holds the **divergence trail** — the running record of how brain departs from upstream bd toward the brain spec (`../ISA.md`).
+This directory holds the **divergence trail** — the running record of how brain departs from upstream bd toward the brain vision ([`../VISION.md`](../VISION.md)). The retired v0.3 project ISA is kept as a frozen historical record at [`../docs/brain/archive/ISA-v03.md`](../docs/brain/archive/ISA-v03.md); it is no longer the spec.
 
 ## Purpose
 
@@ -25,7 +25,7 @@ Commits with the trailer `divergence:skip` in the commit message are exempt. Int
 
 Use the trailer sparingly. If in doubt, write the doc.
 
-A pre-commit hook will eventually enforce this pairing (tracked in `../ISA.md` — see `Decisions` 2026-05-31 and the deferred ISC-152 follow-up). Until then it's enforced by review.
+A pre-commit hook will eventually enforce this pairing (once tracked as deferred follow-up in the retired ISA — see its `Decisions` 2026-05-31, archived at [`../docs/brain/archive/ISA-v03.md`](../docs/brain/archive/ISA-v03.md)). Until then it's enforced by review.
 
 ## Naming
 
@@ -46,7 +46,7 @@ Every divergence doc starts with this YAML block:
 ---
 id: 0001
 title: short imperative phrase, lowercase
-isc: [ISC-100, ISC-101]           # which ISA criteria this commit moves
+isc: [ISC-100, ISC-101]           # historical ISA criteria (retired ISA: docs/brain/archive/ISA-v03.md)
 status: proposed                   # proposed | landed | superseded | reverted
 created: 2026-05-31
 updated: 2026-05-31
@@ -72,7 +72,7 @@ Three headings, in this order:
 
 ### `# Why`
 
-The fork-spec-driven reason for this change. Cite the ISA section, the ISC range, or the decision record that drives it. Plain English — readable on a phone.
+The fork-vision-driven reason for this change. Cite the vision section, the design doc, the ISC range (historical ISCs live in the retired ISA, `docs/brain/archive/ISA-v03.md`), or the decision record that drives it. Plain English — readable on a phone.
 
 ### `# What changed`
 
@@ -80,7 +80,7 @@ The minimal, factual list of code/schema/build/runtime changes. Not a diff dump 
 
 ### `# Brain-spec link`
 
-A relative markdown link back to the ISA section this commit advances. Always include `[ISA.md](../ISA.md)` at minimum.
+A relative markdown link back to the record this commit advances. Always include [`VISION.md`](../VISION.md) at minimum; design docs under `docs/design/` or `docs/brain/` are the usual second link. The retired ISA (`docs/brain/archive/ISA-v03.md`) may still be cited when a change responds to something only the historical record holds.
 
 ## How to add a new divergence doc
 
@@ -127,3 +127,6 @@ A relative markdown link back to the ISA section this commit advances. Always in
 | [0031](0031-durable-event-outbox.md) | durable event outbox — events are rows in the store, delivered with retries until acknowledged | landed |
 | [0032](0032-shared-database-backup.md) | back a shared database up once — one destination, one throttle, one lock | proposed |
 | [0033](0033-event-payload-elision.md) | cap string values in audit `events` rows so appends stop growing the table quadratically | proposed |
+| [0034](0034-review-fixes-hooks-outbox-backup.md) | small fixes from the adversarial review of the 2026-10-07..09 changes | proposed |
+| [0035](0035-brain-host-promote.md) | brain host promote — move the brain host role between machines, and clients that correct themselves | proposed |
+| [0036](0036-config-keys-single-where.md) | one WHERE on the scoped key-list config read | proposed |
