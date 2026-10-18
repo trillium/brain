@@ -3,13 +3,20 @@ package main
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 // TestGetActorWithGit tests the actor resolution fallback chain.
-// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > git config user.name > $USER > "unknown"
+// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > fleet
+// agent identity > git config user.name > $USER > "unknown"
 func TestGetActorWithGit(t *testing.T) {
+	// These cases exercise the fallbacks below the agent identity: a suite run
+	// from inside an agent process must not see that agent's identity.
+	t.Setenv(agentNameEnvVar, "")
+	t.Setenv(agentIDEnvVar, "")
+
 	// Save original environment and actor variable
 	origActor := actor
 	origBdActor, bdActorSet := os.LookupEnv("BD_ACTOR")
@@ -157,6 +164,9 @@ func TestGetActorWithGit(t *testing.T) {
 
 // TestGetActorWithGit_PriorityOrder tests that the priority order is respected
 func TestGetActorWithGit_PriorityOrder(t *testing.T) {
+	t.Setenv(agentNameEnvVar, "")
+	t.Setenv(agentIDEnvVar, "")
+
 	// Save original state
 	origActor := actor
 	origBdActor, bdActorSet := os.LookupEnv("BD_ACTOR")
@@ -199,4 +209,93 @@ func TestGetActorWithGit_PriorityOrder(t *testing.T) {
 	if result != "from-bd-actor" {
 		t.Errorf("Expected BD_ACTOR to be used as fallback, got %q", result)
 	}
+}
+
+// TestGetActorWithGit_FleetAgentIdentity pins where the fleet agent identity sits
+// in the chain (robots-0x8): it loses to every explicit actor and wins over the
+// human git identity, so an agent-filed bead is stamped with the agent's name.
+func TestGetActorWithGit_FleetAgentIdentity(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USER", "fallback-user")
+	t.Setenv(agentNameEnvVar, "Volt")
+	t.Setenv(agentIDEnvVar, "volt")
+
+	origActor := actor
+	t.Cleanup(func() { actor = origActor })
+
+	// git user.name resolves to something human here; the agent identity must
+	// still win, whatever git answers.
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, "gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+	if err := os.WriteFile(filepath.Join(home, "gitconfig"), []byte("[user]\n\tname = Human Owner\n"), 0o644); err != nil {
+		t.Fatalf("write gitconfig: %v", err)
+	}
+
+	t.Run("agent identity outranks git user.name", func(t *testing.T) {
+		actor = ""
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		if got := getActorWithGit(); got != "Volt" {
+			t.Errorf("getActorWithGit() = %q, want %q", got, "Volt")
+		}
+	})
+
+	t.Run("name resolved from identity.md when only the id is exported", func(t *testing.T) {
+		writeIdentityFile(t, home, "volt", "---\nid: volt\nname: \"Volt\"\n---\n")
+		t.Setenv(agentNameEnvVar, "")
+		actor = ""
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		if got := getActorWithGit(); got != "Volt" {
+			t.Errorf("getActorWithGit() = %q, want %q", got, "Volt")
+		}
+	})
+
+	t.Run("BEADS_ACTOR outranks the agent identity", func(t *testing.T) {
+		actor = ""
+		t.Setenv("BEADS_ACTOR", "explicit-actor")
+		t.Setenv("BD_ACTOR", "bd-actor")
+		if got := getActorWithGit(); got != "explicit-actor" {
+			t.Errorf("getActorWithGit() = %q, want %q", got, "explicit-actor")
+		}
+	})
+
+	t.Run("BD_ACTOR outranks the agent identity", func(t *testing.T) {
+		actor = ""
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "bd-actor")
+		if got := getActorWithGit(); got != "bd-actor" {
+			t.Errorf("getActorWithGit() = %q, want %q", got, "bd-actor")
+		}
+	})
+
+	t.Run("--actor outranks the agent identity", func(t *testing.T) {
+		actor = "flag-actor"
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		if got := getActorWithGit(); got != "flag-actor" {
+			t.Errorf("getActorWithGit() = %q, want %q", got, "flag-actor")
+		}
+	})
+
+	t.Run("no agent identity falls through to git user.name", func(t *testing.T) {
+		actor = ""
+		t.Setenv(agentNameEnvVar, "")
+		t.Setenv(agentIDEnvVar, "")
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		// Whatever git answers here is human attribution; what matters is that
+		// the agent identity above is not the one consulted when it is absent.
+		want := "fallback-user"
+		if out, err := exec.Command("git", "config", "user.name").Output(); err == nil {
+			if name := strings.TrimSpace(string(out)); name != "" {
+				want = name
+			}
+		}
+		if got := getActorWithGit(); got != want {
+			t.Errorf("getActorWithGit() = %q, want %q", got, want)
+		}
+	})
 }

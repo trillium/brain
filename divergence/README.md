@@ -131,3 +131,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0035](0035-brain-host-promote.md) | brain host promote — move the brain host role between machines, and clients that correct themselves | proposed |
 | [0036](0036-config-keys-single-where.md) | one WHERE on the scoped key-list config read | proposed |
 | [0037](0037-store-host-single-source.md) | one shared store-host config — the Dolt server is one fact per machine, read at run time | landed |
+| [0036](0036-store-writes-stamp-filing-agent.md) | store writes stamp the filing agent, not the human's git identity | proposed |

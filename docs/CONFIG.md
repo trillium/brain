@@ -202,14 +202,20 @@ dolt:
 
 The actor name (used for `created_by` in issues and audit trails) is resolved in this order:
 
-1. `--actor` flag (explicit override)
+1. `--actor` flag (explicit override), or the `actor` config key
 2. `BEADS_ACTOR` environment variable
 3. `BD_ACTOR` environment variable (deprecated alias, kept for backwards compatibility)
-4. `git config user.name`
-5. `$USER` environment variable (system username fallback)
-6. `"unknown"` (final fallback)
+4. the fleet agent identity, when this process is running as an agent (`PARLAY_AGENT_NAME`, else the `name:` field of `~/.parlay/agents/$PARLAY_AGENT_ID/identity.md`, else `PARLAY_AGENT_ID`)
+5. `git config user.name`
+6. `$USER` environment variable (system username fallback)
+7. `"unknown"` (final fallback)
 
 For most developers, no configuration is needed - beads will use your git identity automatically. This ensures your issue authorship matches your commit authorship.
+
+A process running as a fleet agent names that agent instead of the human whose
+git identity is configured on the checkout, so "which agent filed this bead" is
+answerable from `created_by` alone. An explicit actor always wins, which is the
+way to record a human's own write from inside an agent session.
 
 To override, set `BEADS_ACTOR` in your shell profile:
 ```bash
