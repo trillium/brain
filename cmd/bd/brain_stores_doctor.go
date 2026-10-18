@@ -157,12 +157,13 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			}
 			// A store whose metadata.json pins its own Dolt host or port reads
 			// from the shared file through its wrapper but diverges from the
-			// federation on a bare bd run in the store directory.
+			// federation on a bare bd run in the store directory. It is
+			// informational: shown, but it does not make --strict fail.
 			if status, reason := metadataServerPin(name, stores[name]); status != "" && r.Status != "fail" {
-				if r.Reason == "" {
+				if r.Status == "ok" {
 					r.Status, r.Reason = status, reason
 				} else {
-					r.Status, r.Reason = "warn", r.Reason+"; "+reason
+					r.Reason += "; " + reason
 				}
 			}
 			results[i] = r
@@ -171,29 +172,18 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	wg.Wait()
 	elapsed := time.Since(started)
 
-	okCount, warnCount, failCount := 0, 0, 0
-	failed := make([]string, 0, len(names))
-	for _, r := range results {
-		switch r.Status {
-		case "fail":
-			failCount++
-			failed = append(failed, r.Name)
-		case "warn":
-			warnCount++
-		default:
-			okCount++
-		}
-	}
+	okCount, warnCount, failCount, infoCount, failed := tallyStoreHealth(results)
 
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
-			"stores":   results,
-			"ok":       okCount,
-			"warnings": warnCount,
-			"failed":   failCount,
-			"total":    len(results),
-			"failing":  failed,
-			"ms":       elapsed.Milliseconds(),
+			"stores":        results,
+			"ok":            okCount,
+			"warnings":      warnCount,
+			"informational": infoCount,
+			"failed":        failCount,
+			"total":         len(results),
+			"failing":       failed,
+			"ms":            elapsed.Milliseconds(),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -206,7 +196,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			}
 		}
 		for _, r := range results {
-			label := map[string]string{"ok": "ok  ", "warn": "WARN", "fail": "FAIL"}[r.Status]
+			label := map[string]string{"ok": "ok  ", "info": "info", "warn": "WARN", "fail": "FAIL"}[r.Status]
 			line := fmt.Sprintf("%s  %-*s  %5dms", label, width, r.Name, r.Millis)
 			if r.Reason != "" {
 				line += "  " + r.Reason
@@ -218,8 +208,8 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 				}
 			}
 		}
-		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings) in %.1fs\n",
-			okCount+warnCount, len(results), failCount, warnCount, elapsed.Seconds())
+		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings, %d informational) in %.1fs\n",
+			okCount+warnCount, len(results), failCount, warnCount, infoCount, elapsed.Seconds())
 		if failCount > 0 {
 			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(failed, " "))
 		}
@@ -228,6 +218,27 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	if code := doctorExitCode(failCount, warnCount); code != 0 {
 		os.Exit(code)
 	}
+}
+
+// tallyStoreHealth folds probe results into the counts the exit code and the
+// summary use. Informational findings are counted separately from warnings, so
+// --strict does not fail on them.
+func tallyStoreHealth(results []storeHealth) (okCount, warnCount, failCount, infoCount int, failed []string) {
+	failed = make([]string, 0, len(results))
+	for _, r := range results {
+		switch r.Status {
+		case "fail":
+			failCount++
+			failed = append(failed, r.Name)
+		case "warn":
+			warnCount++
+		case "info":
+			infoCount++
+		default:
+			okCount++
+		}
+	}
+	return okCount, warnCount, failCount, infoCount, failed
 }
 
 // doctorExitCode maps probe tallies to the process exit code. Kept separate
@@ -374,7 +385,8 @@ func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason 
 // metadataServerPin reports a store whose metadata.json pins its own Dolt host
 // or port. The generated wrapper resolves the shared store host config, but a
 // bare bd run in the store directory would use the pinned value instead and
-// silently diverge from the federation's one server.
+// silently diverge from the federation's one server. It is informational, not
+// a warning: the store itself still answers through its wrapper.
 func metadataServerPin(name string, entry storeEntry) (status, reason string) {
 	beadsDir := expandPath(entry.Path)
 	if wrapper, ok := storeWrapperPath(name); ok {
@@ -399,7 +411,7 @@ func metadataServerPin(name string, entry storeEntry) (status, reason string) {
 	if len(pins) == 0 {
 		return "", ""
 	}
-	return "warn", fmt.Sprintf("%s pins %s in metadata.json; a bare bd run would use it instead of the shared store host config",
+	return "info", fmt.Sprintf("%s pins %s in metadata.json; a bare bd run would use it instead of the shared store host config",
 		beadsDir, strings.Join(pins, ", "))
 }
 

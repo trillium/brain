@@ -27,7 +27,7 @@ var (
 type wrapperRewrite struct {
 	Name    string `json:"name"`
 	Wrapper string `json:"wrapper,omitempty"`
-	Status  string `json:"status"` // "ok" | "unclassified" | "fail"
+	Status  string `json:"status"` // "ok" | "embedded" | "unclassified" | "fail"
 	Reason  string `json:"reason,omitempty"`
 	// Repointed is true when the wrapper was rewritten to resolve its Dolt
 	// host from the shared store host config at run time (a baked host pin was
@@ -99,18 +99,24 @@ func relativizeWrapperHome(body string) (string, bool) {
 	return out, changed
 }
 
-// wrapperBackupSuffix names the copy 'brain stores rewrite-wrappers' leaves of a
-// wrapper before it is rewritten, so an operator can restore it if the repoint
-// must be rolled back.
-const wrapperBackupSuffix = ".bak"
+// wrapperBackupMarker names the copy 'brain stores rewrite-wrappers' leaves of
+// a wrapper before it is rewritten: <wrapper>.bak-repoint-<timestamp>. It is a
+// plain data file without the exec bit, so host-layout scanning never mistakes
+// a backup for a wrapper.
+const wrapperBackupMarker = ".bak-repoint-"
+
+// wrapperBackupPath returns the backup filename for the wrapper at path.
+func wrapperBackupPath(path string) string {
+	return path + wrapperBackupMarker + time.Now().UTC().Format("20060102T150405Z")
+}
 
 // rewriteWrapperInPlace makes an existing wrapper's home paths $HOME-relative,
 // and — for a store whose metadata.json declares server mode — makes it resolve
 // the Dolt host from the shared store host config at run time: the runtime block
 // is added when missing and baked host/port pins are dropped, since a leftover
 // pin would win over the file. Every other line (route sourcing, comments) is
-// preserved. The pre-rewrite file is copied to <path>.bak first, so the change
-// is reversible.
+// preserved. The pre-rewrite file is copied to its <path>.bak-repoint-<timestamp>
+// first, so the change is reversible.
 func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -130,23 +136,28 @@ func rewriteWrapperInPlace(path string, serverMode bool) (repointed bool, err er
 	if err != nil {
 		return repointed, err
 	}
-	if err := os.WriteFile(path+wrapperBackupSuffix, data, info.Mode().Perm()); err != nil { //nolint:gosec // the wrapper's own backup
-		return repointed, fmt.Errorf("writing %s: %w", path+wrapperBackupSuffix, err)
+	backup := wrapperBackupPath(path)
+	if err := os.WriteFile(backup, data, 0o600); err != nil { //nolint:gosec // the backup is a data copy, deliberately not executable
+		return repointed, fmt.Errorf("writing %s: %w", backup, err)
 	}
 	return repointed, os.WriteFile(path, []byte(out), info.Mode().Perm()) //nolint:gosec // preserving the wrapper's own mode
 }
 
-// canonicalizeWrapperHost gives a wrapper the shared-host runtime block in place
-// of any baked host pin. It is idempotent: an already-canonical wrapper with no
-// baked pin is returned unchanged.
+// canonicalizeWrapperHost gives a wrapper the shared-host runtime block at the
+// canonical insertion point: after the shebang, the leading comment block and
+// any route-sourcing lines, and before the first statement that can reach a bd
+// invocation. A wrapper that already carries the block in an older position is
+// repositioned rather than left with the block above the last exec, and an
+// already-canonical wrapper is returned unchanged.
 func canonicalizeWrapperHost(body string) (string, bool) {
 	stripped := stripBakedServerPins(body)
-	changed := stripped != body
-	if strings.Contains(stripped, "_store_host_file=") {
-		return stripped, changed
+	without := stripped
+	if i := strings.Index(stripped, sharedServerHostBlock); i >= 0 {
+		without = stripped[:i] + stripped[i+len(sharedServerHostBlock):]
 	}
-	idx := wrapperHostBlockOffset(stripped)
-	return stripped[:idx] + sharedServerHostBlock + stripped[idx:], true
+	idx := wrapperHostBlockOffset(without)
+	out := without[:idx] + sharedServerHostBlock + without[idx:]
+	return out, out != body
 }
 
 // wrapperHostBlockOffset is where the run-time host block must be inserted:
@@ -254,15 +265,9 @@ func stripBakedServerPins(body string) string {
 type wrapperTarget struct {
 	name  string
 	entry storeEntry
-	// serverMode is true when the wrapper should resolve its host from the
-	// shared store host config rather than from a baked pin: its own store
-	// declares the shared server, or it already carries a baked server pin.
-	// An embedded store keeps its minimal wrapper.
-	serverMode bool
-	// classified is false when neither the wrapper's own store's metadata.json
-	// nor a baked pin says which shape this wrapper is. Such a wrapper is
-	// reported as unclassified, never as repointed or ok.
-	classified bool
+	// classification is how the wrapper's store was read: shared-server,
+	// embedded, or neither. An embedded store keeps its minimal wrapper.
+	classification wrapperClassification
 }
 
 // collectWrapperTargets returns every registry store that has a wrapper plus
@@ -284,7 +289,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		if !canon {
 			continue
 		}
-		self.serverMode, self.classified = classifyWrapper(stores[name], wp)
+		self.classification = classifyWrapper(stores[name], wp)
 		targets = append(targets, self)
 	}
 	home, err := os.UserHomeDir()
@@ -297,7 +302,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		return targets
 	}
 	for _, e := range ents {
-		if e.IsDir() || seen[e.Name()] || strings.HasSuffix(e.Name(), wrapperBackupSuffix) {
+		if e.IsDir() || seen[e.Name()] || strings.Contains(e.Name(), wrapperBackupMarker) {
 			continue
 		}
 		wp, ok := storeWrapperPath(e.Name())
@@ -314,7 +319,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		}
 		self, canon := canonicalWrapperFor(e.Name(), wp, entry)
 		if canon {
-			self.serverMode, self.classified = classifyWrapper(entry, wp)
+			self.classification = classifyWrapper(entry, wp)
 			targets = append(targets, self)
 		}
 	}
@@ -331,15 +336,29 @@ func canonicalWrapperFor(name, wrapperPath string, entry storeEntry) (wrapperTar
 	return wrapperTarget{name: name, entry: entry}, true
 }
 
+// wrapperClassification is how classifyWrapper reads a wrapper's store.
+type wrapperClassification struct {
+	// serverMode is true when the wrapper should resolve its host from the
+	// shared store host config rather than from a baked pin.
+	serverMode bool
+	// classified is false when neither the store's metadata.json nor a baked
+	// pin says which shape the wrapper is.
+	classified bool
+	// embedded is true when the store has its own .beads directory but no
+	// metadata.json: a store provisioned with --embedded.
+	embedded bool
+}
+
 // classifyWrapper decides whether a wrapper should resolve its host from the
 // shared store host config, the way 'brain stores doctor' identifies a store:
 // from the wrapper's own BEADS_DIR first, then the registry path. A wrapper
 // that already carries a baked host pin is a shared-server wrapper whatever its
-// store's metadata says. classified is false when neither answers, so the verb
-// reports the wrapper instead of counting it repointed.
-func classifyWrapper(entry storeEntry, wrapperPath string) (serverMode, classified bool) {
+// store's metadata says; a store directory with no metadata.json is the
+// embedded shape. classified is false when neither answers, so the verb reports
+// the wrapper instead of counting it repointed.
+func classifyWrapper(entry storeEntry, wrapperPath string) wrapperClassification {
 	if _, found := bakedServerPinIn(wrapperPath); found {
-		return true, true
+		return wrapperClassification{serverMode: true, classified: true}
 	}
 	paths := make([]string, 0, 2)
 	if beadsDir, ok := wrapperBeadsDir(wrapperPath); ok {
@@ -350,12 +369,18 @@ func classifyWrapper(entry storeEntry, wrapperPath string) (serverMode, classifi
 	}
 	for _, beadsDir := range paths {
 		cfg, err := configfile.Load(beadsDir)
-		if err != nil || cfg == nil {
+		if err != nil {
 			continue
 		}
-		return strings.EqualFold(cfg.DoltMode, configfile.DoltModeServer), true
+		if cfg == nil {
+			if info, statErr := os.Stat(beadsDir); statErr == nil && info.IsDir() {
+				return wrapperClassification{embedded: true}
+			}
+			continue
+		}
+		return wrapperClassification{serverMode: strings.EqualFold(cfg.DoltMode, configfile.DoltModeServer), classified: true}
 	}
-	return false, false
+	return wrapperClassification{}
 }
 
 // bakedServerPinIn reports the first baked host/port pin a wrapper carries.
@@ -392,7 +417,7 @@ func rewriteAllStoreWrappers(self string, stores map[string]storeEntry, jobs int
 			r := wrapperRewrite{Name: t.name}
 			wp, _ := storeWrapperPath(t.name)
 			r.Wrapper = wp
-			repointed, err := rewriteWrapperInPlace(wp, t.serverMode)
+			repointed, err := rewriteWrapperInPlace(wp, t.classification.serverMode)
 			r.Repointed = repointed
 			if err != nil {
 				r.Status, r.Reason = "fail", "rewriting wrapper: "+err.Error()
@@ -410,7 +435,10 @@ func rewriteAllStoreWrappers(self string, stores map[string]storeEntry, jobs int
 				r.Status, r.Reason = "fail", "wrapper does not resolve a database: "+h.Reason
 			case h.Probe != "wrapper":
 				r.Status, r.Reason = "fail", "wrapper not executable after rewrite"
-			case !t.classified:
+			case t.classification.embedded:
+				r.Status = "embedded"
+				r.Reason = "store is embedded (no metadata.json); its minimal wrapper is left alone"
+			case !t.classification.classified:
 				r.Status = "unclassified"
 				r.Reason = "no readable .beads/metadata.json and no baked host pin, so the wrapper was not repointed"
 			default:
@@ -423,14 +451,33 @@ func rewriteAllStoreWrappers(self string, stores map[string]storeEntry, jobs int
 	return results
 }
 
+// failedRewrites returns the wrappers that did not pass the repoint pass. An
+// embedded store's wrapper is skipped, not failed: it never reads the shared
+// file by design.
 func failedRewrites(rs []wrapperRewrite) []wrapperRewrite {
 	var out []wrapperRewrite
 	for _, r := range rs {
-		if r.Status != "ok" {
+		if r.Status != "ok" && r.Status != "embedded" {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// requireSharedStoreHostFile reports why 'brain stores rewrite-wrappers' must
+// not touch a wrapper: the shared store host config is absent (a process env
+// value alone does not satisfy this) or present but unusable. The error names
+// the file and the keys the generated block needs.
+func requireSharedStoreHostFile() error {
+	path := configfile.DefaultStoreHostPath()
+	if path == "" {
+		path = "~/.config/brain/" + configfile.StoreHostFileName
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("shared store host config %s does not exist: write %s=<host> and %s=<port> there before repointing wrappers, then re-run",
+			path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort)
+	}
+	return configfile.ValidateStoreHostFile()
 }
 
 var brainStoresRewriteWrappersCmd = &cobra.Command{
@@ -445,7 +492,8 @@ the wrapper's first bd invocation path (never only above the final exec) and
 any whole-line baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped. A wrapper that
 still contains a host or port assignment the verb cannot safely rewrite is
 reported as failed, not verified. Each rewritten wrapper is first copied to
-<wrapper>.bak, so the repoint can be rolled back.
+<wrapper>.bak-repoint-<timestamp>, so the repoint can be rolled back. The backup
+is a plain data copy without the exec bit, so host promotion never installs it.
 
 The shared file must already exist: this verb refuses up front rather than
 repointing the fleet into wrappers that would refuse every invocation. Embedded
@@ -466,15 +514,7 @@ written or does not resolve a database. 'brain remote set' and
 		// The block this verb installs reads the shared store host config at run
 		// time and refuses without it, so require the file before any wrapper is
 		// touched: repointing first would leave every store's CLI refusing.
-		path := configfile.DefaultStoreHostPath()
-		if path == "" {
-			path = "~/.config/brain/" + configfile.StoreHostFileName
-		}
-		if _, err := os.Stat(path); err != nil {
-			FatalError("shared store host config %s does not exist: write %s=<host> and %s=<port> there before repointing wrappers, then re-run",
-				path, configfile.StoreHostKeyHost, configfile.StoreHostKeyPort)
-		}
-		if err := configfile.ValidateStoreHostFile(); err != nil {
+		if err := requireSharedStoreHostFile(); err != nil {
 			FatalError("%v", err)
 		}
 
@@ -488,14 +528,18 @@ written or does not resolve a database. 'brain remote set' and
 		}
 		results := rewriteAllStoreWrappers(self, stores, storesRewriteJobs, storesRewriteTimeout)
 		failed := failedRewrites(results)
+		embedded := 0
 		repointed := 0
 		for _, r := range results {
+			if r.Status == "embedded" {
+				embedded++
+			}
 			if r.Repointed {
 				repointed++
 			}
 		}
 		if jsonOutput {
-			outputJSON(map[string]any{"total": len(results), "failed": len(failed), "repointed": repointed, "stores": results})
+			outputJSON(map[string]any{"total": len(results), "failed": len(failed), "embedded": embedded, "repointed": repointed, "stores": results})
 		} else {
 			for _, r := range results {
 				switch r.Status {
@@ -505,18 +549,21 @@ written or does not resolve a database. 'brain remote set' and
 						note = "  (host now read from the shared store host config)"
 					}
 					fmt.Printf("  ok    %-18s %s%s\n", r.Name, r.Wrapper, note)
+				case "embedded":
+					fmt.Printf("  skip  %-18s %s\n", r.Name, r.Reason)
 				case "unclassified":
 					fmt.Printf("  WARN  %-18s %s\n", r.Name, r.Reason)
 				default:
 					fmt.Printf("  FAIL  %-18s %s\n", r.Name, r.Reason)
 				}
 			}
+			verified := len(results) - len(failed) - embedded
 			if len(failed) == 0 {
-				fmt.Printf("%d/%d wrappers rewritten and verified (%d repointed at the shared store host config)\n",
-					len(results), len(results), repointed)
+				fmt.Printf("%d/%d wrappers rewritten and verified (%d embedded skipped, %d repointed at the shared store host config)\n",
+					verified, len(results), embedded, repointed)
 			} else {
 				fmt.Printf("%d/%d wrappers rewritten; %d not verified — see above\n",
-					len(results)-len(failed), len(results), len(failed))
+					verified, len(results), len(failed))
 			}
 		}
 		if len(failed) > 0 {
