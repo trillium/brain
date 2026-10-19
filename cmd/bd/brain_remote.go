@@ -376,12 +376,16 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 // command reads from the machine it runs on and that accept "-" as stdin. Only
 // these are rewritten to stdin when forwarded. Any other local file flag fails
 // before anything is sent.
-var stdinFileFlags = map[string]map[string]bool{
-	"create":  {"--body-file": true, "--description-file": true},
-	"update":  {"--body-file": true, "--description-file": true},
-	"comment": {"--file": true},
-	"note":    {"--file": true},
-}
+var stdinFileFlags = func() map[string]map[string]bool {
+	descriptionFlags := map[string]bool{"--body-file": true, "--description-file": true}
+	return map[string]map[string]bool{
+		"create":  descriptionFlags,
+		"new":     descriptionFlags,
+		"update":  descriptionFlags,
+		"comment": {"--file": true},
+		"note":    {"--file": true},
+	}
+}()
 
 // localFileFlags are every flag named in stdinFileFlags.
 var localFileFlags = map[string]bool{"--body-file": true, "--description-file": true, "--file": true}

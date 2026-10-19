@@ -515,6 +515,7 @@ func TestForwardSendsLocalBodyFileContent(t *testing.T) {
 		{"create", "title", "--body-file", local},
 		{"create", "title", "--body-file=" + local},
 		{"create", "title", "--description-file", local},
+		{"new", "title", "--body-file", local},
 		{"comment", "bd-1", "--file", local},
 		{"comment", "bd-1", "--file=" + local},
 		{"note", "bd-1", "--file", local},
