@@ -609,3 +609,17 @@ func TestForwardRejectsExplicitStdinCombinedWithLocalFile(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardPassesStdinFileFlagsOutsideTheTableThrough(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostEchoBody(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"dep", "add", "bd-1", "bd-2", "--file", "-"}, "edge\n")
+	if code != 0 {
+		t.Fatalf("dep add --file - should forward: code %d, stderr %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "body=<edge>") {
+		t.Errorf("the host should receive the caller's stdin: %q", stdout)
+	}
+}

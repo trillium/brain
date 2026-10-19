@@ -373,34 +373,38 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 }
 
 // stdinFileFlags are the flags, per host subcommand, whose value is a path the
-// command reads from the machine it runs on and that accept "-" as stdin. Only
-// these are rewritten to stdin when forwarded. Any other local file flag fails
-// before anything is sent.
-var stdinFileFlags = func() map[string]map[string]bool {
-	descriptionFlags := map[string]bool{"--body-file": true, "--description-file": true}
-	return map[string]map[string]bool{
-		"create":  descriptionFlags,
-		"new":     descriptionFlags,
-		"update":  descriptionFlags,
-		"comment": {"--file": true},
-		"note":    {"--file": true},
-	}
-}()
+// command reads from the machine it runs on and that accept "-" as stdin. They
+// are rewritten to stdin when forwarded.
+var stdinFileFlags = map[string]map[string]bool{
+	"create":  {"--body-file": true, "--description-file": true},
+	"update":  {"--body-file": true, "--description-file": true},
+	"comment": {"--file": true},
+	"note":    {"--file": true},
+}
 
-// localFileFlags are every flag named in stdinFileFlags.
-var localFileFlags = map[string]bool{"--body-file": true, "--description-file": true, "--file": true}
+// unsendableFileFlags are the flags, per host subcommand, that name a local file
+// the host reads as a path only. They cannot be sent, so forwarding stops before
+// anything is sent.
+var unsendableFileFlags = map[string]map[string]bool{
+	"batch":    {"--file": true},
+	"comments": {"--file": true},
+	"create":   {"--file": true},
+}
 
-// localFileForForward finds a local file named by one of localFileFlags, and
+// localFileForForward finds a local file named by a flag in stdinFileFlags, and
 // returns args with that path replaced by "-" along with the opened file, which
 // the caller sends to the host as stdin. It returns the args unchanged and a nil
 // file when there is nothing to send. Only one file can be sent per command,
-// since stdin carries one. Arguments after "--" are never rewritten. A local file
-// flag that the subcommand does not accept as stdin is an error.
+// since stdin carries one. Arguments after "--" are never rewritten. A flag in
+// unsendableFileFlags is an error.
 func localFileForForward(args []string) ([]string, *os.File, error) {
 	out := append([]string(nil), args...)
 	command := ""
 	if len(out) > 0 {
 		command = out[0]
+	}
+	if command == "new" {
+		command = "create"
 	}
 	var file *os.File
 	stdinClaimed := false
@@ -409,11 +413,11 @@ func localFileForForward(args []string) ([]string, *os.File, error) {
 			break
 		}
 		flag, value, inline := strings.Cut(out[i], "=")
-		if !localFileFlags[flag] {
-			continue
+		if unsendableFileFlags[command][flag] {
+			return nil, nil, fmt.Errorf("%s %s is not supported when forwarded", command, flag)
 		}
 		if !stdinFileFlags[command][flag] {
-			return nil, nil, fmt.Errorf("%s %s is not supported when forwarded", command, flag)
+			continue
 		}
 		valueAt := i
 		if !inline {
