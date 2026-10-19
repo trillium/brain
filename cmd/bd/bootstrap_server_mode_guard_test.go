@@ -65,7 +65,7 @@ func TestBootstrapPlanRefusesEmbeddedCreateWhenServerModeResolved(t *testing.T) 
 		{
 			name: "dolt.shared-server in target config.yaml",
 			setup: func(t *testing.T, beadsDir string) *configfile.Config {
-				if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt.shared-server: true\n"), 0o600); err != nil {
+				if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt:\n  shared-server: true\n"), 0o600); err != nil {
 					t.Fatal(err)
 				}
 				return configfile.DefaultConfig()
