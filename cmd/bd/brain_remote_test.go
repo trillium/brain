@@ -517,6 +517,8 @@ func TestForwardSendsLocalBodyFileContent(t *testing.T) {
 		{"create", "title", "--description-file", local},
 		{"comment", "bd-1", "--file", local},
 		{"comment", "bd-1", "--file=" + local},
+		{"note", "bd-1", "--file", local},
+		{"update", "bd-1", "--body-file", local},
 	} {
 		stdout, stderr, code := runForward(t, cfg, "task", args, "")
 		if code != 0 {
@@ -551,5 +553,32 @@ func TestForwardLeavesStdinFlagAloneAndRejectsMissingFile(t *testing.T) {
 	}
 	if !strings.Contains(stderr, missing) {
 		t.Errorf("stderr should name the missing file: %q", stderr)
+	}
+}
+
+func TestForwardRejectsLocalFileFlagsTheHostCannotRead(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostEchoBody(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+	local := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(local, []byte("plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"create", "title", "--file", local},
+		{"batch", "--file", local},
+		{"comments", "add", "bd-1", "--file", local},
+	} {
+		stdout, stderr, code := runForward(t, cfg, "task", args, "")
+		if code == 0 {
+			t.Errorf("%v: forwarding a local file the host cannot read must fail", args)
+		}
+		if stdout != "" {
+			t.Errorf("%v: nothing should run on the host: %q", args, stdout)
+		}
+		if !strings.Contains(stderr, "--file is not supported when forwarded") {
+			t.Errorf("%v: stderr should say the flag is unsupported: %q", args, stderr)
+		}
 	}
 }

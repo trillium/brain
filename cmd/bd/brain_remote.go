@@ -300,9 +300,10 @@ func maybeForwardRemote(args []string) (handled bool, exitCode int) {
 // the exit status to use. Files are passed straight through to ssh, so a real
 // TTY or pipe is relayed byte for byte.
 //
-// A local file named by --body-file, --description-file or --file is sent as
-// the command's stdin instead (see localFileForForward), since the host cannot
-// read this machine's paths.
+// A local file named by a flag in stdinFileFlags is sent as the command's stdin
+// instead (see localFileForForward), since the host cannot read this machine's
+// paths. A local file flag outside that table stops the command before anything
+// is sent.
 //
 // If the host answers that the brain has moved (a "moved" notice, see
 // brain_host_follow.go), the client verifies the move, points remote.yaml at the
@@ -371,17 +372,32 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 	return code
 }
 
-// localFileFlags are the flags whose value is a path that the command reads
-// from the machine it runs on. Each reads "-" as stdin.
+// stdinFileFlags are the flags, per host subcommand, whose value is a path the
+// command reads from the machine it runs on and that accept "-" as stdin. Only
+// these are rewritten to stdin when forwarded. Any other local file flag fails
+// before anything is sent.
+var stdinFileFlags = map[string]map[string]bool{
+	"create":  {"--body-file": true, "--description-file": true},
+	"update":  {"--body-file": true, "--description-file": true},
+	"comment": {"--file": true},
+	"note":    {"--file": true},
+}
+
+// localFileFlags are every flag named in stdinFileFlags.
 var localFileFlags = map[string]bool{"--body-file": true, "--description-file": true, "--file": true}
 
 // localFileForForward finds a local file named by one of localFileFlags, and
 // returns args with that path replaced by "-" along with the opened file, which
 // the caller sends to the host as stdin. It returns the args unchanged and a nil
 // file when there is nothing to send. Only one file can be sent per command,
-// since stdin carries one. Arguments after "--" are never rewritten.
+// since stdin carries one. Arguments after "--" are never rewritten. A local file
+// flag that the subcommand does not accept as stdin is an error.
 func localFileForForward(args []string) ([]string, *os.File, error) {
 	out := append([]string(nil), args...)
+	command := ""
+	if len(out) > 0 {
+		command = out[0]
+	}
 	var file *os.File
 	for i := 0; i < len(out); i++ {
 		if out[i] == "--" {
@@ -390,6 +406,9 @@ func localFileForForward(args []string) ([]string, *os.File, error) {
 		flag, value, inline := strings.Cut(out[i], "=")
 		if !localFileFlags[flag] {
 			continue
+		}
+		if !stdinFileFlags[command][flag] {
+			return nil, nil, fmt.Errorf("%s %s is not supported when forwarded", command, flag)
 		}
 		valueAt := i
 		if !inline {
