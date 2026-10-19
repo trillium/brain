@@ -788,7 +788,8 @@ Once a host is set, 'brain …' and every installed store command ('task create'
 'inbox list', …) run the same command line on the host over ssh, through the
 host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
-locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host.
+locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host. An
+exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.`,
 	Annotations: map[string]string{"brain-remote": "1"},
