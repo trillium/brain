@@ -29,7 +29,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -478,6 +477,38 @@ func isFileFlagWord(a string) bool {
 	return name == "--file" || name == "-f"
 }
 
+// hasCommentFile reports whether a --file or -f flag comes before the first "--",
+// where the words are flags rather than literal text.
+func hasCommentFile(args []string) bool {
+	for _, a := range args {
+		if a == "--" {
+			return false
+		}
+		if isFileFlagWord(a) {
+			return true
+		}
+	}
+	return false
+}
+
+// commentArgsWithoutText drops the text words of 'comments add ID [TEXT...]' and
+// any "--", because the file's text is appended after a fresh "--" and must be
+// the only text the host sees.
+func commentArgsWithoutText(args []string) []string {
+	pos := positionalArgs(args, func(a string) bool { return takesValue(commentsAddCmd, a) })
+	drop := make([]bool, len(args))
+	for _, i := range pos[min(3, len(pos)):] {
+		drop[i] = true
+	}
+	kept := make([]string, 0, len(args))
+	for i, a := range args {
+		if !drop[i] && a != "--" {
+			kept = append(kept, a)
+		}
+	}
+	return kept
+}
+
 // localFileFlags rewrites a forwarded command so that no local file path reaches
 // the brain host. Each local file flag becomes "<flag> -", and the file's bytes
 // are returned as payload for the caller to send on stdin. 'comments add' reads
@@ -486,10 +517,8 @@ func isFileFlagWord(a string) bool {
 // and passes through unchanged.
 func localFileFlags(args []string) (rewritten []string, payload io.Reader, err error) {
 	cmd, sub := commandWords(args)
-	if cmd == "comments" && sub == "add" && slices.ContainsFunc(args, isFileFlagWord) {
-		if pos := positionalArgs(args, func(a string) bool { return takesValue(commentsAddCmd, a) }); len(pos) > 3 {
-			args = slices.Delete(slices.Clone(args), pos[3], pos[3]+1)
-		}
+	if cmd == "comments" && sub == "add" && hasCommentFile(args) {
+		args = commentArgsWithoutText(args)
 	}
 
 	out := make([]string, 0, len(args))

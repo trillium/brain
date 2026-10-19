@@ -294,6 +294,9 @@ func TestLocalFileFlagsRewriteOnlyTextFileFlags(t *testing.T) {
 		{"root -C before the command", []string{"-C", dir, "comment", "ID", "--file", path}, []string{"-C", dir, "comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"comments add combined -f<path>", []string{"comments", "add", "ID", "-f" + path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
 		{"comments add file replaces typed text", []string{"comments", "add", "ID", "typed", "-f", path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"comments add file replaces every typed word", []string{"comments", "add", "ID", "fix", "the", "bug", "-f", path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"comments add file replaces text after --", []string{"comments", "add", "ID", "-f", path, "--", "typed"}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"comments add -- makes -f literal text", []string{"comments", "add", "ID", "--", "typed", "-f", path}, []string{"comments", "add", "ID", "--", "typed", "-f", path}, "<none>"},
 		{"comments list --body-file is not a comment body", []string{"comments", "list", "--body-file", path}, []string{"comments", "list", "--body-file", "-"}, "it's \"quoted\"\n"},
 		{"note --file=", []string{"note", "ID", "--file=" + path}, []string{"note", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"comments add -f goes inline", []string{"comments", "add", "ID", "-f", path, "--author", "me"}, []string{"comments", "add", "ID", "--author", "me", "--", "it's \"quoted\"\n"}, "<none>"},
@@ -361,12 +364,14 @@ func TestForwardCommentsAddFileWinsOverTypedText(t *testing.T) {
 	if err := os.WriteFile(local, []byte("file text"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, _, _ := runForward(t, cfg, "task", []string{"comments", "add", "ID", "typed", "-f", local}, "")
+	stdout, _, _ := runForward(t, cfg, "task", []string{"comments", "add", "ID", "fix", "the", "bug", "-f", local}, "")
 	if !strings.Contains(stdout, "[ID]\n[--]\n[file text]\n") {
 		t.Errorf("host did not receive the file text as the comment body: %q", stdout)
 	}
-	if strings.Contains(stdout, "[typed]") {
-		t.Errorf("typed text reached the host alongside the file: %q", stdout)
+	for _, leftover := range []string{"[fix]", "[the]", "[bug]"} {
+		if strings.Contains(stdout, leftover) {
+			t.Errorf("typed text %s reached the host alongside the file: %q", leftover, stdout)
+		}
 	}
 }
 
