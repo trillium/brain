@@ -490,3 +490,66 @@ func TestLooksLikeSSHFailure(t *testing.T) {
 		}
 	}
 }
+
+// hostEchoBody installs a fake "task" on the host that prints each argument
+// and, when one of them reads a body from stdin ("-" or "--flag=-"), the stdin
+// it was sent.
+func hostEchoBody(t *testing.T, hostBin string) {
+	t.Helper()
+	writeExec(t, filepath.Join(hostBin, "task"), `#!/bin/sh
+for a in "$@"; do printf '[%s]\n' "$a"; done
+for a in "$@"; do case "$a" in -|*=-) printf 'body=<%s>\n' "$(cat)"; break ;; esac; done
+`)
+}
+
+func TestForwardSendsLocalBodyFileContent(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostEchoBody(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+	local := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(local, []byte("it's a body\nline two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"create", "title", "--body-file", local},
+		{"create", "title", "--body-file=" + local},
+		{"create", "title", "--description-file", local},
+		{"comment", "bd-1", "--file", local},
+		{"comment", "bd-1", "--file=" + local},
+	} {
+		stdout, stderr, code := runForward(t, cfg, "task", args, "")
+		if code != 0 {
+			t.Errorf("%v: exit code = %d, stderr %q", args, code, stderr)
+		}
+		if strings.Contains(stdout, local) {
+			t.Errorf("%v: the host was given the client's path: %q", args, stdout)
+		}
+		if !strings.Contains(stdout, "body=<it's a body\nline two>") {
+			t.Errorf("%v: host did not receive the file content: %q", args, stdout)
+		}
+	}
+}
+
+func TestForwardLeavesStdinFlagAloneAndRejectsMissingFile(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostEchoBody(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+
+	stdout, _, code := runForward(t, cfg, "task", []string{"create", "t", "--body-file", "-"}, "piped\n")
+	if code != 0 || !strings.Contains(stdout, "body=<piped>") {
+		t.Errorf("--body-file - should still read the caller's stdin: code %d, %q", code, stdout)
+	}
+
+	missing := filepath.Join(t.TempDir(), "absent.md")
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"create", "t", "--body-file", missing}, "")
+	if code == 0 {
+		t.Errorf("a missing local file must fail, not run on the host")
+	}
+	if stdout != "" {
+		t.Errorf("nothing should run on the host: %q", stdout)
+	}
+	if !strings.Contains(stderr, missing) {
+		t.Errorf("stderr should name the missing file: %q", stderr)
+	}
+}

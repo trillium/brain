@@ -300,12 +300,26 @@ func maybeForwardRemote(args []string) (handled bool, exitCode int) {
 // the exit status to use. Files are passed straight through to ssh, so a real
 // TTY or pipe is relayed byte for byte.
 //
+// A local file named by --body-file, --description-file or --file is sent as
+// the command's stdin instead (see localFileForForward), since the host cannot
+// read this machine's paths.
+//
 // If the host answers that the brain has moved (a "moved" notice, see
 // brain_host_follow.go), the client verifies the move, points remote.yaml at the
 // new host and runs the command once more there, provided the command's input
 // can be replayed. If the move cannot be verified, nothing is changed and the
 // command is not run anywhere.
 func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdin, stdout, stderr *os.File) int {
+	args, file, err := localFileForForward(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "brain: %v; nothing was sent to the brain host\n", err)
+		return 1
+	}
+	if file != nil {
+		defer file.Close()
+		stdin, tty = file, false
+	}
+
 	startOffset := int64(-1)
 	if fi, err := stdin.Stat(); err == nil && fi.Mode().IsRegular() {
 		if off, serr := stdin.Seek(0, io.SeekCurrent); serr == nil {
@@ -355,6 +369,63 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 		fmt.Fprintf(stderr, "brain: %s also reports a move (to %s); not following a second time for one command. Run it again.\n", final, again.Target)
 	}
 	return code
+}
+
+// localFileFlags are the flags whose value is a path that the command reads
+// from the machine it runs on. Each reads "-" as stdin.
+var localFileFlags = map[string]bool{"--body-file": true, "--description-file": true, "--file": true}
+
+// localFileForForward finds a local file named by one of localFileFlags, and
+// returns args with that path replaced by "-" along with the opened file, which
+// the caller sends to the host as stdin. It returns the args unchanged and a nil
+// file when there is nothing to send. Only one file can be sent per command,
+// since stdin carries one. Arguments after "--" are never rewritten.
+func localFileForForward(args []string) ([]string, *os.File, error) {
+	out := append([]string(nil), args...)
+	var file *os.File
+	for i := 0; i < len(out); i++ {
+		if out[i] == "--" {
+			break
+		}
+		flag, value, inline := strings.Cut(out[i], "=")
+		if !localFileFlags[flag] {
+			continue
+		}
+		valueAt := i
+		if !inline {
+			if i+1 == len(out) {
+				break // a flag with no value: the host reports it
+			}
+			valueAt = i + 1
+			value = out[valueAt]
+		}
+		if value == "-" {
+			i = valueAt
+			continue // already stdin, which is relayed as usual
+		}
+		if file != nil {
+			return nil, nil, fmt.Errorf("only one of --body-file, --description-file and --file can be sent to the brain host")
+		}
+		f, err := os.Open(value) //nolint:gosec // the user's own path, read here and never interpreted by a shell
+		if err != nil {
+			return nil, nil, fmt.Errorf("cannot read %s %q: %w", flag, value, err)
+		}
+		if fi, err := f.Stat(); err != nil || fi.IsDir() {
+			_ = f.Close()
+			return nil, nil, fmt.Errorf("%s %q is not a readable file", flag, value)
+		}
+		file = f
+		if inline {
+			out[i] = flag + "=-"
+		} else {
+			out[valueAt] = "-"
+		}
+		i = valueAt
+	}
+	if file == nil {
+		return args, nil, nil
+	}
+	return out, file, nil
 }
 
 // forwardOnce runs the command on cfg.Host. If the host answered with a moved
