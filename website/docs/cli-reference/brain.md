@@ -464,6 +464,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+#### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 #### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the

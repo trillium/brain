@@ -105,7 +105,18 @@ the host itself) simply has no `remote.yaml` and runs locally.
 - `BRAIN_REMOTE_HOST=other@host brain status` points one command at another host.
 - An exported `BEADS_DIR` that names a local beads project (a directory with
   project files) wins over `remote.yaml`: the command runs against that store
-  here and is not forwarded. An unset or non-project `BEADS_DIR` still forwards.
+  here and is not forwarded. An unset or non-project `BEADS_DIR` still forwards
+  reads and store commands.
+- A bare `brain create|update|close|delete|import` (or an alias such as `new`
+  or `done`) with `BEADS_DIR` unset and a `.beads` workspace found from the
+  working directory runs locally against that workspace and is not forwarded.
+  It is refused otherwise, when `BEADS_DIR` is set but is not a local project or
+  when no workspace is found: `brain: no beads workspace here; set BEADS_DIR or
+  BRAIN_REMOTE=off`, exit 2, nothing sent to the host. Nothing here names a store
+  the host can honor, and the host would otherwise answer through its own
+  `brain` wrapper, so the write would land in that wrapper's default store. Reads
+  (`brain list`, `brain show …`) still forward from anywhere, and store commands
+  (`task create`) forward every verb.
 - `brain remote disconnect` closes the shared connection; the next call reopens it.
 - `brain remote unset` removes the configuration. Wrappers stay but have no host.
 - Unreachable host: the call fails with `brain: cannot reach the brain host …`

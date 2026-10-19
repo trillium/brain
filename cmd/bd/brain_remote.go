@@ -249,6 +249,37 @@ func sshBinary() string {
 
 func fdIsTerminal(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
 
+// remoteWriteVerbs are the top-level verbs that write to whichever store
+// answers them. A client wrapper names its store and forwards every verb; a
+// bare 'brain'/'bd' call with no store named anywhere is refused for these.
+var remoteWriteVerbs = map[string]bool{
+	"create": true,
+	"update": true,
+	"close":  true,
+	"delete": true,
+	"import": true,
+}
+
+// noWorkspaceWriteMsg is the refusal for a bare client write with no store
+// named by BEADS_DIR or by a .beads workspace found from the working directory.
+const noWorkspaceWriteMsg = "no beads workspace here; set BEADS_DIR or BRAIN_REMOTE=off"
+
+// remoteVerbName resolves the first command word of args to the name of the
+// top-level command it invokes, so an alias ("new", "done") counts as the verb
+// it stands for. A word that names no command is returned as typed.
+func remoteVerbName(args []string) string {
+	word, _ := commandWords(args)
+	if word == "" {
+		return ""
+	}
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == word || c.HasAlias(word) {
+			return c.Name()
+		}
+	}
+	return word
+}
+
 // remoteForwardingActive reports whether this invocation must be forwarded,
 // and to what. name is the command to run on the host ("brain" unless a
 // wrapper named a store).
@@ -276,6 +307,18 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 	}
 	if name == "" {
 		name = "brain"
+		// A bare call names no store. The host answers it through its own
+		// 'brain' wrapper, so a write would land in whatever store that wrapper
+		// defaults to. Reads are harmless to forward. A bare write runs here
+		// against a .beads workspace found from the working directory, and is
+		// refused otherwise. A BEADS_DIR reaching this point is not a local
+		// project, so the host cannot honor it and it names nothing.
+		if remoteWriteVerbs[remoteVerbName(args)] {
+			if os.Getenv("BEADS_DIR") == "" && beads.FindBeadsDir() != "" {
+				return nil, "", false, nil
+			}
+			return nil, "", false, errors.New(noWorkspaceWriteMsg)
+		}
 	}
 	if !remoteNameRE.MatchString(name) {
 		return nil, "", false, fmt.Errorf("invalid store command name %q in $%s", name, envRemoteStore)
@@ -1022,6 +1065,11 @@ host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
 locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host. An
 exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
+A bare 'brain create|update|close|delete|import' runs locally against a .beads
+workspace found from the working directory (BEADS_DIR unset), and is refused
+rather than forwarded otherwise, so the host's default store never absorbs a
+write that named no store; reads and store commands ('task create') forward as
+always.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.`,
 	Annotations: map[string]string{"brain-remote": "1"},

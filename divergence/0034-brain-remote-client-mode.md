@@ -50,6 +50,9 @@ interfaces; the design must not depend on that or worsen it).
 - Escape hatches: `BRAIN_REMOTE=off`, `BRAIN_REMOTE_HOST`, and a local
   `BEADS_DIR` (see `docs/brain/REMOTE.md`). The host side of every
   forward runs with `BRAIN_REMOTE=off`, so forwarding cannot loop.
+- A bare write with no store named is never forwarded: the host's default
+  store would absorb it. It runs locally or is refused. The rule is owned by
+  `docs/brain/REMOTE.md`.
 
 # Decisions
 
@@ -69,4 +72,6 @@ re-parses them like the real one; unreachable-host message and status;
 validation of host, bin_dir and ssh options; wrapper install, idempotence,
 `--force`, `--prune`, never `bd`; wrapper → binary store handoff; registry parse
 and host wrapper check; PATH shadow notes; `brain remote` does not open a store
-while `dolt remote add` still does.
+while `dolt remote add` still does; a bare write with no local workspace is
+refused before ssh while reads, wrappers and local `BEADS_DIR` forward, and
+in-workspace writes run locally.

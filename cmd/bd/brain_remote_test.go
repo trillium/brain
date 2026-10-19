@@ -232,6 +232,84 @@ func TestRemoteForwardingYieldsToLocalBeadsDir(t *testing.T) {
 	}
 }
 
+// A bare client call that writes (create, update, close, delete, import, or an
+// alias of one) is refused when nothing here names a store: no BEADS_DIR and no
+// .beads workspace found from the working directory. Forwarding it would let
+// the host's default store absorb the write. Reads, store wrappers, and bare
+// writes that do name a store forward as before.
+func TestRemoteForwardingRefusesBareWritesWithoutWorkspace(t *testing.T) {
+	remoteEnv(t)
+	if err := saveRemoteConfig(&remoteConfig{Host: "me@host"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", "")
+	t.Chdir(t.TempDir()) // no .beads here or above
+
+	for _, args := range [][]string{
+		{"create", "sl1eq probe"},
+		{"new", "sl1eq probe"},
+		{"update", "brain-1", "--status", "closed"},
+		{"close", "brain-1"},
+		{"done", "brain-1"},
+		{"delete", "brain-1", "--force"},
+		{"import", "-"},
+		{"--json", "create", "sl1eq probe"},
+	} {
+		_, _, active, err := remoteForwardingActive(args)
+		if active || err == nil || err.Error() != noWorkspaceWriteMsg {
+			t.Errorf("%q: want refusal %q, got active=%v err=%v", args, noWorkspaceWriteMsg, active, err)
+		}
+	}
+	// The refusal is the whole answer: handled, exit 2, and ssh never ran.
+	if handled, code := maybeForwardRemote([]string{"create", "sl1eq probe"}); !handled || code != 2 {
+		t.Errorf("maybeForwardRemote: handled=%v code=%d, want handled with exit 2", handled, code)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(os.Getenv(envRemoteSSH)), "ssh.log")); err == nil {
+		t.Error("a refused write must not reach ssh")
+	}
+
+	// Reads still forward from the same place.
+	for _, args := range [][]string{{"list"}, {"show", "brain-1"}, {"search", "x"}, {"--version"}, nil} {
+		if _, name, active, err := remoteForwardingActive(args); !active || err != nil || name != "brain" {
+			t.Errorf("%q: read must forward: active=%v name=%q err=%v", args, active, name, err)
+		}
+	}
+
+	// A store wrapper names its store, so it forwards every verb.
+	t.Setenv(envRemoteStore, "task")
+	if _, name, active, err := remoteForwardingActive([]string{"create", "x"}); !active || err != nil || name != "task" {
+		t.Errorf("wrapper write must forward: active=%v name=%q err=%v", active, name, err)
+	}
+	t.Setenv(envRemoteStore, "")
+
+	// A BEADS_DIR that is not a local project cannot be honored on the host,
+	// which would answer through its default store, so the bare write is refused.
+	t.Setenv("BEADS_DIR", filepath.Join(t.TempDir(), ".beads"))
+	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); active || err == nil || err.Error() != noWorkspaceWriteMsg {
+		t.Errorf("write with non-project BEADS_DIR must refuse: active=%v err=%v", active, err)
+	}
+	if _, name, active, err := remoteForwardingActive([]string{"list"}); !active || err != nil || name != "brain" {
+		t.Errorf("read with non-project BEADS_DIR must forward: active=%v name=%q err=%v", active, name, err)
+	}
+	t.Setenv("BEADS_DIR", "")
+
+	// A .beads workspace above the working directory names one as well.
+	ws := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(ws, ".beads"), 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, ".beads", "metadata.json"), []byte("{}"), 0o644); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(ws, "sub"), 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	t.Chdir(filepath.Join(ws, "sub"))
+	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); active || err != nil {
+		t.Errorf("write inside a workspace must run locally: active=%v err=%v", active, err)
+	}
+}
+
 // hostTask installs a fake "task" command on the fake host. It prints each
 // argument in brackets, echoes stdin, reports whether it was told not to
 // forward onward, and exits with the status named by $TASK_EXIT or 7.

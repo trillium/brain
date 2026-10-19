@@ -347,6 +347,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Unregister a store from the brain federation registry
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
 - [bd transfer](#bd-transfer) — Atomically move a brain doc from one store to another
 - [bd undefer](#bd-undefer) — Undefer one or more issues (restore to open)
@@ -6642,6 +6643,29 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
+##### bd brain stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 ##### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
@@ -8512,6 +8536,11 @@ host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
 locally once; BRAIN_REMOTE_HOST=&lt;target&gt; overrides the configured host. An
 exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
+A bare 'brain create|update|close|delete|import' runs locally against a .beads
+workspace found from the working directory (BEADS_DIR unset), and is refused
+rather than forwarded otherwise, so the host's default store never absorbs a
+write that named no store; reads and store commands ('task create') forward as
+always.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
@@ -8893,6 +8922,29 @@ bd stores render-all [flags]
 
 ```
       --json   Emit a structured JSON object instead of per-store text summaries
+```
+
+#### bd stores rewrite-wrappers
+
+Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
+~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
+"$HOME/…" in place, preserving every other env pin and the exec line. Stores
+with no wrapper are skipped. Each wrapper is then read through the way
+'brain stores doctor' does.
+
+Exits non-zero, naming every store that failed, if any wrapper cannot be
+written or does not resolve a database. 'brain remote set' and
+'brain remote install' run this on the brain host.
+
+```
+bd stores rewrite-wrappers [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Verify this many stores concurrently (default 8)
+      --timeout duration   Per-store read timeout (default 20s)
 ```
 
 #### bd stores set-about
