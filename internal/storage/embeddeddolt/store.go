@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -89,6 +90,9 @@ func newStore(ctx context.Context, beadsDir, database, branch string, lenientGat
 	absBeadsDir, err := filepath.Abs(beadsDir)
 	if err != nil {
 		return nil, fmt.Errorf("embeddeddolt: resolving beads dir: %w", err)
+	}
+	if err := configfile.CheckEmbeddedCreateAllowed(absBeadsDir); err != nil {
+		return nil, err
 	}
 	dataDir := filepath.Join(absBeadsDir, "embeddeddolt")
 	if err := os.MkdirAll(dataDir, config.BeadsDirPerm); err != nil {

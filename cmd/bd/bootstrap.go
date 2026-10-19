@@ -836,6 +836,9 @@ func resolveRemoteCloneMode(beadsDir string, cfg *configfile.Config, cloneMode r
 
 // cloneViaEmbedded clones using the embedded Dolt engine (CGO required).
 func cloneViaEmbedded(ctx context.Context, beadsDir, remoteURL, dbName string) error {
+	if err := configfile.CheckEmbeddedCreateAllowed(beadsDir); err != nil {
+		return err
+	}
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return fmt.Errorf("create embeddeddolt directory: %w", err)
