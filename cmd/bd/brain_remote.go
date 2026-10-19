@@ -300,12 +300,34 @@ func maybeForwardRemote(args []string) (handled bool, exitCode int) {
 // the exit status to use. Files are passed straight through to ssh, so a real
 // TTY or pipe is relayed byte for byte.
 //
+// A local file named by --body-file, --description-file, or a text-file flag is
+// read here and sent on stdin (see localFileFlags), because the path would
+// otherwise be resolved on the brain host.
+//
 // If the host answers that the brain has moved (a "moved" notice, see
 // brain_host_follow.go), the client verifies the move, points remote.yaml at the
 // new host and runs the command once more there, provided the command's input
 // can be replayed. If the move cannot be verified, nothing is changed and the
 // command is not run anywhere.
 func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdin, stdout, stderr *os.File) int {
+	args, payload, err := localFileFlags(args)
+	if err != nil {
+		fmt.Fprintf(stderr, "brain: %v\n", err)
+		return 1
+	}
+	if payload != nil {
+		spool, err := spoolStdin(payload)
+		if err != nil {
+			fmt.Fprintf(stderr, "brain: %v\n", err)
+			return 1
+		}
+		defer func() {
+			_ = spool.Close()
+			_ = os.Remove(spool.Name())
+		}()
+		stdin, tty = spool, false
+	}
+
 	startOffset := int64(-1)
 	if fi, err := stdin.Stat(); err == nil && fi.Mode().IsRegular() {
 		if off, serr := stdin.Seek(0, io.SeekCurrent); serr == nil {
@@ -355,6 +377,115 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 		fmt.Fprintf(stderr, "brain: %s also reports a move (to %s); not following a second time for one command. Run it again.\n", final, again.Target)
 	}
 	return code
+}
+
+// localFileFlag reports whether flag names a local file that the command reads
+// as text. --body-file and --description-file always do. --file and -f do only
+// where the command reads comment text from them: create's --file is a markdown
+// batch and dep's is a JSONL edge list, so those keep their paths.
+func localFileFlag(flag, cmd, sub string) bool {
+	switch flag {
+	case "--body-file", "--description-file":
+		return true
+	case "--file", "-f":
+		switch cmd {
+		case "comment", "note":
+			return flag == "--file"
+		case "comments":
+			return sub == "add"
+		}
+	}
+	return false
+}
+
+// localFileFlags rewrites a forwarded command so that no local file path reaches
+// the brain host. Each local file flag becomes "<flag> -", and the file's bytes
+// are returned as payload for the caller to send on stdin. 'comments add' reads
+// its file path itself rather than from stdin, so for it the text is appended
+// as a trailing positional argument instead. A value of "-" is already stdin
+// and passes through unchanged.
+func localFileFlags(args []string) (rewritten []string, payload io.Reader, err error) {
+	var cmd, sub string
+	words := 0
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			continue
+		}
+		switch words {
+		case 0:
+			cmd = a
+		case 1:
+			sub = a
+		}
+		words++
+	}
+
+	out := make([]string, 0, len(args))
+	var tail []string
+	var content []byte
+	hasPayload := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
+		start := i
+		name, value, inline := a, "", false
+		if j := strings.IndexByte(a, '='); j > 0 && strings.HasPrefix(a, "-") {
+			name, value, inline = a[:j], a[j+1:], true
+		}
+		if !strings.HasPrefix(a, "-") || !localFileFlag(name, cmd, sub) || (!inline && i+1 == len(args)) {
+			out = append(out, a)
+			continue
+		}
+		if !inline {
+			i++
+			value = args[i]
+		}
+		if value == "-" {
+			out = append(out, args[start:i+1]...)
+			continue
+		}
+		data, rerr := os.ReadFile(value) //nolint:gosec // the user's own file, read on this machine
+		if rerr != nil {
+			return nil, nil, fmt.Errorf("reading %s %s: %w", name, value, rerr)
+		}
+		if cmd == "comments" {
+			tail = append(tail, "--", string(data))
+			continue
+		}
+		if hasPayload {
+			return nil, nil, fmt.Errorf("only one file flag can be forwarded per command")
+		}
+		hasPayload, content = true, data
+		out = append(out, name, "-")
+	}
+	out = append(out, tail...)
+	if !hasPayload {
+		return out, nil, nil
+	}
+	return out, bytes.NewReader(content), nil
+}
+
+// spoolStdin copies payload into a rewound temporary file. A regular file can
+// be replayed if the host moves, as forwardRemote requires of its input.
+func spoolStdin(payload io.Reader) (*os.File, error) {
+	f, err := os.CreateTemp("", "brain-forward-*")
+	if err != nil {
+		return nil, fmt.Errorf("staging file contents for the brain host: %w", err)
+	}
+	if _, err := io.Copy(f, payload); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("staging file contents for the brain host: %w", err)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		_ = os.Remove(f.Name())
+		return nil, fmt.Errorf("staging file contents for the brain host: %w", err)
+	}
+	return f, nil
 }
 
 // forwardOnce runs the command on cfg.Host. If the host answered with a moved

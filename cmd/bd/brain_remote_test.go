@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -259,6 +260,90 @@ func TestForwardPreservesArgsStdinAndExitCode(t *testing.T) {
 	stdout, _, _ = runForward(t, cfg, "task", []string{"stdin"}, "body line 1\nit's body line 2\n")
 	if !strings.Contains(stdout, "stdin=<body line 1\nit's body line 2>") {
 		t.Errorf("stdin not relayed: %q", stdout)
+	}
+}
+
+func TestLocalFileFlagsRewriteOnlyTextFileFlags(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "body.md")
+	if err := os.WriteFile(path, []byte("it's \"quoted\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := func(t *testing.T, r io.Reader) string {
+		t.Helper()
+		if r == nil {
+			return "<none>"
+		}
+		b, err := io.ReadAll(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	cases := []struct {
+		name    string
+		args    []string
+		want    []string
+		payload string
+	}{
+		{"body-file", []string{"create", "T", "--body-file", path}, []string{"create", "T", "--body-file", "-"}, "it's \"quoted\"\n"},
+		{"body-file=", []string{"update", "ID", "--body-file=" + path}, []string{"update", "ID", "--body-file", "-"}, "it's \"quoted\"\n"},
+		{"description-file", []string{"create", "T", "--description-file", path}, []string{"create", "T", "--description-file", "-"}, "it's \"quoted\"\n"},
+		{"comment --file", []string{"comment", "ID", "--file", path}, []string{"comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
+		{"note --file=", []string{"note", "ID", "--file=" + path}, []string{"note", "ID", "--file", "-"}, "it's \"quoted\"\n"},
+		{"comments add -f goes inline", []string{"comments", "add", "ID", "-f", path, "--author", "me"}, []string{"comments", "add", "ID", "--author", "me", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"create --file is a markdown batch", []string{"create", "--file", "batch.md"}, []string{"create", "--file", "batch.md"}, "<none>"},
+		{"dep add --file is an edge list", []string{"dep", "add", "--file", "edges.jsonl"}, []string{"dep", "add", "--file", "edges.jsonl"}, "<none>"},
+		{"stdin dash passes through", []string{"comment", "ID", "--file", "-"}, []string{"comment", "ID", "--file", "-"}, "<none>"},
+		{"flag without value is left for bd", []string{"create", "T", "--body-file"}, []string{"create", "T", "--body-file"}, "<none>"},
+		{"args after -- are untouched", []string{"comment", "ID", "--", "--body-file", path}, []string{"comment", "ID", "--", "--body-file", path}, "<none>"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, payload, err := localFileFlags(tc.args)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if strings.Join(got, "\x00") != strings.Join(tc.want, "\x00") {
+				t.Errorf("args = %q, want %q", got, tc.want)
+			}
+			if p := read(t, payload); p != tc.payload {
+				t.Errorf("payload = %q, want %q", p, tc.payload)
+			}
+		})
+	}
+
+	missing := filepath.Join(dir, "missing.md")
+	if _, _, err := localFileFlags([]string{"comment", "ID", "--file", missing}); err == nil || !strings.Contains(err.Error(), missing) {
+		t.Errorf("missing local file: err = %v, want one naming %s", err, missing)
+	}
+	if _, _, err := localFileFlags([]string{"create", "T", "--body-file", path, "--description-file", path}); err == nil {
+		t.Errorf("two file flags with one stdin payload should be refused")
+	}
+}
+
+func TestForwardSendsLocalFileContentOnStdin(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostTask(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+
+	local := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(local, []byte("line 1\nit's \"quoted\" $HOME\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The caller's own stdin must not leak in; the file's bytes are the input.
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "caller stdin")
+	if code != 7 {
+		t.Errorf("exit code = %d, want 7 (the host command's status); stderr %q", code, stderr)
+	}
+	if !strings.Contains(stdout, "[--body-file]\n[-]\n") {
+		t.Errorf("flag was not rewritten to stdin: %q", stdout)
+	}
+	if !strings.Contains(stdout, "stdin=<line 1\nit's \"quoted\" $HOME>") {
+		t.Errorf("host did not receive the file contents on stdin: %q", stdout)
+	}
+	if strings.Contains(stdout, local) {
+		t.Errorf("local path leaked to the host: %q", stdout)
 	}
 }
 
