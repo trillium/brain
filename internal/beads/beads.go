@@ -704,18 +704,8 @@ func ExplicitBeadsDir() string {
 // contents are used as the actual .beads directory path.
 func FindBeadsDir() string {
 	// 1. Check BEADS_DIR environment variable (preferred)
-	if beadsDir := os.Getenv("BEADS_DIR"); beadsDir != "" {
-		absBeadsDir := canonicalizeBeadsDirPath(beadsDir)
-
-		// Follow redirect if present
-		absBeadsDir = FollowRedirect(absBeadsDir)
-
-		if info, err := os.Stat(absBeadsDir); err == nil && info.IsDir() {
-			// Validate directory contains actual project files
-			if hasBeadsProjectFiles(absBeadsDir) {
-				return absBeadsDir
-			}
-		}
+	if explicit := ExplicitBeadsDir(); explicit != "" {
+		return explicit
 	}
 
 	// 2. Walk up from CWD toward the repo root, checking each directory for .beads/.
