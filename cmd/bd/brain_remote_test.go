@@ -290,6 +290,9 @@ func TestLocalFileFlagsRewriteOnlyTextFileFlags(t *testing.T) {
 		{"body-file=", []string{"update", "ID", "--body-file=" + path}, []string{"update", "ID", "--body-file", "-"}, "it's \"quoted\"\n"},
 		{"description-file", []string{"create", "T", "--description-file", path}, []string{"create", "T", "--description-file", "-"}, "it's \"quoted\"\n"},
 		{"comment --file", []string{"comment", "ID", "--file", path}, []string{"comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
+		{"root --actor before the command", []string{"--actor", "me", "comment", "ID", "--file", path}, []string{"--actor", "me", "comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
+		{"root -C before the command", []string{"-C", dir, "comment", "ID", "--file", path}, []string{"-C", dir, "comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
+		{"comments add combined -f<path>", []string{"comments", "add", "ID", "-f" + path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
 		{"note --file=", []string{"note", "ID", "--file=" + path}, []string{"note", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"comments add -f goes inline", []string{"comments", "add", "ID", "-f", path, "--author", "me"}, []string{"comments", "add", "ID", "--author", "me", "--", "it's \"quoted\"\n"}, "<none>"},
 		{"create --file is a markdown batch", []string{"create", "--file", "batch.md"}, []string{"create", "--file", "batch.md"}, "<none>"},
@@ -331,8 +334,7 @@ func TestForwardSendsLocalFileContentOnStdin(t *testing.T) {
 	if err := os.WriteFile(local, []byte("line 1\nit's \"quoted\" $HOME\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The caller's own stdin must not leak in; the file's bytes are the input.
-	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "caller stdin")
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "")
 	if code != 7 {
 		t.Errorf("exit code = %d, want 7 (the host command's status); stderr %q", code, stderr)
 	}
@@ -344,6 +346,27 @@ func TestForwardSendsLocalFileContentOnStdin(t *testing.T) {
 	}
 	if strings.Contains(stdout, local) {
 		t.Errorf("local path leaked to the host: %q", stdout)
+	}
+}
+
+func TestForwardRefusesFileFlagWhenStdinIsPiped(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostTask(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+
+	local := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(local, []byte("file text\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "piped input")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if stdout != "" {
+		t.Errorf("host ran despite conflicting stdin: %q", stdout)
+	}
+	if !strings.Contains(stderr, "stdin is also piped in") {
+		t.Errorf("stderr = %q, want a refusal naming the piped stdin", stderr)
 	}
 }
 

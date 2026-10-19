@@ -316,6 +316,10 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 		return 1
 	}
 	if payload != nil {
+		if stdinCarriesInput(stdin) {
+			fmt.Fprintf(stderr, "brain: this command reads its text from a file, but stdin is also piped in; pipe one or the other\n")
+			return 1
+		}
 		spool, err := spoolStdin(payload)
 		if err != nil {
 			fmt.Fprintf(stderr, "brain: %v\n", err)
@@ -398,6 +402,60 @@ func localFileFlag(flag, cmd, sub string) bool {
 	return false
 }
 
+// stdinCarriesInput reports whether the caller's stdin holds input that a staged
+// payload would replace: a pipe, or a regular file with bytes in it. A terminal
+// and a character device such as /dev/null carry none.
+func stdinCarriesInput(f *os.File) bool {
+	if fdIsTerminal(f) {
+		return false
+	}
+	fi, err := f.Stat()
+	switch {
+	case err != nil:
+		return false
+	case fi.Mode().IsRegular():
+		return fi.Size() > 0
+	default:
+		return fi.Mode()&os.ModeCharDevice == 0
+	}
+}
+
+// rootValueFlag reports whether arg is a root persistent flag that takes a
+// value, such as --actor, -C or --db, so the word after it is that value.
+func rootValueFlag(arg string) bool {
+	flags := rootCmd.PersistentFlags()
+	if name, ok := strings.CutPrefix(arg, "--"); ok {
+		f := flags.Lookup(name)
+		return f != nil && f.NoOptDefVal == ""
+	}
+	if len(arg) == 2 {
+		f := flags.ShorthandLookup(arg[1:])
+		return f != nil && f.NoOptDefVal == ""
+	}
+	return false
+}
+
+// commandWords returns the command and subcommand words of args. Root flags
+// that take a value may come before them, so their values are skipped.
+func commandWords(args []string) (cmd, sub string) {
+	var words []string
+	for i := 0; i < len(args) && len(words) < 2; i++ {
+		a := args[i]
+		if !strings.HasPrefix(a, "-") {
+			words = append(words, a)
+		} else if !strings.Contains(a, "=") && rootValueFlag(a) {
+			i++
+		}
+	}
+	if len(words) > 0 {
+		cmd = words[0]
+	}
+	if len(words) > 1 {
+		sub = words[1]
+	}
+	return cmd, sub
+}
+
 // localFileFlags rewrites a forwarded command so that no local file path reaches
 // the brain host. Each local file flag becomes "<flag> -", and the file's bytes
 // are returned as payload for the caller to send on stdin. 'comments add' reads
@@ -405,20 +463,7 @@ func localFileFlag(flag, cmd, sub string) bool {
 // as a trailing positional argument instead. A value of "-" is already stdin
 // and passes through unchanged.
 func localFileFlags(args []string) (rewritten []string, payload io.Reader, err error) {
-	var cmd, sub string
-	words := 0
-	for _, a := range args {
-		if strings.HasPrefix(a, "-") {
-			continue
-		}
-		switch words {
-		case 0:
-			cmd = a
-		case 1:
-			sub = a
-		}
-		words++
-	}
+	cmd, sub := commandWords(args)
 
 	out := make([]string, 0, len(args))
 	var tail []string
@@ -434,6 +479,9 @@ func localFileFlags(args []string) (rewritten []string, payload io.Reader, err e
 		name, value, inline := a, "", false
 		if j := strings.IndexByte(a, '='); j > 0 && strings.HasPrefix(a, "-") {
 			name, value, inline = a[:j], a[j+1:], true
+		}
+		if strings.HasPrefix(a, "-f") && len(a) > 2 && a[2] != '=' {
+			name, value, inline = "-f", a[2:], true
 		}
 		if !strings.HasPrefix(a, "-") || !localFileFlag(name, cmd, sub) || (!inline && i+1 == len(args)) {
 			out = append(out, a)
