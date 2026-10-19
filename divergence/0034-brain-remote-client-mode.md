@@ -76,5 +76,5 @@ validation of host, bin_dir and ssh options; wrapper install, idempotence,
 `--force`, `--prune`, never `bd`; wrapper → binary store handoff; registry parse
 and host wrapper check; PATH shadow notes; `brain remote` does not open a store
 while `dolt remote add` still does; a bare write with no local workspace is
-refused before ssh while reads, wrappers, local `BEADS_DIR` and in-workspace
-writes forward.
+refused before ssh while reads, wrappers and local `BEADS_DIR` forward, and
+in-workspace writes run locally.

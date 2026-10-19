@@ -305,8 +305,8 @@ func TestRemoteForwardingRefusesBareWritesWithoutWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Chdir(filepath.Join(ws, "sub"))
-	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); !active || err != nil {
-		t.Errorf("write inside a workspace must forward: active=%v err=%v", active, err)
+	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); active || err != nil {
+		t.Errorf("write inside a workspace must run locally: active=%v err=%v", active, err)
 	}
 }
 
