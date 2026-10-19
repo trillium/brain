@@ -550,6 +550,9 @@ func localFileFlags(args []string) (rewritten []string, payload io.Reader, err e
 			return nil, nil, fmt.Errorf("reading %s %s: %w", name, value, rerr)
 		}
 		if cmd == "comments" && sub == "add" && isFileFlagWord(a) {
+			if len(tail) > 0 {
+				return nil, nil, fmt.Errorf("only one file flag can be forwarded per command")
+			}
 			tail = append(tail, "--", string(data))
 			continue
 		}

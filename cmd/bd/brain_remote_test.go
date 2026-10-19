@@ -375,6 +375,31 @@ func TestForwardCommentsAddFileWinsOverTypedText(t *testing.T) {
 	}
 }
 
+func TestForwardRefusesTwoCommentFilesBeforeHostRuns(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostTask(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.md")
+	b := filepath.Join(dir, "b.md")
+	for _, p := range []string{a, b} {
+		if err := os.WriteFile(p, []byte("text\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"comments", "add", "ID", "-f", a, "--file", b}, "")
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1; stderr %q", code, stderr)
+	}
+	if !strings.Contains(stderr, "only one file flag can be forwarded per command") {
+		t.Errorf("stderr lacks the refusal: %q", stderr)
+	}
+	if stdout != "" {
+		t.Errorf("host ran despite the refusal: %q", stdout)
+	}
+}
+
 func TestForwardUnreachableHostSaysSo(t *testing.T) {
 	remoteEnv(t)
 	cfg := &remoteConfig{Host: "unreachable"}
