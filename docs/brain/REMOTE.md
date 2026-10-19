@@ -31,8 +31,19 @@ all interfaces.)
 | host behaviour | the command runs through the host's own wrapper, so store pins, create-emit hooks and routing apply exactly as if you were typing at the host |
 | latency | one multiplexed ssh connection (`ControlMaster=auto`, `ControlPersist=10m`) is shared by every call, so a call costs one round trip plus the command, not a new handshake |
 
-Not preserved: **paths are host paths.** `task create -f body.md` reads `body.md`
-on the host, not on the client. Use `-f -` and pipe the file in.
+Not preserved: **paths are host paths**, except for the file flags below. Any
+other path argument is resolved on the host, so pipe the file in with `-f -`.
+
+The client reads a local file itself for these flags and sends its contents on
+stdin (a missing local file is reported on the client):
+
+- `--body-file` and `--description-file`, on any command.
+- `--file` and `-f`, on `comment`, `note` and `comments add`. For `comments add`
+  the file text replaces any typed text and is sent as the comment body.
+
+`create --file` (markdown batch) and `dep --file` (edge list) still take host
+paths. Forwarding two local file flags in one command is refused before anything
+is sent.
 
 ## Set up a client
 
@@ -131,8 +142,8 @@ call.
 
 - The login shell on the host must be sh-compatible for the outer command
   (bash, zsh, dash); everything after that runs under `/bin/sh -c`.
-- Commands that read client files by path (`-f path`, `--file path`) read the
-  host's files. Interactive editors (`bd edit`) work when a TTY is allocated.
+- File paths that are not in the list under "What is preserved" are read from
+  the host. Interactive editors (`bd edit`) work when a TTY is allocated.
 - The host's wrapper directory must be reachable by absolute path; the forward
   prepends it to `PATH` for the command, so wrappers that `exec bd` resolve even
   though a non-interactive ssh session has a minimal `PATH`.
