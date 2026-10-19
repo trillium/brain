@@ -24,10 +24,10 @@ host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
 locally once; BRAIN_REMOTE_HOST=&lt;target&gt; overrides the configured host. An
 exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
-A bare 'brain create|update|close|delete|import' with no BEADS_DIR and no .beads
-workspace from the working directory is refused rather than forwarded, so the
-host's default store never absorbs a write that named no store; reads and store
-commands ('task create') forward as always.
+A bare 'brain create|update|close|delete|import' is refused rather than forwarded
+unless BEADS_DIR is unset and a .beads workspace is found from the working
+directory, so the host's default store never absorbs a write that named no
+store; reads and store commands ('task create') forward as always.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 

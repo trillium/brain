@@ -282,11 +282,14 @@ func TestRemoteForwardingRefusesBareWritesWithoutWorkspace(t *testing.T) {
 	}
 	t.Setenv(envRemoteStore, "")
 
-	// A BEADS_DIR that is not a local project still names the store to use on
-	// the host (a thin client's wrapper sets one), so the write forwards.
+	// A BEADS_DIR that is not a local project cannot be honored on the host,
+	// which would answer through its default store, so the bare write is refused.
 	t.Setenv("BEADS_DIR", filepath.Join(t.TempDir(), ".beads"))
-	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); !active || err != nil {
-		t.Errorf("write with BEADS_DIR must forward: active=%v err=%v", active, err)
+	if _, _, active, err := remoteForwardingActive([]string{"create", "x"}); active || err == nil || err.Error() != noWorkspaceWriteMsg {
+		t.Errorf("write with non-project BEADS_DIR must refuse: active=%v err=%v", active, err)
+	}
+	if _, name, active, err := remoteForwardingActive([]string{"list"}); !active || err != nil || name != "brain" {
+		t.Errorf("read with non-project BEADS_DIR must forward: active=%v name=%q err=%v", active, name, err)
 	}
 	t.Setenv("BEADS_DIR", "")
 

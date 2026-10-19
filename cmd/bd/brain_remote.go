@@ -310,10 +310,10 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 		// A bare call names no store. The host answers it through its own
 		// 'brain' wrapper, so a write would land in whatever store that wrapper
 		// defaults to. Reads are harmless to forward; a write is refused unless
-		// something here says which store was meant: an exported BEADS_DIR
-		// (a local project already returned above; any other value forwards as
-		// before) or a .beads workspace found from the working directory.
-		if remoteWriteVerbs[remoteVerbName(args)] && os.Getenv("BEADS_DIR") == "" && beads.FindBeadsDir() == "" {
+		// something here says which store was meant: a .beads workspace found
+		// from the working directory. A BEADS_DIR reaching this point is not a
+		// local project, so the host cannot honor it and it names nothing.
+		if remoteWriteVerbs[remoteVerbName(args)] && (os.Getenv("BEADS_DIR") != "" || beads.FindBeadsDir() == "") {
 			return nil, "", false, errors.New(noWorkspaceWriteMsg)
 		}
 	}
@@ -1062,10 +1062,10 @@ host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
 locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host. An
 exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
-A bare 'brain create|update|close|delete|import' with no BEADS_DIR and no .beads
-workspace from the working directory is refused rather than forwarded, so the
-host's default store never absorbs a write that named no store; reads and store
-commands ('task create') forward as always.
+A bare 'brain create|update|close|delete|import' is refused rather than forwarded
+unless BEADS_DIR is unset and a .beads workspace is found from the working
+directory, so the host's default store never absorbs a write that named no
+store; reads and store commands ('task create') forward as always.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.`,
 	Annotations: map[string]string{"brain-remote": "1"},
