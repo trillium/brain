@@ -50,12 +50,9 @@ interfaces; the design must not depend on that or worsen it).
 - Escape hatches: `BRAIN_REMOTE=off`, `BRAIN_REMOTE_HOST`, and a local
   `BEADS_DIR` (see `docs/brain/REMOTE.md`). The host side of every
   forward runs with `BRAIN_REMOTE=off`, so forwarding cannot loop.
-- A bare `brain`/`bd` write (`create`, `update`, `close`, `delete`, `import`,
-  or an alias) is refused rather than forwarded when `BEADS_DIR` is set to a
-  non-project path, or when it is unset and no `.beads` workspace is found from
-  cwd (`no beads workspace here; set BEADS_DIR or BRAIN_REMOTE=off`): nothing
-  the host can honor named a store, so the host's default store would absorb
-  it. Reads and store wrappers forward as before.
+- A bare write with no store named is never forwarded: the host's default
+  store would absorb it. It runs locally or is refused. The rule is owned by
+  `docs/brain/REMOTE.md`.
 
 # Decisions
 
