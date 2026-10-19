@@ -3206,7 +3206,7 @@ Bootstrap auto-detects the right action:
   • If git origin has Dolt data (refs/dolt/data): clones from git and wires origin for future push/pull
   • If .beads/backup/*.jsonl exists: restores from backup
   • If .beads/issues.jsonl exists: imports from git-tracked JSONL
-  • If no database exists: creates a fresh one
+  • If no database exists: creates a fresh one (embedded stores only; dolt_mode=server stores are refused)
   • If database already exists: validates and reports status
 
 This is the recommended command for:
