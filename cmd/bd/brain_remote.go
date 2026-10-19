@@ -35,6 +35,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/beads"
 	"golang.org/x/term"
 	"gopkg.in/yaml.v3"
 )
@@ -259,6 +260,11 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 	// 'brain remote …' and 'brain host …' configure or manage this machine and
 	// always run here.
 	if name == "" && len(args) > 0 && (args[0] == "remote" || args[0] == "host") {
+		return nil, "", false, nil
+	}
+	// An explicit BEADS_DIR naming a local beads project wins over the client
+	// config in HOME, so the store it names is opened here instead of forwarded.
+	if beads.ExplicitBeadsDir() != "" {
 		return nil, "", false, nil
 	}
 	cfg, err = loadRemoteConfig()
@@ -1014,7 +1020,8 @@ Once a host is set, 'brain …' and every installed store command ('task create'
 'inbox list', …) run the same command line on the host over ssh, through the
 host's own wrappers, with arguments, stdin, TTY and exit code preserved. The
 Dolt server is never reached over the network. BRAIN_REMOTE=off runs a command
-locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host.
+locally once; BRAIN_REMOTE_HOST=<target> overrides the configured host. An
+exported BEADS_DIR that names a local beads project also runs locally, unforwarded.
 
 Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.`,
 	Annotations: map[string]string{"brain-remote": "1"},
