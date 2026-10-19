@@ -193,6 +193,44 @@ func TestRemoteForwardingActive(t *testing.T) {
 	}
 }
 
+// An explicit BEADS_DIR naming a local beads project must win over a client
+// config in HOME: the store it names is opened here, not forwarded to the host.
+func TestRemoteForwardingYieldsToLocalBeadsDir(t *testing.T) {
+	remoteEnv(t)
+	if err := saveRemoteConfig(&remoteConfig{Host: "me@host"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Not set: the client config forwards as before.
+	t.Setenv("BEADS_DIR", "")
+	if _, _, active, _ := remoteForwardingActive([]string{"list"}); !active {
+		t.Fatal("no BEADS_DIR must still forward")
+	}
+
+	// Set to a directory without project files: not a local store, still forwards.
+	empty := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(empty, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", empty)
+	if _, _, active, _ := remoteForwardingActive([]string{"list"}); !active {
+		t.Fatal("BEADS_DIR without project files must still forward")
+	}
+
+	// Set to a local beads project: runs here.
+	local := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(local, 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "metadata.json"), []byte("{}"), 0o644); err != nil { //nolint:gosec // test file
+		t.Fatal(err)
+	}
+	t.Setenv("BEADS_DIR", local)
+	if _, _, active, err := remoteForwardingActive([]string{"list"}); active || err != nil {
+		t.Fatalf("BEADS_DIR with a local project must not forward: active=%v err=%v", active, err)
+	}
+}
+
 // hostTask installs a fake "task" command on the fake host. It prints each
 // argument in brackets, echoes stdin, reports whether it was told not to
 // forward onward, and exits with the status named by $TASK_EXIT or 7.

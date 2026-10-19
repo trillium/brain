@@ -669,6 +669,22 @@ func hasBeadsDatabase(beadsDir string) bool {
 	return false
 }
 
+// ExplicitBeadsDir returns the canonical BEADS_DIR when it names an existing
+// beads project (same checks as step 1 of FindBeadsDir), or "" otherwise.
+// It does not walk the filesystem, so callers can ask whether an explicit
+// store was requested before any other resolution runs.
+func ExplicitBeadsDir() string {
+	beadsDir := os.Getenv("BEADS_DIR")
+	if beadsDir == "" {
+		return ""
+	}
+	absBeadsDir := FollowRedirect(canonicalizeBeadsDirPath(beadsDir))
+	if info, err := os.Stat(absBeadsDir); err == nil && info.IsDir() && hasBeadsProjectFiles(absBeadsDir) {
+		return absBeadsDir
+	}
+	return ""
+}
+
 // FindBeadsDir finds the .beads/ directory in the current directory tree.
 // Returns empty string if not found.
 //
