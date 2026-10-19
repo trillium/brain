@@ -29,6 +29,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -316,10 +317,6 @@ func forwardRemote(cfg *remoteConfig, name string, args []string, tty bool, stdi
 		return 1
 	}
 	if payload != nil {
-		if stdinCarriesInput(stdin) {
-			fmt.Fprintf(stderr, "brain: this command reads its text from a file, but stdin is also piped in; pipe one or the other\n")
-			return 1
-		}
 		spool, err := spoolStdin(payload)
 		if err != nil {
 			fmt.Fprintf(stderr, "brain: %v\n", err)
@@ -402,58 +399,83 @@ func localFileFlag(flag, cmd, sub string) bool {
 	return false
 }
 
-// stdinCarriesInput reports whether the caller's stdin holds input that a staged
-// payload would replace: a pipe, or a regular file with bytes in it. A terminal
-// and a character device such as /dev/null carry none.
-func stdinCarriesInput(f *os.File) bool {
-	if fdIsTerminal(f) {
+// takesValue reports whether arg, a flag as typed, names a flag of cmd (its own,
+// persistent, or inherited from a parent) that takes a value.
+func takesValue(cmd *cobra.Command, arg string) bool {
+	if long, ok := strings.CutPrefix(arg, "--"); ok {
+		f := cmd.Flags().Lookup(long)
+		if f == nil {
+			f = cmd.PersistentFlags().Lookup(long)
+		}
+		if f == nil {
+			f = cmd.InheritedFlags().Lookup(long)
+		}
+		return f != nil && f.NoOptDefVal == ""
+	}
+	if len(arg) != 2 {
 		return false
 	}
-	fi, err := f.Stat()
-	switch {
-	case err != nil:
-		return false
-	case fi.Mode().IsRegular():
-		return fi.Size() > 0
-	default:
-		return fi.Mode()&os.ModeCharDevice == 0
+	f := cmd.Flags().ShorthandLookup(arg[1:])
+	if f == nil {
+		f = cmd.PersistentFlags().ShorthandLookup(arg[1:])
 	}
+	if f == nil {
+		f = cmd.InheritedFlags().ShorthandLookup(arg[1:])
+	}
+	return f != nil && f.NoOptDefVal == ""
 }
 
-// rootValueFlag reports whether arg is a root persistent flag that takes a
-// value, such as --actor, -C or --db, so the word after it is that value.
-func rootValueFlag(arg string) bool {
-	flags := rootCmd.PersistentFlags()
-	if name, ok := strings.CutPrefix(arg, "--"); ok {
-		f := flags.Lookup(name)
-		return f != nil && f.NoOptDefVal == ""
+// positionalArgs returns the indexes of args that are positional words rather
+// than flags or flag values. takes reports whether a flag word takes the next
+// word as its value. Everything after "--" is positional.
+func positionalArgs(args []string, takes func(string) bool) []int {
+	var pos []int
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--":
+			for j := i + 1; j < len(args); j++ {
+				pos = append(pos, j)
+			}
+			return pos
+		case a == "-" || !strings.HasPrefix(a, "-"):
+			pos = append(pos, i)
+		case !strings.Contains(a, "=") && takes(a):
+			i++
+		}
 	}
-	if len(arg) == 2 {
-		f := flags.ShorthandLookup(arg[1:])
-		return f != nil && f.NoOptDefVal == ""
-	}
-	return false
+	return pos
 }
 
 // commandWords returns the command and subcommand words of args. Root flags
 // that take a value may come before them, so their values are skipped.
 func commandWords(args []string) (cmd, sub string) {
-	var words []string
-	for i := 0; i < len(args) && len(words) < 2; i++ {
-		a := args[i]
-		if !strings.HasPrefix(a, "-") {
-			words = append(words, a)
-		} else if !strings.Contains(a, "=") && rootValueFlag(a) {
-			i++
-		}
+	pos := positionalArgs(args, func(a string) bool { return takesValue(rootCmd, a) })
+	if len(pos) > 0 {
+		cmd = args[pos[0]]
 	}
-	if len(words) > 0 {
-		cmd = words[0]
-	}
-	if len(words) > 1 {
-		sub = words[1]
+	if len(pos) > 1 {
+		sub = args[pos[1]]
 	}
 	return cmd, sub
+}
+
+// splitFlag separates a flag word into its name and inline value. The combined
+// short form -f<path> splits after the f, as -f=<path> does.
+func splitFlag(a string) (name, value string, inline bool) {
+	name = a
+	if j := strings.IndexByte(a, '='); j > 0 && strings.HasPrefix(a, "-") {
+		name, value, inline = a[:j], a[j+1:], true
+	}
+	if strings.HasPrefix(a, "-f") && len(a) > 2 && a[2] != '=' {
+		name, value, inline = "-f", a[2:], true
+	}
+	return name, value, inline
+}
+
+func isFileFlagWord(a string) bool {
+	name, _, _ := splitFlag(a)
+	return name == "--file" || name == "-f"
 }
 
 // localFileFlags rewrites a forwarded command so that no local file path reaches
@@ -464,6 +486,11 @@ func commandWords(args []string) (cmd, sub string) {
 // and passes through unchanged.
 func localFileFlags(args []string) (rewritten []string, payload io.Reader, err error) {
 	cmd, sub := commandWords(args)
+	if cmd == "comments" && sub == "add" && slices.ContainsFunc(args, isFileFlagWord) {
+		if pos := positionalArgs(args, func(a string) bool { return takesValue(commentsAddCmd, a) }); len(pos) > 3 {
+			args = slices.Delete(slices.Clone(args), pos[3], pos[3]+1)
+		}
+	}
 
 	out := make([]string, 0, len(args))
 	var tail []string
@@ -476,13 +503,7 @@ func localFileFlags(args []string) (rewritten []string, payload io.Reader, err e
 			break
 		}
 		start := i
-		name, value, inline := a, "", false
-		if j := strings.IndexByte(a, '='); j > 0 && strings.HasPrefix(a, "-") {
-			name, value, inline = a[:j], a[j+1:], true
-		}
-		if strings.HasPrefix(a, "-f") && len(a) > 2 && a[2] != '=' {
-			name, value, inline = "-f", a[2:], true
-		}
+		name, value, inline := splitFlag(a)
 		if !strings.HasPrefix(a, "-") || !localFileFlag(name, cmd, sub) || (!inline && i+1 == len(args)) {
 			out = append(out, a)
 			continue
@@ -499,7 +520,7 @@ func localFileFlags(args []string) (rewritten []string, payload io.Reader, err e
 		if rerr != nil {
 			return nil, nil, fmt.Errorf("reading %s %s: %w", name, value, rerr)
 		}
-		if cmd == "comments" {
+		if cmd == "comments" && sub == "add" && isFileFlagWord(a) {
 			tail = append(tail, "--", string(data))
 			continue
 		}

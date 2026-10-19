@@ -293,6 +293,8 @@ func TestLocalFileFlagsRewriteOnlyTextFileFlags(t *testing.T) {
 		{"root --actor before the command", []string{"--actor", "me", "comment", "ID", "--file", path}, []string{"--actor", "me", "comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"root -C before the command", []string{"-C", dir, "comment", "ID", "--file", path}, []string{"-C", dir, "comment", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"comments add combined -f<path>", []string{"comments", "add", "ID", "-f" + path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"comments add file replaces typed text", []string{"comments", "add", "ID", "typed", "-f", path}, []string{"comments", "add", "ID", "--", "it's \"quoted\"\n"}, "<none>"},
+		{"comments list --body-file is not a comment body", []string{"comments", "list", "--body-file", path}, []string{"comments", "list", "--body-file", "-"}, "it's \"quoted\"\n"},
 		{"note --file=", []string{"note", "ID", "--file=" + path}, []string{"note", "ID", "--file", "-"}, "it's \"quoted\"\n"},
 		{"comments add -f goes inline", []string{"comments", "add", "ID", "-f", path, "--author", "me"}, []string{"comments", "add", "ID", "--author", "me", "--", "it's \"quoted\"\n"}, "<none>"},
 		{"create --file is a markdown batch", []string{"create", "--file", "batch.md"}, []string{"create", "--file", "batch.md"}, "<none>"},
@@ -334,7 +336,8 @@ func TestForwardSendsLocalFileContentOnStdin(t *testing.T) {
 	if err := os.WriteFile(local, []byte("line 1\nit's \"quoted\" $HOME\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "")
+	// The caller's own stdin must not leak in; the file's bytes are the input.
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "caller stdin")
 	if code != 7 {
 		t.Errorf("exit code = %d, want 7 (the host command's status); stderr %q", code, stderr)
 	}
@@ -349,24 +352,21 @@ func TestForwardSendsLocalFileContentOnStdin(t *testing.T) {
 	}
 }
 
-func TestForwardRefusesFileFlagWhenStdinIsPiped(t *testing.T) {
+func TestForwardCommentsAddFileWinsOverTypedText(t *testing.T) {
 	_, hostBin := remoteEnv(t)
 	hostTask(t, hostBin)
 	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
 
-	local := filepath.Join(t.TempDir(), "body.md")
-	if err := os.WriteFile(local, []byte("file text\n"), 0o600); err != nil {
+	local := filepath.Join(t.TempDir(), "notes.md")
+	if err := os.WriteFile(local, []byte("file text"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code := runForward(t, cfg, "task", []string{"stdin", "--body-file", local}, "piped input")
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
+	stdout, _, _ := runForward(t, cfg, "task", []string{"comments", "add", "ID", "typed", "-f", local}, "")
+	if !strings.Contains(stdout, "[ID]\n[--]\n[file text]\n") {
+		t.Errorf("host did not receive the file text as the comment body: %q", stdout)
 	}
-	if stdout != "" {
-		t.Errorf("host ran despite conflicting stdin: %q", stdout)
-	}
-	if !strings.Contains(stderr, "stdin is also piped in") {
-		t.Errorf("stderr = %q, want a refusal naming the piped stdin", stderr)
+	if strings.Contains(stdout, "[typed]") {
+		t.Errorf("typed text reached the host alongside the file: %q", stdout)
 	}
 }
 
