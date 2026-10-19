@@ -403,6 +403,7 @@ func localFileForForward(args []string) ([]string, *os.File, error) {
 		command = out[0]
 	}
 	var file *os.File
+	stdinClaimed := false
 	for i := 0; i < len(out); i++ {
 		if out[i] == "--" {
 			break
@@ -422,12 +423,13 @@ func localFileForForward(args []string) ([]string, *os.File, error) {
 			valueAt = i + 1
 			value = out[valueAt]
 		}
+		if stdinClaimed {
+			return nil, nil, fmt.Errorf("only one of --body-file, --description-file and --file can be sent to the brain host")
+		}
+		stdinClaimed = true
 		if value == "-" {
 			i = valueAt
 			continue // already stdin, which is relayed as usual
-		}
-		if file != nil {
-			return nil, nil, fmt.Errorf("only one of --body-file, --description-file and --file can be sent to the brain host")
 		}
 		f, err := os.Open(value) //nolint:gosec // the user's own path, read here and never interpreted by a shell
 		if err != nil {

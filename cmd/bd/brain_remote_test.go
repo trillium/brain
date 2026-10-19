@@ -583,3 +583,29 @@ func TestForwardRejectsLocalFileFlagsTheHostCannotRead(t *testing.T) {
 		}
 	}
 }
+
+func TestForwardRejectsExplicitStdinCombinedWithLocalFile(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	hostEchoBody(t, hostBin)
+	cfg := &remoteConfig{Host: "me@host", BinDir: hostBin}
+	local := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(local, []byte("plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{
+		{"create", "t", "--body-file", "-", "--description-file", local},
+		{"create", "t", "--description-file", local, "--body-file", "-"},
+	} {
+		stdout, stderr, code := runForward(t, cfg, "task", args, "piped\n")
+		if code == 0 {
+			t.Errorf("%v: stdin and a local file must not both be sent", args)
+		}
+		if stdout != "" {
+			t.Errorf("%v: nothing should run on the host: %q", args, stdout)
+		}
+		if !strings.Contains(stderr, "only one of") {
+			t.Errorf("%v: stderr should name the single-stdin limit: %q", args, stderr)
+		}
+	}
+}
