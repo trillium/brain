@@ -225,6 +225,25 @@ const (
 	DefaultDoltRemotesAPIPort = 8080 // Default dolt remotesapi port for federation
 )
 
+// CheckEmbeddedCreateAllowed returns an error when the store at beadsDir pins
+// dolt_mode=server in metadata.json. Every site that would create
+// .beads/embeddeddolt calls it first: an embedded database created inside a
+// server-mode store is a shadow copy that later writes fragment into
+// (robots-ucj59). A missing or unreadable metadata.json does not block.
+func CheckEmbeddedCreateAllowed(beadsDir string) error {
+	cfg, err := Load(beadsDir)
+	if err != nil || cfg == nil {
+		return nil
+	}
+	if strings.EqualFold(cfg.DoltMode, DoltModeServer) {
+		return fmt.Errorf("refusing to create embedded Dolt database under %s: "+
+			".beads/metadata.json has dolt_mode=server, so this store is server-backed; "+
+			"connect to its dolt server instead of creating .beads/embeddeddolt",
+			beadsDir)
+	}
+	return nil
+}
+
 // IsDoltServerMode returns true if Dolt should connect via sql-server.
 // Server mode is the standard connection method.
 //

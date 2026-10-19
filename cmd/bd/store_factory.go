@@ -71,6 +71,9 @@ func acquireEmbeddedLock(beadsDir string, serverMode bool) (util.Unlocker, error
 	if serverMode {
 		return util.NoopLock{}, nil
 	}
+	if err := configfile.CheckEmbeddedCreateAllowed(beadsDir); err != nil {
+		return nil, err
+	}
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")
 	lock, err := util.TryLock(filepath.Join(dataDir, ".lock"))
 	if err != nil {

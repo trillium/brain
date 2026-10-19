@@ -106,7 +106,7 @@ Bootstrap auto-detects the right action:
   • If git origin has Dolt data (refs/dolt/data): clones from git and wires origin for future push/pull
   • If .beads/backup/*.jsonl exists: restores from backup
   • If .beads/issues.jsonl exists: imports from git-tracked JSONL
-  • If no database exists: creates a fresh one
+  • If no database exists: creates a fresh one (embedded stores only; dolt_mode=server stores are refused)
   • If database already exists: validates and reports status
 
 This is the recommended command for:
@@ -291,7 +291,7 @@ func detectBootstrapAction(beadsDir string, cfg *configfile.Config) BootstrapPla
 	// (metadata.json, env vars, and the target config.yaml when present) rather
 	// than unrelated global config loaded from the caller's current repo.
 	isSharedServer := bootstrapSharedServerMode(beadsDir)
-	isServer := cfg.IsDoltServerMode() || isSharedServer
+	isServer := bootstrapServerMode(beadsDir, cfg)
 
 	// Check sync.remote (primary) or sync.git-remote (deprecated fallback)
 	syncRemote := resolveSyncRemote()
@@ -420,6 +420,10 @@ func bootstrapSharedServerMode(beadsDir string) bool {
 	return strings.EqualFold(config.GetStringFromDir(beadsDir, "dolt.shared-server"), "true")
 }
 
+func bootstrapServerMode(beadsDir string, cfg *configfile.Config) bool {
+	return cfg.IsDoltServerMode() || bootstrapSharedServerMode(beadsDir)
+}
+
 func bootstrapServerDoltDir(beadsDir string, cfg *configfile.Config, isSharedServer bool) string {
 	if isSharedServer {
 		if dir, err := doltserver.SharedDoltDir(); err == nil {
@@ -519,6 +523,11 @@ func executeBootstrapPlan(plan BootstrapPlan, cfg *configfile.Config, nonInterac
 	}
 
 	ctx := context.Background()
+
+	if plan.Action != "sync" && bootstrapServerMode(plan.BeadsDir, cfg) {
+		return fmt.Errorf("refusing to create embedded Dolt database under %s: bootstrap resolved server mode for this store; "+
+			"connect to its dolt server instead of creating .beads/embeddeddolt", plan.BeadsDir)
+	}
 
 	switch plan.Action {
 	case "sync":
@@ -636,7 +645,11 @@ func executeSyncAction(ctx context.Context, plan BootstrapPlan, cfg *configfile.
 	}
 
 	dbName := cfg.GetDoltDatabase()
-	if err := cloneFromRemote(ctx, plan.BeadsDir, plan.SyncRemote, dbName, cfg); err != nil {
+	cloneMode := remoteCloneAuto
+	if bootstrapServerMode(plan.BeadsDir, cfg) {
+		cloneMode = remoteCloneExternalServer
+	}
+	if err := cloneFromRemoteWithMode(ctx, plan.BeadsDir, plan.SyncRemote, dbName, cfg, cloneMode); err != nil {
 		return err
 	}
 
@@ -836,6 +849,9 @@ func resolveRemoteCloneMode(beadsDir string, cfg *configfile.Config, cloneMode r
 
 // cloneViaEmbedded clones using the embedded Dolt engine (CGO required).
 func cloneViaEmbedded(ctx context.Context, beadsDir, remoteURL, dbName string) error {
+	if err := configfile.CheckEmbeddedCreateAllowed(beadsDir); err != nil {
+		return err
+	}
 	dataDir := filepath.Join(beadsDir, "embeddeddolt")
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return fmt.Errorf("create embeddeddolt directory: %w", err)
