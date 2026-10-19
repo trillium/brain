@@ -47,7 +47,8 @@ interfaces; the design must not depend on that or worsen it).
   store, and writes a marker-tagged client wrapper per store; it never replaces
   an unmarked file without `--force`, never writes `bd`, and reports PATH
   shadowing.
-- Escape hatches: `BRAIN_REMOTE=off`, `BRAIN_REMOTE_HOST`. The host side of every
+- Escape hatches: `BRAIN_REMOTE=off`, `BRAIN_REMOTE_HOST`, and a local
+  `BEADS_DIR` (see `docs/brain/REMOTE.md`). The host side of every
   forward runs with `BRAIN_REMOTE=off`, so forwarding cannot loop.
 
 # Decisions

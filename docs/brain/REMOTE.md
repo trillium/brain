@@ -92,6 +92,9 @@ the host itself) simply has no `remote.yaml` and runs locally.
 
 - `BRAIN_REMOTE=off task list` runs one command against a local database.
 - `BRAIN_REMOTE_HOST=other@host brain status` points one command at another host.
+- An exported `BEADS_DIR` that names a local beads project (a directory with
+  project files) wins over `remote.yaml`: the command runs against that store
+  here and is not forwarded. An unset or non-project `BEADS_DIR` still forwards.
 - `brain remote disconnect` closes the shared connection; the next call reopens it.
 - `brain remote unset` removes the configuration. Wrappers stay but have no host.
 - Unreachable host: the call fails with `brain: cannot reach the brain host …`
