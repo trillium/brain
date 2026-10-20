@@ -5,12 +5,17 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
@@ -344,58 +349,150 @@ func TestPatch(t *testing.T) {
 	// Documented two-step mint: create (which persists a title-derived
 	// metadata.brain_slug), then patch the slug column. Both fields must
 	// hold the patched slug, and sibling metadata keys must survive.
+	//
+	// The slug write is one raw UPDATE. The embedded store does not
+	// implement RawDBAccessor, and brain runs on dolt sql-server, so this
+	// case uses its own server instead of the embedded workspace above.
 	t.Run("two_step_mint_slug_patch_syncs_brain_slug", func(t *testing.T) {
-		// The slug write needs raw DB access, which the embedded store does
-		// not expose. Brain stores run in server mode, so this case needs a
-		// server-mode fixture before it can run.
-		t.Skip("slug patch requires raw DB access; the embedded store does not expose it")
 		const want = "canonical-ship-slug"
-		issue := bdCreate(t, bd, dir, "Ship The Thing", "--type", "isa")
+		port := startPatchDoltServer(t)
+		srvDir := t.TempDir()
+		initGitRepoAt(t, srvDir)
+		runBDInit(t, bd, srvDir,
+			"--skip-hooks", "--skip-agents",
+			"--server", "--external",
+			"--server-host", "127.0.0.1",
+			"--server-port", fmt.Sprintf("%d", port),
+			"--server-user", "root",
+			"--database", "slugpatch",
+			"--prefix", "sp",
+		)
+		issue := bdCreate(t, bd, srvDir, "Ship The Thing", "--type", "isa")
+		db := openPatchServerDB(t, port, "slugpatch")
 
-		withTestDB(t, beadsDir, func(db *sql.DB) {
-			_, brainSlug, meta := readSlugAndMetadata(t, db, issue.ID)
-			if brainSlug == "" {
-				brainSlug = "ship-the-thing"
-			}
-			if brainSlug == want {
-				t.Fatalf("mint stored %q before the slug patch; the case would not show divergence", want)
-			}
-			meta["brain_slug"] = brainSlug
-			meta["keep"] = "yes"
-			raw, err := json.Marshal(meta)
-			if err != nil {
-				t.Fatalf("marshal seeded metadata: %v", err)
-			}
-			if _, err := db.ExecContext(t.Context(),
-				"UPDATE issues SET metadata = ? WHERE id = ?",
-				string(raw), issue.ID,
-			); err != nil {
-				t.Fatalf("seed metadata: %v", err)
-			}
-		})
+		_, brainSlug, meta := readSlugAndMetadata(t, db, issue.ID)
+		if brainSlug == "" {
+			brainSlug = "ship-the-thing"
+		}
+		if brainSlug == want {
+			t.Fatalf("mint stored %q before the slug patch; the case would not show divergence", want)
+		}
+		meta["brain_slug"] = brainSlug
+		meta["keep"] = "yes"
+		raw, err := json.Marshal(meta)
+		if err != nil {
+			t.Fatalf("marshal seeded metadata: %v", err)
+		}
+		if _, err := db.ExecContext(t.Context(),
+			"UPDATE issues SET metadata = ? WHERE id = ?",
+			string(raw), issue.ID,
+		); err != nil {
+			t.Fatalf("seed metadata: %v", err)
+		}
+		_, beforeUpdated := readISAColumns(t, db, issue.ID)
 
-		bdPatchOK(t, bd, dir, issue.ID, "--field", "slug", "--value", want)
+		bdPatchOK(t, bd, srvDir, issue.ID, "--field", "slug", "--value", want)
 
-		withTestDB(t, beadsDir, func(db *sql.DB) {
-			slug, brainSlug, meta := readSlugAndMetadata(t, db, issue.ID)
-			if slug != want {
-				t.Errorf("slug column = %q, want %q", slug, want)
-			}
-			if brainSlug != want {
-				t.Errorf("metadata.brain_slug = %q, want %q", brainSlug, want)
-			}
-			if slug != brainSlug {
-				t.Errorf("slug column %q and metadata.brain_slug %q diverged", slug, brainSlug)
-			}
-			if keep, _ := meta["keep"].(string); keep != "yes" {
-				t.Errorf("sibling metadata key keep = %#v, want %q", meta["keep"], "yes")
-			}
-			_, updated := readISAColumns(t, db, issue.ID)
-			if updated.Valid {
-				t.Errorf("slug patch touched isa_updated_at: %v", updated.Time)
-			}
-		})
+		slug, gotBrain, gotMeta := readSlugAndMetadata(t, db, issue.ID)
+		if slug != want {
+			t.Errorf("slug column = %q, want %q", slug, want)
+		}
+		if gotBrain != want {
+			t.Errorf("metadata.brain_slug = %q, want %q", gotBrain, want)
+		}
+		if slug != gotBrain {
+			t.Errorf("slug column %q and metadata.brain_slug %q diverged", slug, gotBrain)
+		}
+		if keep, _ := gotMeta["keep"].(string); keep != "yes" {
+			t.Errorf("sibling metadata key keep = %#v, want %q", gotMeta["keep"], "yes")
+		}
+		_, afterUpdated := readISAColumns(t, db, issue.ID)
+		if beforeUpdated.Valid != afterUpdated.Valid || (beforeUpdated.Valid && !beforeUpdated.Time.Equal(afterUpdated.Time)) {
+			t.Errorf("slug patch changed isa_updated_at from %v to %v", beforeUpdated, afterUpdated)
+		}
 	})
+}
+
+// startPatchDoltServer starts a scratch dolt sql-server and returns its port.
+// The process is stopped when the test ends. Skips when the dolt binary is absent.
+func startPatchDoltServer(t *testing.T) int {
+	t.Helper()
+	if _, err := exec.LookPath("dolt"); err != nil {
+		t.Skip("dolt binary not on PATH")
+	}
+	listen, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("pick port: %v", err)
+	}
+	port := listen.Addr().(*net.TCPAddr).Port
+	if err := listen.Close(); err != nil {
+		t.Fatalf("close probe listener: %v", err)
+	}
+
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	env := doltServerEnv(root)
+	initCmd := exec.Command("dolt", "init", "--name", "slug-patch-test", "--email", "slug-patch@test.invalid")
+	initCmd.Dir, initCmd.Env = dataDir, env
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("dolt init: %v\n%s", err, out)
+	}
+	srv := exec.Command("dolt", "sql-server", "--host", "127.0.0.1", fmt.Sprintf("--port=%d", port), "--loglevel=error")
+	srv.Dir, srv.Env = dataDir, env
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start dolt sql-server: %v", err)
+	}
+	t.Cleanup(func() {
+		if srv.Process != nil {
+			_ = srv.Process.Signal(syscall.SIGTERM)
+			_ = srv.Wait()
+		}
+	})
+
+	dsn := fmt.Sprintf("root@tcp(127.0.0.1:%d)/", port)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := sql.Open("mysql", dsn)
+		if err == nil {
+			var one int
+			qerr := c.QueryRow("SELECT 1").Scan(&one)
+			_ = c.Close()
+			if qerr == nil && one == 1 {
+				return port
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatal("dolt sql-server not ready in 30s")
+	return 0
+}
+
+func doltServerEnv(root string) []string {
+	env := make([]string, 0, len(os.Environ())+1)
+	for _, e := range os.Environ() {
+		if strings.HasPrefix(e, "DOLT_ROOT_PATH=") || strings.HasPrefix(e, "BEADS_") {
+			continue
+		}
+		env = append(env, e)
+	}
+	return append(env, "DOLT_ROOT_PATH="+root)
+}
+
+func openPatchServerDB(t *testing.T, port int, database string) *sql.DB {
+	t.Helper()
+	dsn := fmt.Sprintf("root@tcp(127.0.0.1:%d)/%s?parseTime=true", port, database)
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("open server db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.PingContext(t.Context()); err != nil {
+		t.Fatalf("ping server db: %v", err)
+	}
+	return db
 }
 
 // readSlugAndMetadata returns the slug column, metadata.brain_slug, and the
