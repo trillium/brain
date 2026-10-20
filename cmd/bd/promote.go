@@ -31,12 +31,6 @@ Examples:
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// `brain promote` is the recast hint. `bd promote` graduates wisps.
-		// See brain_promote.go and WHAT_IS_BRAIN.md § 4.4.
-		if invokedAsBrain() {
-			return brainPromoteHint()
-		}
-
 		CheckReadonly("promote")
 
 		evt := metrics.NewCommandEvent("promote")
