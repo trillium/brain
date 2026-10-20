@@ -414,11 +414,11 @@ func TestPatch(t *testing.T) {
 }
 
 // startPatchDoltServer starts a scratch dolt sql-server and returns its port.
-// The process is stopped when the test ends. Skips when the dolt binary is absent.
+// The process is stopped when the test ends. Fails when the dolt binary is absent.
 func startPatchDoltServer(t *testing.T) int {
 	t.Helper()
 	if _, err := exec.LookPath("dolt"); err != nil {
-		t.Skip("dolt binary not on PATH")
+		t.Fatalf("dolt binary not on PATH: %v", err)
 	}
 	listen, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
