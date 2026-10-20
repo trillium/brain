@@ -294,4 +294,49 @@ func TestPatch(t *testing.T) {
 			}
 		})
 	})
+
+	// description and body share storage. A --body-file write followed by
+	// patch --field=description must refuse and leave the body intact.
+	t.Run("description_patch_refuses_to_replace_body_file", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Body clobber guard", "--type", "task")
+		const marker = "The rest of the body must survive a description patch."
+		body := "Opening relevance.\n\n" + marker + "\n"
+		bodyFile := filepath.Join(t.TempDir(), "body.md")
+		if err := os.WriteFile(bodyFile, []byte(body), 0o644); err != nil {
+			t.Fatalf("write body file: %v", err)
+		}
+		bdUpdate(t, bd, dir, issue.ID, "--body-file", bodyFile)
+
+		const shortLine = "short relevance line"
+		out := bdPatchFail(t, bd, dir, 2, issue.ID, "--field", "description", "--value", shortLine)
+		for _, want := range []string{"opening sentence", "body-file", "share storage"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("refusal output missing %q:\n%s", want, out)
+			}
+		}
+
+		got := bdShow(t, bd, dir, issue.ID)
+		if !strings.Contains(got.Description, marker) {
+			t.Errorf("body was clobbered: got %q", got.Description)
+		}
+		if strings.TrimSpace(got.Description) == shortLine {
+			t.Errorf("description patch replaced the body with %q", shortLine)
+		}
+	})
+
+	// An empty body is not a replace. The description patch may set it.
+	t.Run("description_patch_sets_empty_body", func(t *testing.T) {
+		issue := bdCreate(t, bd, dir, "Empty body description patch", "--type", "task")
+		before := bdShow(t, bd, dir, issue.ID)
+		if strings.TrimSpace(before.Description) != "" {
+			t.Fatalf("expected a new issue to start with an empty body, got %q", before.Description)
+		}
+
+		const line = "first description line"
+		bdPatchOK(t, bd, dir, issue.ID, "--field", "description", "--value", line)
+		got := bdShow(t, bd, dir, issue.ID)
+		if got.Description != line {
+			t.Errorf("description = %q, want %q", got.Description, line)
+		}
+	})
 }

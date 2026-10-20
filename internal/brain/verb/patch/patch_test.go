@@ -169,6 +169,41 @@ func TestIsISAField(t *testing.T) {
 	}
 }
 
+// TestDescriptionBodyReplaceError pins the clobber guard: a non-empty body
+// must be refused, and the message must point at the opening-sentence edit
+// and at bd update --body-file. A blank body is not a replace.
+func TestDescriptionBodyReplaceError(t *testing.T) {
+	if err := DescriptionBodyReplaceError(""); err != nil {
+		t.Fatalf("empty body should allow a description patch, got %v", err)
+	}
+	if err := DescriptionBodyReplaceError(" \n\t"); err != nil {
+		t.Fatalf("whitespace body should allow a description patch, got %v", err)
+	}
+
+	body := "Opening relevance.\n\nThe rest of the body must survive.\n"
+	err := DescriptionBodyReplaceError(body)
+	if err == nil {
+		t.Fatal("expected a non-empty body to refuse a description patch")
+	}
+	var verr *ValidationError
+	if !errors.As(err, &verr) {
+		t.Fatalf("expected *ValidationError, got %T", err)
+	}
+	if verr.Field != FieldDescription {
+		t.Errorf("field = %q, want %q", verr.Field, FieldDescription)
+	}
+	for _, want := range []string{
+		"share storage",
+		"opening sentence",
+		"not a separate patch",
+		"bd update <id> --body-file <path>",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q missing %q", err.Error(), want)
+		}
+	}
+}
+
 // TestWrongKindError confirms the surfaced message contains the exact
 // substring "only valid for kind=isa" — embedded tests grep for this.
 func TestWrongKindError(t *testing.T) {

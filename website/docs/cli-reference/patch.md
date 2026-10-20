@@ -26,6 +26,12 @@ isa_updated_at.
 Non-ISA, non-slug fields are routed to 'bd update' validation; if your
 field is not in the patch allowlist, use 'bd update' instead.
 
+description and body are the same stored field. patch --field=description
+refuses when that field already has content, because the patch would
+replace the whole body. To add a short relevance line, make it the opening
+sentence of the body. To replace the body, use
+'bd update &lt;id&gt; --body-file &lt;path&gt;'.
+
 Examples:
   bd patch isa-001 --field isa_phase --value BUILD
   bd patch isa-001 --field isa_progress_m --value 7
