@@ -156,7 +156,7 @@ Examples:
   brain recast B-a7b3c --to=task --json
 
 ```
-bd brain recast <id> [flags]
+bd recast <id> [flags]
 ```
 
 **Flags:**
@@ -186,13 +186,13 @@ and prevents an explosion at common hub nodes; a future
 "--bidirectional" flag is conceivable but not in scope.
 
 Examples:
-  bd brain related B-a7b3c
-  bd brain related B-a7b3c --depth=3
-  bd brain related B-a7b3c --depth=0      # print the center alone
-  bd brain related B-a7b3c --json         # machine-readable tree
+  brain related B-a7b3c
+  brain related B-a7b3c --depth=3
+  brain related B-a7b3c --depth=0      # print the center alone
+  brain related B-a7b3c --json         # machine-readable tree
 
 ```
-bd brain related <id> [flags]
+bd related <id> [flags]
 ```
 
 **Flags:**

@@ -37,3 +37,33 @@ func TestBrainCmd_HelpMentionsSubcommands(t *testing.T) {
 		t.Errorf("brainCmd.Long missing pointer to ISA.md; verb-discovery loses its anchor")
 	}
 }
+
+// TestGraphVerbsRegisteredOnRoot locks the documented surface:
+// `brain related` and `brain recast` are root verbs. A registration that
+// only calls brainCmd.AddCommand makes them `brain brain <verb>`, which
+// the installed binary reports as an unknown command.
+func TestGraphVerbsRegisteredOnRoot(t *testing.T) {
+	for _, name := range []string{"related", "recast"} {
+		found, _, err := rootCmd.Find([]string{name})
+		if err != nil {
+			t.Fatalf("rootCmd.Find([%s]) error: %v", name, err)
+		}
+		if found == nil || found.Name() != name {
+			t.Fatalf("root command %q not registered", name)
+		}
+	}
+}
+
+// TestGraphVerbsStillUnderBrain keeps `bd brain related` / `bd brain recast`
+// / `bd brain promote` working after the root registration.
+func TestGraphVerbsStillUnderBrain(t *testing.T) {
+	for _, name := range []string{"related", "recast", "promote"} {
+		found, _, err := rootCmd.Find([]string{"brain", name})
+		if err != nil {
+			t.Fatalf("rootCmd.Find([brain %s]) error: %v", name, err)
+		}
+		if found == nil || found.Name() != name {
+			t.Fatalf("brain %s not registered", name)
+		}
+	}
+}

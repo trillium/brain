@@ -54,10 +54,10 @@ and prevents an explosion at common hub nodes; a future
 "--bidirectional" flag is conceivable but not in scope.
 
 Examples:
-  bd brain related B-a7b3c
-  bd brain related B-a7b3c --depth=3
-  bd brain related B-a7b3c --depth=0      # print the center alone
-  bd brain related B-a7b3c --json         # machine-readable tree`,
+  brain related B-a7b3c
+  brain related B-a7b3c --depth=3
+  brain related B-a7b3c --depth=0      # print the center alone
+  brain related B-a7b3c --json         # machine-readable tree`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		// brain related is read-only. CheckReadonly is intentionally NOT
@@ -214,5 +214,10 @@ func formatKindTag(kind string, closed bool) string {
 func init() {
 	brainRelatedCmd.Flags().Int("depth", relatedverb.DefaultDepth,
 		"BFS depth cap (0 prints the center alone; higher walks further)")
+	// Root registration is what `brain related` resolves. The binary is
+	// installed as `brain` (and as `bd`); a verb that lives only under
+	// brainCmd is reached as `brain brain related`. Keep the nested
+	// command so `bd brain related` still works.
 	brainCmd.AddCommand(brainRelatedCmd)
+	rootCmd.AddCommand(brainRelatedCmd)
 }
