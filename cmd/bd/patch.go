@@ -71,7 +71,8 @@ func init() {
 //  2. If --field is an ISA field, run direct SQL UPDATE keyed on
 //     issue_type='isa'. Use rows-affected to detect wrong-kind vs not-found.
 //  3. If --field is "slug", run direct SQL UPDATE keyed on the id alone
-//     (slug is kind-agnostic). Skip the isa_updated_at touch.
+//     (slug is kind-agnostic) that sets the slug column and metadata.brain_slug
+//     together. Skip the isa_updated_at touch.
 //  4. Otherwise, delegate to storage.UpdateIssue (the same path bd update
 //     uses), so we inherit its allowlist and audit-trail behavior.
 func runPatch(cmd *cobra.Command, args []string) {
@@ -227,9 +228,11 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 	emitSuccess(result.ResolvedID, field, value, kind)
 }
 
-// runPatchSlug writes the slug field. Slug is patchable on any kind and does
-// NOT touch isa_updated_at. We use direct SQL (rather than UpdateIssue) so the
-// behavior — including the no-touch on isa_updated_at — is explicit and
+// runPatchSlug writes the slug column and metadata.brain_slug in one
+// statement. Slug is patchable on any kind and does NOT touch isa_updated_at.
+// Dedup and import key on metadata.brain_slug, so the two must never diverge.
+// We use direct SQL (rather than UpdateIssue) so the behavior — including the
+// no-touch on isa_updated_at and the single-statement write — is explicit and
 // auditable.
 func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 	db, kind, err := openWriteDB(result)
@@ -238,8 +241,8 @@ func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 	}
 
 	res, execErr := db.ExecContext(ctx,
-		"UPDATE issues SET slug = ? WHERE id = ?",
-		value, result.ResolvedID,
+		"UPDATE issues SET slug = ?, metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.brain_slug', ?) WHERE id = ?",
+		value, value, result.ResolvedID,
 	)
 	if execErr != nil {
 		FatalErrorRespectJSON("updating slug: %v", execErr)

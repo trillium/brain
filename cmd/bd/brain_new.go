@@ -123,8 +123,8 @@ Examples:
 // brainNewStoreAdapter satisfies newverb.IssueCreator by delegating
 // CreateIssue to the global storage.DoltStorage and implementing SetSlug
 // via raw SQL through the RawDBAccessor seam. Mirrors the openWriteDB
-// pattern in cmd/bd/patch.go so the slug write touches the same UPDATE
-// path that `bd patch --field slug` uses.
+// pattern in cmd/bd/patch.go. Unlike `bd patch --field slug`, this writes
+// only the slug column and leaves metadata.brain_slug untouched.
 type brainNewStoreAdapter struct {
 	ctx   context.Context
 	inner storage.DoltStorage
