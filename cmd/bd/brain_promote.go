@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -27,6 +29,12 @@ import (
 // arguments (Args: ArbitraryArgs) so a user typing
 // `brain promote B-a7b3c task` or `brain promote --to=task B-a7b3c`
 // still hits the hint and not Cobra's "unknown command" message.
+//
+// The root `promote` command is bd's wisp graduation and cannot be
+// replaced: `bd promote` must keep that behavior. When the process was
+// invoked as `brain` (wrapper, BD_NAME, or argv0), that root command
+// returns brainPromoteHint instead, which is the surface WHAT_IS_BRAIN
+// § 4.4 documents for `brain promote`.
 //
 // The hint is printed to stderr (matching FatalError's destination)
 // and the command returns a non-nil error so the process exit code
@@ -56,13 +64,33 @@ times in shell history.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Stderr destination matches FatalError; non-nil return matches
-		// `os.Exit(1)` semantics through Cobra's error path. The two-line
-		// hint matches the wording in WHAT_IS_BRAIN.md § 4.4.
-		fmt.Fprintln(os.Stderr, "error: did you mean `brain recast <id> --to=<kind>`?")
-		fmt.Fprintln(os.Stderr, "       `bd promote` graduates wisps to beads; `brain recast` shifts kind.")
-		return errors.New("brain promote is not a brain verb; use brain recast")
+		return brainPromoteHint()
 	},
+}
+
+// brainPromoteHint is the usage error for `brain promote`.
+// Stderr destination matches FatalError; the non-nil return matches
+// `os.Exit(1)` semantics through Cobra's error path. The two-line hint
+// matches the wording in WHAT_IS_BRAIN.md § 4.4.
+func brainPromoteHint() error {
+	fmt.Fprintln(os.Stderr, "error: did you mean `brain recast <id> --to=<kind>`?")
+	fmt.Fprintln(os.Stderr, "       `bd promote` graduates wisps to beads; `brain recast` shifts kind.")
+	return errors.New("brain promote is not a brain verb; use brain recast")
+}
+
+// invokedAsBrain reports whether this process is the `brain` command
+// rather than `bd`. The two names are one binary. Store wrappers set
+// BD_NAME, the remote client wrapper sets BRAIN_REMOTE_STORE, and a
+// binary installed as `brain` shows up in argv0 (the bd.real shim
+// strips to `bd`, so the env checks come first).
+func invokedAsBrain() bool {
+	if os.Getenv("BRAIN_REMOTE_STORE") == "brain" || os.Getenv("BD_NAME") == "brain" {
+		return true
+	}
+	base := filepath.Base(os.Args[0])
+	base = strings.TrimSuffix(base, ".exe")
+	base = strings.TrimSuffix(base, ".real")
+	return base == "brain"
 }
 
 func init() {

@@ -37,3 +37,72 @@ func TestBrainCmd_HelpMentionsSubcommands(t *testing.T) {
 		t.Errorf("brainCmd.Long missing pointer to ISA.md; verb-discovery loses its anchor")
 	}
 }
+
+// TestGraphVerbsRegisteredOnRoot locks the documented surface:
+// `brain related` and `brain recast` are root verbs. A registration that
+// only calls brainCmd.AddCommand makes them `brain brain <verb>`, which
+// the installed binary reports as an unknown command.
+func TestGraphVerbsRegisteredOnRoot(t *testing.T) {
+	for _, name := range []string{"related", "recast"} {
+		found, _, err := rootCmd.Find([]string{name})
+		if err != nil {
+			t.Fatalf("rootCmd.Find([%s]) error: %v", name, err)
+		}
+		if found == nil || found.Name() != name {
+			t.Fatalf("root command %q not registered", name)
+		}
+	}
+}
+
+// TestGraphVerbsStillUnderBrain keeps `bd brain related` / `bd brain recast`
+// / `bd brain promote` working after the root registration.
+func TestGraphVerbsStillUnderBrain(t *testing.T) {
+	for _, name := range []string{"related", "recast", "promote"} {
+		found, _, err := rootCmd.Find([]string{"brain", name})
+		if err != nil {
+			t.Fatalf("rootCmd.Find([brain %s]) error: %v", name, err)
+		}
+		if found == nil || found.Name() != name {
+			t.Fatalf("brain %s not registered", name)
+		}
+	}
+}
+
+func TestInvokedAsBrain(t *testing.T) {
+	t.Run("remote store", func(t *testing.T) {
+		t.Setenv("BRAIN_REMOTE_STORE", "brain")
+		t.Setenv("BD_NAME", "")
+		if !invokedAsBrain() {
+			t.Fatal("BRAIN_REMOTE_STORE=brain should count as the brain command")
+		}
+	})
+	t.Run("bd name", func(t *testing.T) {
+		t.Setenv("BRAIN_REMOTE_STORE", "")
+		t.Setenv("BD_NAME", "brain")
+		if !invokedAsBrain() {
+			t.Fatal("BD_NAME=brain should count as the brain command")
+		}
+	})
+	t.Run("other store", func(t *testing.T) {
+		t.Setenv("BRAIN_REMOTE_STORE", "task")
+		t.Setenv("BD_NAME", "task")
+		if invokedAsBrain() {
+			t.Fatal("a non-brain store must keep wisp promote")
+		}
+	})
+	t.Run("plain bd", func(t *testing.T) {
+		t.Setenv("BRAIN_REMOTE_STORE", "")
+		t.Setenv("BD_NAME", "")
+		if invokedAsBrain() {
+			t.Fatal("a plain bd invocation must not redirect promote")
+		}
+	})
+}
+
+func TestPromoteRedirectsWhenInvokedAsBrain(t *testing.T) {
+	t.Setenv("BRAIN_REMOTE_STORE", "brain")
+	err := promoteCmd.RunE(promoteCmd, []string{"B-a7b3c"})
+	if err == nil || !strings.Contains(err.Error(), "brain recast") {
+		t.Fatalf("promote error = %v, want recast redirect", err)
+	}
+}

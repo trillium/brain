@@ -146,5 +146,8 @@ func init() {
 	// with exit code 1. The verb's own guard catches it again for the
 	// hand-constructed-Args case (modularity guarantee).
 	_ = brainRecastCmd.MarkFlagRequired("to")
+	// Same dual registration as brain related: `brain recast` is a root
+	// verb. Nested `bd brain recast` stays registered too.
 	brainCmd.AddCommand(brainRecastCmd)
+	rootCmd.AddCommand(brainRecastCmd)
 }
