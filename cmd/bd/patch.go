@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 	patchverb "github.com/steveyegge/beads/internal/brain/verb/patch"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
@@ -71,9 +70,9 @@ func init() {
 //  1. Resolve the issue and its store (via the routed-result helper).
 //  2. If --field is an ISA field, run direct SQL UPDATE keyed on
 //     issue_type='isa'. Use rows-affected to detect wrong-kind vs not-found.
-//  3. If --field is "slug", update the slug column and metadata.brain_slug
-//     together through UpdateIssue (slug is kind-agnostic). Skip the
-//     isa_updated_at touch.
+//  3. If --field is "slug", run direct SQL UPDATE keyed on the id alone
+//     (slug is kind-agnostic) that sets the slug column and metadata.brain_slug
+//     together. Skip the isa_updated_at touch.
 //  4. Otherwise, delegate to storage.UpdateIssue (the same path bd update
 //     uses), so we inherit its allowlist and audit-trail behavior.
 func runPatch(cmd *cobra.Command, args []string) {
@@ -229,40 +228,35 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 	emitSuccess(result.ResolvedID, field, value, kind)
 }
 
-// runPatchSlug writes the slug column and metadata.brain_slug to the same
-// value. Slug is patchable on any kind and does NOT touch isa_updated_at.
-// Dedup and import read metadata.brain_slug. The documented two-step mint
-// (create, then patch --field slug) used to leave that field on the
-// title-derived slug while the column held the caller's slug.
-//
-// UpdateIssue writes both fields on the server store and the embedded
-// store. isa_updated_at is absent from the update map, so a slug patch
-// leaves it unchanged.
+// runPatchSlug writes the slug column and metadata.brain_slug in one
+// statement. Slug is patchable on any kind and does NOT touch isa_updated_at.
+// Dedup and import key on metadata.brain_slug, so the two must never diverge.
+// We use direct SQL (rather than UpdateIssue) so the behavior — including the
+// no-touch on isa_updated_at and the single-statement write — is explicit and
+// auditable.
 func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
-	var existing json.RawMessage
-	if result.Issue != nil {
-		existing = result.Issue.Metadata
-	}
-	metadata, metaErr := exfiltrator.MetadataWithSlug(existing, value)
-	if metaErr != nil {
-		FatalErrorRespectJSON("updating metadata.brain_slug: %v", metaErr)
+	db, kind, err := openWriteDB(result)
+	if err != nil {
+		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	updates := map[string]interface{}{
-		"slug":     value,
-		"metadata": string(metadata),
+	res, execErr := db.ExecContext(ctx,
+		"UPDATE issues SET slug = ?, metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.brain_slug', ?) WHERE id = ?",
+		value, value, result.ResolvedID,
+	)
+	if execErr != nil {
+		FatalErrorRespectJSON("updating slug: %v", execErr)
 	}
-	if err := result.Store.UpdateIssue(ctx, result.ResolvedID, updates, actor); err != nil {
-		FatalErrorRespectJSON("updating slug: %v", err)
+	affected, raErr := res.RowsAffected()
+	if raErr != nil {
+		FatalErrorRespectJSON("checking rows affected: %v", raErr)
+	}
+	if affected == 0 {
+		FatalErrorRespectJSON("issue %s not found", result.ResolvedID)
 	}
 
 	commandDidWrite.Store(true)
 	SetLastTouchedID(result.ResolvedID)
-
-	kind := ""
-	if result.Issue != nil {
-		kind = string(result.Issue.IssueType)
-	}
 
 	// ISC-33: slug patches on ISA rows change the canonical render path.
 	// Auto-render best-effort post-commit so the new slug's ISA.md is
