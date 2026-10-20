@@ -9,7 +9,7 @@ sidebar_position: 0
 <!-- AUTO-GENERATED: do not edit manually -->
 Reference for bd Latest. Generated from `bd help --docs-root`.
 
-This reference covers all 128 live top-level `bd` commands. Regenerate it with:
+This reference covers all 130 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
@@ -107,7 +107,9 @@ This reference covers all 128 live top-level `bd` commands. Regenerate it with:
 - [`bd quickstart`](./quickstart.md)
 - [`bd ready`](./ready.md)
 - [`bd recall`](./recall.md)
+- [`bd recast`](./recast.md)
 - [`bd recompute-blocked`](./recompute-blocked.md)
+- [`bd related`](./related.md)
 - [`bd remember`](./remember.md)
 - [`bd remote`](./remote.md)
 - [`bd rename`](./rename.md)

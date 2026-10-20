@@ -328,6 +328,8 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd notion sync](#bd-notion-sync) — Sync issues with Notion
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
+- [bd recast](#bd-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
+- [bd related](#bd-related) — Walk the graph from a center brain doc and print the subgraph as a tree
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
@@ -6335,7 +6337,7 @@ Examples:
   brain recast B-a7b3c --to=task --json
 
 ```
-bd brain recast <id> [flags]
+bd recast <id> [flags]
 ```
 
 **Flags:**
@@ -6365,13 +6367,13 @@ and prevents an explosion at common hub nodes; a future
 "--bidirectional" flag is conceivable but not in scope.
 
 Examples:
-  bd brain related B-a7b3c
-  bd brain related B-a7b3c --depth=3
-  bd brain related B-a7b3c --depth=0      # print the center alone
-  bd brain related B-a7b3c --json         # machine-readable tree
+  brain related B-a7b3c
+  brain related B-a7b3c --depth=3
+  brain related B-a7b3c --depth=0      # print the center alone
+  brain related B-a7b3c --json         # machine-readable tree
 
 ```
-bd brain related <id> [flags]
+bd related <id> [flags]
 ```
 
 **Flags:**
@@ -8518,6 +8520,83 @@ bd ready [flags]
   -s, --sort string                  Sort policy: priority (default), hybrid, oldest (default "priority")
   -t, --type string                  Filter by issue type (task, bug, feature, epic, decision, merge-request). Aliases: mr→merge-request, feat→feature, mol→molecule, dec/adr→decision
   -u, --unassigned                   Show only unassigned issues
+```
+
+### bd recast
+
+brain recast shifts the kind of an existing brain doc. Every edge
+survives. Every comment survives. The body survives. The ID survives.
+Only the issue_type column changes — and, on certain transitions, the
+status column.
+
+--to=&lt;kind&gt; is REQUIRED. Valid values:
+  task        — work to be done; participates in ready/blocked queues
+  knowledge   — a note or learning; reference-only, never "ready"
+  both        — task-shaped work whose body is also the lesson
+
+Status rules:
+  knowledge → task / both : status defaults to 'open' unless the row
+                            was explicitly 'closed' (then preserved)
+  task → knowledge / both : status preserved
+  both → task / knowledge : status preserved
+
+If the current kind already equals --to, recast is a no-op (exit 0,
+no write, no markdown churn).
+
+Markdown relocation (entries/knowledge/&lt;slug&gt;.md → entries/task/&lt;slug&gt;.md)
+is OUT OF SCOPE for this verb — the exfiltrator handles it on its next
+idempotent sync.
+
+Examples:
+  brain recast B-a7b3c --to=task
+  brain recast B-a7b3c --to=knowledge
+  brain recast B-a7b3c --to=both
+  brain recast B-a7b3c --to=task --json
+
+```
+bd recast <id> [flags]
+```
+
+**Flags:**
+
+```
+      --to string   Target kind: one of task | knowledge | both (required)
+```
+
+### bd related
+
+brain related performs a breadth-first walk of outgoing edges from
+the given center brain doc and prints the reachable subgraph as an
+indented tree.
+
+The walk is bounded by --depth (default 2). --depth=0 prints just the
+center; --depth=1 prints the center and direct neighbours; higher
+values BFS further out. Each printed node carries its kind tag
+([kind=task], [kind=knowledge], or [kind=both]) and — for closed tasks
+— a ", closed" annotation. On a cycle, the second appearance of a node
+is annotated "(already visited)" and the BFS does not recurse through
+it again.
+
+Edges are followed in the outgoing (from → to) direction only — the
+same direction "bd dep list" prints by default and the same direction
+"brain link &lt;a&gt; &lt;b&gt;" creates. This keeps the rendered tree directional
+and prevents an explosion at common hub nodes; a future
+"--bidirectional" flag is conceivable but not in scope.
+
+Examples:
+  brain related B-a7b3c
+  brain related B-a7b3c --depth=3
+  brain related B-a7b3c --depth=0      # print the center alone
+  brain related B-a7b3c --json         # machine-readable tree
+
+```
+bd related <id> [flags]
+```
+
+**Flags:**
+
+```
+      --depth int   BFS depth cap (0 prints the center alone; higher walks further) (default 2)
 ```
 
 ### bd remote
