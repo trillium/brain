@@ -29,6 +29,11 @@ const (
 	FieldSlug         = "slug"
 )
 
+// FieldDescription is the issues.description column. --description, --body,
+// and --body-file all write this one column, so a description patch is a
+// full body replace.
+const FieldDescription = "description"
+
 // ValidPhases enumerates the legal values for isa_phase. The Algorithm v6.3.0
 // defines seven phases; this set mirrors that contract exactly.
 var ValidPhases = map[string]struct{}{
@@ -236,6 +241,25 @@ func ValidateProgressN(value string, currentM int) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// DescriptionBodyReplaceError refuses a description patch that would replace
+// a non-empty body. description and body share storage, so the patch is not a
+// separate short field write. A blank existing body (empty or whitespace)
+// is not a replace and returns nil.
+//
+// The message tells the operator to put a short relevance line in the opening
+// sentence of the body, or to replace the body with bd update --body-file.
+func DescriptionBodyReplaceError(existing string) error {
+	if strings.TrimSpace(existing) == "" {
+		return nil
+	}
+	return &ValidationError{
+		Field: FieldDescription,
+		Message: "refusing to patch description: description and body share storage, so this would replace the existing body. " +
+			"To add a short relevance line, make it the opening sentence of the body, not a separate patch. " +
+			"To replace the body, use 'bd update <id> --body-file <path>'.",
+	}
 }
 
 // WrongKindError is returned by callers when an ISA-only field is patched on

@@ -43,6 +43,12 @@ isa_updated_at.
 Non-ISA, non-slug fields are routed to 'bd update' validation; if your
 field is not in the patch allowlist, use 'bd update' instead.
 
+description and body are the same stored field. patch --field=description
+refuses when that field already has content, because the patch would
+replace the whole body. To add a short relevance line, make it the opening
+sentence of the body. To replace the body, use
+'bd update <id> --body-file <path>'.
+
 Examples:
   bd patch isa-001 --field isa_phase --value BUILD
   bd patch isa-001 --field isa_progress_m --value 7
@@ -270,10 +276,23 @@ func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
 func runPatchPassthrough(ctx context.Context, result *RoutedResult, field, value string) {
 	issueStore := result.Store
 
+	// description and body share storage. A description patch is a full body
+	// replace, so refuse when a body is already present instead of silently
+	// clobbering it. An empty body can still be set through this path.
+	if field == patchverb.FieldDescription {
+		existing := ""
+		if result.Issue != nil {
+			existing = result.Issue.Description
+		}
+		if rerr := patchverb.DescriptionBodyReplaceError(existing); rerr != nil {
+			exitValidation(rerr)
+		}
+	}
+
 	// Per-store content-schema check on description patches — mirrors the
 	// create-time gate. Validate the incoming body BEFORE writing, under the
 	// same validation.on-create tristate.
-	if field == "description" {
+	if field == patchverb.FieldDescription {
 		mode := config.GetString("validation.on-create")
 		if mode == "warn" || mode == "error" {
 			issueType := ""
