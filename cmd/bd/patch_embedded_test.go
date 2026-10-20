@@ -4,6 +4,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -339,4 +340,81 @@ func TestPatch(t *testing.T) {
 			t.Errorf("description = %q, want %q", got.Description, line)
 		}
 	})
+
+	// Documented two-step mint: create (which persists a title-derived
+	// metadata.brain_slug), then patch the slug column. Both fields must
+	// hold the patched slug, and sibling metadata keys must survive.
+	t.Run("two_step_mint_slug_patch_syncs_brain_slug", func(t *testing.T) {
+		const want = "canonical-ship-slug"
+		issue := bdCreate(t, bd, dir, "Ship The Thing", "--type", "isa")
+
+		withTestDB(t, beadsDir, func(db *sql.DB) {
+			_, brainSlug, meta := readSlugAndMetadata(t, db, issue.ID)
+			if brainSlug == "" {
+				brainSlug = "ship-the-thing"
+			}
+			if brainSlug == want {
+				t.Fatalf("mint stored %q before the slug patch; the case would not show divergence", want)
+			}
+			meta["brain_slug"] = brainSlug
+			meta["keep"] = "yes"
+			raw, err := json.Marshal(meta)
+			if err != nil {
+				t.Fatalf("marshal seeded metadata: %v", err)
+			}
+			if _, err := db.ExecContext(t.Context(),
+				"UPDATE issues SET metadata = ? WHERE id = ?",
+				string(raw), issue.ID,
+			); err != nil {
+				t.Fatalf("seed metadata: %v", err)
+			}
+		})
+
+		bdPatchOK(t, bd, dir, issue.ID, "--field", "slug", "--value", want)
+
+		withTestDB(t, beadsDir, func(db *sql.DB) {
+			slug, brainSlug, meta := readSlugAndMetadata(t, db, issue.ID)
+			if slug != want {
+				t.Errorf("slug column = %q, want %q", slug, want)
+			}
+			if brainSlug != want {
+				t.Errorf("metadata.brain_slug = %q, want %q", brainSlug, want)
+			}
+			if slug != brainSlug {
+				t.Errorf("slug column %q and metadata.brain_slug %q diverged", slug, brainSlug)
+			}
+			if keep, _ := meta["keep"].(string); keep != "yes" {
+				t.Errorf("sibling metadata key keep = %#v, want %q", meta["keep"], "yes")
+			}
+			_, updated := readISAColumns(t, db, issue.ID)
+			if updated.Valid {
+				t.Errorf("slug patch touched isa_updated_at: %v", updated.Time)
+			}
+		})
+	})
+}
+
+// readSlugAndMetadata returns the slug column, metadata.brain_slug, and the
+// decoded metadata object. A missing or null metadata blob decodes as an
+// empty object and an empty brain slug.
+func readSlugAndMetadata(t *testing.T, db *sql.DB, id string) (string, string, map[string]any) {
+	t.Helper()
+	var (
+		slug sql.NullString
+		meta []byte
+	)
+	err := db.QueryRowContext(t.Context(),
+		"SELECT slug, CAST(metadata AS CHAR) FROM issues WHERE id = ?", id,
+	).Scan(&slug, &meta)
+	if err != nil {
+		t.Fatalf("read slug/metadata for %s: %v", id, err)
+	}
+	decoded := map[string]any{}
+	if len(meta) > 0 && string(meta) != "null" {
+		if err := json.Unmarshal(meta, &decoded); err != nil {
+			t.Fatalf("decode metadata for %s: %v\nraw: %s", id, err, meta)
+		}
+	}
+	brainSlug, _ := decoded["brain_slug"].(string)
+	return slug.String, brainSlug, decoded
 }

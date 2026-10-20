@@ -24,7 +24,7 @@ func IsAllowedUpdateField(key string) bool {
 		"mol_type":       true,
 		"event_category": true, "event_actor": true, "event_target": true, "event_payload": true,
 		"due_at": true, "defer_until": true, "await_id": true, "waiters": true,
-		"metadata": true,
+		"metadata": true, "slug": true,
 	}
 	return allowed[key]
 }
