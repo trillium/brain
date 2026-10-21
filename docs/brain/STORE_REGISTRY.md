@@ -1,0 +1,237 @@
+# The store registry: how every machine learns a store was created, renamed or removed
+
+> **The acceptance test, in one sentence.** Create a store on machine A. Machine
+> B runs any ordinary brain command. Afterwards B's `brain stores list` shows the
+> store and its command exists, with nothing run by hand; a machine that was
+> offline catches up on its first command or at the next 5-minute poll; rename
+> and remove propagate the same way. That is
+> `TestAutomaticPropagation_CreateRenameRemove` in
+> `cmd/bd/brain_registry_e2e_test.go`, run against a real throwaway Dolt server
+> and three temp HOMEs.
+
+## Why a machine "lacks" a store when brain is one shared database
+
+It does not lack the store. Everything that makes a store a store is already in
+the one shared database:
+
+| in the shared database (every machine sees it) | on each machine (a **shim**, a local pointer to it) |
+|---|---|
+| the store's beads (`issues` and children) | the wrapper command `~/.local/bin/<store>` |
+| its namespace row and id prefix (`brain_stores`, `brain_store_prefixes`) | its line in `~/.config/brain/stores.yaml`, and `stores.env` |
+| its project identity | the `BEADS_DIR` skeleton `~/data/<store>/.beads/metadata.json` |
+| **the registry: names, kinds, paths, an epoch (new)** | the agent link `~/.pi/agent/bin/<store>` |
+
+Before this change nothing told a machine the right-hand column was out of date:
+a store created on one machine had a wrapper there and nowhere else, and the
+three `stores.yaml` files matched only because someone copied one by hand. The
+registry fixes exactly that: it is the **list the shims are generated from**, plus
+a **version counter (the epoch)** that goes up in the same transaction as every
+create, rename or remove.
+
+```
+ machine A                  shared database                       machine B
+ ─────────                  ───────────────                       ─────────
+ brain stores create X ──▶  tx { namespace seed,
+                                 registry entry X,
+                                 log row,
+                                 epoch 41 → 42 }  ◀── every command reads the epoch (1 row)
+                                                       epoch 42 ≠ applied 41
+                                                       └─▶ brain stores sync (inline)
+                                                            wrapper, stores.yaml/env,
+                                                            BEADS_DIR, agent link
+                            ◀── B reports "applied 42" ──
+ "epoch 42; 2 of 3 machines converged"          5-minute launchd poller = backstop for idle machines
+```
+
+State, not events, is what is read. A machine that slept through ten changes
+converges in one step; no message can be lost.
+
+## The three layers, and which one is primary
+
+| layer | what it is | when it matters |
+|---|---|---|
+| **1. Registry + epoch** (source of truth) | four tables in the shared database; written atomically with every lifecycle change | always |
+| **2. Runtime resolution** (correctness floor) | `brain store <name> <command…>` resolves the name from the registry **at call time** (cached with the epoch under `~/.config/brain/registry.cache.json`); a shell `command_not_found` hook sends unknown names there. No file per store is needed | the moment the epoch changes, before any wrapper exists; new machines; anything interactive |
+| **3. Generated shims** (convenience + compatibility) | wrapper, `stores.yaml`/`stores.env`, `BEADS_DIR`, agent link, written by `brain stores sync` | every existing caller that runs a store **by command name**: `task list`, `runbooks create …` in scripts, launchd jobs, agents, firstmate |
+
+### Why runtime resolution is not the only layer (honest comparison)
+
+| | runtime resolution only (`brain store X …`) | generated shims only (before this change, automated) | **both, one registry (what is built)** |
+|---|---|---|---|
+| **new store usable on machine B** | immediately, on the next command | after the next sync (a command or ≤ 5 min) | immediately via layer 2; by name after sync |
+| **existing callers `task list`, `runbooks create` (scripts, cron, launchd, agents, firstmate)** | **break**: a non-interactive process has no shell hook, and a command name needs a file on PATH. Every caller would have to be rewritten to `brain store task list` | work unchanged | work unchanged |
+| **latency** | one extra process start (≈ 0.13 s measured for a bare `bd`) plus the `brain` store open, on every call | none | none for shims; the extra only on the fallback path |
+| **offline** | the cached name resolves (tested); data needs the database either way | shims keep working with the database up; nothing to resolve offline | same as shims |
+| **macbook (reaches data through mini1 today)** | forwarded whole: `brain store X …` runs on the host, which resolves it. The macbook needs no per-store file at all | needs a forwarding wrapper per store, generated by `sync` from the host's registry (built) | both |
+| **beads bridge, phone/ChatGPT apps** | best fit: these callers pass the store as a *parameter*, not a command name; they should read the registry/cache, not stores.yaml | need a restart or a stores.yaml re-read to learn a store | the bridge reads the epoch (see below) |
+| **effort / risk** | small, but cannot be the whole answer (row 2) | medium (sync, poller, doctor) | medium: both share one code path (`resolveStore`, `buildSyncPlan`) |
+
+**Recommendation, and what is implemented:** make the registry primary and keep
+both consumers of it. Runtime resolution is the floor (it can never be stale by
+more than one command, and it needs no files), the shims are the compatibility
+layer that existing callers cannot live without, and `sync` / `doctor --fleet`
+prove the shims are in place. Dropping the shims would break every script that
+calls a store by name; dropping runtime resolution would leave a new store
+unusable on a machine until a sync ran.
+
+## Commands
+
+```sh
+brain stores sync [--dry-run] [--force] [--machine NAME] [--quiet] [--json]
+brain stores verify [--json] [--probe N]        # read-only: this machine, from its real files
+brain stores doctor --fleet [--roster F] [--machines a,b] [--json]
+brain stores reconcile [--apply]                # one-time recovery (below)
+brain stores epoch                              # registry epoch vs applied here
+brain stores registry export|log|report         # inspect the registry
+brain stores poller print|install|uninstall|status
+brain stores shell-hook zsh|bash                # command-not-found → brain store
+brain store <name> <command…>                   # runtime resolution
+brain store --check <name>                      # exit 0 if the cached registry has it (instant)
+```
+
+`create`, `rename`, `remove`, `alias`, `add`, `set-about` and `edit-back` write
+the registry when it is adopted (`reconcile --apply` adopts it) and keep their
+old, local-only behaviour (with a note) when it is not. `--local-only` forces the
+old behaviour. `BRAIN_REGISTRY=off` disables every registry code path.
+
+### What each lifecycle verb does now
+
+| verb | shared database (one transaction, epoch +1) | this machine | every other machine |
+|---|---|---|---|
+| `create X` | namespace seed + registry entry + log row | wrapper, `stores.yaml`, `stores.env`, link, via `sync` | the same, on its next command or ≤ 5 min |
+| `rename a b` | `a` tombstoned (or kept as an alias with `--keep-old-wrapper`), `b` active, `brain_store_aliases b → a` (the namespace and prefix keep the old name) | directory moved, then `sync` | `b`'s wrapper and `BEADS_DIR` skeleton created, `a`'s *generated* wrapper removed; **the old data directory is left where it is** |
+| `remove X` | tombstone (`state=removed`); the row stays so an offline machine still learns of it | generated wrapper, link and list entry removed | the same; **data, database rows and the prefix are never touched** |
+| `alias`, `add`, `set-about`, `edit-back` | upsert | `sync` | `sync` |
+
+`create` does not wait for the fleet. It prints `epoch N; k of n machines
+converged` from the machines' own reports; `doctor --fleet` is the proof.
+
+### `sync` rules (idempotent, never destructive)
+
+* Reads the registry snapshot and **recomputes the digest** from the rows it read;
+  a mismatch (torn read, hand edit) is refused, nothing is applied.
+* Writes only: `~/.local/bin/<name>`, `~/.pi/agent/bin/<name>`,
+  `~/.config/brain/{stores.yaml,stores.env,registry.applied,registry.cache.json}`
+  and a missing `~/data/<store>/.beads` skeleton. Wrapper bodies are generated
+  locally from a template; the database supplies **data, never shell**. Names
+  must match `^[a-z0-9][a-z0-9_-]{0,63}$` and paths must be clean, HOME-relative
+  and under `data/`; a hostile row is refused (tested, including one whose digest
+  was recomputed).
+* A file without the `# Auto-generated by 'brain stores` marker is **never
+  rewritten or removed**; a removed store whose wrapper is not generated is
+  reported as an orphan and left alone.
+* Replaced or removed files are copied to
+  `~/.local/share/brain/registry-backup/<time>/` with a `restore.sh`.
+* A half-applied run is simply re-planned by the next run. A wrapper waits for its
+  `BEADS_DIR` skeleton. A partial run does not claim the epoch as applied and
+  reports what failed to the database.
+* A client machine (`~/.config/brain/remote.yaml`, e.g. the macbook) reads the
+  registry through its relay host (one hop) and writes forwarding wrappers.
+
+## The ride-along: every command carries the epoch
+
+Every bd/brain command already holds a database connection, so
+`PersistentPreRunE` reads one primary-key row (`brain_registry_state`, measured
+**0.08 ms**) and compares it with `~/.config/brain/registry.applied`. If this
+machine is behind it prints one line and runs the sync inline, then the command
+continues:
+
+```
+store list changed (epoch 41 -> 42): running brain stores sync
+```
+
+* `BRAIN_REGISTRY_POLICY=notify` only tells; `off` disables it.
+* **Never blocks:** an unreachable database, a failing sync or a held lock is a
+  warning at most once an hour; the command runs regardless. After a failed sync
+  commands do not retry for 5 minutes (the poller does).
+* **No double sync:** a per-machine lock (`registry.lock`, stale after 5 min);
+  the loser skips.
+* **No loops:** `BRAIN_REGISTRY_SYNCING=1` is set during a sync and inherited by
+  everything it starts; the `stores sync|verify|doctor|registry|reconcile|poller`
+  commands never ride along.
+* Error-driven path: an unknown name given to `brain store` triggers one sync and
+  one retry; the shell hook asks the cached registry first.
+
+## The poller (backstop for idle machines)
+
+`brain stores poller print` shows the launchd job: `RunAtLoad`, every 300 s,
+`~/.local/bin/brain stores sync --quiet --trigger timer`, logs in
+`~/Library/Logs/brain/stores-sync.log` (quiet: only changes and failures are
+written). `poller install` writes
+`~/Library/LaunchAgents/com.brain.stores-sync.plist` and loads it; `uninstall`
+removes it. **Nothing in the build or the tests installs it.** Install per
+machine, see `docs/brain/STORE_REGISTRY_DEPLOY.md`.
+
+## `brain stores doctor --fleet`: proof
+
+For each machine of the roster (`~/.config/brain/fleet.yaml`, default `mini0`,
+`mini1`, `macbook`; `--roster`, `--machines`) it runs `brain stores verify --json
+--probe 3` (read-only; local directly, others over `ssh -o BatchMode=yes`),
+compares the machine's real files with the database epoch and digest, reads the
+newest three stores through their wrappers, and prints one verdict per machine:
+
+| verdict | meaning | fix printed |
+|---|---|---|
+| `converged` | epoch and digest equal, nothing missing, probes read | |
+| `lagging` | applied epoch behind | `brain stores sync --machine NAME` |
+| `drifted` | same epoch but a wrapper/link/env is missing or a probe fails | `brain stores sync --machine NAME --force` |
+| `asleep-ok` | unreachable, but its last report is current: it missed nothing | |
+| `unreachable` | unreachable and its last report is behind | wake it, then sync |
+
+Before the machines it cross-checks the registry with `brain_stores` (a
+registered store missing from the registry is a registry bug and is listed
+first). The last line is `CONVERGED epoch N digest … on k/k machines` or `NOT
+CONVERGED at epoch N: …`. Exit 0 converged, 1 not converged (with `FAILING
+MACHINES:`), 2 registry unreadable.
+
+## One-time recovery: `brain stores reconcile`
+
+Merges an out-of-sync fleet back into one. On the machine whose `stores.yaml` is
+the truth:
+
+```sh
+brain stores reconcile            # reads only; writes a report + a decisions template
+$EDITOR ~/.config/brain/reconcile-decisions.yaml   # for each database-only name: store | not-a-store
+brain stores reconcile --apply    # adopts the certain stores, applies your decisions, syncs this machine
+```
+
+What is **certain** (stores registered in this machine's `stores.yaml`, with their
+alias wrappers) is adopted. What the database knows that no registry lists (the 8
+names `beads_global`, `commitments`, `feedtack`, `gcnotes`, `guard`, `retro`,
+`rt`, `TinyKeyboard`) is **asked, not guessed**: the report shows, per name,
+whether it is registered in `brain_stores`, its source database, prefixes and
+bead counts, and whether a wrapper or `~/data/<name>` exists here. An undecided
+name stays unregistered.
+
+## The beads bridge
+
+The bridge reads `stores.yaml` once at start (`app/src/config.ts`), so a new store
+is unknown to it until it restarts. What this change gives it:
+
+* `sync` rewrites `stores.yaml` and `registry.applied` (epoch + digest) on every
+  change, and runs the executables in `~/.config/brain/sync.d/` after a change
+  (`launchctl kickstart -k gui/$UID/<bridge label>` is the one-line hook for a
+  restart).
+* The follow-up that makes the bridge itself epoch-aware lives outside this
+  repository (the bridge is an installed app, not in this tree): re-read
+  `stores.yaml` when `registry.applied` changes, mutating `STORES` in place, and
+  expose `stores_epoch` in `bridge_info` so `doctor --fleet` can compare. A ready
+  patch is attached to the PR description and filed as a follow-up.
+
+## What was and was not tested
+
+Tested (real throwaway Dolt server, temp HOMEs, no real store touched): atomic
+epoch bump and rollback, concurrent creators (one epoch each, no lost update),
+torn-read refusal, create/rename/remove propagation to a second and to an offline
+third machine, offline catch-up at the next poll, half-applied sync, idempotence
+(byte-identical tree), dry-run, backup/restore, unmanaged files untouched,
+hostile rows, client machine through a fake relay, runtime resolution and the
+shell hooks, reconcile with the 8 database-only names, fleet doctor verdicts and
+exit semantics, poller plist (`plutil -lint`), ride-along cost, concurrency and
+loop protection.
+
+Not tested (needs real machines): the `brain_app` login's privileges (does it
+have `CREATE TABLE` for the first adoption and `REPLACE` on the namespace tables;
+the tests connect as root to a throwaway server), real ssh from the machine that
+runs `doctor --fleet`, `launchctl` load/unload, the macbook's relay route, and
+the bridge change.

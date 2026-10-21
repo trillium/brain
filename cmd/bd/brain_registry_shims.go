@@ -253,7 +253,10 @@ func syncWrapperBody(e storeregistry.Entry, env shimEnv) string {
 	default:
 		fmt.Fprintf(&b, "# %s: store on the shared Dolt sql-server.\n", e.Name)
 	}
-	b.WriteString("[ -r \"$HOME/.local/bin/.bd-pin.sh\" ] && . \"$HOME/.local/bin/.bd-pin.sh\"\n")
+	// Same preamble as the fleet's pinned wrappers (satellite-config): the bd pin,
+	// then the external-first route, each only where the machine has it.
+	b.WriteString("[ -r \"$HOME/.local/bin/.bd-pin.sh\" ] && . \"$HOME/.local/bin/.bd-pin.sh\"  # bd-pin (satellite-config)\n")
+	b.WriteString("[ -r \"$HOME/.local/bin/.beads-route.sh\" ] && . \"$HOME/.local/bin/.beads-route.sh\"  # beads-remote-route\n")
 	fmt.Fprintf(&b, "export BEADS_DIR=\"$HOME/%s\"\n", e.RelPath)
 	fmt.Fprintf(&b, "export BD_NAME=%q\n", bdName)
 	if e.WrapperKind == storeregistry.WrapperEmbedded {

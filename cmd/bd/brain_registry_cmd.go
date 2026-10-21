@@ -322,7 +322,13 @@ var brainStoresEpochCmd = &cobra.Command{
 			_ = outputJSON(out)
 			return
 		}
-		fmt.Printf("registry epoch %v, applied here %d (%s)\n", out["registry_epoch"], applied.Epoch, machineName())
+		if re, ok := out["registry_epoch"]; ok {
+			fmt.Printf("registry epoch %v, applied here %d (%s)\n", re, applied.Epoch, machineName())
+		} else if msg, bad := out["error"]; bad {
+			fmt.Printf("registry unreachable (%v); applied here: epoch %d (%s)\n", msg, applied.Epoch, machineName())
+		} else {
+			fmt.Printf("registry not adopted in this database; applied here: epoch %d (%s)\n", applied.Epoch, machineName())
+		}
 	},
 }
 
