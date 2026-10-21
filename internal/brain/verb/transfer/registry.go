@@ -18,9 +18,7 @@
 //
 // # Sources of truth (in priority order)
 //
-//  1. The optional `~/.config/brain/stores.yaml` registry (legacy
-//     `~/.config/pai/stores.yaml` symlink still read for transition) +
-//     each store's
+//  1. The optional `~/.config/brain/stores.yaml` registry + each store's
 //     `.beads/metadata.json#dolt_database`. When present, this gives the
 //     authoritative store-name → DB-name and store-name → prefix mappings
 //     for that user's actual setup.
@@ -159,8 +157,7 @@ var validDBName = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_\-]*$`)
 //nolint:gochecknoglobals // compiled-once regex
 var validPrefix = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// storesYAML mirrors the on-disk shape of ~/.config/brain/stores.yaml
-// (legacy ~/.config/pai/stores.yaml).
+// storesYAML mirrors the on-disk shape of ~/.config/brain/stores.yaml.
 // Only the `stores: name → path` map is consumed; any other keys are
 // ignored so a yaml format extension upstream does not break us.
 type storesYAML struct {
@@ -212,12 +209,11 @@ type metadataJSON struct {
 // fallback for that entry. A partial registry with the builtin
 // fallback intact is more useful than a hard failure on a typo in
 // one entry.
-// readStoresDoc reads one registry yaml. found=false means absent (not an
-// error); a present-but-bad file returns found=true with the error so the
-// caller can decide whether the other file's healthy state suffices.
-func readStoresDoc(homeDir, dir string) (storesYAML, bool, error) {
+// readStoresDoc reads the registry yaml. found=false means absent (not an
+// error); a present-but-bad file returns found=true with the error.
+func readStoresDoc(homeDir string) (storesYAML, bool, error) {
 	var doc storesYAML
-	cand := filepath.Join(homeDir, ".config", dir, "stores.yaml")
+	cand := filepath.Join(homeDir, ".config", "brain", "stores.yaml")
 	raw, err := os.ReadFile(cand) //nolint:gosec // path is constructed from the caller-supplied home dir
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -273,28 +269,16 @@ func Load(homeDir string) (*Registry, error) {
 		return r, nil
 	}
 
-	// Read the optional ~/.config/brain/stores.yaml registry union-merged with
-	// the legacy ~/.config/pai/stores.yaml file for transition (canonical wins
-	// on name conflict). Merging guarantees a diverged legacy file can never
-	// hide stores from transfer routing. Absence of both is the common case
-	// (fresh install); we silently keep the fallback. The legacy read is
-	// best-effort: a corrupt/unreadable legacy file never blocks routing
-	// while the canonical file is healthy; a corrupt legacy with a missing
-	// canonical stays fatal so callers see the damage instead of silently
-	// routing on fallback alone.
-	legacyDoc, _, legacyErr := readStoresDoc(homeDir, "pai")
-	canonicalDoc, canonicalFound, err := readStoresDoc(homeDir, "brain")
+	// Read the optional ~/.config/brain/stores.yaml registry. Absence is the
+	// common case (fresh install); we silently keep the fallback. A
+	// corrupt/unreadable file is returned so callers see the damage instead
+	// of silently routing on fallback alone.
+	doc, _, err := readStoresDoc(homeDir)
 	if err != nil {
 		return r, err
 	}
-	if !canonicalFound && legacyErr != nil {
-		return r, legacyErr
-	}
 	enriched := make(map[string]string)
-	for name, beadsPath := range legacyDoc.Stores {
-		enriched[strings.ToLower(strings.TrimSpace(name))] = string(beadsPath)
-	}
-	for name, beadsPath := range canonicalDoc.Stores {
+	for name, beadsPath := range doc.Stores {
 		enriched[strings.ToLower(strings.TrimSpace(name))] = string(beadsPath)
 	}
 	if len(enriched) == 0 {

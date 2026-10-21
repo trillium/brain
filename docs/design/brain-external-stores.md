@@ -206,7 +206,7 @@ layer already reads `BEADS_DOLT_SERVER_HOST`/`PORT`/password/TLS.
 - Tests and temp stores that pre-set `BEADS_DOLT_SERVER_HOST` themselves
   keep winning only if the routing block assigns *conditionally* (the
   `: "${VAR:=…}"` shape the shim already uses, and which
-  `~/.config/pai/remote.env` states as the rule: pre-set env always wins
+  `~/.config/brain/remote.env` states as the rule: pre-set env always wins
   over defaults) — while the unconditional pin exports (BEADS_DIR,
   BD_NAME) stay ordered as the shim's NOTE requires (see §Transition).
 

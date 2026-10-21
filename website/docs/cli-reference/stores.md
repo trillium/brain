@@ -12,15 +12,12 @@ Generated from `bd help --doc stores`
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/brain/stores.yaml (legacy path
-~/.config/pai/stores.yaml is a compat symlink kept for transition).
-Each registered store
+The registry lives at ~/.config/brain/stores.yaml. Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
 Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
-shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
-PAI_STORE_* aliases are still emitted for transition).
+shell wrapper scripts that need BRAIN_STORE_* variables.
 
 ```
 bd stores [flags]
