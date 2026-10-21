@@ -24,9 +24,10 @@ rollback.
 3. Land PRs #41 / #43 first if they are still open: `sync` uses the wrapper
    conventions they establish (the store-host record). If PR #43 lands first,
    rebase this branch on it (the conflict surface is `cmd/bd/brain_stores.go`).
-   If the PAI-removal change lands first, rebase on it: this change reuses
-   `saveStoresRegistry` / `regenerateStoresEnv`, which still keep the legacy
-   `~/.config/pai/stores.*` compatibility symlinks until that change removes them.
+   This branch is already rebased on the PAI removal (#52): the legacy
+   `stores.yaml` fallback is gone, so a machine whose list still lives only at
+   the retired legacy path must be given `~/.config/brain/stores.yaml` (`sync`
+   writes it from the registry; see mini1 below).
 4. **Hold the other machines on `notify` until each has had a reviewed dry-run.**
    Once the registry is adopted (mini0 step 5) any machine running the new binary
    syncs itself on its next command. That is the point, but the first sync of a
@@ -79,10 +80,10 @@ them `registered=1` (the build marks them `0`).
 3. `brain stores sync --dry-run`. Expected: `stores.yaml differs from the registry`
    (mini1's copy carries `/Users/trilliumsmith/...` paths, copied from the
    macbook; sync rewrites it to mini1's own home), the 12 missing agent links, and
-   nothing else. mini1's registry lives at `~/.config/pai/stores.yaml` with
-   `~/.config/brain` empty: the first sync writes the canonical
-   `~/.config/brain/stores.yaml` (merging the legacy file, losing nothing) and
-   converts the legacy path to a symlink.
+   nothing else. mini1's list lives at a retired legacy path with
+   `~/.config/brain` empty, and the new binary no longer reads that path: the
+   first sync writes `~/.config/brain/stores.yaml` and `stores.env` from the
+   registry (the old file is left where it is, untouched).
 4. `brain stores sync`, then `brain stores verify --probe 3` → `converged`; then `rm -f
    ~/.config/brain/registry.policy` (back to `auto`).
 5. Poller: same as mini0 step 10.
