@@ -402,10 +402,35 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 // the health probe for the whole federation: requiring a healthy store to run it
 // would make it useless in exactly the situation it exists to detect.
 func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
-	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+	if cmd == nil {
 		return false
 	}
-	return cmd.Name() == "doctor"
+	// 'stores poller' and 'stores shell-hook' only print or manage local files.
+	for c := cmd; c != nil && c.Parent() != nil; c = c.Parent() {
+		if c.Parent().Name() == "stores" && (c.Name() == "poller" || c.Name() == "shell-hook") {
+			return true
+		}
+	}
+	if cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
+		return false
+	}
+	switch cmd.Name() {
+	case "doctor":
+		// The per-store probe must run with no usable caller store. The fleet
+		// proof reads the registry, so it needs a connection unless this machine
+		// is a client (which reads through its relay host).
+		if fleet, _ := cmd.Flags().GetBool("fleet"); fleet {
+			_, client := clientSourceIfConfigured()
+			return client
+		}
+		return true
+	case "sync", "verify":
+		// A client machine reads the registry through its relay host and
+		// writes only local files: no local store is involved.
+		_, client := clientSourceIfConfigured()
+		return client
+	}
+	return false
 }
 
 // unifyCommandCanRunWithoutStore reports whether a 'brain unify' subcommand
@@ -1337,6 +1362,12 @@ var rootCmd = &cobra.Command{
 			}
 		}
 
+		// Registry ride-along: every command already holds a database
+		// connection, so reading the store registry's epoch costs one indexed
+		// row. A machine whose shims are behind catches up here, inline, and
+		// never blocks the command (see registryRideAlong).
+		registryRideAlong(rootCtx, cmd)
+
 		// Sync all state to CommandContext for unified access.
 		syncCommandContext()
 
@@ -1623,6 +1654,12 @@ func main() {
 	// A machine that gave the host role away answers forwarded client calls with
 	// where the brain went (the client verifies it and follows).
 	if handled, code := hostGateEarly(os.Args[1:]); handled {
+		os.Exit(code)
+	}
+
+	// 'brain store --check <name>' answers from the cached registry alone: a
+	// shell calls it for every mistyped command, so it must be instant.
+	if handled, code := registryCheckEarly(os.Args[1:]); handled {
 		os.Exit(code)
 	}
 

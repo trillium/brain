@@ -463,3 +463,49 @@ func ReadLog(ctx context.Context, q DBTX, limit int) ([]LogRow, error) {
 	}
 	return out, rows.Err()
 }
+
+// Init adopts the registry in a database: it creates the tables and the epoch
+// row (epoch 0, the digest of the empty list) when they are missing. It is
+// idempotent and never touches existing rows. Until a database is adopted,
+// lifecycle verbs keep their local-only behaviour.
+func Init(ctx context.Context, db *sql.DB, meta Meta) (State, error) {
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		tx, err := db.BeginTx(ctx, nil)
+		if err != nil {
+			return State{}, err
+		}
+		st, err := initTx(ctx, tx, meta)
+		if err == nil {
+			err = tx.Commit()
+		} else {
+			_ = tx.Rollback()
+		}
+		if err == nil {
+			return st, nil
+		}
+		time.Sleep(time.Duration(attempt*25) * time.Millisecond)
+		if attempt == maxAttempts-1 {
+			return State{}, err
+		}
+	}
+	return State{}, ErrConflict
+}
+
+func initTx(ctx context.Context, tx *sql.Tx, meta Meta) (State, error) {
+	if err := EnsureSchema(ctx, tx); err != nil {
+		return State{}, err
+	}
+	st, found, err := ReadState(ctx, tx)
+	if err != nil || found {
+		return st, err
+	}
+	now := time.Now().UTC()
+	if meta.Now != nil {
+		now = meta.Now()
+	}
+	st = State{Epoch: 0, Digest: Digest(nil), UpdatedAt: now.Format(timeFmt), UpdatedBy: actorOf(meta)}
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO brain_registry_state (id, epoch, digest, updated_at, updated_by) VALUES (1, 0, ?, ?, ?)",
+		st.Digest, st.UpdatedAt, st.UpdatedBy)
+	return st, err
+}

@@ -58,6 +58,8 @@ func New(t *testing.T) *Server {
 	t.Cleanup(func() { _ = db.Close() })
 	for _, stmt := range []string{
 		"CREATE TABLE brain_unified_config (`store` varchar(128) NOT NULL, `key` varchar(255) NOT NULL, value text NOT NULL, PRIMARY KEY (`store`,`key`))",
+		"CREATE TABLE brain_unified_metadata (`store` varchar(128) NOT NULL, `key` varchar(255) NOT NULL, value text NOT NULL, PRIMARY KEY (`store`,`key`))",
+		"CREATE TABLE issues (id varchar(255) NOT NULL, PRIMARY KEY (id))",
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
 			t.Fatal(err)

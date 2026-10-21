@@ -56,6 +56,14 @@ const (
 
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
+// storeKeyRE is the namespace key of a store in the database. Unlike a command
+// name it may carry capitals and the "db:" marker the unify build gives a
+// database that no registry listed ("db:retro", "db:TinyKeyboard").
+var storeKeyRE = regexp.MustCompile(`^(db:)?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
+
+// ValidStoreKey reports whether s may be the canonical store of an entry.
+func ValidStoreKey(s string) bool { return storeKeyRE.MatchString(s) }
+
 // ValidName reports whether s may be a wrapper/command name. The database
 // supplies DATA, never code: a name that fails this check is never written to
 // disk, whatever a (poisoned) row says.
@@ -115,7 +123,7 @@ func (e Entry) Validate() error {
 	if e.WrapperKind != WrapperServer && e.WrapperKind != WrapperEmbedded {
 		return fmt.Errorf("%s: invalid wrapper kind %q", e.Name, e.WrapperKind)
 	}
-	if !ValidName(e.Store) {
+	if !ValidStoreKey(e.Store) {
 		return fmt.Errorf("%s: invalid store %q", e.Name, e.Store)
 	}
 	if e.Kind == KindStore && e.Store != e.Name && e.State == StateActive && e.WrapperKind != WrapperServer {
@@ -189,8 +197,8 @@ type Machine struct {
 	AppliedDigest string `json:"applied_digest"`
 	CheckedAt     string `json:"checked_at"`
 	WrappersOK    int    `json:"wrappers_ok"`
-	Missing       string `json:"missing"`  // JSON
-	Orphans       string `json:"orphans"`  // JSON
+	Missing       string `json:"missing"` // JSON
+	Orphans       string `json:"orphans"` // JSON
 	BdVersion     string `json:"bd_version"`
 	LastError     string `json:"last_error"`
 	Retired       bool   `json:"retired"`
