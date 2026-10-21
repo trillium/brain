@@ -71,8 +71,11 @@ func (s dbSource) Machines(ctx context.Context) ([]storeregistry.Machine, error)
 
 func (s dbSource) Role() (string, string) { return "direct", "" }
 
+// defaultRegistryDB is the connected store's raw connection to the shared database.
+func defaultRegistryDB() (*sql.DB, error) { return storePrefixDB() }
+
 // registryDBFunc opens the shared database. Tests replace it.
-var registryDBFunc = func() (*sql.DB, error) { return storePrefixDB() }
+var registryDBFunc = defaultRegistryDB
 
 // registrySnapshotJSON is the wire form of 'brain stores registry export --json'.
 type registrySnapshotJSON struct {

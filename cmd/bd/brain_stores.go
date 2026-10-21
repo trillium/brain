@@ -212,7 +212,6 @@ var brainStoresAddCmd = &cobra.Command{
 	},
 }
 
-
 var brainStoresRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
 	Short: "Remove a store from the fleet: tombstone in the shared registry, then each machine drops its generated wrapper",

@@ -565,27 +565,29 @@ func registryCheckEarly(args []string) (handled bool, exitCode int) {
 	return false, 0
 }
 
-func runBrainStore(cmd *cobra.Command, args []string) {
-	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		_ = cmd.Help()
-		return
-	}
-	name, rest := args[0], args[1:]
+// storeInvocation is how a registry store is run without its wrapper.
+type storeInvocation struct {
+	Name     string
+	BeadsDir string
+	BDName   string
+	Env      []string
+}
+
+// resolveStore turns a registry name into the environment a wrapper would set.
+// An unknown name triggers one sync and one retry (the error-driven path), and
+// a store whose BEADS_DIR is missing on this machine gets its skeleton.
+func resolveStore(ctx context.Context, name string, src registrySource) (storeInvocation, error) {
 	if !storeregistry.ValidName(name) {
-		FatalError("%q is not a store name", name)
+		return storeInvocation{}, fmt.Errorf("%q is not a store name", name)
 	}
-	ctx := rootCtx
 	e, ok := cachedEntry(name)
-	if !ok {
-		// Error-driven path: a name that may have been created a moment ago.
-		if db, derr := registryDBFunc(); derr == nil {
-			if _, serr := runRegistrySync(ctx, syncOptions{Source: dbSource{db: db}, Wait: 20 * time.Second, Trigger: "unknown-store"}); serr == nil {
-				e, ok = cachedEntry(name)
-			}
+	if !ok && src != nil {
+		if _, err := runRegistrySync(ctx, syncOptions{Source: src, Wait: 20 * time.Second, Trigger: "unknown-store"}); err == nil {
+			e, ok = cachedEntry(name)
 		}
 	}
 	if !ok {
-		FatalError("unknown store %q. Known: %s", name, strings.Join(cachedActiveNames(), " "))
+		return storeInvocation{}, fmt.Errorf("unknown store %q. Known: %s", name, strings.Join(cachedActiveNames(), " "))
 	}
 	home, _ := os.UserHomeDir()
 	bdName := e.Name
@@ -593,26 +595,40 @@ func runBrainStore(cmd *cobra.Command, args []string) {
 		bdName = e.Store
 	}
 	beadsDir := filepath.Join(home, e.RelPath)
-	if _, err := os.Stat(filepath.Join(beadsDir, "metadata.json")); err != nil && e.WrapperKind == storeregistry.WrapperServer {
-		if db, derr := registryDBFunc(); derr == nil {
-			src := dbSource{db: db}
-			env := newShimEnv(ctx, src, machineName())
-			if err := createStoreSkeleton(env, syncAction{Path: beadsDir, project: e.Store, entry: e}); err != nil {
-				FatalError("preparing %s: %v", beadsDir, err)
-			}
+	if _, err := os.Stat(filepath.Join(beadsDir, "metadata.json")); err != nil && e.WrapperKind == storeregistry.WrapperServer && src != nil {
+		env := newShimEnv(ctx, src, machineName())
+		if err := createStoreSkeleton(env, syncAction{Path: beadsDir, project: e.Store, entry: e}); err != nil {
+			return storeInvocation{}, fmt.Errorf("preparing %s: %w", beadsDir, err)
 		}
 	}
 	knowledge := filepath.Dir(beadsDir)
 	if filepath.Base(knowledge) != bdName {
 		knowledge = filepath.Join(knowledge, bdName)
 	}
+	return storeInvocation{Name: name, BeadsDir: beadsDir, BDName: bdName, Env: []string{
+		"BEADS_DIR=" + beadsDir, "BD_NAME=" + bdName, "BRAIN_KNOWLEDGE_ROOT=" + knowledge,
+		"BRAIN_EXFIL_FLAT=1", "BRAIN_STORE_RESOLVED=" + name}}, nil
+}
+
+func runBrainStore(cmd *cobra.Command, args []string) {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		_ = cmd.Help()
+		return
+	}
+	var src registrySource
+	if db, derr := registryDBFunc(); derr == nil && db != nil {
+		src = dbSource{db: db}
+	}
+	inv, err := resolveStore(rootCtx, args[0], src)
+	if err != nil {
+		FatalError("%v", err)
+	}
 	self, err := os.Executable()
 	if err != nil {
 		self = os.Args[0]
 	}
-	child := exec.Command(self, rest...) //nolint:gosec // our own binary
-	child.Env = append(os.Environ(), "BEADS_DIR="+beadsDir, "BD_NAME="+bdName,
-		"BRAIN_KNOWLEDGE_ROOT="+knowledge, "BRAIN_EXFIL_FLAT=1", "BRAIN_STORE_RESOLVED="+name, envRegistrySyncing+"=1")
+	child := exec.Command(self, args[1:]...) //nolint:gosec // our own binary
+	child.Env = append(os.Environ(), inv.Env...)
 	child.Stdin, child.Stdout, child.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := child.Run(); err != nil {
 		var ee *exec.ExitError
