@@ -207,7 +207,7 @@ func classifyFleetMachine(m fleetMember, snap storeregistry.Snapshot, ack *store
 			parts = append(parts, rep.Error)
 		}
 		r.Detail = fmt.Sprintf("at epoch %d but %s", rep.AppliedEpoch, strings.Join(parts, "; "))
-		r.Fix = fix + " --force"
+		r.Fix = fix
 	default:
 		r.Verdict = verdictConverged
 		r.Detail = fmt.Sprintf("epoch %d, %d/%d wrappers", rep.AppliedEpoch, rep.WrappersOK, rep.Active)
@@ -429,9 +429,6 @@ func runFleetMachineSync(ctx context.Context, name string, dryRun bool) int {
 	args := []string{"stores", "sync"}
 	if dryRun {
 		args = append(args, "--dry-run")
-	}
-	if syncForce {
-		args = append(args, "--force")
 	}
 	tctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()

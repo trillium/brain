@@ -586,3 +586,32 @@ func TestJSONHelpers(t *testing.T) {
 		t.Error("a report with missing wrappers is not converged")
 	}
 }
+
+func TestRideAlongPolicyFileHoldsAMachineOnNotify(t *testing.T) {
+	f := newFleet(t)
+	a, b := f.addMachine("mini0"), f.addMachine("mini1")
+	f.adopt(a)
+	a.createStore("recipes")
+	b.use()
+	mustWrite(t, filepath.Join(b.home, ".config/brain/registry.policy"), "notify\n", 0o644)
+	if registryPolicy() != "notify" {
+		t.Fatal("the per-machine file should set the policy")
+	}
+	said := b.anyCommand()
+	if !strings.Contains(said, "run 'brain stores sync'") || b.has(".local/bin/recipes") {
+		t.Errorf("a machine on notify tells and waits: said=%q wrapper=%v", said, b.has(".local/bin/recipes"))
+	}
+	// The environment wins over the file; deleting the file returns to auto.
+	t.Setenv(envRegistryPolicy, "auto")
+	if registryPolicy() != "auto" {
+		t.Error("BRAIN_REGISTRY_POLICY overrides the file")
+	}
+	t.Setenv(envRegistryPolicy, "")
+	if err := os.Remove(filepath.Join(b.home, ".config/brain/registry.policy")); err != nil {
+		t.Fatal(err)
+	}
+	b.anyCommand()
+	if !b.has(".local/bin/recipes") {
+		t.Error("back on auto, the next command syncs")
+	}
+}

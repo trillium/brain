@@ -20,7 +20,7 @@ import (
 
 // This file is the command surface of the store registry:
 //
-//	brain stores sync [--dry-run] [--force] [--machine NAME]
+//	brain stores sync [--dry-run] [--machine NAME]
 //	brain stores verify [--json]
 //	brain stores epoch
 //	brain stores registry export|report|log
@@ -35,7 +35,6 @@ var storesLocalOnly bool
 
 var (
 	syncDryRun  bool
-	syncForce   bool
 	syncQuiet   bool
 	syncMachine string
 	syncTrigger string
@@ -108,7 +107,7 @@ func runBrainStoresSync(cmd *cobra.Command, _ []string) {
 		fmt.Fprintf(os.Stderr, "brain stores sync: cannot reach the registry: %v\n", err)
 		os.Exit(3)
 	}
-	rep, err := runRegistrySync(ctx, syncOptions{Source: src, DryRun: syncDryRun, Force: syncForce, Wait: syncWait, Trigger: syncTrigger})
+	rep, err := runRegistrySync(ctx, syncOptions{Source: src, DryRun: syncDryRun, Wait: syncWait, Trigger: syncTrigger})
 	if err != nil {
 		if syncQuiet {
 			fmt.Fprintf(os.Stderr, "%s brain stores sync: %v\n", time.Now().UTC().Format(time.RFC3339), err)
@@ -459,7 +458,7 @@ func homeRelativeDir(dir string) (string, bool) {
 // syncThisMachine applies the registry to this machine right after a
 // lifecycle change, and returns the "epoch N; k of n converged" line.
 func syncThisMachine(ctx context.Context, db *sql.DB, epoch int64) string {
-	rep, err := runRegistrySync(ctx, syncOptions{Source: dbSource{db: db}, Force: true, Wait: 30 * time.Second, Trigger: "lifecycle"})
+	rep, err := runRegistrySync(ctx, syncOptions{Source: dbSource{db: db}, Wait: 30 * time.Second, Trigger: "lifecycle"})
 	line := fleetConvergenceLine(ctx, db, epoch)
 	if err != nil {
 		return fmt.Sprintf("%s (local sync failed: %s; run 'brain stores sync')", line, firstErrLine(err))
@@ -691,7 +690,6 @@ command_not_found_handle() {
 
 func init() {
 	brainStoresSyncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Print the plan and change nothing")
-	brainStoresSyncCmd.Flags().BoolVar(&syncForce, "force", false, "Re-check every shim even when the applied epoch is current")
 	brainStoresSyncCmd.Flags().BoolVar(&syncQuiet, "quiet", false, "Print only when something changed or failed (for the poller's log)")
 	brainStoresSyncCmd.Flags().StringVar(&syncMachine, "machine", "", "Run the sync on this fleet machine over ssh (default: this machine)")
 	brainStoresSyncCmd.Flags().StringVar(&syncTrigger, "trigger", "manual", "What started this run (recorded for the log: timer, manual, ...)")

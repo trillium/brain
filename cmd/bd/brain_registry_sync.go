@@ -192,7 +192,6 @@ func acquireRegistryLock(wait time.Duration) (release func(), ok bool) {
 type syncOptions struct {
 	Source  registrySource
 	DryRun  bool
-	Force   bool
 	Wait    time.Duration // how long to wait for the sync lock (0 = try once)
 	Machine string
 	Trigger string // timer | ride-along | create | manual ...
@@ -336,7 +335,7 @@ func runRegistrySync(ctx context.Context, opt syncOptions) (*syncReport, error) 
 		clearRegistryFailure()
 	}
 	reportToDatabase(ctx, opt.Source, machine, role, rep, snap)
-	if rep.Changed > 0 && rep.Status == "converged" || rep.PrevEpoch != rep.Epoch {
+	if rep.Status == "converged" && (rep.Changed > 0 || rep.PrevEpoch != rep.Epoch) {
 		runSyncHooks(rep)
 	}
 	return rep, nil

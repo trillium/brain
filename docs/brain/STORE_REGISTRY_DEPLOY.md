@@ -27,11 +27,19 @@ rollback.
    If the PAI-removal change lands first, rebase on it: this change reuses
    `saveStoresRegistry` / `regenerateStoresEnv`, which still keep the legacy
    `~/.config/pai/stores.*` compatibility symlinks until that change removes them.
-4. Back up the small mutable state of each machine (no secrets involved):
+4. **Hold the other machines on `notify` until each has had a reviewed dry-run.**
+   Once the registry is adopted (mini0 step 5) any machine running the new binary
+   syncs itself on its next command. That is the point, but the first sync of a
+   machine deserves a look: on mini1 and the macbook, right after installing the
+   binary and **before** mini0 adopts, run `echo notify >
+   ~/.config/brain/registry.policy`. Commands then only print `store list changed
+   (epoch N -> M): run 'brain stores sync'`. After the reviewed `sync --dry-run`
+   and `sync` on that machine, delete the file (policy `auto`).
+5. Back up the small mutable state of each machine (no secrets involved):
    `tar czf ~/brain-config-pre-registry.tgz ~/.config/brain ~/.local/bin ~/.pi/agent/bin`
    (a few MB; the wrappers are text; `~/.pi/agent/bin` holds a few large binaries,
    exclude them if the archive is too big).
-5. The database login. The first adoption creates four tables and every
+6. The database login. The first adoption creates four tables and every
    lifecycle verb writes rows through the caller's connection (`brain_app`). Prove
    the privileges on mini0 before the first real run:
    `brain stores reconcile` (read-only) works with any login; for the write, run
@@ -67,6 +75,7 @@ them `registered=1` (the build marks them `0`).
 
 1. Steps 1–2 of mini0 (binary + pin, `brain stores doctor` baseline).
 2. **Do not run `reconcile --apply` here.** The registry already exists (mini0).
+   `~/.config/brain/registry.policy` should still say `notify` (section 0, step 4).
 3. `brain stores sync --dry-run`. Expected: `stores.yaml differs from the registry`
    (mini1's copy carries `/Users/trilliumsmith/...` paths, copied from the
    macbook; sync rewrites it to mini1's own home), the 12 missing agent links, and
@@ -74,7 +83,8 @@ them `registered=1` (the build marks them `0`).
    `~/.config/brain` empty: the first sync writes the canonical
    `~/.config/brain/stores.yaml` (merging the legacy file, losing nothing) and
    converts the legacy path to a symlink.
-4. `brain stores sync`, then `brain stores verify --probe 3` → `converged`.
+4. `brain stores sync`, then `brain stores verify --probe 3` → `converged`; then `rm -f
+   ~/.config/brain/registry.policy` (back to `auto`).
 5. Poller: same as mini0 step 10.
 6. Retire the stray bridge process on mini1 (`bun src/server.ts`, started 17 Oct,
    plist disabled): `kill` it. Decide separately whether mini1 keeps a bridge.
@@ -101,7 +111,7 @@ One hop, the relay is the database host, and `sync` reads the real registry.
 4. `brain stores sync --dry-run`: the registry is read from mini0; expect
    `unchanged` for the 55 forwarding wrappers and `CREATE` for any store mini0 has
    that the macbook lacks, plus the 4 missing agent links.
-5. `brain stores sync`, `brain stores verify` → `converged`.
+5. `brain stores sync`, `brain stores verify` → `converged`; `rm -f ~/.config/brain/registry.policy`.
 6. Poller: same as mini0 step 10, using the macbook's `brain` wrapper path.
 7. Gate: `brain stores doctor --fleet` from the macbook (local + ssh to the others) →
    `CONVERGED … on 3/3 machines`.
@@ -120,7 +130,7 @@ No ssh hop at runtime; it talks SQL to mini0:3307 like the minis.
    wrappers to server-mode wrappers (they carry the remote marker, so they are
    brain's to replace; each is backed up) and a `BEADS_DIR` skeleton for each store
    (project ids come from the database).
-3. `brain stores sync`; `brain stores verify --probe 3`.
+3. `brain stores sync`; `brain stores verify --probe 3`; `rm -f ~/.config/brain/registry.policy`.
 4. Larger change than A (credentials on a laptop, 55 skeletons, the satellite
    `bead-doctor` wrapper-form check must accept the generated form); do it only if
    the macbook must work when mini1 is down.

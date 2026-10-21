@@ -77,7 +77,7 @@ unusable on a machine until a sync ran.
 ## Commands
 
 ```sh
-brain stores sync [--dry-run] [--force] [--machine NAME] [--quiet] [--json]
+brain stores sync [--dry-run] [--machine NAME] [--quiet] [--json]
 brain stores verify [--json] [--probe N]        # read-only: this machine, from its real files
 brain stores doctor --fleet [--roster F] [--machines a,b] [--json]
 brain stores reconcile [--apply]                # one-time recovery (below)
@@ -140,7 +140,7 @@ continues:
 store list changed (epoch 41 -> 42): running brain stores sync
 ```
 
-* `BRAIN_REGISTRY_POLICY=notify` only tells; `off` disables it.
+* Policy: `auto` (default) syncs inline; `notify` only tells; `off` disables it. Set per command with `BRAIN_REGISTRY_POLICY`, or per machine in the one-word file `~/.config/brain/registry.policy` (the env var wins). A machine that should wait for a reviewed `sync --dry-run` is put on `notify` first.
 * **Never blocks:** an unreachable database, a failing sync or a held lock is a
   warning at most once an hour; the command runs regardless. After a failed sync
   commands do not retry for 5 minutes (the poller does).
@@ -149,6 +149,9 @@ store list changed (epoch 41 -> 42): running brain stores sync
 * **No loops:** `BRAIN_REGISTRY_SYNCING=1` is set during a sync and inherited by
   everything it starts; the `stores sync|verify|doctor|registry|reconcile|poller`
   commands never ride along.
+* A client machine (the macbook) forwards every command to its host, so the
+  ride-along happens there; the client itself converges through the poller and
+  `brain stores sync`.
 * Error-driven path: an unknown name given to `brain store` triggers one sync and
   one retry; the shell hook asks the cached registry first.
 
@@ -174,7 +177,7 @@ newest three stores through their wrappers, and prints one verdict per machine:
 |---|---|---|
 | `converged` | epoch and digest equal, nothing missing, probes read | |
 | `lagging` | applied epoch behind | `brain stores sync --machine NAME` |
-| `drifted` | same epoch but a wrapper/link/env is missing or a probe fails | `brain stores sync --machine NAME --force` |
+| `drifted` | same epoch but a wrapper/link/env is missing or a probe fails | `brain stores sync --machine NAME` |
 | `asleep-ok` | unreachable, but its last report is current: it missed nothing | |
 | `unreachable` | unreachable and its last report is behind | wake it, then sync |
 

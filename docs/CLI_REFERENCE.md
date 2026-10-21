@@ -6957,7 +6957,6 @@ bd stores sync [flags]
 
 ```
       --dry-run          Print the plan and change nothing
-      --force            Re-check every shim even when the applied epoch is current
       --machine string   Run the sync on this fleet machine over ssh (default: this machine)
       --quiet            Print only when something changed or failed (for the poller's log)
       --trigger string   What started this run (recorded for the log: timer, manual, ...) (default "manual")
@@ -9598,7 +9597,6 @@ bd stores sync [flags]
 
 ```
       --dry-run          Print the plan and change nothing
-      --force            Re-check every shim even when the applied epoch is current
       --machine string   Run the sync on this fleet machine over ssh (default: this machine)
       --quiet            Print only when something changed or failed (for the poller's log)
       --trigger string   What started this run (recorded for the log: timer, manual, ...) (default "manual")

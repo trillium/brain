@@ -36,7 +36,7 @@ func registryRideAlongSkipped(cmd *cobra.Command) bool {
 	if strings.EqualFold(os.Getenv(envRegistryOff), "off") || os.Getenv(envRegistrySyncing) != "" {
 		return true
 	}
-	if strings.EqualFold(os.Getenv(envRegistryPolicy), "off") {
+	if registryPolicy() == "off" {
 		return true
 	}
 	for c := cmd; c != nil; c = c.Parent() {
@@ -53,6 +53,24 @@ func registryRideAlongSkipped(cmd *cobra.Command) bool {
 		}
 	}
 	return false
+}
+
+const registryPolicyPath = ".config/brain/registry.policy"
+
+// registryPolicy is the ride-along policy: auto (default), notify or off. The
+// environment wins over the per-machine file ~/.config/brain/registry.policy.
+func registryPolicy() string {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(envRegistryPolicy)))
+	if v == "" {
+		if data, err := os.ReadFile(homeFile(registryPolicyPath)); err == nil {
+			v = strings.ToLower(strings.TrimSpace(string(data)))
+		}
+	}
+	switch v {
+	case "notify", "off":
+		return v
+	}
+	return "auto"
 }
 
 // registryRideAlong is called once per command, after the store is open.
@@ -86,7 +104,7 @@ func rideAlongWith(ctx context.Context, src registrySource, q storeregistry.DBTX
 	if recentRegistryFailure() {
 		return // a sync just failed here; the poller retries, commands must not keep paying for it
 	}
-	if strings.EqualFold(os.Getenv(envRegistryPolicy), "notify") {
+	if registryPolicy() == "notify" {
 		warnRegistryOnce(errOut, fmt.Sprintf("store list changed (epoch %d -> %d): run 'brain stores sync'", applied.Epoch, epoch))
 		return
 	}
