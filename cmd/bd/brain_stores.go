@@ -22,23 +22,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// storesYamlPath is the canonical registry file for brain federation stores.
-// De-PAI migration (brain v0.5.0): canonical path moved from
-// ~/.config/pai/stores.yaml to ~/.config/brain/stores.yaml. The legacy path
-// is kept as a compat symlink (see ensureCompatSymlink) so existing stores
-// keep working non-destructively.
+// storesYamlPath is the registry file for brain federation stores.
 const storesYamlPath = ".config/brain/stores.yaml"
-
-// storesYamlLegacyPath is the pre-migration registry location. Read as a
-// fallback; written only as a symlink to the canonical path.
-const storesYamlLegacyPath = ".config/pai/stores.yaml"
 
 // storesEnvPath is the shell-sourceable export of the registry.
 const storesEnvPath = ".config/brain/stores.env"
-
-// storesEnvLegacyPath is the pre-migration env export. Kept as a compat
-// symlink to the canonical file.
-const storesEnvLegacyPath = ".config/pai/stores.env"
 
 // storeEntry is the registry value for a single federated store. The Path
 // points at the store's .beads directory; About is an optional human blurb
@@ -88,14 +76,6 @@ func storesYamlFile() string {
 	return filepath.Join(home, storesYamlPath)
 }
 
-func storesYamlLegacyFile() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, storesYamlLegacyPath)
-}
-
 func storesEnvFile() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -104,118 +84,6 @@ func storesEnvFile() string {
 	return filepath.Join(home, storesEnvPath)
 }
 
-func storesEnvLegacyFile() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, storesEnvLegacyPath)
-}
-
-// ensureCompatSymlink points legacyPath at canonicalPath via a relative
-// symlink. Non-destructive by design:
-//   - legacy missing → create symlink.
-//   - legacy already the correct symlink → no-op.
-//   - legacy is a regular file/dir → leave untouched (a prior version's
-//     data); the caller has already migrated its contents by reading the
-//     legacy path first and writing the canonical path.
-//
-// Returns nil in all non-fatal cases so migration never blocks a store write.
-//
-//nolint:unparam // always-nil error keeps call sites uniform with other I/O helpers
-func ensureCompatSymlink(canonicalPath, legacyPath string) error {
-	if canonicalPath == "" || legacyPath == "" || canonicalPath == legacyPath {
-		return nil
-	}
-	if _, err := os.Lstat(legacyPath); err != nil {
-		if !os.IsNotExist(err) {
-			return nil
-		}
-		if err := os.MkdirAll(filepath.Dir(legacyPath), 0o755); err != nil {
-			return nil
-		}
-		rel, err := filepath.Rel(filepath.Dir(legacyPath), canonicalPath)
-		if err != nil {
-			rel = canonicalPath
-		}
-		_ = os.Symlink(rel, legacyPath)
-		return nil
-	}
-	// Legacy exists: if it is already a symlink, verify/fix its target.
-	if fi, err := os.Lstat(legacyPath); err == nil && fi.Mode()&os.ModeSymlink != 0 {
-		if target, err := os.Readlink(legacyPath); err == nil {
-			resolved := target
-			if !filepath.IsAbs(resolved) {
-				resolved = filepath.Join(filepath.Dir(legacyPath), target)
-			}
-			if filepath.Clean(resolved) == filepath.Clean(canonicalPath) {
-				return nil
-			}
-		}
-		// Stale symlink pointing elsewhere: leave it; operator intent wins.
-		return nil
-	}
-	// Regular file/dir at legacy path: leave in place for compat reads.
-	return nil
-}
-
-// migrateLegacyFileToSymlink converges the legacy path to a symlink once the
-// canonical file holds the merged state. Called after each save, so the
-// transition always ends at: canonical file + legacy symlink. Safe in every
-// case because both callers (saveStoresRegistry, regenerateStoresEnv) write
-// the canonical file from content loaded through the legacy fallback first:
-// every byte of a legacy regular file is already present in the canonical
-// file before the legacy path is replaced, so no data is ever lost.
-// A legacy directory (never a file the migration wrote) is left untouched.
-func migrateLegacyFileToSymlink(canonicalPath, legacyPath string) {
-	if canonicalPath == "" || legacyPath == "" {
-		return
-	}
-	fi, err := os.Lstat(legacyPath)
-	if err != nil {
-		// Legacy missing → ensure symlink for future compat reads.
-		_ = ensureCompatSymlink(canonicalPath, legacyPath)
-		return
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		_ = ensureCompatSymlink(canonicalPath, legacyPath)
-		return
-	}
-	if !fi.Mode().IsRegular() {
-		return
-	}
-	if _, err := os.Stat(canonicalPath); err != nil {
-		// Canonical absent but legacy is a regular file (e.g. a save that
-		// failed between load and write): seed canonical from legacy so
-		// the legacy content survives, then converge below.
-		data, err := os.ReadFile(legacyPath) //nolint:gosec
-		if err != nil {
-			return
-		}
-		if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
-			return
-		}
-		if err := os.WriteFile(canonicalPath, data, 0o644); err != nil { //nolint:gosec
-			return
-		}
-	}
-	// Both paths are regular files at this point. The canonical file was
-	// written from merged state that already includes the legacy content
-	// (loads read the legacy fallback), so replacing the stale legacy file
-	// with a symlink loses nothing and keeps old-path readers current.
-	// The remove+symlink is best-effort: a failure leaves the legacy file
-	// readable and the canonical file authoritative.
-	if err := os.Remove(legacyPath); err != nil {
-		return
-	}
-	_ = ensureCompatSymlink(canonicalPath, legacyPath)
-}
-
-// loadStoresRegistry reads the canonical registry file union-merged with the
-// legacy fallback (canonical wins on key conflict). Merging — rather than
-// first-file-wins — guarantees a diverged legacy regular file can never lose
-// entries silently: every load-then-save cycle persists the union, so the
-// post-save symlink convergence in migrateLegacyFileToSymlink is lossless.
 // readStoresFile reads one registry file. found=false means the file is
 // absent (not an error). A present-but-unreadable or unparseable file
 // returns found=true with the error, so callers can decide whether the
@@ -241,30 +109,18 @@ func readStoresFile(path string) (stores map[string]storeEntry, found bool, err 
 	return reg.Stores, true, nil
 }
 
+// loadStoresRegistry reads the registry file. A missing file is an empty
+// registry; a present-but-unreadable or unparseable one is an error, so a
+// later save cannot persist an empty registry over unknown state.
 func loadStoresRegistry() (map[string]storeEntry, error) {
-	merged := make(map[string]storeEntry)
-	// Legacy first so canonical entries overwrite on conflict. The legacy
-	// read is best-effort: a corrupt/unreadable legacy file must never break
-	// reads while the canonical file is healthy (otherwise a damaged legacy
-	// copy would wedge every load-then-save command in a stuck state, since
-	// load fails before save can converge it). A corrupt legacy with a
-	// missing canonical stays fatal, so a later save cannot persist an
-	// empty registry over unknown state.
-	legacy, _, legacyErr := readStoresFile(storesYamlLegacyFile())
-	canonical, canonicalFound, err := readStoresFile(storesYamlFile())
+	stores, _, err := readStoresFile(storesYamlFile())
 	if err != nil {
 		return nil, err
 	}
-	if !canonicalFound && legacyErr != nil {
-		return nil, legacyErr
+	if stores == nil {
+		stores = make(map[string]storeEntry)
 	}
-	for name, entry := range legacy {
-		merged[name] = entry
-	}
-	for name, entry := range canonical {
-		merged[name] = entry
-	}
-	return merged, nil
+	return stores, nil
 }
 
 func saveStoresRegistry(stores map[string]storeEntry) error {
@@ -277,11 +133,10 @@ func saveStoresRegistry(stores map[string]storeEntry) error {
 	if err != nil {
 		return fmt.Errorf("marshaling stores: %w", err)
 	}
-	header := "# brain federation store registry — managed by 'brain stores'\n# Do not edit manually; use 'brain stores add/remove'.\n# Legacy path ~/.config/pai/stores.yaml is a compat symlink to this file.\n\n"
+	header := "# brain federation store registry — managed by 'brain stores'\n# Do not edit manually; use 'brain stores add/remove'.\n\n"
 	if err := os.WriteFile(path, append([]byte(header), data...), 0o644); err != nil { //nolint:gosec
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
-	migrateLegacyFileToSymlink(path, storesYamlLegacyFile())
 	return nil
 }
 
@@ -290,15 +145,12 @@ var brainStoresCmd = &cobra.Command{
 	Short: "Manage the brain federation store registry",
 	Long: `Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/brain/stores.yaml (legacy path
-~/.config/pai/stores.yaml is a compat symlink kept for transition).
-Each registered store
+The registry lives at ~/.config/brain/stores.yaml. Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
 Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
-shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
-PAI_STORE_* aliases are still emitted for transition).`,
+shell wrapper scripts that need BRAIN_STORE_* variables.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
 	},
@@ -987,8 +839,7 @@ exec env BEADS_DIR=%s BD_NAME=%q %s "$@"
 
 // regenerateStoresEnv writes ~/.config/brain/stores.env from the registry,
 // matching the format `brain stores env` emits. It exports the canonical
-// BRAIN_STORE_* / BRAIN_STORES_LIST variables plus deprecated PAI_STORE_* /
-// PAI_STORES_LIST aliases for transition. Returns the written path.
+// BRAIN_STORE_* / BRAIN_STORES_LIST variables. Returns the written path.
 func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
@@ -1004,25 +855,17 @@ func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 	var sb strings.Builder
 	sb.WriteString("# Auto-generated by 'brain stores env' — do not edit manually.\n")
 	sb.WriteString("# Source in store wrapper scripts to get BRAIN_STORE_* vars.\n")
-	sb.WriteString("# Deprecated PAI_STORE_* aliases are emitted for transition and will be removed.\n")
 	sb.WriteString("# Regenerate: brain stores env\n")
-	sb.WriteString("# Canonical file: ~/.config/brain/stores.env (legacy ~/.config/pai/stores.env is a symlink).\n\n")
+	sb.WriteString("# File: ~/.config/brain/stores.env\n\n")
 	for _, n := range names {
 		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
 		sb.WriteString(fmt.Sprintf("export BRAIN_STORE_%s=%q\n", envKey, stores[n].Path))
 	}
 	sb.WriteString(fmt.Sprintf("\nexport BRAIN_STORES_LIST=%q\n", strings.Join(names, ":")))
-	sb.WriteString("\n# Deprecated compat aliases (transition only).\n")
-	for _, n := range names {
-		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-		sb.WriteString(fmt.Sprintf("export PAI_STORE_%s=%q\n", envKey, stores[n].Path))
-	}
-	sb.WriteString(fmt.Sprintf("export PAI_STORES_LIST=%q\n", strings.Join(names, ":")))
 
 	if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
-	migrateLegacyFileToSymlink(outPath, filepath.Join(home, storesEnvLegacyPath))
 	return outPath, nil
 }
 

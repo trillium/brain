@@ -89,11 +89,6 @@ func TestRegenerateStoresEnv_WritesShellExports(t *testing.T) {
 		`export BRAIN_STORE_IDEAS="/data/ideas/.beads"`,
 		`export BRAIN_STORE_SIDE_QUESTS="/data/side-quests/.beads"`,
 		`export BRAIN_STORES_LIST="ideas:recipes:side-quests"`, // sorted, colon-joined
-		// Deprecated compat aliases (transition only).
-		`export PAI_STORE_RECIPES="/data/recipes/.beads"`,
-		`export PAI_STORE_IDEAS="/data/ideas/.beads"`,
-		`export PAI_STORE_SIDE_QUESTS="/data/side-quests/.beads"`,
-		`export PAI_STORES_LIST="ideas:recipes:side-quests"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("env file missing line %q. Got:\n%s", want, got)
@@ -332,29 +327,7 @@ func TestInitDoltStore_ErrorsWhenDoltMissing(t *testing.T) {
 	}
 }
 
-func TestLoadStoresRegistry_LegacyFallback(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	home, _ := os.UserHomeDir()
-	legacyDir := filepath.Join(home, ".config", "pai")
-	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
-		t.Fatalf("mkdir legacy: %v", err)
-	}
-	legacyBody := "stores:\n  task:\n    path: /data/tasks/.beads\n"
-	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte(legacyBody), 0o644); err != nil {
-		t.Fatalf("write legacy yaml: %v", err)
-	}
-
-	stores, err := loadStoresRegistry()
-	if err != nil {
-		t.Fatalf("loadStoresRegistry: %v", err)
-	}
-	if stores["task"].Path != "/data/tasks/.beads" {
-		t.Errorf("legacy fallback not read; got %+v", stores)
-	}
-}
-
-func TestSaveStoresRegistry_ConvergesLegacySymlink(t *testing.T) {
+func TestSaveStoresRegistry_RoundTrip(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	stores := map[string]storeEntry{"task": {Path: "/data/tasks/.beads"}}
@@ -363,19 +336,9 @@ func TestSaveStoresRegistry_ConvergesLegacySymlink(t *testing.T) {
 	}
 
 	home, _ := os.UserHomeDir()
-	canonical := filepath.Join(home, ".config", "brain", "stores.yaml")
-	legacy := filepath.Join(home, ".config", "pai", "stores.yaml")
-	if _, err := os.Stat(canonical); err != nil {
-		t.Fatalf("canonical registry missing: %v", err)
+	if _, err := os.Stat(filepath.Join(home, ".config", "brain", "stores.yaml")); err != nil {
+		t.Fatalf("registry missing: %v", err)
 	}
-	fi, err := os.Lstat(legacy)
-	if err != nil {
-		t.Fatalf("legacy compat path missing: %v", err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("legacy path should be a symlink, mode %v", fi.Mode())
-	}
-	// Round-trip: load reads the canonical file back.
 	back, err := loadStoresRegistry()
 	if err != nil {
 		t.Fatalf("reload: %v", err)
@@ -385,122 +348,33 @@ func TestSaveStoresRegistry_ConvergesLegacySymlink(t *testing.T) {
 	}
 }
 
-func TestSaveStoresRegistry_ConvergesLegacyRegularFile(t *testing.T) {
+func TestLoadStoresRegistry_MissingIsEmpty(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-
-	home, _ := os.UserHomeDir()
-	legacyDir := filepath.Join(home, ".config", "pai")
-	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
-		t.Fatalf("mkdir legacy: %v", err)
-	}
-	// Pre-migration machine: only a legacy regular file exists.
-	legacyBody := "stores:\n  task:\n    path: /data/tasks/.beads\n"
-	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte(legacyBody), 0o644); err != nil {
-		t.Fatalf("write legacy yaml: %v", err)
-	}
-
-	// First post-migration save merges legacy content and must converge
-	// the legacy path to a symlink — never leave it stale.
-	stores, err := loadStoresRegistry()
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	stores["recipes"] = storeEntry{Path: "/data/recipes/.beads"}
-	if err := saveStoresRegistry(stores); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	legacy := filepath.Join(legacyDir, "stores.yaml")
-	fi, err := os.Lstat(legacy)
-	if err != nil {
-		t.Fatalf("legacy path missing after save: %v", err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("legacy path should be a symlink after first save, mode %v", fi.Mode())
-	}
-	back, err := loadStoresRegistry()
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if back["task"].Path != "/data/tasks/.beads" || back["recipes"].Path != "/data/recipes/.beads" {
-		t.Errorf("merged state lost; got %+v", back)
-	}
-}
-
-func TestLoadStoresRegistry_MergesDivergedFiles(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	home, _ := os.UserHomeDir()
-	for dir, body := range map[string]string{
-		// Legacy holds a store the canonical file never saw.
-		filepath.Join(home, ".config", "pai"): "stores:\n  task:\n    path: /data/tasks/.beads\n  shared:\n    path: /legacy/shared/.beads\n",
-		// Canonical wins on the conflicting key.
-		filepath.Join(home, ".config", "brain"): "stores:\n  recipes:\n    path: /data/recipes/.beads\n  shared:\n    path: /canonical/shared/.beads\n",
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
-			t.Fatalf("write %s: %v", dir, err)
-		}
-	}
 
 	stores, err := loadStoresRegistry()
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("missing registry should load empty: %v", err)
 	}
-	if stores["task"].Path != "/data/tasks/.beads" {
-		t.Errorf("legacy-only entry lost; got %+v", stores)
-	}
-	if stores["recipes"].Path != "/data/recipes/.beads" {
-		t.Errorf("canonical-only entry lost; got %+v", stores)
-	}
-	if stores["shared"].Path != "/canonical/shared/.beads" {
-		t.Errorf("canonical should win on conflict; got %+v", stores)
+	if len(stores) != 0 {
+		t.Errorf("expected empty registry; got %+v", stores)
 	}
 }
 
-func TestLoadStoresRegistry_CorruptLegacyHealthyCanonical(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+func TestLoadStoresRegistry_CorruptIsFatal(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
-	home, _ := os.UserHomeDir()
-	for dir, body := range map[string]string{
-		// Corrupt legacy must never wedge reads while canonical is healthy.
-		filepath.Join(home, ".config", "pai"):   "not: [valid yaml: but parseable",
-		filepath.Join(home, ".config", "brain"): "stores:\n  task:\n    path: /data/tasks/.beads\n",
-	} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", dir, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte(body), 0o644); err != nil {
-			t.Fatalf("write %s: %v", dir, err)
-		}
+	dir := filepath.Join(home, ".config", "brain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "stores.yaml"), []byte("not: [valid yaml: but parseable"), 0o644); err != nil {
+		t.Fatalf("write yaml: %v", err)
 	}
 
-	stores, err := loadStoresRegistry()
-	if err != nil {
-		t.Fatalf("corrupt legacy must not fail healthy-canonical load: %v", err)
-	}
-	if stores["task"].Path != "/data/tasks/.beads" {
-		t.Errorf("canonical content lost; got %+v", stores)
-	}
-}
-
-func TestLoadStoresRegistry_CorruptLegacyMissingCanonical(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-
-	home, _ := os.UserHomeDir()
-	legacyDir := filepath.Join(home, ".config", "pai")
-	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
-		t.Fatalf("mkdir legacy: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(legacyDir, "stores.yaml"), []byte("not: [valid yaml: but parseable"), 0o644); err != nil {
-		t.Fatalf("write legacy yaml: %v", err)
-	}
-
-	// Corrupt legacy with no canonical stays fatal: a later save must not
-	// persist an empty registry over unknown state.
+	// A corrupt registry stays fatal: a later save must not persist an
+	// empty registry over unknown state.
 	if _, err := loadStoresRegistry(); err == nil {
-		t.Fatal("expected error for corrupt legacy with missing canonical, got nil")
+		t.Fatal("expected error for corrupt registry, got nil")
 	}
 }

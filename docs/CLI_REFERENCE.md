@@ -940,9 +940,7 @@ Render an ISA-kind issue to canonical markdown at
 &lt;exfil-root&gt;/&lt;slug&gt;/ISA.md.
 
 The exfil root is configurable via the BRAIN_ISA_EXFIL_ROOT environment
-variable; it defaults to $&#123;HOME&#125;/.claude/brain/MEMORY/WORK. When that
-path does not exist but the legacy $&#123;HOME&#125;/.claude/PAI/MEMORY/WORK does,
-the legacy path is used instead. The render is
+variable; it defaults to $&#123;HOME&#125;/.claude/brain/MEMORY/WORK. The render is
 atomic: a temp file is written first, then rename(2) makes the swap, so
 readers never observe a half-written file.
 
@@ -6392,15 +6390,12 @@ bd related <id> [flags]
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/brain/stores.yaml (legacy path
-~/.config/pai/stores.yaml is a compat symlink kept for transition).
-Each registered store
+The registry lives at ~/.config/brain/stores.yaml. Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
 Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
-shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
-PAI_STORE_* aliases are still emitted for transition).
+shell wrapper scripts that need BRAIN_STORE_* variables.
 
 ```
 bd stores
@@ -8750,15 +8745,12 @@ bd ship <capability> [flags]
 
 Manage the registry of bd stores federated under brain.
 
-The registry lives at ~/.config/brain/stores.yaml (legacy path
-~/.config/pai/stores.yaml is a compat symlink kept for transition).
-Each registered store
+The registry lives at ~/.config/brain/stores.yaml. Each registered store
 can be searched via 'brain search', transferred to via 'brain transfer',
 and synced via 'brain repo sync'.
 
 Run 'brain stores env' to regenerate ~/.config/brain/stores.env for
-shell wrapper scripts that need BRAIN_STORE_* variables (deprecated
-PAI_STORE_* aliases are still emitted for transition).
+shell wrapper scripts that need BRAIN_STORE_* variables.
 
 ```
 bd stores [flags]

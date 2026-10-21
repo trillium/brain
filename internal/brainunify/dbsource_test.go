@@ -158,10 +158,10 @@ func TestLoadRegistryResolvesDatabaseNotStoreName(t *testing.T) {
 	}
 }
 
-func TestLoadRegistryReadsLegacyPath(t *testing.T) {
+func TestLoadRegistryReadsRegistry(t *testing.T) {
 	home := t.TempDir()
 	writeStore(t, home, "inbox", "inbox", "p3", "inbox", "inbox")
-	cfgDir := filepath.Join(home, ".config", "pai")
+	cfgDir := filepath.Join(home, ".config", "brain")
 	if err := os.MkdirAll(cfgDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestLoadRegistryReadsLegacyPath(t *testing.T) {
 		t.Fatalf("LoadRegistry: %v", err)
 	}
 	if len(got.Stores) != 1 || got.Stores[0].Namespace != "inbox" {
-		t.Fatalf("legacy registry not read: %+v", got.Stores)
+		t.Fatalf("registry not read: %+v", got.Stores)
 	}
 }
 

@@ -263,7 +263,7 @@ func TestRenderLearnPhaseProducesFile(t *testing.T) {
 
 // TestRenderSingleTrailingNewline pins the contract that the output ends
 // with exactly one '\n'. Multiple trailing newlines have caused git diff
-// noise in adjacent PAI tools; one is enough.
+// noise in adjacent tools; one is enough.
 func TestRenderSingleTrailingNewline(t *testing.T) {
 	in := &RenderInput{
 		ID:    "brain-isa-00007",

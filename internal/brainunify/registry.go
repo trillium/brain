@@ -45,10 +45,7 @@ import (
 // `brain stores` maintains. The registry is the authority for which stores
 // exist; the store's metadata.json is the authority for which Dolt database
 // backs it.
-const (
-	registryCanonical = ".config/brain/stores.yaml"
-	registryLegacy    = ".config/pai/stores.yaml"
-)
+const registryPath = ".config/brain/stores.yaml"
 
 // Store is one federated brain store: the registry name, the .beads directory
 // on disk, and the Dolt database on the shared server that actually holds its
@@ -202,16 +199,12 @@ func (r Registry) ByDatabase(name string) []Store {
 // database. home is the user's home directory (normally os.UserHomeDir);
 // passing it explicitly keeps the resolution testable.
 func LoadRegistry(home string) (Registry, error) {
-	canonical := filepath.Join(home, registryCanonical)
-	legacy := filepath.Join(home, registryLegacy)
-	path := canonical
-	if _, err := os.Stat(canonical); err != nil && !os.IsNotExist(err) {
-		return Registry{}, fmt.Errorf("reading store registry %s: %w", canonical, err)
-	} else if os.IsNotExist(err) {
-		if _, lerr := os.Stat(legacy); lerr != nil {
-			return Registry{}, fmt.Errorf("no brain store registry at %s (legacy %s also absent): %w", canonical, legacy, lerr)
+	path := filepath.Join(home, registryPath)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return Registry{}, fmt.Errorf("no brain store registry at %s: %w", path, err)
 		}
-		path = legacy
+		return Registry{}, fmt.Errorf("reading store registry %s: %w", path, err)
 	}
 	raw, err := os.ReadFile(path) //nolint:gosec // operator-owned registry, fixed path
 	if err != nil {

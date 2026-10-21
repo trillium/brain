@@ -1002,7 +1002,7 @@ func (e *peerEnv) activate(ctx context.Context, req peerActivateReq) (*peerActiv
 	}
 
 	// 2. Registry and env, written by the same code 'brain stores' uses.
-	for _, p := range []string{storesYamlFile(), storesYamlLegacyFile(), storesEnvFile(), storesEnvLegacyFile()} {
+	for _, p := range []string{storesYamlFile(), storesEnvFile()} {
 		if err := j.saveFile(p); err != nil {
 			return nil, err
 		}

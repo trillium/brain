@@ -32,14 +32,11 @@ brain is one Dolt database (`brain_unified`) holding a family of stores, each wi
 
 ## Store registry
 
-Stores are registered in `~/.config/brain/stores.yaml` (legacy `~/.config/pai/stores.yaml`
-is a compat symlink kept for transition — old paths keep working). The registry drives both
+Stores are registered in `~/.config/brain/stores.yaml`. The registry drives both
 the binary (for `brain search` federation and `brain transfer`) and shell wrappers (via
 `~/.config/brain/stores.env`, generated with `brain stores env`).
 
-`brain stores env` exports canonical `BRAIN_STORE_*` / `BRAIN_STORES_LIST` variables plus
-deprecated `PAI_STORE_*` / `PAI_STORES_LIST` aliases for transition. See
-[docs/BRAIN_DEPAI_MIGRATION.md](docs/BRAIN_DEPAI_MIGRATION.md).
+`brain stores env` exports `BRAIN_STORE_*` / `BRAIN_STORES_LIST` variables.
 
 ```sh
 brain stores create recipes              # provision new store end-to-end (namespace in the shared database, entries/, wrapper, registry, env)
@@ -64,7 +61,7 @@ A store with no wrapper (registered with `--no-wrapper`, or one that was lost) i
 - **Markdown exfiltration on every mutation, every kind.** Every write renders a markdown file to `<store>/entries/<kind>/<slug>.md` — not just the brain trio (task/knowledge/both) but every IssueType bd recognizes (bug, feature, epic, decision, message, etc.). Dolt is canonical; markdown is the human view.
 - **Store-derived exfil root.** Resolution is `BRAIN_KNOWLEDGE_ROOT` → `dirname($BEADS_DIR)/entries` → `~/data/brain/entries` — so each store's markdown lands next to its own store directory automatically.
 - **On-demand re-render.** `bd render <id>` and `bd render-all` re-emit markdown from the substrate when the on-disk copy is missing, corrupted, or out of date. `render-all` prints a confirmation summary (`Exfiltrated N / M beads to <root>/entries/ (K failed)`) and supports `--json` for scripting.
-- **ISA primitives.** First-class support for ISA (Ideal State Artifact) format v2.7 — `brain new isa`, `brain isa-section`, `brain isa-render`, per-section UPSERT semantics. (Format originated as PAI Algorithm v6.4+ ISAs; see migration notes.)
+- **ISA primitives.** First-class support for ISA (Ideal State Artifact) format v2.7 — `brain new isa`, `brain isa-section`, `brain isa-render`, per-section UPSERT semantics.
 - **Auto-file feature requests.** Unknown flag on a `brain` command? It files a feature request automatically and prints the ID.
 
 ## How it ships
@@ -96,13 +93,10 @@ The combined token `<beadsVersion>+brain.<brainVersion>` is canonical. Print it 
 To cut a release:
 
 ```sh
-make brain-release BUMP=minor   # tags brain/vX.Y.Z locally (de-PAI migration shipped as v0.5.0)
+make brain-release BUMP=minor   # tags brain/vX.Y.Z locally
 make build && cp bd ~/.local/bin/bd
 git push origin brain/v0.5.0    # push when online
 ```
-
-De-PAI migration notes (registry path, env renames, ISA exfil default, compat shims):
-[docs/BRAIN_DEPAI_MIGRATION.md](docs/BRAIN_DEPAI_MIGRATION.md).
 
 ## Key verbs
 
