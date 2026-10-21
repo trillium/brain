@@ -1,0 +1,97 @@
+--- a/src/config.ts	2026-10-21 09:39:06
++++ b/src/config.ts	2026-10-21 09:39:18
+@@ -1,6 +1,6 @@
+ // Shared config: ports, URLs, auth key, store registry. Single source of truth
+ // for every route module.
+-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs'
++import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from 'fs'
+ import { configFile, configFileReadOnly } from './lib/config-dir'
+ import { join, dirname } from 'path'
+ import { randomBytes } from 'crypto'
+@@ -54,10 +54,40 @@
+   stores: Record<string, StoreEntry>
+ }
+ 
+-const storesConfig = yaml.load(
+-  readFileSync(configFileReadOnly('stores.yaml'), 'utf8')
+-) as StoresConfig
++const STORES_FILE = configFileReadOnly('stores.yaml')
++let storesConfig: StoresConfig = { stores: {} }
++let storesMtimeMs = -1
+ 
+-export const STORES = Object.keys(storesConfig.stores)
+-export const storeAbout = (store: string): string =>
+-  storesConfig.stores[store]?.about ?? ''
++// STORES is one array that is refilled IN PLACE, so every module that imported
++// it (or captured it as a default parameter) sees a store created, renamed or
++// removed elsewhere in the fleet. `brain stores sync` rewrites stores.yaml and
++// ~/.config/brain/registry.applied on every registry change; this re-reads the
++// file when its mtime moves (one statSync per request).
++export const STORES: string[] = []
++
++export function refreshStores(): void {
++  let mtime: number
++  try { mtime = statSync(STORES_FILE).mtimeMs } catch { return } // keep the last good list
++  if (mtime === storesMtimeMs) return
++  const cfg = yaml.load(readFileSync(STORES_FILE, 'utf8')) as StoresConfig
++  if (!cfg || !cfg.stores) return
++  storesConfig = cfg
++  storesMtimeMs = mtime
++  STORES.length = 0
++  STORES.push(...Object.keys(cfg.stores))
++}
++refreshStores()
++
++export const storeAbout = (store: string): string => {
++  refreshStores()
++  return storesConfig.stores[store]?.about ?? ''
++}
++
++// The registry epoch this machine last applied (written by `brain stores sync`);
++// bridge_info reports it so `brain stores doctor --fleet` can compare.
++export const storesEpoch = (): number => {
++  try {
++    const raw = JSON.parse(readFileSync(configFileReadOnly('registry.applied'), 'utf8')) as { epoch?: number }
++    return typeof raw.epoch === 'number' ? raw.epoch : 0
++  } catch { return 0 }
++}
+--- a/src/server.ts	2026-10-21 09:39:06
++++ b/src/server.ts	2026-10-21 09:39:18
+@@ -3,7 +3,7 @@
+ import { execSync } from 'child_process'
+ import { readFileSync } from 'fs'
+ import path from 'path'
+-import { PORT, BASE, toolKey, STORES, storeAbout, TAILNET_IP } from './config'
++import { PORT, BASE, toolKey, STORES, storeAbout, TAILNET_IP, refreshStores } from './config'
+ import { qstr, pstr, cacheTag, bd, storeFromId } from './util'
+ import { wrap } from './wrap'
+ import { warmResume } from './resume-cache'
+@@ -16,6 +16,9 @@
+ 
+ const app = express()
+ 
++// Pick up a store list changed by `brain stores sync` (cheap: one statSync).
++app.use((_req: Request, _res: Response, next: NextFunction) => { refreshStores(); next() })
++
+ // Supporting routing correction only (truthful req.ip in logs on
+ // Funnel-forwarded hops): the auth decision lives in ./lib/access-gate
+ // and never rests on req.ip, X-Forwarded-For, or User-Agent.
+--- a/src/routes/mcp.ts	2026-10-21 09:39:06
++++ b/src/routes/mcp.ts	2026-10-21 09:39:18
+@@ -7,7 +7,7 @@
+ import { createMcpHandler, withMcpAuth } from 'mcp-handler'
+ import { z } from 'zod'
+ import { MAX_BODY_CHARS, bodyText, requiredBodyText } from '../lib/limits'
+-import { BASE, STORES, toolKey } from '../config'
++import { BASE, STORES, toolKey, storesEpoch } from '../config'
+ import { storeFromId } from '../util'
+ import {
+   ambiguousBeadIdError,
+@@ -690,6 +690,7 @@
+         operator: loadProfile(),
+         personalityDoc: pers.doc,
+         stores: STORES,
++        stores_epoch: storesEpoch(),
+         recentNotes: scratch.notes,
+         scratchTotal: scratch.total,
+       }))

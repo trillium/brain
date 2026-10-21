@@ -23,6 +23,16 @@ All notable changes to the beads project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased (brain 0.6.0)
+
+Store registry: the shared database holds the one list of stores with an epoch
+bumped in the same transaction as every create, rename and remove. New:
+`brain stores sync|verify|reconcile|epoch|registry|poller|shell-hook`,
+`brain stores doctor --fleet`, `brain store <name> …` (runtime resolution) and a
+ride-along epoch check on every command. Fixed: `stores rename` no longer drops
+the shared-server pins, `stores remove` regenerates `stores.env`. See
+[docs/brain/STORE_REGISTRY.md](docs/brain/STORE_REGISTRY.md).
+
 ## brain v0.5.1
 
 Built on beads 1.1.0-rc.1 (`1.1.0-rc.1+brain.0.5.1`). `brain remote` client

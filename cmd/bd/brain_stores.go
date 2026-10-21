@@ -18,6 +18,7 @@ import (
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/storeregistry"
 	"github.com/steveyegge/beads/internal/ui"
 	"gopkg.in/yaml.v3"
 )
@@ -179,20 +180,78 @@ var brainStoresAddCmd = &cobra.Command{
 			FatalError("saving registry: %v", err)
 		}
 
+		// Telegraph it: a registered store the fleet cannot learn of exists on
+		// one machine only. Under $HOME/data it goes into the shared registry.
+		epochNote := ""
+		if db, adopted := registryWriteTarget(rootCtx); adopted {
+			if rel, ok := homeRelativeDir(beadsDir); ok {
+				e := storeregistry.Entry{Name: name, Kind: storeregistry.KindStore, Store: name, State: storeregistry.StateActive,
+					RelPath: rel, WrapperKind: detectWrapperKindFor(name, filepath.Dir(beadsDir)), About: entry.About, EditBack: entry.EditBack}
+				if e.Validate() == nil {
+					if res, merr := storeregistry.Mutate(rootCtx, db, registryMeta(), storeregistry.PlanCreate(e)); merr != nil {
+						fmt.Fprintf(os.Stderr, "warning: store registered locally only; the shared registry refused it: %v\n", merr)
+					} else {
+						epochNote = syncThisMachine(rootCtx, db, res.Epoch)
+					}
+				} else {
+					fmt.Fprintf(os.Stderr, "note: %q is registered on this machine only (%v)\n", name, e.Validate())
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "note: %q is registered on this machine only (its path is not under $HOME)\n", name)
+			}
+		}
+
 		if jsonOutput {
-			outputJSON(map[string]string{"name": name, "path": beadsDir})
+			outputJSON(map[string]string{"name": name, "path": beadsDir, "registry": epochNote})
 			return
 		}
 		fmt.Printf("%s Registered store %q → %s\n", ui.RenderPass("✓"), name, beadsDir)
+		if epochNote != "" {
+			fmt.Printf("    %s\n", epochNote)
+		}
 	},
 }
 
 var brainStoresRemoveCmd = &cobra.Command{
 	Use:   "remove <name>",
-	Short: "Unregister a store from the brain federation registry",
-	Args:  cobra.ExactArgs(1),
+	Short: "Remove a store from the fleet: tombstone in the shared registry, then each machine drops its generated wrapper",
+	Long: `Remove a store name from the brain fleet.
+
+When the shared registry is adopted, the name is tombstoned in the registry in
+one transaction (epoch +1). This machine then syncs at once and every other
+machine on its next command or within 5 minutes: each removes only its own
+GENERATED wrapper, ~/.pi/agent/bin link and stores.yaml/stores.env line.
+Nothing else is touched: the store's data directory, its rows in the database
+and its id prefix all stay (a removed store can be created again later).
+A wrapper that brain did not generate is reported, never deleted.
+
+--local-only (or a registry that is not adopted yet) keeps the old behaviour:
+the line leaves this machine's stores.yaml and stores.env is regenerated;
+no other machine is told.`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := strings.ToLower(strings.TrimSpace(args[0]))
+
+		if db, adopted := registryWriteTarget(rootCtx); adopted {
+			snap, _, rerr := storeregistry.ReadSnapshot(rootCtx, db)
+			if rerr == nil {
+				for _, e := range snap.Entries {
+					if e.Name == name && e.State == storeregistry.StateActive {
+						res, err := storeregistry.Mutate(rootCtx, db, registryMeta(), storeregistry.PlanRemove(name))
+						if err != nil {
+							FatalError("removing %q from the registry: %v", name, err)
+						}
+						line := syncThisMachine(rootCtx, db, res.Epoch)
+						if jsonOutput {
+							outputJSON(map[string]any{"name": name, "epoch": res.Epoch, "registry": line})
+							return
+						}
+						fmt.Printf("%s Removed store %q (tombstoned; data and database rows untouched)\n    %s\n", ui.RenderPass("✓"), name, line)
+						return
+					}
+				}
+			}
+		}
 
 		stores, err := loadStoresRegistry()
 		if err != nil {
@@ -205,7 +264,13 @@ var brainStoresRemoveCmd = &cobra.Command{
 		if err := saveStoresRegistry(stores); err != nil {
 			FatalError("saving registry: %v", err)
 		}
-		fmt.Printf("%s Removed store %q\n", ui.RenderPass("✓"), name)
+		if _, err := regenerateStoresEnv(stores); err != nil {
+			FatalError("regenerating stores.env: %v", err)
+		}
+		fmt.Printf("%s Removed store %q from this machine's registry only\n", ui.RenderPass("✓"), name)
+		if wp, ok := storeWrapperPath(name); ok {
+			fmt.Printf("    its wrapper %s was left in place; delete it by hand, or adopt the fleet registry ('brain stores reconcile') so removals propagate\n", wp)
+		}
 	},
 }
 
@@ -259,6 +324,35 @@ var brainStoresListCmd = &cobra.Command{
 	},
 }
 
+// registryApplyPlan applies a lifecycle plan through the shared registry when
+// the registry is adopted and knows the name. applied is false when the verb
+// should fall back to its local-only behaviour (registry not adopted, or the
+// name is not in it). note is the "epoch N; k of n machines converged" line.
+func registryApplyPlan(ctx context.Context, name string, plan storeregistry.PlanFunc) (note string, applied bool, err error) {
+	db, adopted := registryWriteTarget(ctx)
+	if !adopted {
+		return "", false, nil
+	}
+	entries, rerr := storeregistry.ReadEntries(ctx, db)
+	if rerr != nil {
+		return "", false, nil
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name == name && e.State == storeregistry.StateActive {
+			found = true
+		}
+	}
+	if !found {
+		return "", false, nil
+	}
+	res, err := storeregistry.Mutate(ctx, db, registryMeta(), plan)
+	if err != nil {
+		return "", true, err
+	}
+	return syncThisMachine(ctx, db, res.Epoch), true, nil
+}
+
 var brainStoresEditBackCmd = &cobra.Command{
 	Use:   "edit-back <name> on|off",
 	Short: "Declare whether a store accepts edits from its rendered markdown files",
@@ -286,6 +380,18 @@ file that disappears marks its bead for deletion, never removes it.
 		option := strings.TrimSpace(args[1])
 		if option != "on" && option != "off" {
 			FatalError("edit-back takes on or off, not %q", option)
+		}
+
+		if note, applied, err := registryApplyPlan(rootCtx, name, storeregistry.PlanEditBack(name, option == "on")); applied {
+			if err != nil {
+				FatalError("%v", err)
+			}
+			if jsonOutput {
+				outputJSON(map[string]any{"name": name, "edit_back": option == "on", "registry": note})
+				return
+			}
+			fmt.Printf("%s store %s: edit-back %s\n    %s\n", ui.RenderPass("✓"), name, option, note)
+			return
 		}
 
 		stores, err := loadStoresRegistry()
@@ -317,6 +423,15 @@ var (
 	createStoreInitName string
 	createStoreInitMail string
 )
+
+// createRegistry carries the shared-registry write of a create through
+// provisioning: the namespace seed and the registry entry commit in one
+// transaction, and Epoch is the epoch that transaction produced.
+type createRegistry struct {
+	DB    *sql.DB
+	Entry storeregistry.Entry
+	Epoch int64
+}
 
 var brainStoresCreateCmd = &cobra.Command{
 	Use:   "create <name>",
@@ -379,9 +494,31 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	// boop store": afterwards 'boop list/ready/create' address the boop
 	// namespace, whatever the substrate is.
 	host, port, shared := resolveSharedServerCreate()
+
+	// Registry-adopted fleets: the store is created IN the shared registry, in
+	// the same transaction as its namespace seed, so every other machine learns
+	// of it. The wrapper, stores.yaml line and agent link then come from the
+	// same sync every other machine runs.
+	var reg *createRegistry
+	if db, adopted := registryWriteTarget(rootCtx); adopted && shared {
+		rel, relOK := homeRelativeDir(beadsDir)
+		e := storeregistry.Entry{Name: name, Kind: storeregistry.KindStore, Store: name, State: storeregistry.StateActive,
+			RelPath: rel, WrapperKind: storeregistry.WrapperServer}
+		switch {
+		case !relOK || e.Validate() != nil:
+			FatalError("the shared registry cannot hold store %q at %s (lowercase name; directory under $HOME/data): %v; use --local-only to create it on this machine only", name, beadsDir, e.Validate())
+		case createStoreNoWrap:
+			FatalError("--no-wrapper cannot be combined with the shared registry (every machine generates the wrapper); use --local-only")
+		case createStoreBinary != "":
+			FatalError("--bd-binary cannot be combined with the shared registry (wrappers run $BD_BIN or bd); use --local-only")
+		}
+		reg = &createRegistry{DB: db, Entry: e}
+	} else if shared && !storesLocalOnly {
+		fmt.Fprintln(os.Stderr, "note: the shared store registry is not adopted in this database, so other machines will not learn of this store; run 'brain stores reconcile'")
+	}
 	provisioned := ""
 	if shared {
-		pdb, perr := provisionServerStore(context.Background(), name, beadsDir, host, port)
+		pdb, perr := provisionServerStore(context.Background(), name, beadsDir, host, port, reg)
 		if perr != nil {
 			FatalError("provisioning server store at %s: %v", beadsDir, perr)
 		}
@@ -395,6 +532,22 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	// Step 2: entries/ sibling for exfiltration.
 	if err := os.MkdirAll(entriesDir, 0o755); err != nil {
 		FatalError("creating %s: %v", entriesDir, err)
+	}
+
+	if reg != nil && reg.Epoch > 0 {
+		line := syncThisMachine(rootCtx, reg.DB, reg.Epoch)
+		wp, _ := storeWrapperPath(name)
+		if jsonOutput {
+			outputJSON(map[string]any{"name": name, "path": path, "beads_dir": beadsDir, "entries_dir": entriesDir,
+				"wrapper": wp, "registry": storesYamlFile(), "env_file": storesEnvFile(), "epoch": reg.Epoch, "fleet": line})
+			return
+		}
+		fmt.Printf("%s Created store %q\n", ui.RenderPass("✓"), name)
+		fmt.Printf("    beads:    %s\n", beadsDir)
+		fmt.Printf("    entries:  %s\n", entriesDir)
+		fmt.Printf("    wrapper:  %s\n", wp)
+		fmt.Printf("    %s\n", line)
+		return
 	}
 
 	// Step 3: wrapper at ~/.local/bin/<name>. Shared-server stores get the four
@@ -558,7 +711,7 @@ func buildServerStoreConfig(name, host string, port int, projectID string) *conf
 //
 // Idempotent: on re-run it preserves the existing project identity (minting a
 // new one would break the metadata.json↔database identity check on later opens).
-func provisionServerStore(ctx context.Context, name, beadsDir, host string, port int) (string, error) {
+func provisionServerStore(ctx context.Context, name, beadsDir, host string, port int, reg *createRegistry) (string, error) {
 	if err := os.MkdirAll(beadsDir, 0o700); err != nil {
 		return "", fmt.Errorf("mkdir %s: %w", beadsDir, err)
 	}
@@ -601,7 +754,11 @@ func provisionServerStore(ctx context.Context, name, beadsDir, host string, port
 	// collision with another store's recorded prefix refuses before anything
 	// is half-created.
 	if unified {
-		if err := seedNamespaceRows(ctx, host, port, unifiedDatabase, name, projectID); err != nil {
+		if reg != nil {
+			if err := registerCreatedStore(ctx, reg, unifiedDatabase, name, projectID); err != nil {
+				return unifiedDatabase, err
+			}
+		} else if err := seedNamespaceRows(ctx, host, port, unifiedDatabase, name, projectID); err != nil {
 			return unifiedDatabase, err
 		}
 	}
@@ -689,28 +846,57 @@ func seedNamespaceRows(ctx context.Context, host string, port int, unifiedDataba
 	if err != nil {
 		return fmt.Errorf("open transaction for the %s namespace seed: %w", name, err)
 	}
-	if _, err := issueops.RecordStorePrefix(seedCtx, tx, name, name, reasonStoreCreated); err != nil {
+	if err := seedNamespaceTx(seedCtx, tx, unifiedDatabase, name, projectID); err != nil {
 		_ = tx.Rollback()
-		return fmt.Errorf("recording the name prefix for %q: %w", name, err)
-	}
-	if _, err := tx.ExecContext(seedCtx,
-		"REPLACE INTO brain_unified_config (`store`,`key`,value) VALUES (?, 'issue_prefix', ?)", name, name); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("seeding issue_prefix for %q: %w", name, err)
-	}
-	if _, err := tx.ExecContext(seedCtx,
-		"REPLACE INTO brain_unified_metadata (`store`,`key`,value) VALUES (?, '_project_id', ?)", name, projectID); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("seeding project identity for %q: %w", name, err)
-	}
-	if _, err := tx.ExecContext(seedCtx,
-		"REPLACE INTO brain_stores (`store`,`registered`,`source_database`,`beads_dir`,`project_id`,`schema_version`,`template_source`,`imported_at`) VALUES (?, 1, ?, '', ?, '', 0, ?)",
-		name, unifiedDatabase, projectID, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
-		_ = tx.Rollback()
-		return fmt.Errorf("recording store %q in brain_stores: %w", name, err)
+		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("committing the %q namespace seed: %w", name, err)
+	}
+	return nil
+}
+
+// registerCreatedStore writes a new store into the shared registry. The
+// namespace seed (issue_prefix, project identity, brain_stores row, name-prefix
+// claim) rides in the registry's own transaction, through the caller's
+// connection, so the store and the epoch bump commit together or not at all.
+func registerCreatedStore(ctx context.Context, reg *createRegistry, unifiedDatabase, name, projectID string) error {
+	meta := registryMeta()
+	meta.InTx = func(ctx context.Context, tx storeregistry.DBTX) error {
+		return seedNamespaceTx(ctx, tx, unifiedDatabase, name, projectID)
+	}
+	res, err := storeregistry.Mutate(ctx, reg.DB, meta, storeregistry.PlanCreate(reg.Entry))
+	if err != nil {
+		return fmt.Errorf("recording %q in the shared registry: %w", name, err)
+	}
+	reg.Epoch = res.Epoch
+	if !res.Changed {
+		// Idempotent re-run of an existing store: report the current epoch.
+		st, _, _ := storeregistry.ReadState(ctx, reg.DB)
+		reg.Epoch = st.Epoch
+	}
+	return nil
+}
+
+// seedNamespaceTx is the body of the namespace seed, run inside a caller-owned
+// transaction: the registry's (so the seed and the epoch bump commit together)
+// or seedNamespaceRows' own.
+func seedNamespaceTx(ctx context.Context, tx storeregistry.DBTX, unifiedDatabase, name, projectID string) error {
+	if _, err := issueops.RecordStorePrefix(ctx, tx, name, name, reasonStoreCreated); err != nil {
+		return fmt.Errorf("recording the name prefix for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"REPLACE INTO brain_unified_config (`store`,`key`,value) VALUES (?, 'issue_prefix', ?)", name, name); err != nil {
+		return fmt.Errorf("seeding issue_prefix for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"REPLACE INTO brain_unified_metadata (`store`,`key`,value) VALUES (?, '_project_id', ?)", name, projectID); err != nil {
+		return fmt.Errorf("seeding project identity for %q: %w", name, err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		"REPLACE INTO brain_stores (`store`,`registered`,`source_database`,`beads_dir`,`project_id`,`schema_version`,`template_source`,`imported_at`) VALUES (?, 1, ?, '', ?, '', 0, ?)",
+		name, unifiedDatabase, projectID, time.Now().UTC().Format("2006-01-02 15:04:05")); err != nil {
+		return fmt.Errorf("recording store %q in brain_stores: %w", name, err)
 	}
 	return nil
 }
@@ -850,20 +1036,9 @@ func regenerateStoresEnv(stores map[string]storeEntry) (string, error) {
 		return "", fmt.Errorf("mkdir %s: %w", filepath.Dir(outPath), err)
 	}
 
-	names := sortedKeys(stores)
+	body := storesEnvBody(stores)
 
-	var sb strings.Builder
-	sb.WriteString("# Auto-generated by 'brain stores env' — do not edit manually.\n")
-	sb.WriteString("# Source in store wrapper scripts to get BRAIN_STORE_* vars.\n")
-	sb.WriteString("# Regenerate: brain stores env\n")
-	sb.WriteString("# File: ~/.config/brain/stores.env\n\n")
-	for _, n := range names {
-		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
-		sb.WriteString(fmt.Sprintf("export BRAIN_STORE_%s=%q\n", envKey, stores[n].Path))
-	}
-	sb.WriteString(fmt.Sprintf("\nexport BRAIN_STORES_LIST=%q\n", strings.Join(names, ":")))
-
-	if err := os.WriteFile(outPath, []byte(sb.String()), 0o644); err != nil { //nolint:gosec
+	if err := os.WriteFile(outPath, []byte(body), 0o644); err != nil { //nolint:gosec
 		return "", fmt.Errorf("writing %s: %w", outPath, err)
 	}
 	return outPath, nil
@@ -1053,6 +1228,20 @@ func runBrainStoresAlias(_ *cobra.Command, args []string) {
 		FatalError("alias %q is the same as the existing store name", alias)
 	}
 
+	if !aliasNoWrapper && aliasBdBinary == "" {
+		if note, applied, err := registryApplyPlan(rootCtx, existing, storeregistry.PlanAlias(existing, alias)); applied {
+			if err != nil {
+				FatalError("%v", err)
+			}
+			if jsonOutput {
+				outputJSON(map[string]string{"alias": alias, "existing": existing, "registry": note})
+				return
+			}
+			fmt.Printf("%s Aliased %q → %q\n    %s\n", ui.RenderPass("✓"), alias, existing, note)
+			return
+		}
+	}
+
 	stores, err := loadStoresRegistry()
 	if err != nil {
 		FatalError("loading registry: %v", err)
@@ -1193,15 +1382,59 @@ func runBrainStoresRename(_ *cobra.Command, args []string) {
 		newBeadsDir = filepath.Join(defaultNewPath, ".beads")
 	}
 
-	// Step 2: write new wrapper, remove old (unless asked to keep).
-	wrapperPath, err := writeStoreWrapper(newName, newBeadsDir, "")
+	// Registry path: tombstone the old name, activate the new one, record the
+	// alias that keeps the old namespace resolving, bump the epoch: one
+	// transaction. This machine then syncs; the fleet follows.
+	if regDB, adopted := registryWriteTarget(rootCtx); adopted {
+		entries, _ := storeregistry.ReadEntries(rootCtx, regDB)
+		canonical, known := "", false
+		for _, e := range entries {
+			if e.Name == oldName && e.State == storeregistry.StateActive && e.Kind == storeregistry.KindStore {
+				canonical, known = e.Store, true
+			}
+		}
+		if known {
+			rel, relOK := homeRelativeDir(newBeadsDir)
+			if !relOK || storeregistry.ValidRelPath(rel) != nil || !storeregistry.ValidName(newName) {
+				revertRenameMove(oldBeadsDir, newBeadsDir)
+				FatalError("the registry cannot hold %q at %s (names are lowercase letters, digits, - and _; the directory must be under $HOME/data); use --local-only", newName, newBeadsDir)
+			}
+			res, err := registryRenameStore(rootCtx, regDB, oldName, newName, canonical, rel, renameKeepOldWrapper)
+			if err != nil {
+				revertRenameMove(oldBeadsDir, newBeadsDir)
+				FatalError("renaming %q in the registry: %v", oldName, err)
+			}
+			line := syncThisMachine(rootCtx, regDB, res.Epoch)
+			if jsonOutput {
+				outputJSON(map[string]any{"old_name": oldName, "new_name": newName, "old_path": oldBeadsDir, "new_path": newBeadsDir, "epoch": res.Epoch, "registry": line})
+				return
+			}
+			fmt.Printf("%s Renamed store %q → %q\n", ui.RenderPass("✓"), oldName, newName)
+			fmt.Printf("    path:     %s → %s\n", oldBeadsDir, newBeadsDir)
+			fmt.Printf("    %s\n", line)
+			fmt.Printf("    other machines keep their old data directory untouched; they get the new name's wrapper and directory skeleton from the registry\n")
+			return
+		}
+	}
+
+	// Step 2: write new wrapper, remove old (unless asked to keep). A store in
+	// shared-server mode keeps its server pins: the embedded form would
+	// silently point the renamed store at nothing.
+	var wrapperPath string
+	if host, port, shared := resolveSharedServerCreate(); shared {
+		wrapperPath, err = writeServerStoreWrapper(newName, newBeadsDir, "", host, port, "")
+	} else {
+		wrapperPath, err = writeStoreWrapper(newName, newBeadsDir, "")
+	}
 	if err != nil {
 		FatalError("writing new wrapper: %v", err)
 	}
 	if !renameKeepOldWrapper {
 		oldWrapper := filepath.Join(home, ".local", "bin", oldName)
-		if _, err := os.Stat(oldWrapper); err == nil {
-			_ = os.Remove(oldWrapper) // best-effort cleanup
+		if data, err := os.ReadFile(oldWrapper); err == nil && isGeneratedWrapperBody(data) {
+			_ = os.Remove(oldWrapper) // best-effort cleanup of a wrapper brain wrote
+		} else if err == nil {
+			fmt.Fprintf(os.Stderr, "note: %s was not generated by brain and was left in place\n", oldWrapper)
 		}
 	}
 
@@ -1218,6 +1451,7 @@ func runBrainStoresRename(_ *cobra.Command, args []string) {
 	if err != nil {
 		FatalError("regenerating stores.env: %v", err)
 	}
+	fmt.Fprintln(os.Stderr, "note: the shared store registry is not adopted here, so other machines were not told; run 'brain stores reconcile'")
 
 	if jsonOutput {
 		outputJSON(map[string]string{
@@ -1265,6 +1499,18 @@ Examples:
 	Run: func(cmd *cobra.Command, args []string) {
 		name := strings.ToLower(strings.TrimSpace(args[0]))
 		about := strings.TrimSpace(args[1])
+
+		if note, applied, err := registryApplyPlan(rootCtx, name, storeregistry.PlanAbout(name, about)); applied {
+			if err != nil {
+				FatalError("%v", err)
+			}
+			if jsonOutput {
+				outputJSON(map[string]string{"name": name, "about": about, "registry": note})
+				return
+			}
+			fmt.Printf("%s Set about for store %q\n    %s\n", ui.RenderPass("✓"), name, note)
+			return
+		}
 
 		stores, err := loadStoresRegistry()
 		if err != nil {
@@ -1337,6 +1583,11 @@ func init() {
 	brainStoresCreateCmd.Flags().StringVar(&createStoreInitMail, "dolt-email", "",
 		"--email arg to pass to 'dolt init' (skipped if empty)")
 
+	for _, c := range []*cobra.Command{brainStoresCreateCmd, brainStoresRenameCmd, brainStoresRemoveCmd, brainStoresAddCmd} {
+		c.Flags().BoolVar(&storesLocalOnly, "local-only", false,
+			"Act on this machine only; do not write the shared store registry (other machines are not told)")
+	}
+
 	brainStoresRenderAllCmd.Flags().BoolVar(&renderAllStoresJSON, "json", false,
 		"Emit a structured JSON object instead of per-store text summaries")
 
@@ -1363,4 +1614,49 @@ func init() {
 	brainStoresCmd.AddCommand(brainStoresEnvCmd)
 	brainCmd.AddCommand(brainStoresCmd)
 	rootCmd.AddCommand(brainStoresCmd)
+}
+
+// revertRenameMove undoes the directory move of a rename that the registry then
+// refused, so a failed rename leaves the machine exactly as it was.
+func revertRenameMove(oldBeadsDir, newBeadsDir string) {
+	if oldBeadsDir == newBeadsDir {
+		return
+	}
+	if err := os.Rename(filepath.Dir(newBeadsDir), filepath.Dir(oldBeadsDir)); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not move %s back to %s: %v\n", filepath.Dir(newBeadsDir), filepath.Dir(oldBeadsDir), err)
+	}
+}
+
+// registryRenameStore tombstones the old name, activates the new one and
+// records the database alias that keeps the old namespace resolving, in one
+// transaction with the epoch bump.
+func registryRenameStore(ctx context.Context, db *sql.DB, oldName, newName, canonical, relPath string, keepOld bool) (storeregistry.Result, error) {
+	meta := registryMeta()
+	if canonical != newName {
+		meta.InTx = func(ctx context.Context, tx storeregistry.DBTX) error {
+			if _, err := tx.ExecContext(ctx, "REPLACE INTO brain_store_aliases (alias, `store`) VALUES (?, ?)", newName, canonical); err != nil {
+				return fmt.Errorf("recording the alias %s → %s: %w", newName, canonical, err)
+			}
+			return nil
+		}
+	}
+	return storeregistry.Mutate(ctx, db, meta, storeregistry.PlanRename(oldName, newName, relPath, keepOld))
+}
+
+// storesEnvBody is the text of stores.env for a registry: what
+// regenerateStoresEnv writes, and what a sync plan compares against.
+func storesEnvBody(stores map[string]storeEntry) string {
+	names := sortedKeys(stores)
+
+	var sb strings.Builder
+	sb.WriteString("# Auto-generated by 'brain stores env' — do not edit manually.\n")
+	sb.WriteString("# Source in store wrapper scripts to get BRAIN_STORE_* vars.\n")
+	sb.WriteString("# Regenerate: brain stores env\n")
+	sb.WriteString("# File: ~/.config/brain/stores.env\n\n")
+	for _, n := range names {
+		envKey := strings.ToUpper(strings.ReplaceAll(n, "-", "_"))
+		sb.WriteString(fmt.Sprintf("export BRAIN_STORE_%s=%q\n", envKey, stores[n].Path))
+	}
+	sb.WriteString(fmt.Sprintf("\nexport BRAIN_STORES_LIST=%q\n", strings.Join(names, ":")))
+	return sb.String()
 }

@@ -293,6 +293,12 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 	if name == "" && len(args) > 0 && (args[0] == "remote" || args[0] == "host") {
 		return nil, "", false, nil
 	}
+	// The registry verbs that manage THIS machine's shims (sync, verify, the
+	// fleet doctor, the poller, the shell hook) always run here; they read the
+	// registry through the relay host themselves.
+	if name == "" && registryLocalVerb(args) {
+		return nil, "", false, nil
+	}
 	// An explicit BEADS_DIR naming a local beads project wins over the client
 	// config in HOME, so the store it names is opened here instead of forwarded.
 	if beads.ExplicitBeadsDir() != "" {

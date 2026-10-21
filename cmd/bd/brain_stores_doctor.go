@@ -81,6 +81,12 @@ so the failure is invisible by construction until something asserts it.
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
 
+With --fleet it instead proves the whole fleet converged on the shared store
+registry: it reads the registry epoch and the generated artefacts (wrappers,
+agent links, stores.yaml/env) on every machine of the roster over ssh,
+read-only, and reports converged / lagging / drifted with the exact fix
+command (exit 0 converged, 1 not converged, 2 registry unreadable).
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -92,7 +98,11 @@ no store names are known, so the line carries the __registry__ sentinel.`,
 	Run:  runBrainStoresDoctor,
 }
 
-func runBrainStoresDoctor(_ *cobra.Command, _ []string) {
+func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
+	if doctorFleet {
+		runBrainStoresDoctorFleet(cmd)
+		return
+	}
 	stores, err := loadStoresRegistry()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
