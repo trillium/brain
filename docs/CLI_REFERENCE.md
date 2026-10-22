@@ -6476,6 +6476,11 @@ For each machine, in roster order:
       does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate)
       proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing
       undo:   sh ~/.local/share/brain/registry-backup/&lt;time&gt;/restore.sh on the machine; BRAIN_REGISTRY=off switches the registry off
+  smoke     the wrappers the sync wrote cannot loop, and one real read answers
+      needs:  the converge step passed
+      does:   nothing; read-only
+      proves: every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
+      undo:   none; on failure the exact restore command of the sync's backup is printed and recorded
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only
@@ -9256,6 +9261,11 @@ For each machine, in roster order:
       does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate)
       proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing
       undo:   sh ~/.local/share/brain/registry-backup/&lt;time&gt;/restore.sh on the machine; BRAIN_REGISTRY=off switches the registry off
+  smoke     the wrappers the sync wrote cannot loop, and one real read answers
+      needs:  the converge step passed
+      does:   nothing; read-only
+      proves: every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
+      undo:   none; on failure the exact restore command of the sync's backup is printed and recorded
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only

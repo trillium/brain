@@ -176,7 +176,9 @@ type syncAction struct {
 	target   string // link target
 	project  string // dir: the canonical store whose identity the skeleton carries
 	needsDir string // wrapper/link: the BEADS_DIR (absolute) that must exist first
-	entry    storeregistry.Entry
+	// execTarget: a client wrapper's exec target, re-checked at apply time.
+	execTarget string
+	entry      storeregistry.Entry
 }
 
 // changes reports whether applying the action alters the disk.
@@ -198,6 +200,8 @@ type syncPlan struct {
 	Active     int
 	// LocalOnly are stores in stores.yaml that the registry does not know.
 	LocalOnly []string
+	// Refused are wrappers the guard declined to write, one line each.
+	Refused []string
 
 	finalYaml map[string]storeEntry
 }
@@ -322,7 +326,18 @@ func buildSyncPlan(env shimEnv, snap storeregistry.Snapshot) (*syncPlan, error) 
 		wrapperPath := filepath.Join(env.binDir(), e.Name)
 
 		if env.Role == "client" {
+			// A wrapper that would exec itself, or another generated wrapper, is never
+			// written: it would hang every command that runs through it.
+			if why := wrapperTargetRefusal(env.BrainBinary, wrapperPath); why != "" {
+				plan.Actions = append(plan.Actions, syncAction{Kind: "wrapper", Name: e.Name, Op: "skip", Path: wrapperPath, Reason: "refused: " + why})
+				plan.Missing["wrappers"] = append(plan.Missing["wrappers"], e.Name)
+				plan.Refused = append(plan.Refused, "wrapper "+e.Name+": refused: "+why)
+				continue
+			}
 			plan.addWrapper(e.Name, wrapperPath, []byte(remoteWrapperBody(e.Name, env.BrainBinary)), "client forwarding wrapper")
+			if n := len(plan.Actions); n > 0 && plan.Actions[n-1].Kind == "wrapper" && plan.Actions[n-1].Name == e.Name {
+				plan.Actions[n-1].execTarget = env.BrainBinary
+			}
 		} else {
 			// The BEADS_DIR skeleton comes first: a wrapper without it resolves nothing.
 			if !dirOK[e.RelPath] {
@@ -463,6 +478,13 @@ func applySyncPlan(env shimEnv, plan *syncPlan) applyResult {
 		if err != nil {
 			return
 		}
+		// The copy keeps the original's permission bits: restore.sh copies with
+		// 'cp -p', so a wrapper backed up without its executable bit would be
+		// restored non-executable and every command through it would fail.
+		mode := os.FileMode(0o600)
+		if st, serr := os.Stat(path); serr == nil {
+			mode = st.Mode().Perm() | 0o600
+		}
 		if backup == "" {
 			backup = filepath.Join(env.Home, registryBackupDir, time.Now().UTC().Format("20060102-150405"))
 			res.Backup = backup
@@ -473,7 +495,9 @@ func applySyncPlan(env shimEnv, plan *syncPlan) applyResult {
 		}
 		dst := filepath.Join(backup, rel)
 		if os.MkdirAll(filepath.Dir(dst), 0o700) == nil {
-			_ = os.WriteFile(dst, data, 0o600)
+			if os.WriteFile(dst, data, mode) == nil {
+				_ = os.Chmod(dst, mode) // WriteFile is subject to the umask
+			}
 		}
 	}
 	failedDir := map[string]bool{}
@@ -496,6 +520,8 @@ func applySyncPlan(env shimEnv, plan *syncPlan) applyResult {
 			if a.Op == "remove" {
 				backupFile(a.Path)
 				err = os.Remove(a.Path)
+			} else if why := applyTargetRefusal(a); why != "" {
+				err = errors.New("refused: " + why)
 			} else {
 				if a.Op == "update" {
 					backupFile(a.Path)
@@ -524,10 +550,19 @@ func applySyncPlan(env shimEnv, plan *syncPlan) applyResult {
 	if backup != "" {
 		restore := "#!/bin/sh\n# Restores the files a 'brain stores sync' replaced or removed.\n" +
 			"cd \"" + backup + "\" || exit 1\n" +
-			"find . -type f ! -name restore.sh | while read -r f; do mkdir -p \"$HOME/$(dirname \"$f\")\"; command cp -fp \"$f\" \"$HOME/$f\"; done\n"
+			"find . -type f ! -name restore.sh | while read -r f; do mkdir -p \"$HOME/$(dirname \"$f\")\"; command cp -fp \"$f\" \"$HOME/$f\"; case \"$f\" in ./.local/bin/*|.local/bin/*) chmod 755 \"$HOME/$f\";; esac; done\n"
 		_ = os.WriteFile(filepath.Join(backup, "restore.sh"), []byte(restore), 0o700)
 	}
 	return res
+}
+
+// applyTargetRefusal re-checks, just before a client wrapper is written, that
+// its exec target is still a real binary and not the wrapper being replaced.
+func applyTargetRefusal(a syncAction) string {
+	if a.execTarget == "" {
+		return ""
+	}
+	return wrapperTargetRefusal(a.execTarget, a.Path)
 }
 
 // createStoreSkeleton writes a store's BEADS_DIR on this machine: metadata.json

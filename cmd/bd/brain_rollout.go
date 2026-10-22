@@ -243,6 +243,11 @@ func runRollout(ctx context.Context, r *rolloutRun, roster []fleetMember, steps 
 				continue
 			}
 			o := r.execStep(ctx, st, mr)
+			if o.Status == statFail && (st.ID == "converge" || st.ID == "smoke" || st.ID == "prove") {
+				if hint := mr.restoreHint(); hint != "" {
+					o.Fix = strings.TrimSpace(o.Fix + " | " + hint)
+				}
+			}
 			mrep.Steps = append(mrep.Steps, o)
 			if o.Status == statFail {
 				f := o
@@ -289,7 +294,12 @@ func (r *rolloutRun) recordFailure(ctx context.Context, mr *machineRun, verdict 
 	if mr.Role == "" {
 		mr.Role = "unknown"
 	}
-	_ = r.Records.Write(ctx, r.recordFor(mr, outcome, o.Step, o.Detail))
+	detail := o.Detail
+	if mr.RestoreCmd != "" && (o.Step == "converge" || o.Step == "smoke" || o.Step == "prove") {
+		// Put the restore command first: the record's detail is truncated from the end.
+		detail = "RESTORE: " + mr.RestoreCmd + " | " + detail
+	}
+	_ = r.Records.Write(ctx, r.recordFor(mr, outcome, o.Step, detail))
 }
 
 func rolloutSummary(rep *rolloutReport, r *rolloutRun) string {
