@@ -46,7 +46,9 @@ type fakeMachine struct {
 	cache       bool
 	missing     map[string][]string
 	storeBroken bool
-	previous    string // kept binary after an install
+	noWrapper   bool
+	lastScripts map[string]string // kind -> the script text last run
+	previous    string            // kept binary after an install
 	uploads     int
 	syncRuns    int
 	restores    int
@@ -91,6 +93,10 @@ func (f *fakeFleet) Exec(_ context.Context, mem fleetMember, script string, stdi
 	}
 	kind := marker(script)
 	m.scripts = append(m.scripts, kind)
+	if m.lastScripts == nil {
+		m.lastScripts = map[string]string{}
+	}
+	m.lastScripts[kind] = script
 	m.envOff[kind] = strings.Contains(script, "BRAIN_REMOTE=off")
 	switch kind {
 	case "probe":
@@ -177,9 +183,17 @@ func (f *fakeFleet) Exec(_ context.Context, mem fleetMember, script string, stdi
 		}
 		if m.relay != "" {
 			rep.Role = "client"
+			if !m.cache {
+				rep.Source = "relay"
+			}
 		}
 		b, _ := json.Marshal(rep)
 		return string(b) + "\n", 0, nil
+	case "wrapper":
+		if m.noWrapper {
+			return "no wrapper named x on the PATH\n", 44, nil
+		}
+		return "", 0, nil
 	case "storeread":
 		if m.storeBroken {
 			return "Error: no beads database found\n", 1, nil
@@ -657,6 +671,101 @@ func TestRolloutClient_LocalBinaryOldMeansNotProvedEvenIfReportClaimsNew(t *test
 	rep := h.do(false, "macbook")
 	if rep.Complete {
 		t.Fatal("claimed converged with an old local binary")
+	}
+}
+
+func clientWithNewestStore(h *rolloutHarness) *fakeMachine {
+	h.reg.store = []storeregistry.Entry{{Name: "feature", Kind: storeregistry.KindStore, Store: "feature", State: storeregistry.StateActive, RelPath: "data/feature", WrapperKind: storeregistry.WrapperServer, ChangedEpoch: 7}}
+	mac := h.converged("macbook")
+	mac.relay = "mini1@100.102.238.78"
+	return mac
+}
+
+func TestRolloutClient_IsProvedWithItsOwnPiecesAndTheRecordSaysSo(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	rep := h.do(true, "macbook")
+	if !rep.Complete {
+		t.Fatalf("a client with the build, the wrapper and the epoch must be proved: %+v %+v", rep.Failures, rep.Stopped)
+	}
+	// Its own sync and verify run through its own binary, never the forwarding 'brain' wrapper.
+	for _, kind := range []string{"report"} {
+		sc := mac.lastScripts[kind]
+		if !strings.Contains(sc, "unset BRAIN_REMOTE_STORE") || strings.Contains(sc, "\nbrain ") || strings.Contains(sc, "BRAIN_REMOTE=off") {
+			t.Errorf("%s script on a client must run bd directly and still read through the relay:\n%s", kind, sc)
+		}
+	}
+	for _, kind := range []string{"wrapper", "storeread"} {
+		if mac.lastScripts[kind] == "" {
+			t.Errorf("client proof must run %s", kind)
+		}
+	}
+	rec := h.records.rows["macbook"]
+	if rec.Role != "client" || rec.Outcome != storeregistry.RolloutVerified || !strings.Contains(rec.Detail, "client of mini1@100.102.238.78") || !strings.Contains(rec.Detail, "'feature'") {
+		t.Fatalf("record must say it is a client and what was proved: %+v", rec)
+	}
+}
+
+func TestRolloutClient_ConvergeRunsTheMachinesOwnSyncNotTheHosts(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	mac.applied = 5
+	h.do(true, "macbook")
+	if mac.syncRuns != 1 {
+		t.Fatalf("the client's own sync must run once, ran %d", mac.syncRuns)
+	}
+	sc := mac.lastScripts["sync"]
+	if !strings.Contains(sc, "unset BRAIN_REMOTE_STORE") || !strings.Contains(sc, "stores sync") || strings.Contains(sc, "\nbrain stores") {
+		t.Errorf("client sync must run through its own bd binary:\n%s", sc)
+	}
+	// What the host answered ('already applied epoch 7') is not accepted for the client.
+	h2 := newHarness(t)
+	m2 := clientWithNewestStore(h2)
+	m2.reportName = "mini1"
+	rep := h2.do(false, "macbook")
+	if rep.Complete || len(rep.Failures) == 0 || rep.Failures[0].Step != "converge" || !strings.Contains(rep.Failures[0].Reason, "not from macbook") {
+		t.Fatalf("converge must reject the host's report: %+v", rep.Failures)
+	}
+}
+
+func TestRolloutClient_HostAnswerIsRejectedAtProve(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	mac.reportName = "mini1"
+	rep := h.do(false, "macbook")
+	if rep.Complete || !strings.Contains(rep.Failures[0].Reason, "not from macbook") {
+		t.Fatalf("wrong-name answer must be rejected: %+v", rep.Failures)
+	}
+}
+
+func TestRolloutClient_MissingWrapperFailsTheProof(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	mac.noWrapper = true
+	rep := h.do(true, "macbook")
+	if rep.Complete || rep.Stopped == nil || rep.Stopped.Step != "prove" || !strings.Contains(rep.Stopped.Reason, "wrapper for store 'feature'") {
+		t.Fatalf("a missing wrapper must fail the proof: %+v %+v", rep.Stopped, rep.Failures)
+	}
+	if rec := h.records.rows["macbook"]; rec.Outcome == storeregistry.RolloutVerified {
+		t.Fatalf("must not be recorded verified: %+v", rec)
+	}
+}
+
+func TestRolloutClient_StoreThatDoesNotAnswerThroughTheHostFailsTheProof(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	mac.storeBroken = true
+	if rep := h.do(false, "macbook"); rep.Complete || !strings.Contains(rep.Failures[0].Reason, "by name") {
+		t.Fatalf("%+v", rep.Failures)
+	}
+}
+
+func TestRolloutClient_ReportNotReadThroughTheRelayIsRefused(t *testing.T) {
+	h := newHarness(t)
+	mac := clientWithNewestStore(h)
+	mac.cache = true // read from its cache, not the relay
+	if rep := h.do(false, "macbook"); rep.Complete {
+		t.Fatal("a cached answer proves nothing")
 	}
 }
 

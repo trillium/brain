@@ -182,6 +182,7 @@ type machineRun struct {
 	Report      *verifyReport
 	BinCheck    string
 	Version     string // what the machine runs now
+	ProofNote   string // what the prove step established, for the record
 }
 
 func (r *rolloutRun) run(ctx context.Context, m fleetMember, script string, stdin io.Reader, timeout time.Duration) (string, int, error) {
@@ -385,7 +386,7 @@ func stepMode() rolloutStep {
 		ID: "mode", Title: "direct machine or client", Scope: "machine",
 		Pre:    "none",
 		Do:     "nothing; read-only",
-		Verify: "a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off, and the registry is read through the relay as the client itself reads it",
+		Verify: "a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off. A client has no database: its sync and verify run through its own bd binary (not the forwarding 'brain' wrapper) and read the registry through the relay",
 		Undo:   "none",
 		check: func(_ context.Context, _ *rolloutRun, mr *machineRun) checkResult {
 			if mr.Role == "client" {
@@ -519,6 +520,13 @@ func versionToken(v string) string {
 	return v
 }
 
+func orDefault(s, d string) string {
+	if s == "" {
+		return d
+	}
+	return s
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "-"
@@ -553,8 +561,8 @@ func stepConverge() rolloutStep {
 	return rolloutStep{
 		ID: "converge", Title: "make the machine apply the registry", Scope: "machine",
 		Pre:    "the machine's brain has 'stores sync' (the build contains the registry)",
-		Do:     "run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate)",
-		Verify: "the machine's own 'brain stores verify' reports the target epoch and nothing missing",
+		Do:     "run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate). On a client this is its own bd binary's sync, which reads the registry through the relay and writes the client's wrappers; the host's sync is never taken for it",
+		Verify: "the machine's own 'brain stores verify' reports the target epoch and nothing missing; on a client the report must name the client itself and say it was read through the relay",
 		Undo:   "sh ~/.local/share/brain/registry-backup/<time>/restore.sh on the machine; BRAIN_REGISTRY=off switches the registry off",
 		check: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
 			if mr.Pending {
@@ -572,13 +580,16 @@ func stepConverge() rolloutStep {
 			if err != nil {
 				return checkResult{State: stFail, Detail: "cannot read " + mr.M.Name + "'s own registry report: " + firstErrLine(err), Fix: reportFix(mr)}
 			}
+			if bad := notOwnReport(mr, rep); bad != nil {
+				return *bad
+			}
 			if rep.AppliedEpoch == r.Epoch && rep.RegistryEpoch == r.Epoch && rep.Converged() {
 				return checkResult{State: stHave, Detail: fmt.Sprintf("already applied epoch %d", rep.AppliedEpoch)}
 			}
 			return checkResult{State: stNeed, Detail: fmt.Sprintf("applied epoch %d, target %d: run 'brain stores sync' on %s", rep.AppliedEpoch, r.Epoch, mr.M.Name)}
 		},
 		act: func(ctx context.Context, r *rolloutRun, mr *machineRun) error {
-			out, exit, err := r.run(ctx, mr.M, scriptSync, nil, 3*time.Minute)
+			out, exit, err := r.run(ctx, mr.M, syncScriptFor(mr), nil, 3*time.Minute)
 			if err != nil {
 				return err
 			}
@@ -592,6 +603,9 @@ func stepConverge() rolloutStep {
 			if err != nil {
 				return checkResult{State: stFail, Detail: "cannot read " + mr.M.Name + "'s own registry report: " + firstErrLine(err), Fix: reportFix(mr)}
 			}
+			if bad := notOwnReport(mr, rep); bad != nil {
+				return *bad
+			}
 			if rep.AppliedEpoch != r.Epoch || !rep.Converged() {
 				return checkResult{State: stFail, Detail: fmt.Sprintf("%s applied epoch %d (target %d)%s", mr.M.Name, rep.AppliedEpoch, r.Epoch, missingText(rep)),
 					Fix: fmt.Sprintf("read 'brain stores sync --dry-run' on %s, then re-run", mr.M.Name)}
@@ -599,6 +613,40 @@ func stepConverge() rolloutStep {
 			return checkResult{State: stHave, Detail: fmt.Sprintf("applied epoch %d", rep.AppliedEpoch)}
 		},
 	}
+}
+
+// reportScriptFor and syncScriptFor pick the form of the script that reaches the
+// machine's own registry state: a client has no database and its 'brain' wrapper
+// forwards to the host, so it goes through the bd binary directly.
+func reportScriptFor(mr *machineRun) string {
+	if mr.Role == "client" {
+		return scriptReportClient(mr.Facts.Bin)
+	}
+	return scriptReport
+}
+
+func syncScriptFor(mr *machineRun) string {
+	if mr.Role == "client" {
+		return scriptSyncClient(mr.Facts.Bin)
+	}
+	return scriptSync
+}
+
+// notOwnReport rejects, for a client, a report that is not the client's own: it
+// names another machine (the host forwarded the question), or it was not read
+// through the relay. Direct machines are unchanged.
+func notOwnReport(mr *machineRun, rep *verifyReport) *checkResult {
+	if mr.Role != "client" {
+		return nil
+	}
+	if !strings.EqualFold(rep.Machine, mr.M.Name) {
+		return &checkResult{State: stFail, Detail: fmt.Sprintf("the report says machine '%s', not '%s': the answer is not from %s (a client forwarding to its host?)", rep.Machine, mr.M.Name, mr.M.Name),
+			Fix: fmt.Sprintf("make the roster name equal the machine's own name (BRAIN_MACHINE or its short hostname), or run 'bd stores verify' on %s", mr.M.Name)}
+	}
+	if rep.Role != "client" || rep.Source == "database" {
+		return &checkResult{State: stFail, Detail: fmt.Sprintf("%s answered as role '%s' from '%s', not as a client reading the registry through its relay", mr.M.Name, rep.Role, rep.Source), Fix: reportFix(mr)}
+	}
+	return nil
 }
 
 func reportFix(mr *machineRun) string {
@@ -629,7 +677,7 @@ func missingText(rep *verifyReport) string {
 
 // fetchReport asks the machine ITSELF for its registry state and parses it.
 func (r *rolloutRun) fetchReport(ctx context.Context, mr *machineRun) (*verifyReport, error) {
-	out, exit, err := r.run(ctx, mr.M, scriptReport, nil, 90*time.Second)
+	out, exit, err := r.run(ctx, mr.M, reportScriptFor(mr), nil, 90*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -651,7 +699,7 @@ func stepProve() rolloutStep {
 		ID: "prove", Title: "the machine itself proves it converged", Scope: "machine",
 		Pre:    "all earlier steps of the machine passed",
 		Do:     "nothing; read-only",
-		Verify: "the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper",
+		Verify: "the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper. A client has no database, so it proves what it can with its own pieces and never accepts the host's answer: its binary (BRAIN_REMOTE=off) is the candidate's exact version; its own sync/verify name it and found every registered store's wrapper; the newest store's wrapper exists there and answers 'list --limit 1' through the host; the registry epoch read through the relay equals the target. Its record says it is a client and lists this",
 		Undo:   "none",
 		check: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
 			if mr.Pending {
@@ -679,6 +727,9 @@ func proveMachine(ctx context.Context, r *rolloutRun, mr *machineRun) checkResul
 	if err != nil {
 		return checkResult{State: stFail, Detail: "cannot read " + mr.M.Name + "'s own report: " + firstErrLine(err), Fix: reportFix(mr)}
 	}
+	if bad := notOwnReport(mr, rep); bad != nil {
+		return *bad
+	}
 	switch {
 	case !strings.EqualFold(rep.Machine, mr.M.Name):
 		return checkResult{State: stFail, Detail: fmt.Sprintf("the report says machine '%s', not '%s': the answer is not from %s (a client forwarding to its host?)", rep.Machine, mr.M.Name, mr.M.Name),
@@ -697,6 +748,16 @@ func proveMachine(ctx context.Context, r *rolloutRun, mr *machineRun) checkResul
 			Fix: fmt.Sprintf("run 'brain stores sync' on %s", mr.M.Name)}
 	}
 	name := r.proveStoreName()
+	if name != "" && mr.Role == "client" {
+		out, exit, err := r.run(ctx, mr.M, scriptWrapperExists(name), nil, 40*time.Second)
+		if err != nil {
+			return checkResult{State: stFail, Detail: firstErrLine(err)}
+		}
+		if exit != 0 {
+			return checkResult{State: stFail, Detail: fmt.Sprintf("the wrapper for store '%s' is not on %s (exit %d: %s)", name, mr.M.Name, exit, rolloutFirstLine(out)),
+				Fix: fmt.Sprintf("run 'bd stores sync' on %s (it writes the wrapper of every registered store), then re-run", mr.M.Name)}
+		}
+	}
 	if name != "" {
 		out, exit, err := r.run(ctx, mr.M, scriptStoreRead(name), nil, 90*time.Second)
 		if err != nil {
@@ -710,6 +771,14 @@ func proveMachine(ctx context.Context, r *rolloutRun, mr *machineRun) checkResul
 	d := fmt.Sprintf("%s itself reports epoch %d, '%s', converged", mr.M.Name, rep.AppliedEpoch, rep.BdVersion)
 	if name != "" {
 		d += fmt.Sprintf("; '%s list' answers", name)
+	}
+	mr.ProofNote = "the machine itself reported the target epoch and the candidate build"
+	if mr.Role == "client" {
+		d = fmt.Sprintf("client of %s: its own binary (BRAIN_REMOTE=off) is '%s'; its own sync and verify (read through the relay) name %s, epoch %d, %d wrappers, none missing", orDash(mr.Facts.Relay), r.Cand.Version, mr.M.Name, rep.AppliedEpoch, rep.WrappersOK)
+		if name != "" {
+			d += fmt.Sprintf("; newest store '%s' has its wrapper here and 'list --limit 1' answers through the host", name)
+		}
+		mr.ProofNote = "client: " + d
 	}
 	mr.Proved = true
 	return checkResult{State: stHave, Detail: d}
@@ -763,7 +832,7 @@ func stepRecord() rolloutStep {
 			outcome, detail := storeregistry.RolloutApplied, "binary and registry applied; not yet proved"
 			step := "record"
 			if mr.Proved {
-				outcome, detail, step = storeregistry.RolloutVerified, "the machine itself reported the target epoch and the candidate build", "prove"
+				outcome, detail, step = storeregistry.RolloutVerified, orDefault(mr.ProofNote, "the machine itself reported the target epoch and the candidate build"), "prove"
 			}
 			if r.Rollback {
 				outcome, detail, step = storeregistry.RolloutRolledBack, "previous binary restored; pin accepts it", "restore"

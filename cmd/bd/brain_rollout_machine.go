@@ -145,6 +145,39 @@ const scriptSync = `# rollout:sync
 ` + rolloutPreamble + `brain stores sync
 `
 
+// The two scripts below are the client forms of scriptReport and scriptSync. A
+// client's 'brain' command is a wrapper that sets BRAIN_REMOTE_STORE=brain, which
+// makes the binary forward even 'stores verify' and 'stores sync' to the host: the
+// answer would be the host's. Run through the bd binary itself with that variable
+// cleared, the registry verbs act on this machine's own files and read the
+// registry through the relay, which is how a client reaches it. BRAIN_REMOTE is
+// not set to off here: off would send them looking for a database the client does
+// not have.
+
+// scriptReportClient asks a client's own binary for its registry state.
+func scriptReportClient(bin string) string {
+	return `# rollout:report
+` + rolloutPreamble + `unset BRAIN_REMOTE_STORE
+exec ` + remoteQuote(bin) + ` stores verify --json
+`
+}
+
+// scriptSyncClient runs a client's own sync, not the host's.
+func scriptSyncClient(bin string) string {
+	return `# rollout:sync
+` + rolloutPreamble + `unset BRAIN_REMOTE_STORE
+exec ` + remoteQuote(bin) + ` stores sync
+`
+}
+
+// scriptWrapperExists checks that the forwarding wrapper of a store is on the
+// machine's PATH (the file a sync generates), before it is asked to answer.
+func scriptWrapperExists(name string) string {
+	return `# rollout:wrapper
+` + rolloutPreamble + `command -v ` + remoteQuote(name) + ` >/dev/null 2>&1 || { echo "no wrapper named ` + name + ` on the PATH" >&2; exit 44; }
+`
+}
+
 // scriptStoreRead reads through a store's wrapper by name.
 func scriptStoreRead(name string) string {
 	return `# rollout:storeread
