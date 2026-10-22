@@ -145,10 +145,16 @@ var brainHostClientsListCmd = &cobra.Command{
 		}
 		if cfg == nil || len(cfg.Clients) == 0 {
 			fmt.Println("no known clients")
-			return nil
+		} else {
+			for _, c := range cfg.Clients {
+				fmt.Printf("%s  (added %s)\n", c.Target, c.Added)
+			}
 		}
-		for _, c := range cfg.Clients {
-			fmt.Printf("%s  (added %s)\n", c.Target, c.Added)
+		// What the last 'brain rollout' runs recorded for each machine of the fleet:
+		// the binary it runs, its pin state and when it was last proved.
+		if rows := hostClientsRollouts(cmd.Context()); len(rows) > 0 {
+			fmt.Println("\nrollout record (brain rollout status):")
+			printRolloutRecords(os.Stdout, rows)
 		}
 		return nil
 	},

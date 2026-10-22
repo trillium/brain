@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storeregistry"
 	"github.com/steveyegge/beads/internal/storeregistry/regtest"
@@ -318,5 +319,41 @@ func TestEpochReadIsCheap(t *testing.T) {
 	t.Logf("ride-along epoch read: %.2f ms/op over %d iterations", float64(per)/1e6, r.N)
 	if per > 10_000_000 { // 10ms, generous for a loaded CI box; measured ~0.3ms
 		t.Fatalf("the epoch read costs %d ns/op, want well under 10ms", per)
+	}
+}
+
+func TestRolloutRecord_UpsertKeepsEarlierVerifiedTimeAndIsIndependentOfTheMachineReports(t *testing.T) {
+	srv := regtest.New(t)
+	ctx := context.Background()
+	db := srv.DB
+	at := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+
+	if rows, err := storeregistry.ReadRollouts(ctx, db); err != nil || len(rows) != 0 {
+		t.Fatalf("a database that never saw a rollout reads as empty: %v %v", rows, err)
+	}
+	ok := storeregistry.Rollout{Machine: "mini1", Role: "direct", BdVersion: "1.1.0 (aaa)", PinState: "ok", PinWant: "1.1.0 (aaa)",
+		BinaryPath: "/h/.local/bin/bd.real", PreviousBinary: "/h/.local/bin/bd.pre-bbb", Epoch: 42, Outcome: storeregistry.RolloutVerified,
+		Step: "prove", Detail: "ok", Actor: "rollout:t", VerifiedAt: "2026-10-22 12:00:00"}
+	if err := storeregistry.ReportRollout(ctx, db, ok, at); err != nil {
+		t.Fatal(err)
+	}
+	// a later failed run does not erase when the machine was last proved
+	failed := storeregistry.Rollout{Machine: "mini1", Role: "direct", BdVersion: "1.1.0 (aaa)", PinState: "stale", PinWant: "old", Epoch: 43,
+		Outcome: storeregistry.RolloutRefused, Step: "pin", Detail: "pin wants old", Actor: "rollout:t"}
+	if err := storeregistry.ReportRollout(ctx, db, failed, at.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// the machine's own sync report REPLACEs its row in brain_registry_machines and must not touch the rollout record
+	if err := storeregistry.ReportMachine(ctx, db, storeregistry.Machine{Machine: "mini1", Role: "direct", AppliedEpoch: 43, AppliedDigest: "d", BdVersion: "x"}, at); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := storeregistry.ReadRollouts(ctx, db)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %v, err = %v", rows, err)
+	}
+	got := rows[0]
+	if got.Outcome != storeregistry.RolloutRefused || got.PinState != "stale" || got.Epoch != 43 ||
+		got.VerifiedAt != "2026-10-22 12:00:00" || got.PreviousBinary != "/h/.local/bin/bd.pre-bbb" || got.UpdatedAt == "" {
+		t.Fatalf("record = %+v", got)
 	}
 }

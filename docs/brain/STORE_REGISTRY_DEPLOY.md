@@ -6,6 +6,11 @@ the change ships with **no** machine configured, and nothing in the build or the
 tests installs the poller or touches a real store. Read
 [`STORE_REGISTRY.md`](STORE_REGISTRY.md) first.
 
+Installing the binary behind the pin, applying the registry on each machine and
+proving it from the machine itself is `brain rollout` (plan by default; `--help`
+lists the steps); this file remains the plan for adopting the registry and for
+the decisions a command cannot take.
+
 Order: **mini0 → mini1 → macbook**, with `brain stores doctor --fleet` between
 machines. Each machine has a gate (what must be true before the next step) and a
 rollback.
