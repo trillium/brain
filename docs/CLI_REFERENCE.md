@@ -6479,7 +6479,7 @@ For each machine, in roster order:
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only
-      proves: the report came from this machine (its own name, not its host's), from its own binary at the candidate's version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
+      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
       undo:   none
   record    write what was established to the shared record
       needs:  the shared database accepts the write (checked at the 'records' step)
@@ -9259,7 +9259,7 @@ For each machine, in roster order:
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only
-      proves: the report came from this machine (its own name, not its host's), from its own binary at the candidate's version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
+      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
       undo:   none
   record    write what was established to the shared record
       needs:  the shared database accepts the write (checked at the 'records' step)
