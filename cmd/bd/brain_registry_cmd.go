@@ -721,6 +721,9 @@ func registryLocalVerb(args []string) bool {
 	if len(words) > 0 && words[0] == "brain" {
 		words = words[1:]
 	}
+	if len(words) == 1 && words[0] == "runbook" {
+		return true // text embedded in this binary; a host's older binary may lack the topic
+	}
 	if len(words) < 2 || words[0] != "stores" {
 		return false
 	}

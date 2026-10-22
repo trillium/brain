@@ -48,7 +48,7 @@ func registryRideAlongSkipped(cmd *cobra.Command) bool {
 			if c.Name() == "registry" || c.Name() == "poller" {
 				return true
 			}
-		case "__complete", "__completeNoDesc", "completion", "help", "version", "prime":
+		case "__complete", "__completeNoDesc", "completion", "help", "version", "prime", "runbook":
 			return true
 		}
 	}

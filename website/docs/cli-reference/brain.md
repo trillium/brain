@@ -201,6 +201,20 @@ bd related <id> [flags]
       --depth int   BFS depth cap (0 prints the center alone; higher walks further) (default 2)
 ```
 
+### bd brain runbook
+
+Operator runbooks are compiled into the binary, so they are available on a
+machine that has no checkout of the repository.
+
+  brain runbook            list the topics
+  brain runbook &lt;topic&gt;    print one runbook (markdown)
+
+Source files: docs/brain/RUNBOOK_*.md.
+
+```
+bd runbook [topic] [flags]
+```
+
 ### bd brain store
 
 Resolve &lt;name&gt; from the shared registry at call time and run the command

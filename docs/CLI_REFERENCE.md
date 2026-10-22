@@ -266,6 +266,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd brain promote](#bd-brain-promote) — Redirect: did you mean `brain recast &lt;id&gt; --to=&lt;kind&gt;`?
   - [bd brain recast](#bd-brain-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
   - [bd brain related](#bd-brain-related) — Walk the graph from a center brain doc and print the subgraph as a tree
+  - [bd brain runbook](#bd-brain-runbook) — Print an operator runbook embedded in this binary
   - [bd brain store](#bd-brain-store) — Run a command against any store the registry knows, without needing its wrapper
   - [bd brain stores](#bd-brain-stores) — Manage the brain federation store registry
   - [bd brain unify](#bd-brain-unify) — Plan, build, replay and verify the consolidation of brain's stores into one Dolt database
@@ -338,6 +339,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd remote status](#bd-remote-status) — Show the configured host, reachability, latency and versions
   - [bd remote unset](#bd-remote-unset) — Stop forwarding; use local databases again
 - [bd rename](#bd-rename) — Rename an issue ID
+- [bd runbook](#bd-runbook) — Print an operator runbook embedded in this binary
 - [bd ship](#bd-ship) — Publish a capability for cross-project dependencies
 - [bd store](#bd-store) — Run a command against any store the registry knows, without needing its wrapper
 - [bd stores](#bd-stores) — Manage the brain federation store registry
@@ -6395,6 +6397,20 @@ bd related <id> [flags]
       --depth int   BFS depth cap (0 prints the center alone; higher walks further) (default 2)
 ```
 
+#### bd brain runbook
+
+Operator runbooks are compiled into the binary, so they are available on a
+machine that has no checkout of the repository.
+
+  brain runbook            list the topics
+  brain runbook &lt;topic&gt;    print one runbook (markdown)
+
+Source files: docs/brain/RUNBOOK_*.md.
+
+```
+bd runbook [topic]
+```
+
 #### bd brain store
 
 Resolve &lt;name&gt; from the shared registry at call time and run the command
@@ -9002,6 +9018,20 @@ Note: The new ID must use a valid prefix for this database.
 
 ```
 bd rename <old-id> <new-id>
+```
+
+### bd runbook
+
+Operator runbooks are compiled into the binary, so they are available on a
+machine that has no checkout of the repository.
+
+  brain runbook            list the topics
+  brain runbook &lt;topic&gt;    print one runbook (markdown)
+
+Source files: docs/brain/RUNBOOK_*.md.
+
+```
+bd runbook [topic] [flags]
 ```
 
 ### bd ship
