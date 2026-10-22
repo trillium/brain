@@ -654,13 +654,13 @@ func stepSmoke() rolloutStep {
 		ID: "smoke", Title: "the wrappers the sync wrote cannot loop, and one real read answers", Scope: "machine",
 		Pre:    "the converge step passed",
 		Do:     "nothing; read-only",
-		Verify: "every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('<store> list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it",
+		Verify: "every live wrapper in ~/.local/bin on the machine (a file named for a registered store or alias; backups like <store>.pre-<date> are skipped and listed) execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('<store> list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it",
 		Undo:   "none; on failure the exact restore command of the sync's backup is printed and recorded",
 		check: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
 			if mr.Pending {
 				return checkResult{State: stSkip, Detail: "pending: checked after the changes above"}
 			}
-			out, exit, err := r.run(ctx, mr.M, scriptSmoke(r.proveStoreName(), smokeReadSeconds), nil, (smokeReadSeconds+30)*time.Second)
+			out, exit, err := r.run(ctx, mr.M, scriptSmoke(r.proveStoreName(), r.liveWrapperNames(), smokeReadSeconds), nil, (smokeReadSeconds+30)*time.Second)
 			if err != nil {
 				return checkResult{State: stFail, Detail: firstErrLine(err)}
 			}
@@ -669,13 +669,20 @@ func stepSmoke() rolloutStep {
 					Fix: "fix the wrapper's exec target (it must be the real bd binary: 'brain remote install' on a client writes it) and re-run"}
 			}
 			d := "every generated wrapper execs a real binary"
+			skipped := ""
 			for _, line := range strings.Split(out, "\n") {
+				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "skipped="); ok {
+					skipped = v
+				}
 				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "wrappers="); ok {
 					d = "wrappers " + strings.ReplaceAll(v, " ", ", ") + "; none loops"
 				}
 				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "read="); ok {
 					d += fmt.Sprintf("; '%s list --limit 1' answers", v)
 				}
+			}
+			if skipped != "" {
+				d += "; skipped (not a registered store or alias, so not a live command): " + strings.ReplaceAll(skipped, " ", ", ")
 			}
 			return checkResult{State: stHave, Detail: d}
 		},
@@ -869,6 +876,16 @@ func proveMachine(ctx context.Context, r *rolloutRun, mr *machineRun) checkResul
 	}
 	mr.Proved = true
 	return checkResult{State: stHave, Detail: d}
+}
+
+// liveWrapperNames is every active store and alias name in the registry: the
+// files in ~/.local/bin the smoke check treats as live commands.
+func (r *rolloutRun) liveWrapperNames() []string {
+	var names []string
+	for _, e := range storeregistry.Active(r.Snap.Entries) {
+		names = append(names, e.Name)
+	}
+	return names
 }
 
 // proveStoreName is the store whose wrapper is read on every machine: the one
