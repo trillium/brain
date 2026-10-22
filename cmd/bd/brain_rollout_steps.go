@@ -63,6 +63,10 @@ type rolloutStep struct {
 	// bookkeeping marks a step whose only effect is the shared record: in a
 	// plan it is shown as todo but does not make the machine "need changes".
 	bookkeeping bool
+	// verifyHave runs verify even when the check found nothing to change: the
+	// check alone is not the proof (the installed binary also has to be accepted
+	// by the pin).
+	verifyHave bool
 }
 
 // rolloutCandidate is the binary being rolled out.
@@ -444,7 +448,7 @@ func pinOwnerHintFor(owner string) string {
 
 func stepBinary() rolloutStep {
 	return rolloutStep{
-		ID: "binary", Title: "install the binary, keeping the previous one", Scope: "machine",
+		ID: "binary", Title: "install the binary, keeping the previous one", Scope: "machine", verifyHave: true,
 		Pre:    "the pin accepts the candidate; the candidate's platform is the machine's; the file to replace is known (BD_BIN, or the bd.real behind a BD_BIN shim)",
 		Do:     "upload the candidate beside the target, run it there and check it reports the candidate's version, copy the current binary to bd.pre-<sha> (an existing, different backup is never overwritten), then rename the new file into place",
 		Verify: "the machine's own binary (BRAIN_REMOTE=off) reports the candidate's version and the pin, sourced the way a wrapper does, accepts it; if not, the kept binary is put back at once",
@@ -646,9 +650,6 @@ func stepProve() rolloutStep {
 			}
 			return proveMachine(ctx, r, mr)
 		},
-		verify: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
-			return proveMachine(ctx, r, mr)
-		},
 	}
 }
 
@@ -839,7 +840,7 @@ func stepRollbackPin() rolloutStep {
 
 func stepRestore() rolloutStep {
 	return rolloutStep{
-		ID: "restore", Title: "put the kept binary back", Scope: "machine",
+		ID: "restore", Title: "put the kept binary back", Scope: "machine", verifyHave: true,
 		Pre:    "the pin accepts the kept binary",
 		Do:     "copy the kept binary over the installed one; the binary it replaces is kept as bd.post-<sha>",
 		Verify: "the machine's own binary reports the kept binary's version and the pin accepts it",

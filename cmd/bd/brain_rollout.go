@@ -32,7 +32,6 @@ var (
 	rolloutPrevious string
 	rolloutRoster   string
 	rolloutMachines []string
-	rolloutTimeout  time.Duration
 )
 
 // stepOutcome is one line of the report.
@@ -114,7 +113,7 @@ func (r *rolloutRun) execStep(ctx context.Context, st rolloutStep, mr *machineRu
 	default:
 		out.Status = statOK
 	}
-	if st.verify == nil {
+	if st.verify == nil || res.State == stHave && !st.verifyHave {
 		return out
 	}
 	v := st.verify(ctx, r, mr)
