@@ -923,6 +923,11 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// 'brain runbook' prints text compiled into this binary.
+		if cmd == brainRunbookCmd {
+			skipsStoreInit = true
+		}
+
 		// 'brain remote …' configures client mode and talks to ssh only.
 		if isBrainRemoteVerb(cmd) {
 			skipsStoreInit = true

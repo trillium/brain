@@ -67,7 +67,7 @@ func shortDate(stamp string) string {
 // gate needs to stop: management of the host itself and of client mode, help,
 // version, completion, and read-only queries.
 var hostGateExempt = map[string]bool{
-	"host": true, "remote": true, "help": true, "version": true, "completion": true,
+	"host": true, "remote": true, "runbook": true, "help": true, "version": true, "completion": true,
 	"__complete": true, "__completeNoDesc": true, "where": true, "info": true,
 }
 
