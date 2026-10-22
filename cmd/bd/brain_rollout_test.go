@@ -46,6 +46,8 @@ type fakeMachine struct {
 	cache       bool
 	missing     map[string][]string
 	storeBroken bool
+	smokeBad    string // non-empty: the smoke script reports this wrapper problem
+	syncOutput  string // printed by 'stores sync' (default "converged")
 	noWrapper   bool
 	lastScripts map[string]string // kind -> the script text last run
 	previous    string            // kept binary after an install
@@ -162,7 +164,15 @@ func (f *fakeFleet) Exec(_ context.Context, mem fleetMember, script string, stdi
 		m.syncRuns++
 		m.applied = f.epoch
 		m.registryAt = f.epoch
+		if m.syncOutput != "" {
+			return m.syncOutput, 0, nil
+		}
 		return "converged\n", 0, nil
+	case "smoke":
+		if m.smokeBad != "" {
+			return "wrappers=60 dynamic=0\nbad: " + m.smokeBad + "\n", 45, nil
+		}
+		return "wrappers=3 dynamic=0\nread=x\n", 0, nil
 	case "report":
 		name := m.reportName
 		if name == "" {

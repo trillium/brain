@@ -856,6 +856,71 @@ func isRemoteWrapper(path string) bool {
 	return false
 }
 
+// wrapperTargetRefusal says why a generated wrapper must not exec target, or ""
+// when it may. A client wrapper hands over to one real binary; if that target
+// is the wrapper itself, or any other generated wrapper, every command it runs
+// re-executes itself forever (the wrapper for the store named 'brain' did
+// exactly that). wrapperPath is the wrapper being written; the target must be
+// an existing, executable, regular file that no 'brain' command generated.
+func wrapperTargetRefusal(target, wrapperPath string) string {
+	if target == "" || !filepath.IsAbs(target) {
+		return fmt.Sprintf("exec target %q is not an absolute path", target)
+	}
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return fmt.Sprintf("exec target %s cannot be resolved: %v", target, err)
+	}
+	st, err := os.Stat(resolved)
+	switch {
+	case err != nil:
+		return fmt.Sprintf("exec target %s cannot be read: %v", target, err)
+	case !st.Mode().IsRegular():
+		return fmt.Sprintf("exec target %s is not a regular file", target)
+	case st.Mode().Perm()&0o111 == 0:
+		return fmt.Sprintf("exec target %s is not executable", target)
+	}
+	if wrapperPath != "" {
+		if wst, werr := os.Stat(wrapperPath); werr == nil && os.SameFile(st, wst) {
+			return fmt.Sprintf("exec target %s is the wrapper itself (%s): it would re-execute itself forever", target, wrapperPath)
+		}
+		if filepath.Clean(wrapperPath) == filepath.Clean(target) || filepath.Clean(wrapperPath) == resolved {
+			return fmt.Sprintf("exec target %s is the wrapper itself (%s): it would re-execute itself forever", target, wrapperPath)
+		}
+	}
+	f, err := os.Open(resolved) //nolint:gosec // inspecting the binary a wrapper would run
+	if err != nil {
+		return fmt.Sprintf("exec target %s cannot be read: %v", target, err)
+	}
+	defer func() { _ = f.Close() }()
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(f, head)
+	if isGeneratedWrapperBody(head[:n]) {
+		return fmt.Sprintf("exec target %s is itself a generated wrapper: a wrapper must exec the real bd binary, never another wrapper", target)
+	}
+	return ""
+}
+
+// clientBrainBinary is the binary every client wrapper hands over to: explicit
+// when given, else the one running this command (symlinks resolved). 'brain
+// remote install' and 'brain stores sync' must agree on it; it is never a path
+// derived from a store name, because ~/.local/bin/brain is a generated wrapper.
+func clientBrainBinary(explicit string) (string, error) {
+	self := explicit
+	if self == "" {
+		var err error
+		if self, err = os.Executable(); err != nil {
+			return "", fmt.Errorf("locating this binary: %w", err)
+		}
+		if resolved, rerr := filepath.EvalSymlinks(self); rerr == nil {
+			self = resolved
+		}
+	}
+	if abs, err := filepath.Abs(self); err == nil {
+		self = abs
+	}
+	return self, nil
+}
+
 // installAction is the outcome for one wrapper name.
 type installAction struct {
 	Name   string `json:"name"`
@@ -885,6 +950,8 @@ func installRemoteWrappers(dir, brainBinary string, names []string, force, dryRu
 			act.Action, act.Note = "skipped", "never shadows bd"
 		case name == self && filepath.Dir(brainBinary) == dir:
 			act.Action, act.Note = "skipped", "this is the brain binary itself"
+		case wrapperTargetRefusal(brainBinary, path) != "":
+			act.Action, act.Note = "skipped", "refused: "+wrapperTargetRefusal(brainBinary, path)
 		default:
 			body := remoteWrapperBody(name, brainBinary)
 			existing, rerr := os.ReadFile(path) //nolint:gosec // our install dir
@@ -1158,17 +1225,9 @@ that shadows (or is shadowed by) another command on PATH.`,
 		if err := cfg.validate(); err != nil {
 			FatalError("%v", err)
 		}
-		self := remoteInstallBin
-		if self == "" {
-			if self, err = os.Executable(); err != nil {
-				FatalError("locating this binary: %v", err)
-			}
-			if resolved, rerr := filepath.EvalSymlinks(self); rerr == nil {
-				self = resolved
-			}
-		}
-		if abs, aerr := filepath.Abs(self); aerr == nil {
-			self = abs
+		self, err := clientBrainBinary(remoteInstallBin)
+		if err != nil {
+			FatalError("%v", err)
 		}
 		dir := remoteInstallDir
 		if dir == "" {

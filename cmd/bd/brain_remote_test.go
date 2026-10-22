@@ -703,7 +703,11 @@ func TestRemoteInstallCommandEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	clientBin := filepath.Join(home, "bin")
-	remoteInstallDir, remoteInstallBin = clientBin, filepath.Join(clientBin, "brain")
+	remoteInstallDir, remoteInstallBin = clientBin, filepath.Join(clientBin, "bd")
+	if err := os.MkdirAll(clientBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeExec(t, remoteInstallBin, "#!/bin/sh\n") // the real binary the wrappers will exec
 	t.Cleanup(func() { remoteInstallDir, remoteInstallBin = "", "" })
 	brainRemoteInstallCmd.Run(brainRemoteInstallCmd, nil)
 	for _, n := range []string{"task", "inbox"} {

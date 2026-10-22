@@ -237,10 +237,11 @@ func newShimEnv(ctx context.Context, src registrySource, machine string) shimEnv
 		env.ProjectID = func(store string) (string, error) { return src.ProjectID(ctx, store) }
 	}
 	if role == "client" {
-		// A client's wrappers hand over to the brain binary on PATH, as 'brain remote install' writes them.
-		env.BrainBinary = filepath.Join(home, ".local", "bin", "brain")
-		if p := os.Getenv("BRAIN_BINARY"); p != "" {
-			env.BrainBinary = p
+		// A client's wrappers hand over to the real binary, exactly as 'brain remote
+		// install' writes them. Never ~/.local/bin/brain: that is itself a generated
+		// wrapper, and a wrapper that execs a wrapper re-executes itself forever.
+		if bin, err := clientBrainBinary(os.Getenv("BRAIN_BINARY")); err == nil {
+			env.BrainBinary = bin
 		}
 	}
 	return env
@@ -288,6 +289,7 @@ func runRegistrySync(ctx context.Context, opt syncOptions) (*syncReport, error) 
 		return nil, err
 	}
 	rep.Actions = plan.Actions
+	rep.Failed = append(rep.Failed, plan.Refused...)
 	rep.Changed = plan.Changes()
 	rep.Orphans, rep.LocalOnly = plan.Orphans, plan.LocalOnly
 	rep.ActiveCount = plan.Active

@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -183,6 +184,10 @@ type machineRun struct {
 	BinCheck    string
 	Version     string // what the machine runs now
 	ProofNote   string // what the prove step established, for the record
+	// Backup is the directory a sync on this machine kept what it replaced in; its
+	// restore.sh puts the machine back. RestoreCmd is the exact command for it.
+	Backup     string
+	RestoreCmd string
 }
 
 func (r *rolloutRun) run(ctx context.Context, m fleetMember, script string, stdin io.Reader, timeout time.Duration) (string, int, error) {
@@ -228,7 +233,7 @@ func pinFix(m, want, got string, owner string) string {
 func installSteps() []rolloutStep {
 	return []rolloutStep{
 		stepCandidate(), stepRegistry(), stepStore(), stepRecords(),
-		stepReach(), stepMode(), stepPin(), stepBinary(), stepConverge(), stepProve(), stepRecord(),
+		stepReach(), stepMode(), stepPin(), stepBinary(), stepConverge(), stepSmoke(), stepProve(), stepRecord(),
 	}
 }
 
@@ -590,6 +595,9 @@ func stepConverge() rolloutStep {
 		},
 		act: func(ctx context.Context, r *rolloutRun, mr *machineRun) error {
 			out, exit, err := r.run(ctx, mr.M, syncScriptFor(mr), nil, 3*time.Minute)
+			// Whatever the sync replaced was kept: remember where, so a failure from
+			// here on can say how to put the machine back, even if the sync itself failed.
+			mr.noteSyncBackup(out, r.Self)
 			if err != nil {
 				return err
 			}
@@ -613,6 +621,85 @@ func stepConverge() rolloutStep {
 			return checkResult{State: stHave, Detail: fmt.Sprintf("applied epoch %d", rep.AppliedEpoch)}
 		},
 	}
+}
+
+var syncBackupRE = regexp.MustCompile(`\(backup: ([^)\s]+)\)`)
+
+// noteSyncBackup records the backup directory a sync printed, and the command that
+// restores it ('brain stores sync' writes restore.sh beside the copies it made).
+func (mr *machineRun) noteSyncBackup(syncOutput, self string) {
+	m := syncBackupRE.FindStringSubmatch(syncOutput)
+	if m == nil {
+		return
+	}
+	mr.Backup = m[1]
+	mr.RestoreCmd = "sh " + remoteQuote(m[1]+"/restore.sh")
+	if mr.M.SSH != "" && mr.M.Name != self {
+		mr.RestoreCmd = fmt.Sprintf("ssh %s %s", mr.M.SSH, remoteQuote(mr.RestoreCmd))
+	}
+}
+
+// restoreHint is appended to the message of a step that failed after a sync
+// changed files on the machine. Nothing restores automatically.
+func (mr *machineRun) restoreHint() string {
+	if mr.RestoreCmd == "" {
+		return ""
+	}
+	return "a sync changed files on " + mr.M.Name + "; to put them back as they were, run: " + mr.RestoreCmd
+}
+
+// stepSmoke is the loop-safe check between converge and prove.
+func stepSmoke() rolloutStep {
+	return rolloutStep{
+		ID: "smoke", Title: "the wrappers the sync wrote cannot loop, and one real read answers", Scope: "machine",
+		Pre:    "the converge step passed",
+		Do:     "nothing; read-only",
+		Verify: "every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('<store> list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it",
+		Undo:   "none; on failure the exact restore command of the sync's backup is printed and recorded",
+		check: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
+			if mr.Pending {
+				return checkResult{State: stSkip, Detail: "pending: checked after the changes above"}
+			}
+			out, exit, err := r.run(ctx, mr.M, scriptSmoke(r.proveStoreName(), smokeReadSeconds), nil, (smokeReadSeconds+30)*time.Second)
+			if err != nil {
+				return checkResult{State: stFail, Detail: firstErrLine(err)}
+			}
+			if exit != 0 {
+				return checkResult{State: stFail, Detail: "wrapper smoke check failed on " + mr.M.Name + ": " + smokeProblems(out),
+					Fix: "fix the wrapper's exec target (it must be the real bd binary: 'brain remote install' on a client writes it) and re-run"}
+			}
+			d := "every generated wrapper execs a real binary"
+			for _, line := range strings.Split(out, "\n") {
+				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "wrappers="); ok {
+					d = "wrappers " + strings.ReplaceAll(v, " ", ", ") + "; none loops"
+				}
+				if v, ok := strings.CutPrefix(strings.TrimSpace(line), "read="); ok {
+					d += fmt.Sprintf("; '%s list --limit 1' answers", v)
+				}
+			}
+			return checkResult{State: stHave, Detail: d}
+		},
+	}
+}
+
+// smokeReadSeconds is how long the smoke read may take before it is killed.
+const smokeReadSeconds = 20
+
+// smokeProblems is the "bad:" lines of a smoke script, or its first line.
+func smokeProblems(out string) string {
+	var bad []string
+	for _, line := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "bad: "); ok {
+			bad = append(bad, v)
+		}
+	}
+	if len(bad) == 0 {
+		return rolloutFirstLine(out)
+	}
+	if len(bad) > 3 {
+		bad = append(bad[:3], fmt.Sprintf("and %d more", len(bad)-3))
+	}
+	return strings.Join(bad, "; ")
 }
 
 // reportScriptFor and syncScriptFor pick the form of the script that reaches the
