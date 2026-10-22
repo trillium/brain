@@ -682,26 +682,13 @@ func (t *doltTransaction) AddDependencyWithOptions(ctx context.Context, dep *typ
 		sourceTable = "wisps"
 	}
 
-	isCrossPrefix := isCrossPrefixDep(dep.IssueID, dep.DependsOnID)
-	targetTable := "issues"
-	kind := issueops.DepTargetIssue
-	switch {
-	case isCrossPrefix, strings.HasPrefix(dep.DependsOnID, "external:"):
-		kind = issueops.DepTargetExternal
-	default:
-		if t.isActiveWisp(ctx, dep.DependsOnID) {
-			targetTable = "wisps"
-			kind = issueops.DepTargetWisp
-		}
-	}
-
+	// The target is classified inside AddDependencyInTx, from the database
+	// itself (issueops.ProbeDepTarget): a cross-store target this database
+	// holds is a real edge, not a text reference.
 	opts := issueops.AddDependencyOpts{
 		SourceTable:    sourceTable,
-		TargetTable:    targetTable,
 		WriteTable:     table,
-		IsCrossPrefix:  isCrossPrefix,
 		SkipCycleCheck: addOpts.SkipCycleCheck,
-		TargetKind:     &kind,
 	}
 	if err := issueops.AddDependencyInTx(ctx, t.txFor(table), dep, actor, opts); err != nil {
 		return err

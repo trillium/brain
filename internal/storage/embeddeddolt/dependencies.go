@@ -12,9 +12,7 @@ import (
 
 func (s *EmbeddedDoltStore) AddDependency(ctx context.Context, dep *types.Dependency, actor string) error {
 	return s.withConn(ctx, true, func(tx *sql.Tx) error {
-		return issueops.AddDependencyInTx(ctx, tx, dep, actor, issueops.AddDependencyOpts{
-			IsCrossPrefix: types.ExtractPrefix(dep.IssueID) != types.ExtractPrefix(dep.DependsOnID),
-		})
+		return issueops.AddDependencyInTx(ctx, tx, dep, actor, issueops.AddDependencyOpts{})
 	})
 }
 

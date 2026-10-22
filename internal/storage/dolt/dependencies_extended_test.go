@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -794,6 +795,11 @@ func TestAddDependency_MultipleExternalReferences(t *testing.T) {
 // Cross-Prefix Dependency Tests
 // =============================================================================
 
+// TestIsCrossPrefixDep covers the namespace predicate the store-aware target
+// classifier falls back on: a non-held target in another store's namespace is
+// a foreign reference, one in the source's own namespace is a name that does
+// not exist. The predicate lives in issueops now, next to the classifier that
+// uses it, so the rule has one home.
 func TestIsCrossPrefixDep(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -811,7 +817,7 @@ func TestIsCrossPrefixDep(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isCrossPrefixDep(tt.source, tt.target)
+			got := issueops.IsCrossPrefix(tt.source, tt.target)
 			if got != tt.expected {
 				t.Errorf("isCrossPrefixDep(%q, %q) = %v, want %v", tt.source, tt.target, got, tt.expected)
 			}

@@ -240,3 +240,59 @@ func TestGetStaleIssuesWideUnscoped(t *testing.T) {
 		t.Fatalf("wide mode pinned the stale filter: %v", filter.Namespaces)
 	}
 }
+
+// TestScopeNamespacesLeavesIdAddressedReadsUnscoped is the global-id-reads rule:
+// a read that names the ids it wants — or that is addressed by id and cannot
+// name them yet (IDLookup, a partial-id resolve) — is never namespace-scoped,
+// while a listing stays narrow. The namespace clause can only exclude
+// explicitly named ids, which is how `task show brain-c56qg` came to answer
+// "no issue found" for a bead this database plainly held.
+func TestScopeNamespacesLeavesIdAddressedReadsUnscoped(t *testing.T) {
+	issueops.ResetUnifiedScopeCacheForTest()
+	defer resetNamespaceReadScopeForTest()
+	SetNamespaceReadScope(NamespaceReadNarrow)
+
+	ctx := context.Background()
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	t.Setenv("BD_NAME", "task")
+	mock.ExpectQuery("select database\\(\\)").
+		WillReturnRows(sqlmock.NewRows([]string{"db"}).AddRow("dolt_unified_scope_id_read_test"))
+	mock.ExpectQuery("select count\\(\\*\\) from information_schema").
+		WithArgs("dolt_unified_scope_id_read_test").
+		WillReturnRows(sqlmock.NewRows([]string{"n"}).AddRow(1))
+	mock.ExpectQuery(regexp.QuoteMeta("select `store` from brain_store_aliases where `alias` = ?")).
+		WithArgs("task").
+		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT prefix FROM brain_store_prefixes WHERE `store` = ?")).
+		WithArgs("task").
+		WillReturnRows(sqlmock.NewRows([]string{"prefix"}).AddRow("task"))
+
+	s := &DoltStore{db: db}
+
+	// A listing is scoped to the wrapper's namespace.
+	if f := s.scopeNamespaces(ctx, types.IssueFilter{}); !reflect.DeepEqual(f.Namespaces, []string{"task"}) {
+		t.Fatalf("listing filter Namespaces = %v, want [task]", f.Namespaces)
+	}
+
+	// Naming the ids is an id-addressed read: the scope must not narrow it.
+	if f := s.scopeNamespaces(ctx, types.IssueFilter{IDs: []string{"brain-c56qg"}}); f.Namespaces != nil {
+		t.Fatalf("id-addressed read was scoped: Namespaces = %v", f.Namespaces)
+	}
+	// A partial-id read cannot name its ids, so it says so.
+	if f := s.scopeNamespaces(ctx, types.IssueFilter{IDLookup: true}); f.Namespaces != nil {
+		t.Fatalf("partial-id read was scoped: Namespaces = %v", f.Namespaces)
+	}
+	// A caller that set the scope itself keeps it, IDLookup or not.
+	if f := s.scopeNamespaces(ctx, types.IssueFilter{Namespaces: []string{"robot"}}); !reflect.DeepEqual(f.Namespaces, []string{"robot"}) {
+		t.Fatalf("caller-set Namespaces = %v, want [robot]", f.Namespaces)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+}

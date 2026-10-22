@@ -170,9 +170,9 @@ func TestPersistDependenciesHonorsImportedCreatedBy(t *testing.T) {
 	mock.ExpectQuery("SELECT 1 FROM wisps WHERE id = \\? LIMIT 1").
 		WithArgs("target").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT 1 FROM issues WHERE id = \\?").
+	mock.ExpectQuery("SELECT issue_type FROM issues WHERE id = \\?").
 		WithArgs("target").
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+		WillReturnRows(sqlmock.NewRows([]string{"issue_type"}).AddRow(string(types.TypeTask)))
 	mock.ExpectExec("INSERT INTO dependencies").
 		WithArgs(depid.New("source", "target"), "source", "target", types.DepRelated, "someone.else", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -212,9 +212,9 @@ func TestPersistDependenciesDefaultsCreatedByToActor(t *testing.T) {
 	mock.ExpectQuery("SELECT 1 FROM wisps WHERE id = \\? LIMIT 1").
 		WithArgs("target").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT 1 FROM issues WHERE id = \\?").
+	mock.ExpectQuery("SELECT issue_type FROM issues WHERE id = \\?").
 		WithArgs("target").
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+		WillReturnRows(sqlmock.NewRows([]string{"issue_type"}).AddRow(string(types.TypeTask)))
 	mock.ExpectExec("INSERT INTO dependencies").
 		WithArgs(depid.New("source", "target"), "source", "target", types.DepRelated, "current.user", sqlmock.AnyArg()).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -250,7 +250,7 @@ func TestPersistDependenciesReturnsTargetLookupErrors(t *testing.T) {
 	mock.ExpectQuery("SELECT 1 FROM wisps WHERE id = \\? LIMIT 1").
 		WithArgs("target").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT 1 FROM issues WHERE id = \\?").
+	mock.ExpectQuery("SELECT issue_type FROM issues WHERE id = \\?").
 		WithArgs("target").
 		WillReturnError(targetErr)
 
@@ -285,9 +285,9 @@ func TestPersistDependenciesSkipsValidationErrorsWhenConfigured(t *testing.T) {
 	mock.ExpectQuery("SELECT 1 FROM wisps WHERE id = \\? LIMIT 1").
 		WithArgs("source").
 		WillReturnError(sql.ErrNoRows)
-	mock.ExpectQuery("SELECT 1 FROM issues WHERE id = \\?").
+	mock.ExpectQuery("SELECT issue_type FROM issues WHERE id = \\?").
 		WithArgs("source").
-		WillReturnRows(sqlmock.NewRows([]string{"1"}).AddRow(1))
+		WillReturnRows(sqlmock.NewRows([]string{"issue_type"}).AddRow(string(types.TypeTask)))
 
 	result, err := PersistDependenciesWithOptionsResult(ctx, tx, []*types.Issue{issue}, "tester", storage.BatchCreateOptions{
 		SkipDependencyValidationErrors: true,

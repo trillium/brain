@@ -111,6 +111,10 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	// This uses the same query path as "bd list --id", ensuring consistency.
 	// Previously we used GetIssue which could fail in cases where SearchIssues
 	// with filter.IDs succeeded, likely due to subtle query differences.
+	//
+	// Resolution is id-addressed, so it is not namespace-scoped: on the unified
+	// database a wrapper resolves any store's id, not only its own (see
+	// types.IssueFilter.IDs and IDLookup).
 	exactFilter := types.IssueFilter{IDs: []string{input}}
 	if issues, err := store.SearchIssues(ctx, "", exactFilter); err == nil && len(issues) > 0 {
 		return issues[0].ID, nil
@@ -189,7 +193,10 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 		return "", notFoundErr(ctx, store, input)
 	}
 
-	filter := types.IssueFilter{}
+	// The fragment search is still id-addressed — the caller wants the bead
+	// this hash belongs to — so it carries IDLookup and stays unscoped on the
+	// unified database; a listing keeps its namespace scope.
+	filter := types.IssueFilter{IDLookup: true}
 	issues, err := store.SearchIssues(ctx, searchPart, filter)
 	if err != nil {
 		return "", fmt.Errorf("failed to search issues: %w", err)
@@ -238,7 +245,7 @@ func ResolvePartialID(ctx context.Context, store storage.Storage, input string) 
 	// always resolvable by partial ID.
 	if len(matches) == 0 {
 		ephTrue := true
-		wispFilter := types.IssueFilter{Ephemeral: &ephTrue}
+		wispFilter := types.IssueFilter{Ephemeral: &ephTrue, IDLookup: true}
 		if wisps, wispErr := store.SearchIssues(ctx, searchPart, wispFilter); wispErr == nil {
 			for _, w := range wisps {
 				if w.ID == input {
