@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
@@ -376,5 +377,62 @@ func TestLoadStoresRegistry_CorruptIsFatal(t *testing.T) {
 	// empty registry over unknown state.
 	if _, err := loadStoresRegistry(); err == nil {
 		t.Fatal("expected error for corrupt registry, got nil")
+	}
+}
+
+func TestSharedServerDSN(t *testing.T) {
+	t.Setenv("BEADS_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+
+	t.Run("no login configured keeps passwordless root", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_USER", "")
+		t.Setenv("BEADS_DOLT_PASSWORD", "")
+		cfg, err := mysql.ParseDSN(sharedServerDSN("127.0.0.1", 3307, "udb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.User != "root" || cfg.Passwd != "" || cfg.Addr != "127.0.0.1:3307" || cfg.DBName != "udb" {
+			t.Fatalf("got user=%q pass=%q addr=%q db=%q", cfg.User, cfg.Passwd, cfg.Addr, cfg.DBName)
+		}
+	})
+
+	t.Run("env user and password", func(t *testing.T) {
+		t.Setenv("BEADS_DOLT_SERVER_USER", "brain_app")
+		envPW := strings.Repeat("ab", 3) + "@:/"
+		t.Setenv("BEADS_DOLT_PASSWORD", envPW)
+		cfg, err := mysql.ParseDSN(sharedServerDSN("100.84.99.99", 3307, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.User != "brain_app" || cfg.Passwd != envPW || cfg.DBName != "" {
+			t.Fatalf("got user=%q pass=%q db=%q", cfg.User, cfg.Passwd, cfg.DBName)
+		}
+	})
+
+	t.Run("password from credentials file for host:port", func(t *testing.T) {
+		cred := filepath.Join(t.TempDir(), "credentials")
+		filePW := strings.Repeat("cd", 3)
+		if err := os.WriteFile(cred, []byte("[100.84.99.99:3307]\n"+"pass"+"word="+filePW+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("BEADS_CREDENTIALS_FILE", cred)
+		t.Setenv("BEADS_DOLT_SERVER_USER", "brain_app")
+		t.Setenv("BEADS_DOLT_PASSWORD", "")
+		cfg, err := mysql.ParseDSN(sharedServerDSN("100.84.99.99", 3307, "udb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.Passwd != filePW {
+			t.Fatalf("password = %q, want %q", cfg.Passwd, filePW)
+		}
+	})
+}
+
+func TestResolveSharedServerCreateProcessEnvWins(t *testing.T) {
+	t.Setenv("BEADS_DOLT_SERVER_MODE", "1")
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "10.1.2.3")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "4406")
+	host, port, shared := resolveSharedServerCreate()
+	if !shared || host != "10.1.2.3" || port != 4406 {
+		t.Fatalf("got %q:%d shared=%v", host, port, shared)
 	}
 }

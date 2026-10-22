@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
@@ -798,6 +800,27 @@ func provisionServerStore(ctx context.Context, name, beadsDir, host string, port
 	return unifiedDatabase, nil
 }
 
+// sharedServerDSN builds the DSN for a raw connection to the shared server
+// from the same login resolution every other brain command uses: the user from
+// BEADS_DOLT_SERVER_USER (default root, so a local passwordless setup keeps
+// working), the password from BEADS_DOLT_PASSWORD, else the [host:port]
+// section of the beads credentials file. database may be empty.
+func sharedServerDSN(host string, port int, database string) string {
+	cfg := mysql.NewConfig()
+	cfg.User = os.Getenv("BEADS_DOLT_SERVER_USER")
+	if cfg.User == "" {
+		cfg.User = configfile.DefaultDoltServerUser
+	}
+	cfg.Passwd = os.Getenv("BEADS_DOLT_PASSWORD")
+	if cfg.Passwd == "" {
+		cfg.Passwd = configfile.LookupCredentialsPassword(host, port)
+	}
+	cfg.Net = "tcp"
+	cfg.Addr = net.JoinHostPort(host, strconv.Itoa(port))
+	cfg.DBName = database
+	return cfg.FormatDSN()
+}
+
 // probeUnifiedDatabaseOnServer answers the name of the database on the shared
 // server that carries brain_unified_config (the unified shape's marker table),
 // and whether one exists at all. No such table = the server is not unified:
@@ -806,7 +829,7 @@ func probeUnifiedDatabaseOnServer(ctx context.Context, host string, port int) (s
 	if port == 0 {
 		return "", false, fmt.Errorf("no shared server port resolved")
 	}
-	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(%s:%d)/", host, port)) //nolint:gosec,noctx // shared-server convention, bounded below
+	db, err := sql.Open("mysql", sharedServerDSN(host, port, "")) //nolint:gosec,noctx // shared-server convention, bounded below
 	if err != nil {
 		return "", false, fmt.Errorf("opening probe connection to %s:%d: %w", host, port, err)
 	}
@@ -835,7 +858,7 @@ func probeUnifiedDatabaseOnServer(ctx context.Context, host string, port int) (s
 // claim (reason "store-created"; a collision with another store's recorded
 // prefix rolls the whole seed back loudly).
 func seedNamespaceRows(ctx context.Context, host string, port int, unifiedDatabase, name, projectID string) error {
-	db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(%s:%d)/%s", host, port, unifiedDatabase)) //nolint:gosec,noctx // shared-server convention; every statement is inside one bounded tx
+	db, err := sql.Open("mysql", sharedServerDSN(host, port, unifiedDatabase)) //nolint:gosec,noctx // shared-server convention; every statement is inside one bounded tx
 	if err != nil {
 		return fmt.Errorf("connecting to %s: %w", unifiedDatabase, err)
 	}
