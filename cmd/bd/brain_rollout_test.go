@@ -164,7 +164,7 @@ func (f *fakeFleet) Exec(_ context.Context, mem fleetMember, script string, stdi
 		}
 		ver := m.reportVer
 		if ver == "" {
-			ver = m.version
+			ver = versionToken(m.version) // a real report carries the version token only
 		}
 		src := "database"
 		if m.cache {
@@ -610,7 +610,7 @@ func TestRolloutClient_IsCheckedThroughItsOwnBinaryNotItsHost(t *testing.T) {
 	h := newHarness(t)
 	// The MacBook is a client of mini1 and still runs the old build. Its host runs the new one.
 	mac := h.fleet.add("macbook", &fakeMachine{pinPresent: false, version: oldVer, relay: "mini1@100.102.238.78", applied: 7, registryAt: 7})
-	mac.reportVer = newVer // what its host would say if the question were forwarded
+	mac.reportVer = versionToken(newVer) // what its host would say if the question were forwarded
 
 	rep := h.do(false, "macbook")
 
@@ -653,7 +653,7 @@ func TestRolloutClient_LocalBinaryOldMeansNotProvedEvenIfReportClaimsNew(t *test
 	mac.relay = "mini1@100.102.238.78"
 	mac.version = oldVer
 	mac.pinWant = oldVer
-	mac.reportVer = newVer
+	mac.reportVer = versionToken(newVer)
 	rep := h.do(false, "macbook")
 	if rep.Complete {
 		t.Fatal("claimed converged with an old local binary")
@@ -667,7 +667,7 @@ func TestRolloutProve_EachClaimIsCheckedOnTheMachineItself(t *testing.T) {
 	}{
 		"registry cache":    {func(m *fakeMachine) { m.cache = true }, "cache"},
 		"report from other": {func(m *fakeMachine) { m.reportName = "elsewhere" }, "not from"},
-		"report old build":  {func(m *fakeMachine) { m.reportVer = oldVer }, "build"},
+		"report old build":  {func(m *fakeMachine) { m.reportVer = "0.9.0" }, "version"},
 		"store unreadable":  {func(m *fakeMachine) { m.storeBroken = true }, "by name"},
 	}
 	for name, c := range cases {

@@ -510,6 +510,15 @@ func stepBinary() rolloutStep {
 	}
 }
 
+// versionToken is the part of a --version line a verify report carries:
+// "1.1.0-rc.1" of "1.1.0-rc.1 (972952bf7)".
+func versionToken(v string) string {
+	if f := strings.Fields(v); len(f) > 0 {
+		return f[0]
+	}
+	return v
+}
+
 func orDash(s string) string {
 	if s == "" {
 		return "-"
@@ -642,7 +651,7 @@ func stepProve() rolloutStep {
 		ID: "prove", Title: "the machine itself proves it converged", Scope: "machine",
 		Pre:    "all earlier steps of the machine passed",
 		Do:     "nothing; read-only",
-		Verify: "the report came from this machine (its own name, not its host's), from its own binary at the candidate's version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper",
+		Verify: "the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper",
 		Undo:   "none",
 		check: func(ctx context.Context, r *rolloutRun, mr *machineRun) checkResult {
 			if mr.Pending {
@@ -674,8 +683,10 @@ func proveMachine(ctx context.Context, r *rolloutRun, mr *machineRun) checkResul
 	case !strings.EqualFold(rep.Machine, mr.M.Name):
 		return checkResult{State: stFail, Detail: fmt.Sprintf("the report says machine '%s', not '%s': the answer is not from %s (a client forwarding to its host?)", rep.Machine, mr.M.Name, mr.M.Name),
 			Fix: fmt.Sprintf("make the roster name equal the machine's own name (BRAIN_MACHINE or its short hostname), or run 'brain stores verify' on %s", mr.M.Name)}
-	case rep.BdVersion != r.Cand.Version:
-		return checkResult{State: stFail, Detail: fmt.Sprintf("%s reports build '%s', not '%s'", mr.M.Name, rep.BdVersion, r.Cand.Version), Fix: "install the candidate on " + mr.M.Name}
+	case rep.BdVersion != versionToken(r.Cand.Version):
+		// The report carries only the version token, not the commit; the commit was
+		// matched above on the same 'brain' command (brain --version).
+		return checkResult{State: stFail, Detail: fmt.Sprintf("%s reports version '%s', not '%s'", mr.M.Name, rep.BdVersion, versionToken(r.Cand.Version)), Fix: "install the candidate on " + mr.M.Name}
 	case rep.Source == "cache":
 		return checkResult{State: stFail, Detail: mr.M.Name + " could not read the registry and answered from its cache: that proves nothing", Fix: reportFix(mr)}
 	case rep.AppliedEpoch != r.Epoch || rep.RegistryEpoch != r.Epoch:
