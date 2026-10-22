@@ -923,8 +923,9 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
-		// 'brain runbook' prints text compiled into this binary.
-		if cmd == brainRunbookCmd {
+		// 'brain rollout' reads the registry like 'stores doctor --fleet': through
+		// the connected store on a direct machine, through its relay on a client.
+		if rolloutCommandCanRunWithoutStore(cmd) {
 			skipsStoreInit = true
 		}
 

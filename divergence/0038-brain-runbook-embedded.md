@@ -2,9 +2,10 @@
 id: 0038
 title: operator runbooks embedded in the binary (`brain runbook`)
 isc: []
-status: proposed
+status: superseded
 created: 2026-10-22
 updated: 2026-10-22
+superseded_by: 0039
 commits: []
 touches:
   - docs/brain/RUNBOOK_STORES_AND_DEPLOY.md
@@ -37,3 +38,10 @@ binary may lack the topic).
 
 The procedure lived in one operator's head and in a chat. A machine that has the
 binary but not a checkout must still be able to read how it is operated.
+
+## Superseded
+
+Superseded by [0039](0039-brain-rollout-command.md). A written procedure, even
+one embedded in the binary, can drift from what the code does and enforces
+nothing. `brain runbook`, `docs/brain/RUNBOOK_STORES_AND_DEPLOY.md` and the
+embedding were removed; the procedure is now the `brain rollout` command.
