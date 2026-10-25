@@ -56,6 +56,7 @@ binary on the client. Build it with `make build` and copy `bd` to
 brain remote set me@my-host.example.ts.net   # checks the host answers, then saves
 brain remote install                          # one wrapper per store in the host's registry
 brain remote status                           # host, reachability, latency, versions
+brain remote doctor                           # check the whole client, with fixes
 ```
 
 `brain remote set` writes `~/.config/brain/remote.yaml`:
@@ -89,6 +90,77 @@ it never writes a command called `bd`, it skips the name of the brain binary
 itself, and it prints a note when a wrapper shadows, or is shadowed by, another
 command on `PATH` (for example Taskwarrior's `task`). Put the wrapper directory
 **after** anything you want to keep winning.
+
+## Diagnosing a client: `brain remote doctor`
+
+`brain remote doctor` answers "why is this client broken?" with one
+pass/warn/fail line per check, each carrying a concrete fix. It writes nothing:
+it reads this client's `HOME`, config and wrappers, and runs only read-only
+commands on the host (`ssh true`, `brain version`, `<store> info --json`).
+
+```
+PASS  config    /Users/me/.config/brain/remote.yaml (HOME /Users/me, host me@host.ts.net)
+PASS  ssh       me@host.ts.net reachable (ssh true, 74ms)
+PASS  version   client and host both 1.1.0-rc.1+brain.0.5.1
+FAIL  wrappers  /Users/me/bin/task sets BRAIN_REMOTE_STORE=inbox but is named task — it would run store inbox on the host
+      fix: brain remote install
+WARN  latency   a warm call took 1240ms (>= 1s)
+      fix: check the network path (Tailscale? host busy?); 'brain remote disconnect' drops a stale multiplexed connection and the next call reconnects
+
+Client doctor: 3 passed, 1 warning(s), 1 failed, 0 skipped (exit 8)
+```
+
+| check | what it asserts |
+|---|---|
+| `config` | the config path is inside `$HOME`, `$HOME` is the home the OS user database gives this account, and `remote.yaml` is owned by this user. This is the check for the bug where a client read another user's (or the host's) `~/.config` — a wrong `HOME` silently changes which config and which wrappers the whole of client mode reads. A host coming from `$BRAIN_REMOTE_HOST` instead of the file is a warning. |
+| `ssh` | `ssh -o BatchMode=yes <host> true` succeeds. |
+| `version` | the client's and the host's combined token (`1.1.0-rc.1+brain.0.5.1`) match. A drifted pair is the quiet failure: the client parses what the host prints, so the mismatch surfaces much later as confusing output. |
+| `wrappers` | every store in the host's registry has a client wrapper, each wrapper pins its own `BRAIN_REMOTE_STORE`, and each store, read through its own wrapper on the host, reports its own `issue_prefix`. A wrapper pinned to the wrong store, or a store resolving to another store's database, is otherwise invisible until an id comes back with the wrong prefix. |
+| `latency` | a warm call on the shared ssh connection is under 1 s (warn) and under 5 s (fail). |
+
+When the host is unreachable, the three checks that need it are reported as
+`skip` rather than failing four times for one cause.
+
+### Exit codes
+
+The failing checks' bits are OR'd together, so a script can tell *what* broke:
+
+| code | meaning |
+|---|---|
+| 0 | every check passed (warnings allowed) |
+| 1 | `config`: no host configured, `remote.yaml` unreadable/invalid, or HOME sanity failed |
+| 2 | `ssh`: the configured host is not reachable |
+| 4 | `version`: client and host brain binaries differ |
+| 8 | `wrappers`: a wrapper is missing, does not carry `BRAIN_REMOTE_STORE`, or resolves to another store's prefix |
+| 16 | `latency`: a warm call took 5 s or more |
+| 32 | `--strict` was given and at least one check warned |
+
+Two or more failing checks combine (for example `10` = ssh unreachable +
+wrappers unhealthy).
+
+### Flags and JSON
+
+`--strict` makes warnings fail too (adding bit 32); `--dir` names the wrapper
+directory (default: the directory of the `brain` binary); `--jobs` bounds how
+many stores are probed at once; `--timeout` bounds one host operation.
+
+`--json` prints the same report as one object — `checks` (each with `name`,
+`status`, `detail`, `fix`, `ms`), the tallies, `exit_code` and `ok`:
+
+```json
+{
+  "host": "me@host.ts.net",
+  "config": "/Users/me/.config/brain/remote.yaml",
+  "home": "/Users/me",
+  "bin_dir": "/Users/me/bin",
+  "checks": [
+    {"name": "config", "status": "pass", "detail": "...", "ms": 0},
+    {"name": "ssh", "status": "pass", "detail": "...", "ms": 74}
+  ],
+  "passed": 5, "warnings": 0, "failed": 0, "skipped": 0,
+  "exit_code": 0, "ok": true
+}
+```
 
 ## Add another client machine
 

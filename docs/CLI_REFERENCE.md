@@ -334,6 +334,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd related](#bd-related) — Walk the graph from a center brain doc and print the subgraph as a tree
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
+  - [bd remote doctor](#bd-remote-doctor) — Diagnose this client: ssh, versions, wrappers, HOME and latency
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
   - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
   - [bd remote status](#bd-remote-status) — Show the configured host, reachability, latency and versions
@@ -9081,6 +9082,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote doctor             check ssh, versions, wrappers, HOME and latency
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -9108,6 +9110,47 @@ Close the shared ssh connection (the next call reopens it)
 
 ```
 bd remote disconnect
+```
+
+#### bd remote doctor
+
+Check this machine's client mode and print one pass/warn/fail line per
+check, each with a concrete fix. Nothing is written: the doctor only reads this
+client's HOME, config and wrappers, and runs read-only commands on the host.
+
+Checks:
+  config    the client config path, HOME sanity (HOME must be this account's
+            own home, and the config must be inside it and owned by you —
+            catches a client that read another user's or the host's .config)
+  ssh       the configured host answers 'ssh true'
+  version   the client's and the host's combined brain versions match
+  wrappers  every store the host offers has a client wrapper carrying its own
+            BRAIN_REMOTE_STORE, and each store reports its own prefix
+  latency   a warm call on the shared ssh connection is fast enough
+
+Exit codes (the failing checks' bits are OR'd together):
+   0  every check passed (warnings allowed)
+   1  config: no host, unreadable/invalid remote.yaml, or HOME sanity failed
+   2  ssh: the host is not reachable
+   4  version: client and host brain binaries differ
+   8  wrappers: a wrapper is missing, does not carry BRAIN_REMOTE_STORE, or
+      resolves to another store's prefix
+  16  latency: a warm call took 5s or more
+  32  --strict was given and at least one check warned
+
+With --json the report is one JSON object (checks, tallies, exit_code, ok).
+
+```
+bd remote doctor [flags]
+```
+
+**Flags:**
+
+```
+      --dir string         Directory holding this client's store wrappers (default: this binary's directory)
+      --jobs int           Probe this many stores concurrently on the host (default 4)
+      --strict             Treat warnings as failures too (exit code gains bit 32)
+      --timeout duration   Bound one host operation (0 disables the bound) (default 20s)
 ```
 
 #### bd remote install
