@@ -333,6 +333,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd recast](#bd-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
 - [bd related](#bd-related) — Walk the graph from a center brain doc and print the subgraph as a tree
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
+  - [bd remote commands](#bd-remote-commands) — List the commands a client can run, which are host-only, and why
   - [bd remote disconnect](#bd-remote-disconnect) — Close the shared ssh connection (the next call reopens it)
   - [bd remote install](#bd-remote-install) — Install or refresh the store command wrappers from the host's registry
   - [bd remote set](#bd-remote-set) — Name the brain host (an ssh target such as user@host)
@@ -9081,6 +9082,7 @@ Make this machine a client of another machine's brain.
   brain remote set &lt;ssh-target&gt;   name the brain host (e.g. me@host.ts.net)
   brain remote install            write a wrapper per store in the host's registry
   brain remote status             show the host, reachability, latency, versions
+  brain remote commands           what each command does from a client (and what is host-only)
   brain remote disconnect         close the shared ssh connection
   brain remote unset              go back to using local databases
 
@@ -9100,6 +9102,52 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
 ```
 bd remote
+```
+
+#### bd remote commands
+
+Show what every command does from a client, derived from the live command
+tree (not a hand-maintained list):
+
+  client  works from a client: in client mode it is forwarded to the brain host
+          over ssh and runs there, through the host's own store wrapper.
+  local   runs on this machine even in client mode: 'brain remote …' reads and
+          changes this client's configuration.
+  host    host-only: manages the machine that serves the brain. A client cannot
+          run it; the fix says where to run it instead.
+
+By default the top-level commands are listed; --all lists every subcommand.
+--client &lt;ssh-target&gt; describes that client instead of this machine (and, on
+the host, says whether it is registered there). --find &lt;text&gt; narrows the list
+to commands whose path, alias or summary contains that text, so "brain remote
+commands --find host" answers "can I run this from here?" without paging the
+whole tree. --category client|local|host lists only one group, so "brain
+remote commands --category host" shows exactly what a client cannot run,
+with the why and the fix for each. Nothing is contacted: the answer is
+computed locally from the command tree and this machine's config.
+
+```
+bd remote commands [flags]
+```
+
+**Examples:**
+
+```bash
+  brain remote commands                 # this machine
+  brain remote commands --all           # every subcommand
+  brain remote commands --client me@laptop
+  brain remote commands --find host
+  brain remote commands --category host
+  brain remote commands --json
+```
+
+**Flags:**
+
+```
+      --all               List every subcommand, not just the top-level commands
+      --category string   Only list commands in this category: client, local, or host
+      --client string     Describe this client (an ssh target) instead of this machine
+      --find string       Only list commands whose path, alias or summary contains this text (case-insensitive)
 ```
 
 #### bd remote disconnect
