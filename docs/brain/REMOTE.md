@@ -25,6 +25,7 @@ all interfaces.)
 | | |
 |---|---|
 | arguments | passed as positional parameters to a fixed `sh -c` script; each is single-quoted, so spaces, apostrophes, `$`, `*`, newlines and empty arguments arrive byte-for-byte. Nothing is re-parsed by the host's shell. |
+| stderr | relayed, minus the `ControlSocket … already exists, disabling multiplexing` and `mux_client_*` lines ssh logs when concurrent calls race for the shared connection; those calls still succeed, so no grep filter is needed. Real ssh errors (host key, auth, name resolution) still come through. |
 | stdin | relayed, so `-f -`, `--body-file -` and pipes work |
 | TTY | a pseudo-terminal is requested only when both stdin and stdout are terminals; pipes and redirects stay clean |
 | exit code | the host command's status; a signal-killed ssh becomes `128+signal` |
