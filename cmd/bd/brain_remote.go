@@ -652,8 +652,9 @@ func forwardOnce(cfg *remoteConfig, name string, args []string, tty bool, stdin,
 	// host command exiting 255, or a closed pipe downstream ('task list | head').
 	seen := &headBuffer{limit: 4096}
 	filter := &movedFilter{dst: stderr}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, io.MultiWriter(filter, seen)
-	code := runRelayed(cmd, cfg, stderr, seen)
+	noise := &muxNoiseFilter{dst: io.MultiWriter(filter, seen)}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, noise
+	code := runRelayed(cmd, cfg, stderr, seen, noise)
 	filter.flush()
 	return filter.notice, code
 }
@@ -757,8 +758,9 @@ func looksLikeSSHFailure(stderr []byte) bool { return sshFailureRE.Match(stderr)
 
 // runRelayed runs ssh and maps its outcome to an exit status, adding a clear
 // message when the connection itself failed.
-func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBuffer) int {
+func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBuffer, noise *muxNoiseFilter) int {
 	err := cmd.Run()
+	noise.flush()
 	if err == nil {
 		return 0
 	}
@@ -768,7 +770,10 @@ func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBu
 			return 128 + int(ws.Signal())
 		}
 		code := ee.ExitCode()
-		if code == sshConnectFailed && looksLikeSSHFailure(seen.buf) {
+		// Exit 255 with nothing on stderr (once the race lines are dropped) is
+		// still ssh's own failure; a remote command that exits 255 prints its
+		// own stderr, which is relayed and does not match this branch.
+		if code == sshConnectFailed && (looksLikeSSHFailure(seen.buf) || len(bytes.TrimSpace(seen.buf)) == 0) {
 			fmt.Fprint(stderr, unreachableMessage(cfg))
 		}
 		return code
@@ -789,6 +794,77 @@ func unreachableMessage(cfg *remoteConfig) string {
   - Config: %s   (change with 'brain remote set <ssh-target>')
   - To run against a local database instead: BRAIN_REMOTE=off <command>
 `, cfg.Host, cfg.Host, remoteConfigFile())
+}
+
+// muxNoiseRE matches the lines ssh logs at error level when concurrent calls
+// race to become the ControlMaster=auto master. The losing call still runs
+// over a plain connection, so these lines are noise, not failures.
+var muxNoiseRE = regexp.MustCompile(`^(ControlSocket .* already exists, disabling multiplexing|mux_client_\w*: .*)\r?\n?$`)
+
+var muxNoisePrefixes = [][]byte{[]byte("ControlSocket "), []byte("mux_client_")}
+
+// muxNoiseFilter drops the multiplexing race lines from ssh's stderr and
+// passes everything else through. A partial line is held only while it could
+// still turn out to be one of those lines.
+type muxNoiseFilter struct {
+	dst     io.Writer
+	buf     []byte
+	passing bool
+}
+
+func (f *muxNoiseFilter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		chunk := p
+		i := bytes.IndexByte(p, '\n')
+		if i >= 0 {
+			chunk = p[:i+1]
+		}
+		p = p[len(chunk):]
+		if f.passing {
+			if _, err := f.dst.Write(chunk); err != nil {
+				return n, err
+			}
+		} else {
+			f.buf = append(f.buf, chunk...)
+			switch {
+			case i >= 0 && muxNoiseRE.Match(f.buf):
+				f.buf = f.buf[:0]
+			case i >= 0 || !mayBeMuxNoise(f.buf):
+				if err := f.release(); err != nil {
+					return n, err
+				}
+				f.passing = true
+			}
+		}
+		if i >= 0 {
+			f.passing = false
+		}
+	}
+	return n, nil
+}
+
+func (f *muxNoiseFilter) release() error {
+	_, err := f.dst.Write(f.buf)
+	f.buf = f.buf[:0]
+	return err
+}
+
+// flush releases a held partial line that never became a race line.
+func (f *muxNoiseFilter) flush() {
+	if len(f.buf) > 0 && !muxNoiseRE.Match(f.buf) {
+		_ = f.release()
+	}
+	f.buf = f.buf[:0]
+}
+
+func mayBeMuxNoise(line []byte) bool {
+	for _, pre := range muxNoisePrefixes {
+		if bytes.HasPrefix(line, pre) || bytes.HasPrefix(pre, line) {
+			return true
+		}
+	}
+	return false
 }
 
 // remoteCapture runs a command on the host and returns its stdout. Used by the

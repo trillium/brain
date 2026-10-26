@@ -35,6 +35,18 @@ if [ "$host" = unreachable ]; then
   echo "ssh: connect to host unreachable port 22: No route to host" >&2
   exit 255
 fi
+if [ "$host" = silent ]; then
+  exit 255
+fi
+if [ "$host" = badkey ]; then
+  printf 'ControlSocket /tmp/cm-badkey already exists, disabling multiplexing\r\n' >&2
+  printf 'Host key verification failed.\r\n' >&2
+  exit 255
+fi
+if [ "$host" = racy ]; then
+  printf 'ControlSocket /tmp/cm-racy already exists, disabling multiplexing\r\n' >&2
+  printf 'mux_client_request_session: read from master failed: Broken pipe\r\n' >&2
+fi
 exec sh -c "$*"
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // test helper
@@ -530,6 +542,79 @@ func TestForwardUnreachableHostSaysSo(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr missing %q: %q", want, stderr)
 		}
+	}
+}
+
+func TestSSHSilentFailureStillNamesHost(t *testing.T) {
+	remoteEnv(t)
+	cfg := &remoteConfig{Host: "silent"}
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"list"}, "")
+	if code != sshConnectFailed {
+		t.Errorf("exit code = %d, want %d", code, sshConnectFailed)
+	}
+	if stdout != "" {
+		t.Errorf("unexpected stdout %q", stdout)
+	}
+	for _, want := range []string{"cannot reach the brain host silent", "ssh exit 255"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q: %q", want, stderr)
+		}
+	}
+}
+
+func TestSSHMuxRaceLinesDropped(t *testing.T) {
+	_, hostBin := remoteEnv(t)
+	writeExec(t, filepath.Join(hostBin, "task"), "#!/bin/sh\necho listed\necho 'host warning' >&2\n")
+	cfg := &remoteConfig{Host: "racy", BinDir: hostBin}
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"list"}, "")
+	if code != 0 {
+		t.Errorf("exit code = %d, want 0; stderr %q", code, stderr)
+	}
+	if stdout != "listed\n" {
+		t.Errorf("stdout = %q", stdout)
+	}
+	if stderr != "host warning\n" {
+		t.Errorf("stderr = %q, want only the host command's own line", stderr)
+	}
+}
+
+func TestSSHRealErrorKeptBesideRaceLine(t *testing.T) {
+	remoteEnv(t)
+	cfg := &remoteConfig{Host: "badkey"}
+	_, stderr, code := runForward(t, cfg, "task", []string{"list"}, "")
+	if code != sshConnectFailed {
+		t.Errorf("exit code = %d, want %d", code, sshConnectFailed)
+	}
+	for _, want := range []string{"Host key verification failed.", "cannot reach the brain host badkey"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q: %q", want, stderr)
+		}
+	}
+	if strings.Contains(stderr, "disabling multiplexing") {
+		t.Errorf("race line not dropped: %q", stderr)
+	}
+}
+
+func TestMuxNoiseFilterSplitWrites(t *testing.T) {
+	in := "ControlSocket /tmp/cm already exists, disabling multiplexing\r\nprompt? mux_client_x\nmux_client_y: z\r\nControlS"
+	for _, size := range []int{1, 3, 7, len(in)} {
+		var out strings.Builder
+		f := &muxNoiseFilter{dst: &out}
+		for i := 0; i < len(in); i += size {
+			if _, err := f.Write([]byte(in[i:min(i+size, len(in))])); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.flush()
+		if want := "prompt? mux_client_x\nControlS"; out.String() != want {
+			t.Errorf("chunk %d: got %q, want %q", size, out.String(), want)
+		}
+	}
+	var out strings.Builder
+	f := &muxNoiseFilter{dst: &out}
+	_, _ = f.Write([]byte("Continue? [y/N] "))
+	if out.String() != "Continue? [y/N] " {
+		t.Errorf("partial prompt held back: %q", out.String())
 	}
 }
 
