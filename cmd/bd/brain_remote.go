@@ -221,7 +221,10 @@ func (c *remoteConfig) sshBaseArgs() []string {
 		"-o", "ControlPersist=10m",
 		"-o", "ServerAliveInterval=15",
 		"-o", "ServerAliveCountMax=3",
-		"-o", "LogLevel=ERROR",
+		// QUIET hides the ControlMaster=auto race ("ControlSocket already
+		// exists, disabling multiplexing"). ssh then prints nothing on a
+		// real connect or auth failure, so runRelayed supplies that message.
+		"-o", "LogLevel=QUIET",
 	}
 	for _, o := range c.SSHOptions {
 		args = append(args, "-o", o)
@@ -768,7 +771,10 @@ func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBu
 			return 128 + int(ws.Signal())
 		}
 		code := ee.ExitCode()
-		if code == sshConnectFailed && looksLikeSSHFailure(seen.buf) {
+		// QUIET ssh emits no diagnostic. Exit 255 with empty stderr is still
+		// ssh's own failure (a remote command that exits 255 prints its own
+		// stderr, which is relayed and does not match this branch).
+		if code == sshConnectFailed && (looksLikeSSHFailure(seen.buf) || len(bytes.TrimSpace(seen.buf)) == 0) {
 			fmt.Fprint(stderr, unreachableMessage(cfg))
 		}
 		return code

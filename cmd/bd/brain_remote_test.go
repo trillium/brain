@@ -35,6 +35,10 @@ if [ "$host" = unreachable ]; then
   echo "ssh: connect to host unreachable port 22: No route to host" >&2
   exit 255
 fi
+# LogLevel=QUIET: ssh exits 255 and prints nothing.
+if [ "$host" = silent ]; then
+  exit 255
+fi
 exec sh -c "$*"
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil { //nolint:gosec // test helper
@@ -530,6 +534,37 @@ func TestForwardUnreachableHostSaysSo(t *testing.T) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr missing %q: %q", want, stderr)
 		}
+	}
+}
+
+func TestSSHQuietStillNamesHostOnSilentFailure(t *testing.T) {
+	remoteEnv(t)
+	cfg := &remoteConfig{Host: "silent"}
+	stdout, stderr, code := runForward(t, cfg, "task", []string{"list"}, "")
+	if code != sshConnectFailed {
+		t.Errorf("exit code = %d, want %d", code, sshConnectFailed)
+	}
+	if stdout != "" {
+		t.Errorf("unexpected stdout %q", stdout)
+	}
+	for _, want := range []string{"cannot reach the brain host silent", "ssh exit 255"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr missing %q: %q", want, stderr)
+		}
+	}
+	log := filepath.Join(filepath.Dir(os.Getenv(envRemoteSSH)), "ssh.log")
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "LogLevel=QUIET") {
+		t.Errorf("ssh argv missing LogLevel=QUIET: %q", b)
+	}
+	if strings.Contains(string(b), "LogLevel=ERROR") {
+		t.Errorf("ssh argv still sets LogLevel=ERROR: %q", b)
+	}
+	if !strings.Contains(string(b), "ControlMaster=auto") || !strings.Contains(string(b), "ControlPersist=10m") {
+		t.Errorf("multiplex options changed: %q", b)
 	}
 }
 
