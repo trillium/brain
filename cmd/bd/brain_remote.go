@@ -656,14 +656,14 @@ func forwardOnce(cfg *remoteConfig, name string, args []string, tty bool, stdin,
 		defer cancel()
 	}
 	cmd := exec.CommandContext(ctx, sshBinary(), cfg.sshArgs(tty, name, args)...) //nolint:gosec // args are quoted/validated above
-	prepareForwardCommand(cmd, tty)
+	prepareForwardCommand(cmd, stdin)
 	// stderr is also kept (bounded) so an ssh failure can be told apart from the
 	// host command exiting 255, or a closed pipe downstream ('task list | head').
 	seen := &headBuffer{limit: 4096}
 	filter := &movedFilter{dst: stderr}
 	noise := &muxNoiseFilter{dst: io.MultiWriter(filter, seen)}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, noise
-	code := runRelayed(cmd, tty, cfg, stderr, seen, noise)
+	code := runRelayed(cmd, cfg, stderr, seen, noise)
 	filter.flush()
 	return filter.notice, code
 }
@@ -767,10 +767,10 @@ func looksLikeSSHFailure(stderr []byte) bool { return sshFailureRE.Match(stderr)
 
 // runRelayed runs ssh and maps its outcome to an exit status, adding a clear
 // message when the connection itself failed.
-func runRelayed(cmd *exec.Cmd, tty bool, cfg *remoteConfig, stderr io.Writer, seen *headBuffer, noise *muxNoiseFilter) int {
+func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBuffer, noise *muxNoiseFilter) int {
 	err := cmd.Start()
 	if err == nil {
-		stop := relayForwardSignals(cmd, tty)
+		stop := relayForwardSignals(cmd)
 		err = cmd.Wait()
 		stop()
 	}

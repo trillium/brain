@@ -16,15 +16,17 @@ const forwardKillGrace = 2 * time.Second
 // prepareForwardCommand puts the forwarded ssh in its own process group and
 // makes a cancelled context stop the whole group, so ssh and anything it
 // spawned (a ProxyCommand, a mux master helper) die with bd instead of
-// outliving it. A tty session stays in the foreground group: Setpgid would
-// stop ssh with SIGTTIN when it reads the terminal.
-func prepareForwardCommand(cmd *exec.Cmd, tty bool) {
-	if tty {
+// outliving it. A session whose stdin is a terminal stays in the foreground
+// group: Setpgid would stop ssh with SIGTTIN when it reads the terminal.
+func prepareForwardCommand(cmd *exec.Cmd, stdin *os.File) {
+	if fdIsTerminal(stdin) {
 		return
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		pgid := cmd.Process.Pid
+		time.AfterFunc(forwardKillGrace, func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) })
+		return syscall.Kill(-pgid, syscall.SIGTERM)
 	}
 	cmd.WaitDelay = forwardKillGrace
 }
@@ -32,8 +34,8 @@ func prepareForwardCommand(cmd *exec.Cmd, tty bool) {
 // relayForwardSignals passes SIGTERM, SIGINT and SIGHUP received by bd on to
 // the child's process group. Call it after cmd.Start; the returned func stops
 // the relay.
-func relayForwardSignals(cmd *exec.Cmd, tty bool) func() {
-	if tty || cmd.Process == nil {
+func relayForwardSignals(cmd *exec.Cmd) func() {
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid || cmd.Process == nil {
 		return func() {}
 	}
 	pid := cmd.Process.Pid
