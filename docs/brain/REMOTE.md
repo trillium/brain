@@ -104,6 +104,9 @@ the host itself) simply has no `remote.yaml` and runs locally.
 
 - `BRAIN_REMOTE=off task list` runs one command against a local database.
 - `BRAIN_REMOTE_HOST=other@host brain status` points one command at another host.
+- `BRAIN_REMOTE_DEADLINE=<seconds>` caps one forwarded call; on expiry the
+  ssh process group gets SIGTERM, then SIGKILL after 2s. Unset means no limit.
+  SIGTERM, SIGINT and SIGHUP sent to the client are relayed to that group.
 - An exported `BEADS_DIR` that names a local beads project (a directory with
   project files) wins over `remote.yaml`: the command runs against that store
   here and is not forwarded. An unset or non-project `BEADS_DIR` still forwards
