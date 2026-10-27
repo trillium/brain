@@ -1,9 +1,108 @@
-# Client mode: run brain on another machine (`brain remote`)
+# Running brain on another machine
 
 The brain stores live in one Dolt database on one computer, the **brain host**.
-Any other machine can be a **client**: `task create …`, `inbox list`,
-`brain search …` and every other store command run against the host,
-transparently, with no database or server on the client.
+Any other machine reaches them from a **client** setup, so `task create …`,
+`inbox list`, `brain search …` and every other store command run against the
+host with no database or server on the client.
+
+There are two transports. Use the first; the second is the fallback.
+
+| | Direct (default) | ssh client mode (fallback) |
+|---|---|---|
+| path | client `bd` → MySQL to `host:3307` | client `brain` → ssh → host `sh` → host wrapper → host `bd` → Dolt |
+| needs | the Dolt port reachable, a `brain_app` password | ssh key login to the host |
+| per-call cost | one TCP dial plus the query | an ssh round trip plus a full `bd` process on the host |
+| unreachable host | fails in about 500 ms (`Dolt server unreachable at host:port`) | ssh connect timeout (5 s default) |
+| set up with | `store-host.env` + credentials + `brain registry sync` | `brain remote set` + `brain remote install` |
+
+Decision **decision-4l0** (2026-10-27) made direct the transport for every
+tailnet machine: clients connect straight to the host's Dolt server as
+`brain_app`, and ssh client mode stays only for a machine that cannot reach the
+Dolt port. This replaces the earlier rule that "only ssh crosses the network",
+whose stated reason (the host's Dolt accepted passwordless logins on all
+interfaces) no longer describes the deployment: the host's server now requires
+the `brain_app` password.
+
+## Direct transport
+
+```
+ client                                        brain host
+ ──────                                        ──────────
+ task create "ship it"
+   └─ ~/.local/bin/task  (server-kind wrapper)
+        BRAIN_NO_EXFIL=1, BEADS_DOLT_SERVER_HOST=<host>
+        └─ bd ── MySQL, user brain_app ──────▶ dolt sql-server :3307
+```
+
+Each client holds three pieces of local configuration:
+
+1. `~/.config/brain/store-host.env`, sourced by every wrapper below its own pins:
+
+   ```sh
+   export BEADS_DOLT_SERVER_HOST=100.84.99.99
+   export BEADS_DOLT_SERVER_PORT=3307
+   export BEADS_DOLT_SERVER_USER=brain_app
+   ```
+
+2. The password, in `~/.config/beads/credentials` (mode 600), in a section keyed
+   by the endpoint. It is never in `store-host.env`, a wrapper, a log or a
+   commit:
+
+   ```ini
+   [100.84.99.99:3307]
+   password=…
+   ```
+
+   Copy the section from a machine that already has it. `BEADS_DOLT_PASSWORD`
+   overrides it for one call.
+
+3. Wrappers from the registry: `brain remote unset` (if the machine was an ssh
+   client), then `brain registry sync`. A machine with no `remote.yaml` is a
+   direct machine, and `sync` writes a server-kind wrapper per store.
+
+### Who writes the markdown
+
+The markdown under `~/data/<store>/` is a derived view of the database, and only
+the host writes it. `brain registry sync` notices that the machine's Dolt host is
+another machine (the `BEADS_DOLT_SERVER_HOST` in `store-host.env` is not
+loopback, this machine's hostname or one of its own addresses) and adds
+`export BRAIN_NO_EXFIL=1` to every server-kind wrapper, so a client never grows a
+second copy. The line follows the host: if the machine becomes the host, the next
+sync removes it.
+
+The host keeps the markdown current with `brain host render`, which runs
+`<store> render-all` through each wrapper in `stores.yaml` (a failing store is
+reported and the rest still render). It refuses to run on a machine whose Dolt
+host is elsewhere. A launchd job runs it every five minutes:
+
+```sh
+brain host render-job install     # com.brain.host-render; also declares it part of the host role
+brain host render-job print       # the plist, nothing written
+brain host render-job uninstall
+```
+
+Because `install` declares the job with `brain host service add`, it moves with
+the host role on `brain host promote`.
+
+### Failing fast
+
+`bd` dials the server with a 500 ms TCP probe before any MySQL traffic. A direct
+client therefore fails in half a second when the host is down or off the
+tailnet (`internal/storage/dolt`: `TestNew_UnreachableRemoteHostFailsFast`),
+instead of waiting on an ssh connect timeout.
+
+### Not yet done
+
+Follow-ups, not part of this transport change: a `brain stores doctor` check
+that every machine's Dolt host equals the one machine claiming `role: host`; retiring the
+satellite-config wrapper generators in favour of `brain registry sync`; the local
+spool and single shipper that stop detached hook processes from blocking during
+an outage.
+
+# ssh client mode (`brain remote`)
+
+Use this only where the Dolt port is not reachable. The rest of this page
+describes it.
 
 ```
  client                                           brain host
@@ -14,11 +113,8 @@ transparently, with no database or server on the client.
              └─ ssh host  exec /bin/sh -c '…' task create 'ship it'
 ```
 
-Only ssh crosses the network. The Dolt port is not exposed, bound, tunnelled or
-reconfigured: the host keeps listening wherever it already did, and clients
-never connect to it. (This is why client mode does not depend on, or worsen,
-the open finding about the host's Dolt server accepting passwordless logins on
-all interfaces.)
+In this mode only ssh crosses the network: the Dolt port is not used by the
+client at all.
 
 ## What is preserved
 

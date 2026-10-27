@@ -37,11 +37,9 @@ var pollerPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version="
   <key>ProgramArguments</key>
   <array>
     <string>{{.Wrapper}}</string>
-    <string>stores</string>
-    <string>sync</string>
-    <string>--quiet</string>
-    <string>--trigger</string>
-    <string>timer</string>
+{{- range .Args}}
+    <string>{{.}}</string>
+{{- end}}
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -69,6 +67,7 @@ var pollerPlistTmpl = template.Must(template.New("plist").Parse(`<?xml version="
 type pollerSpec struct {
 	Label    string
 	Wrapper  string
+	Args     []string
 	Interval int
 	Path     string
 	Log      string
@@ -76,21 +75,33 @@ type pollerSpec struct {
 
 // renderPollerPlist renders the launch agent. Logs go under ~/Library/Logs/brain/.
 func renderPollerPlist(home, wrapper string, interval int) (string, error) {
-	if interval < 60 {
-		return "", fmt.Errorf("interval %ds is too short (minimum 60)", interval)
-	}
 	if wrapper == "" {
 		wrapper = filepath.Join(home, ".local", "bin", "brain")
+	}
+	return renderLaunchdJobPlist(pollerLabel, home, wrapper,
+		[]string{"stores", "sync", "--quiet", "--trigger", "timer"}, interval, "stores-sync.log")
+}
+
+// renderLaunchdJobPlist renders a launch agent that runs wrapper with args at
+// load and every interval seconds, logging to ~/Library/Logs/brain/<logName>.
+func renderLaunchdJobPlist(label, home, wrapper string, args []string, interval int, logName string) (string, error) {
+	if interval < 60 {
+		return "", fmt.Errorf("interval %ds is too short (minimum 60)", interval)
 	}
 	if !filepath.IsAbs(wrapper) {
 		return "", fmt.Errorf("--wrapper must be an absolute path, got %q", wrapper)
 	}
+	escaped := make([]string, len(args))
+	for i, a := range args {
+		escaped[i] = xmlEscape(a)
+	}
 	spec := pollerSpec{
-		Label:    pollerLabel,
+		Label:    label,
 		Wrapper:  xmlEscape(wrapper),
+		Args:     escaped,
 		Interval: interval,
 		Path:     xmlEscape(strings.Join([]string{filepath.Join(home, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"}, ":")),
-		Log:      xmlEscape(filepath.Join(home, pollerLogDirPath, "stores-sync.log")),
+		Log:      xmlEscape(filepath.Join(home, pollerLogDirPath, logName)),
 	}
 	var b bytes.Buffer
 	if err := pollerPlistTmpl.Execute(&b, spec); err != nil {
