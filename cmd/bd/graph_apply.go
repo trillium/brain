@@ -586,6 +586,11 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 			fromID := resolveEdgeRef(edge.FromKey, edge.FromID, keyToID)
 			toID := resolveEdgeRef(edge.ToKey, edge.ToID, keyToID)
 			depType := graphApplyDependencyType(edge.Type)
+			if depType == types.DepParentChild {
+				if err := rejectParentChildEdgeByIDsFrom(ctx, store, tx, fromID, toID); err != nil {
+					return fmt.Errorf("edge %d: %w", i, err)
+				}
+			}
 			if parentDepPairs[graphApplyDepPairKey(fromID, toID)] {
 				if depType == types.DepParentChild {
 					continue
@@ -616,6 +621,9 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 				parentID = keyToID[node.ParentKey]
 			}
 			if parentID != "" {
+				if err := rejectHierarchyInversionFrom(ctx, store, tx, issues[i].ID, issues[i].Priority, parentID); err != nil {
+					return fmt.Errorf("node %q: %w", node.Key, err)
+				}
 				dep := &types.Dependency{
 					IssueID:     issues[i].ID,
 					DependsOnID: parentID,

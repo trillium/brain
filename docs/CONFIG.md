@@ -1,6 +1,6 @@
 # Configuration System
 
-Last reviewed: 2026-05-08
+Last reviewed: 2026-10-26
 
 Freshness source: `cmd/bd/main.go`, `cmd/bd/config.go`, and
 `internal/configfile/`.
@@ -49,6 +49,7 @@ Common tool-level settings you can configure:
 | `create.id-pattern` | - | - | (none) | Date-keyed ids, one bead per period: `day` (`<prefix>-YYYY-MM-DD`), `week` (Sunday that starts the week, `<prefix>-YYYY-MM-DD`), `month` (`<prefix>-YYYY-MM`), `quarter` (`<prefix>-YYYY-qN`), `year` (`<prefix>-YYYY`), in America/Los_Angeles. `bd create` takes the id from today or `--date`, validates `--id` against the pattern, and refuses a second bead for the same period (naming the existing one). `--file`/`--graph` are refused; `--parent` children and wisps are exempt |
 | `validation.on-create` | - | `BD_VALIDATION_ON_CREATE` | `none` | Template validation on create: `none`, `warn`, `error` |
 | `validation.on-sync` | - | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync: `none`, `warn`, `error` |
+| `hierarchy.priority` | - | - | (unset) | Opt-in parent-child specificity ladder for this store. Set to `specificity` so a child must use a higher priority number than its parent. Unset leaves today's priority behavior unchanged. Stored in `config.yaml` because the `hierarchy.` namespace is yaml-backed, like `hierarchy.max-depth` |
 | `git.author` | - | `BD_GIT_AUTHOR` | (none) | Override commit author for beads commits |
 | `git.no-gpg-sign` | - | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `directory.labels` | - | - | (none) | Map directories to labels for automatic filtering |
@@ -418,6 +419,7 @@ Configuration keys use dot-notation namespaces to organize settings:
 - `import.auto` - Legacy hook fallback that imports JSONL after git merge/checkout only when no Dolt remote is configured (default: `true`)
 - `sync.branch` - Name of the dedicated sync branch for beads data (see docs/PROTECTED_BRANCHES.md)
 - `sync.require_confirmation_on_mass_delete` - Require interactive confirmation before pushing when >50% of issues vanish during a merge AND more than 5 issues existed before (default: `false`)
+- `hierarchy.priority` - Per-store opt-in for a specificity ladder on parent-child edges. `bd config set hierarchy.priority specificity` writes the store's `config.yaml` (the `hierarchy.` namespace is yaml-backed, the same family as `hierarchy.max-depth`) and does not write the SQL config table. Unset means today's behavior: priority 0 stays critical, and `bd ready` still sorts by priority ascending. When the value is `specificity`, P0 is the broadest capability. Each child along a parent-child edge uses a higher priority number, through P4. A parent at 4 may have a child at 4. Skips are legal (a P0 parent may have a P3 child). `bd create --parent`, `bd update --parent`, `bd dep add --type parent-child`, and `bd create --graph` reject an edge that breaks the rule and name both ids and both numbers. `bd lint hierarchy` lists existing violating edges and writes nothing; it exits non-zero when any exist. Other stores stay on today's behavior until they set the key.
 
 **Upgrade note:** `export.auto` and `export.git-add` are opt-in. Older releases
 briefly made `.beads/issues.jsonl` look like the default git-tracked source of
