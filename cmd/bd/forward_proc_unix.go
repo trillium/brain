@@ -14,7 +14,7 @@ import (
 const forwardKillGrace = 2 * time.Second
 
 // prepareForwardCommand puts the forwarded ssh in its own process group and
-// makes a cancelled context stop the whole group, so ssh and anything it
+// makes a canceled context stop the whole group, so ssh and anything it
 // spawned (a ProxyCommand, a mux master helper) die with bd instead of
 // outliving it. A session whose stdin is a terminal stays in the foreground
 // group: Setpgid would stop ssh with SIGTTIN when it reads the terminal.
