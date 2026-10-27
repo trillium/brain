@@ -30,6 +30,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -50,10 +51,11 @@ const (
 	remoteWrapperMarker = "# brain-remote-wrapper:"
 
 	// Environment knobs. All optional.
-	envRemoteOff   = "BRAIN_REMOTE"       // "off" runs locally (also set on the host side of every forward)
-	envRemoteHost  = "BRAIN_REMOTE_HOST"  // overrides the configured ssh target
-	envRemoteStore = "BRAIN_REMOTE_STORE" // set by a client wrapper: the command name to run on the host
-	envRemoteSSH   = "BRAIN_REMOTE_SSH"   // ssh binary to use (default "ssh"; tests substitute a fake)
+	envRemoteOff      = "BRAIN_REMOTE"          // "off" runs locally (also set on the host side of every forward)
+	envRemoteHost     = "BRAIN_REMOTE_HOST"     // overrides the configured ssh target
+	envRemoteStore    = "BRAIN_REMOTE_STORE"    // set by a client wrapper: the command name to run on the host
+	envRemoteSSH      = "BRAIN_REMOTE_SSH"      // ssh binary to use (default "ssh"; tests substitute a fake)
+	envRemoteDeadline = "BRAIN_REMOTE_DEADLINE" // seconds a forwarded call may run before ssh's process group is killed (default none)
 
 	defaultRemoteBinDir  = "$HOME/.local/bin"
 	defaultRemoteTimeout = 5
@@ -647,14 +649,21 @@ func spoolStdin(payload io.Reader) (*os.File, error) {
 // forwardOnce runs the command on cfg.Host. If the host answered with a moved
 // notice, it is returned alongside the exit status.
 func forwardOnce(cfg *remoteConfig, name string, args []string, tty bool, stdin, stdout, stderr *os.File) (*movedNotice, int) {
-	cmd := exec.Command(sshBinary(), cfg.sshArgs(tty, name, args)...) //nolint:gosec // args are quoted/validated above
+	ctx := context.Background()
+	if secs, err := strconv.ParseFloat(os.Getenv(envRemoteDeadline), 64); err == nil && secs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(secs*float64(time.Second)))
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, sshBinary(), cfg.sshArgs(tty, name, args)...) //nolint:gosec // args are quoted/validated above
+	prepareForwardCommand(cmd, tty)
 	// stderr is also kept (bounded) so an ssh failure can be told apart from the
 	// host command exiting 255, or a closed pipe downstream ('task list | head').
 	seen := &headBuffer{limit: 4096}
 	filter := &movedFilter{dst: stderr}
 	noise := &muxNoiseFilter{dst: io.MultiWriter(filter, seen)}
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, noise
-	code := runRelayed(cmd, cfg, stderr, seen, noise)
+	code := runRelayed(cmd, tty, cfg, stderr, seen, noise)
 	filter.flush()
 	return filter.notice, code
 }
@@ -758,8 +767,13 @@ func looksLikeSSHFailure(stderr []byte) bool { return sshFailureRE.Match(stderr)
 
 // runRelayed runs ssh and maps its outcome to an exit status, adding a clear
 // message when the connection itself failed.
-func runRelayed(cmd *exec.Cmd, cfg *remoteConfig, stderr io.Writer, seen *headBuffer, noise *muxNoiseFilter) int {
-	err := cmd.Run()
+func runRelayed(cmd *exec.Cmd, tty bool, cfg *remoteConfig, stderr io.Writer, seen *headBuffer, noise *muxNoiseFilter) int {
+	err := cmd.Start()
+	if err == nil {
+		stop := relayForwardSignals(cmd, tty)
+		err = cmd.Wait()
+		stop()
+	}
 	noise.flush()
 	if err == nil {
 		return 0
