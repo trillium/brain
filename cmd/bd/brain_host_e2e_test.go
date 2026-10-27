@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -230,7 +231,7 @@ func TestHostPromoteEndToEnd(t *testing.T) {
 		t.Errorf("the old host's wrapper should forward now:\n%s", w)
 	}
 	nw, _ := os.ReadFile(filepath.Join(b.home, ".local", "bin", "s1"))
-	if !strings.Contains(string(nw), "$HOME/data/s1/.beads") || !strings.Contains(string(nw), hostWrapperMarker) || !strings.Contains(string(nw), "exec bd") {
+	if !strings.Contains(string(nw), "$HOME/data/s1/.beads") || !strings.Contains(string(nw), hostWrapperMarker) || !regexp.MustCompile(`exec (bd|'[^']*/bd') "\$@"`).Match(nw) {
 		t.Errorf("the new host's wrapper:\n%s", nw)
 	}
 	meta, _ := os.ReadFile(filepath.Join(b.home, "data", "s1", ".beads", "metadata.json"))
