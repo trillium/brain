@@ -82,7 +82,9 @@ brain host render-job uninstall
 ```
 
 Because `install` declares the job with `brain host service add`, it moves with
-the host role on `brain host promote`.
+the host role on `brain host promote`. `brain host promote` also installs and
+loads the job on the new host itself if the old host did not have it, and
+declares it in `host.yaml`; running promote again changes nothing further.
 
 ### Failing fast
 
