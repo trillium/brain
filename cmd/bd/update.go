@@ -368,6 +368,21 @@ create, update, show, or close operation).`,
 				continue
 			}
 
+			// Reject an illegal reparent before any write, including --priority
+			// and --claim on the same command. Empty --parent removes the parent
+			// and is not a specificity edge.
+			if newParent, ok := updates["parent"].(string); ok && newParent != "" {
+				childPriority := issue.Priority
+				if p, ok := updates["priority"].(int); ok {
+					childPriority = p
+				}
+				if err := rejectHierarchyInversion(ctx, issueStore, result.ResolvedID, childPriority, newParent); err != nil {
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					closeIfUnmutated(result)
+					continue
+				}
+			}
+
 			// Handle claim operation atomically using compare-and-swap semantics
 			if claimFlag {
 				if err := issueStore.ClaimIssue(ctx, result.ResolvedID, actor); err != nil {

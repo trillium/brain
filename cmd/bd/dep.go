@@ -375,6 +375,12 @@ Examples:
 			Type:        dt,
 		}
 
+		if dt == types.DepParentChild {
+			if err := rejectParentChildEdgeByIDs(ctx, fromStore, fromID, toID); err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
+		}
+
 		if err := fromStore.AddDependency(ctx, dep, actor); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
@@ -479,6 +485,11 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	commitMsg := fmt.Sprintf("dependency: add %d edges", len(resolved))
 	if err := transact(rootCtx, targetStore, commitMsg, func(tx storage.Transaction) error {
 		for _, edge := range resolved {
+			if edge.Type == types.DepParentChild {
+				if err := rejectParentChildEdgeByIDsFrom(rootCtx, targetStore, tx, edge.IssueID, edge.DependsOnID); err != nil {
+					return fmt.Errorf("line %d: %w", edge.Line, err)
+				}
+			}
 			dep := &types.Dependency{
 				IssueID:     edge.IssueID,
 				DependsOnID: edge.DependsOnID,

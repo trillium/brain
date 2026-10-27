@@ -18,9 +18,9 @@ import (
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/remotecache"
 	"github.com/steveyegge/beads/internal/routing"
-	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -626,6 +626,14 @@ Examples:
 			// If error getting parent or parent has no source_repo, continue with default
 		}
 
+		// Reject an illegal parent before CreateIssue so a failed --parent
+		// does not insert the child. The reserved child id is already known.
+		if parentID != "" && issue.ID != "" {
+			if err := rejectHierarchyInversion(ctx, store, issue.ID, issue.Priority, parentID); err != nil {
+				return HandleError("%v", err)
+			}
+		}
+
 		if err := store.CreateIssue(ctx, issue, actor); err != nil {
 			return HandleError("%v", err)
 		}
@@ -638,6 +646,12 @@ Examples:
 
 		// If parent was specified, add parent-child dependency
 		if parentID != "" {
+			if err := rejectHierarchyInversion(ctx, store, issue.ID, issue.Priority, parentID); err != nil {
+				if delErr := store.DeleteIssue(ctx, issue.ID); delErr != nil {
+					return HandleError("%v (also failed to remove %s: %v)", err, issue.ID, delErr)
+				}
+				return HandleError("%v", err)
+			}
 			dep := &types.Dependency{
 				IssueID:     issue.ID,
 				DependsOnID: parentID,
@@ -701,6 +715,16 @@ Examples:
 			if swapDirection {
 				dep.IssueID = dependsOnID
 				dep.DependsOnID = issue.ID
+			}
+			if dep.Type == types.DepParentChild {
+				if err := rejectHierarchyInversion(ctx, store, dep.IssueID, issue.Priority, dep.DependsOnID); err != nil {
+					if dep.IssueID == issue.ID {
+						if delErr := store.DeleteIssue(ctx, issue.ID); delErr != nil {
+							return HandleError("%v (also failed to remove %s: %v)", err, issue.ID, delErr)
+						}
+					}
+					return HandleError("%v", err)
+				}
 			}
 			if err := store.AddDependency(ctx, dep, actor); err != nil {
 				WarnError("failed to add dependency %s -> %s: %v", issue.ID, dependsOnID, err)

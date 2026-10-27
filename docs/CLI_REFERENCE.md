@@ -77,6 +77,7 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd find-duplicates](#bd-find-duplicates) — Find semantically similar issues using text analysis or AI
 - [bd history](#bd-history) — Show version history for an issue
 - [bd lint](#bd-lint) — Check issues for missing template sections
+  - [bd lint hierarchy](#bd-lint-hierarchy) — Report parent-child edges that break the specificity ladder
 - [bd stale](#bd-stale) — Show stale issues (not updated recently)
 - [bd status](#bd-status) — Show issue database overview and statistics
 - [bd statuses](#bd-statuses) — List valid issue statuses
@@ -2181,6 +2182,27 @@ bd lint [issue-id...] [flags]
 ```
   -s, --status string   Filter by status (default: open, use 'all' for all)
   -t, --type string     Filter by issue type (bug, task, feature, epic)
+```
+
+#### bd lint hierarchy
+
+Report parent-child edges that break the specificity ladder.
+
+The check runs only when this store's config.yaml has
+hierarchy.priority=specificity. Unset, it prints nothing and exits 0.
+Other stores are unchanged.
+
+P0 is the broadest capability. Each child along a parent-child edge uses
+a higher priority number, through P4. A parent at 4 may have a child at 4.
+Skips are legal. This command lists violating edges and writes nothing.
+It exits non-zero when any violation exists.
+
+Set the key with:
+  bd config set hierarchy.priority specificity
+
+
+```
+bd lint hierarchy
 ```
 
 ### bd stale
@@ -6459,7 +6481,7 @@ For each machine, in roster order:
   mode      direct machine or client
       needs:  none
       does:   nothing; read-only
-      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off, and the registry is read through the relay as the client itself reads it
+      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off. A client has no database: its sync and verify run through its own bd binary (not the forwarding 'brain' wrapper) and read the registry through the relay
       undo:   none
   pin       the wrapper pin accepts the binary
       needs:  ~/.local/bin/.bd-pin.sh is absent, or its BD_WANT equals the candidate's version string exactly; otherwise every pinned wrapper would exit 78 as soon as the binary is swapped. The pin is owned by satellite-config, so a mismatch is refused with the instruction, never edited
@@ -6473,18 +6495,18 @@ For each machine, in roster order:
       undo:   'brain rollout rollback --apply' puts the kept binary back (keeping the replaced one as bd.post-&lt;sha&gt;)
   converge  make the machine apply the registry
       needs:  the machine's brain has 'stores sync' (the build contains the registry)
-      does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate)
-      proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing
+      does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate). On a client this is its own bd binary's sync, which reads the registry through the relay and writes the client's wrappers; the host's sync is never taken for it
+      proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing; on a client the report must name the client itself and say it was read through the relay
       undo:   sh ~/.local/share/brain/registry-backup/&lt;time&gt;/restore.sh on the machine; BRAIN_REGISTRY=off switches the registry off
   smoke     the wrappers the sync wrote cannot loop, and one real read answers
       needs:  the converge step passed
       does:   nothing; read-only
-      proves: every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
+      proves: every live wrapper in ~/.local/bin on the machine (a file named for a registered store or alias; backups like &lt;store&gt;.pre-&lt;date&gt; are skipped and listed) execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
       undo:   none; on failure the exact restore command of the sync's backup is printed and recorded
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only
-      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
+      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper. A client has no database, so it proves what it can with its own pieces and never accepts the host's answer: its binary (BRAIN_REMOTE=off) is the candidate's exact version; its own sync/verify name it and found every registered store's wrapper; the newest store's wrapper exists there and answers 'list --limit 1' through the host; the registry epoch read through the relay equals the target. Its record says it is a client and lists this
       undo:   none
   record    write what was established to the shared record
       needs:  the shared database accepts the write (checked at the 'records' step)
@@ -6538,7 +6560,7 @@ For each machine, in roster order:
   mode      direct machine or client
       needs:  none
       does:   nothing; read-only
-      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off, and the registry is read through the relay as the client itself reads it
+      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off. A client has no database: its sync and verify run through its own bd binary (not the forwarding 'brain' wrapper) and read the registry through the relay
       undo:   none
   pin       the wrapper pin accepts the kept binary
       needs:  a kept binary is known (the rollout record, or --previous PATH on the machine) and the pin is absent or wants that binary's version; restoring behind a pin that wants the new version would make every wrapper refuse
@@ -9244,7 +9266,7 @@ For each machine, in roster order:
   mode      direct machine or client
       needs:  none
       does:   nothing; read-only
-      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off, and the registry is read through the relay as the client itself reads it
+      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off. A client has no database: its sync and verify run through its own bd binary (not the forwarding 'brain' wrapper) and read the registry through the relay
       undo:   none
   pin       the wrapper pin accepts the binary
       needs:  ~/.local/bin/.bd-pin.sh is absent, or its BD_WANT equals the candidate's version string exactly; otherwise every pinned wrapper would exit 78 as soon as the binary is swapped. The pin is owned by satellite-config, so a mismatch is refused with the instruction, never edited
@@ -9258,18 +9280,18 @@ For each machine, in roster order:
       undo:   'brain rollout rollback --apply' puts the kept binary back (keeping the replaced one as bd.post-&lt;sha&gt;)
   converge  make the machine apply the registry
       needs:  the machine's brain has 'stores sync' (the build contains the registry)
-      does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate)
-      proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing
+      does:   run the machine's own 'brain stores sync' (idempotent; backs up what it replaces; never touches a wrapper brain did not generate). On a client this is its own bd binary's sync, which reads the registry through the relay and writes the client's wrappers; the host's sync is never taken for it
+      proves: the machine's own 'brain stores verify' reports the target epoch and nothing missing; on a client the report must name the client itself and say it was read through the relay
       undo:   sh ~/.local/share/brain/registry-backup/&lt;time&gt;/restore.sh on the machine; BRAIN_REGISTRY=off switches the registry off
   smoke     the wrappers the sync wrote cannot loop, and one real read answers
       needs:  the converge step passed
       does:   nothing; read-only
-      proves: every wrapper brain generated in ~/.local/bin on the machine execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
+      proves: every live wrapper in ~/.local/bin on the machine (a file named for a registered store or alias; backups like &lt;store&gt;.pre-&lt;date&gt; are skipped and listed) execs a regular executable file that is neither the wrapper itself nor another generated wrapper (read from the files, nothing is run for this); then one real read ('&lt;store&gt; list --limit 1') through the newest store's wrapper answers within a few seconds, under a watchdog that kills it
       undo:   none; on failure the exact restore command of the sync's backup is printed and recorded
   prove     the machine itself proves it converged
       needs:  all earlier steps of the machine passed
       does:   nothing; read-only
-      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper
+      proves: the report came from this machine (its own name, not its host's), the machine's own binary and its brain command run the candidate's exact version, at the target epoch, from the live registry (not a cache), converged, and the newest store reads by name through its wrapper. A client has no database, so it proves what it can with its own pieces and never accepts the host's answer: its binary (BRAIN_REMOTE=off) is the candidate's exact version; its own sync/verify name it and found every registered store's wrapper; the newest store's wrapper exists there and answers 'list --limit 1' through the host; the registry epoch read through the relay equals the target. Its record says it is a client and lists this
       undo:   none
   record    write what was established to the shared record
       needs:  the shared database accepts the write (checked at the 'records' step)
@@ -9323,7 +9345,7 @@ For each machine, in roster order:
   mode      direct machine or client
       needs:  none
       does:   nothing; read-only
-      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off, and the registry is read through the relay as the client itself reads it
+      proves: a client (~/.config/brain/remote.yaml names a host) forwards commands to its host and so would run the host's build; every version check on a client therefore runs its own binary with BRAIN_REMOTE=off. A client has no database: its sync and verify run through its own bd binary (not the forwarding 'brain' wrapper) and read the registry through the relay
       undo:   none
   pin       the wrapper pin accepts the kept binary
       needs:  a kept binary is known (the rollout record, or --previous PATH on the machine) and the pin is absent or wants that binary's version; restoring behind a pin that wants the new version would make every wrapper refuse

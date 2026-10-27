@@ -104,6 +104,7 @@ Secrets in this list are refused on git-tracked `config.yaml` files unless you p
 | `validation.on-sync` | — | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync |
 | `validation.metadata.mode` | — | — | `none` | Metadata schema validation |
 | `hierarchy.max-depth` | — | — | `3` | Max hierarchical ID nesting depth |
+| `hierarchy.priority` | — | — | (unset) | `specificity` opts one store into the parent-child ladder. P0 is the broadest capability. Each child along a parent-child edge uses a higher priority number, through P4. See `docs/CONFIG.md` |
 | `backup.enabled` | — | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup |
 | `backup.interval` | — | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `backup.git-push` | — | — | `false` | Auto-push backup repo |
