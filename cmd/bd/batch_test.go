@@ -197,6 +197,54 @@ func TestParseBatchScript_UnterminatedQuote(t *testing.T) {
 	}
 }
 
+func TestParseBatchScript_Label(t *testing.T) {
+	script := `label add bd-1 helpful
+label remove bd-2 stale
+label rm bd-3 wip
+`
+	ops, err := parseBatchScript(strings.NewReader(script))
+	if err != nil {
+		t.Fatalf("parseBatchScript: %v", err)
+	}
+	wantCmds := []string{"label.add", "label.remove", "label.remove"}
+	if len(ops) != len(wantCmds) {
+		t.Fatalf("got %d ops, want %d: %+v", len(ops), len(wantCmds), ops)
+	}
+	for i, op := range ops {
+		if op.cmd != wantCmds[i] {
+			t.Errorf("op %d: cmd = %q, want %q", i, op.cmd, wantCmds[i])
+		}
+	}
+	// 'label add' preserves <id> <label> as its args.
+	if got := ops[0].args; len(got) != 2 || got[0] != "bd-1" || got[1] != "helpful" {
+		t.Errorf("label add args = %v, want [bd-1 helpful]", got)
+	}
+	// 'label rm' aliases 'label remove' and keeps its args.
+	if got := ops[2].args; len(got) != 2 || got[0] != "bd-3" || got[1] != "wip" {
+		t.Errorf("label rm args = %v, want [bd-3 wip]", got)
+	}
+}
+
+func TestParseBatchScript_LabelRequiresSubcommand(t *testing.T) {
+	_, err := parseBatchScript(strings.NewReader("label\n"))
+	if err == nil {
+		t.Fatal("expected error for bare 'label'")
+	}
+	if !strings.Contains(err.Error(), "subcommand") {
+		t.Errorf("error should mention subcommand, got: %v", err)
+	}
+}
+
+func TestParseBatchScript_LabelUnknownSubcommand(t *testing.T) {
+	_, err := parseBatchScript(strings.NewReader("label list bd-1\n"))
+	if err == nil {
+		t.Fatal("expected error for unknown label subcommand")
+	}
+	if !strings.Contains(err.Error(), "label subcommand") {
+		t.Errorf("error should mention label subcommand, got: %v", err)
+	}
+}
+
 func TestParseUpdateKVs(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -220,8 +268,28 @@ func TestParseUpdateKVs(t *testing.T) {
 			want: map[string]interface{}{"assignee": ""},
 		},
 		{
+			// description is a supported update key (added to the grammar so an
+			// obligation discharge can record its decision in one batch op).
+			name: "description supported",
+			in:   []string{"description=## Decision: chose the batch path"},
+			want: map[string]interface{}{"description": "## Decision: chose the batch path"},
+		},
+		{
+			// Empty description is allowed (clears the field), unlike title/status.
+			name: "description may be empty",
+			in:   []string{"description="},
+			want: map[string]interface{}{"description": ""},
+		},
+		{
+			// The full discharge shape: record a decision and advance status in
+			// one op.
+			name: "status and description together",
+			in:   []string{"status=in_progress", "description=notes"},
+			want: map[string]interface{}{"status": "in_progress", "description": "notes"},
+		},
+		{
 			name:    "unsupported key",
-			in:      []string{"description=foo"},
+			in:      []string{"bogus=foo"},
 			wantErr: true,
 		},
 		{

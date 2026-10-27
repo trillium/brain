@@ -50,9 +50,11 @@ Grammar (one command per line):
   create <type> <priority> <title...>
   dep add <from-id> <to-id> [type]
   dep remove <from-id> <to-id>
+  label add <id> <label>
+  label remove <id> <label>
   #comment  (blank lines and '# ...' comments are ignored)
 
-Supported 'update' keys: status, priority, title, assignee
+Supported 'update' keys: status, priority, title, assignee, description
 Supported dependency types: see 'bd dep add --help' (default: blocks)
 
 Tokens are whitespace-separated. Double-quoted strings ("like this") may
@@ -266,8 +268,21 @@ func parseBatchScript(r io.Reader) ([]batchOp, error) {
 				return nil, fmt.Errorf("line %d: unknown dep subcommand %q (want add|remove)", lineNo, tokens[1])
 			}
 			op.args = tokens[2:]
+		case "label":
+			if len(tokens) < 2 {
+				return nil, fmt.Errorf("line %d: 'label' requires a subcommand (add|remove)", lineNo)
+			}
+			switch tokens[1] {
+			case "add":
+				op.cmd = "label.add"
+			case "remove", "rm":
+				op.cmd = "label.remove"
+			default:
+				return nil, fmt.Errorf("line %d: unknown label subcommand %q (want add|remove)", lineNo, tokens[1])
+			}
+			op.args = tokens[2:]
 		default:
-			return nil, fmt.Errorf("line %d: unsupported batch command %q (supported: close, update, create, dep add, dep remove)", lineNo, tokens[0])
+			return nil, fmt.Errorf("line %d: unsupported batch command %q (supported: close, update, create, dep add, dep remove, label add, label remove)", lineNo, tokens[0])
 		}
 		ops = append(ops, op)
 	}
@@ -432,6 +447,28 @@ func runBatchOp(ctx context.Context, tx storage.Transaction, op batchOp) (batchO
 		}
 		result.Target = fmt.Sprintf("%s->%s", from, to)
 		return result, nil
+
+	case "label.add":
+		if len(op.args) < 2 {
+			return result, fmt.Errorf("label add requires <id> <label>")
+		}
+		id, label := op.args[0], op.args[1]
+		if err := tx.AddLabel(ctx, id, label, actorName); err != nil {
+			return result, err
+		}
+		result.Target = fmt.Sprintf("%s+%s", id, label)
+		return result, nil
+
+	case "label.remove":
+		if len(op.args) < 2 {
+			return result, fmt.Errorf("label remove requires <id> <label>")
+		}
+		id, label := op.args[0], op.args[1]
+		if err := tx.RemoveLabel(ctx, id, label, actorName); err != nil {
+			return result, err
+		}
+		result.Target = fmt.Sprintf("%s-%s", id, label)
+		return result, nil
 	}
 	return result, fmt.Errorf("internal: unhandled batch op %q", op.cmd)
 }
@@ -472,8 +509,10 @@ func parseUpdateKVs(kvs []string) (map[string]interface{}, error) {
 			updates["title"] = value
 		case "assignee":
 			updates["assignee"] = value
+		case "description":
+			updates["description"] = value
 		default:
-			return nil, fmt.Errorf("update: unsupported key %q (allowed: status, priority, title, assignee)", key)
+			return nil, fmt.Errorf("update: unsupported key %q (allowed: status, priority, title, assignee, description)", key)
 		}
 	}
 	return updates, nil
