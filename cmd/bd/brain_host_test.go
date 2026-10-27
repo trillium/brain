@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -626,5 +627,70 @@ func TestLaunchdServerPlistAndServiceCalls(t *testing.T) {
 	// An externally managed server is never stopped by brain.
 	if err := m.stop(context.Background(), hostService{Kind: "external"}, 1, true, nil, nil); err == nil {
 		t.Error("brain must refuse to stop a server it does not manage")
+	}
+}
+
+func TestPeerActivateInstallsRenderJobIdempotently(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	var calls []string
+	svc := &serviceManager{home: home, run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return nil, nil
+	}}
+	env := &peerEnv{home: home, svc: svc}
+	const id = "promote-render-job-1"
+	st := &incomingState{ID: id, ServerStarted: true, ServerPort: ln.Addr().(*net.TCPAddr).Port}
+	if err := os.MkdirAll(env.incomingDir(id), 0o755); err != nil { //nolint:gosec // test dir
+		t.Fatal(err)
+	}
+	if err := env.saveIncoming(st); err != nil {
+		t.Fatal(err)
+	}
+	plist := filepath.Join(home, pollerPlistDirPath, renderJobLabel+".plist")
+	for round := 1; round <= 2; round++ {
+		calls = nil
+		if _, err := env.activate(context.Background(), peerActivateReq{ID: id, Generation: 2}); err != nil {
+			t.Fatalf("activate round %d: %v", round, err)
+		}
+		if _, err := os.Stat(plist); err != nil {
+			t.Fatalf("round %d: render job plist not written: %v", round, err)
+		}
+		cfg, err := loadHostConfig(home)
+		if err != nil || cfg == nil || cfg.Role != roleHost {
+			t.Fatalf("round %d: host.yaml = %+v, %v", round, cfg, err)
+		}
+		n := 0
+		for _, s := range cfg.Services {
+			if s == renderJobLabel {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("round %d: services %v should declare %s exactly once", round, cfg.Services, renderJobLabel)
+		}
+		loaded := false
+		for _, c := range calls {
+			if strings.HasPrefix(c, "launchctl bootstrap") && strings.HasSuffix(c, plist) {
+				loaded = true
+			}
+		}
+		if !loaded {
+			t.Errorf("round %d: render job was not loaded; calls: %v", round, calls)
+		}
 	}
 }

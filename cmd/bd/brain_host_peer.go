@@ -1061,10 +1061,33 @@ func (e *peerEnv) activate(ctx context.Context, req peerActivateReq) (*peerActiv
 		resp.Services++
 	}
 
+	// The host owns the markdown: it renders every store periodically.
+	declared := req.DeclaredServices
+	if !containsStr(declared, renderJobLabel) {
+		body, rerr := renderJobPlist(e.home, "", renderJobDefaultSecs)
+		if rerr != nil {
+			return nil, rerr
+		}
+		plist := filepath.Join(e.home, pollerPlistDirPath, renderJobLabel+".plist")
+		if err := os.MkdirAll(filepath.Join(e.home, pollerLogDirPath), 0o755); err != nil { //nolint:gosec // log dir
+			return nil, err
+		}
+		if err := j.writeFile(plist, []byte(body), 0o644); err != nil { //nolint:gosec // LaunchAgent plists are world-readable by convention
+			return nil, err
+		}
+		_, _ = e.svc.run(ctx, "launchctl", "bootout", e.svc.domain()+"/"+renderJobLabel)
+		if _, err := e.svc.loadJob(ctx, renderJobLabel, plist, j); err != nil {
+			resp.Notes = append(resp.Notes, fmt.Sprintf("%s: %v (installed, not loaded)", renderJobLabel, err))
+		}
+		declared = append(append([]string{}, declared...), renderJobLabel)
+		sort.Strings(declared)
+		resp.Services++
+	}
+
 	// 6. The role itself.
 	host := &hostConfig{
 		Role: roleHost, Generation: req.Generation, PromoteID: req.ID, Since: nowStamp(),
-		Server: &req.Server, Clients: req.Clients, Services: req.DeclaredServices, Lineage: req.Lineage,
+		Server: &req.Server, Clients: req.Clients, Services: declared, Lineage: req.Lineage,
 	}
 	host.Server.Service = st.Service
 	data, err := marshalHostConfig(host)

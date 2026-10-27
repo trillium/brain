@@ -233,6 +233,7 @@ func newShimEnv(ctx context.Context, src registrySource, machine string) shimEnv
 		env.BrainBinary = self
 	}
 	if role == "direct" {
+		env.OffHost = !hostIsLocal(effectiveStoreHost(home, env.Host))
 		env.UnifiedDB = src.UnifiedDB(ctx)
 		env.ProjectID = func(store string) (string, error) { return src.ProjectID(ctx, store) }
 	}

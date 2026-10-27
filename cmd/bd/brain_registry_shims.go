@@ -155,6 +155,7 @@ type shimEnv struct {
 	Port        int
 	UnifiedDB   string // the Dolt database a store's metadata.json names
 	BrainBinary string // client wrappers hand over to this
+	OffHost     bool   // the Dolt server runs on another machine, so the host renders the markdown
 	// ProjectID answers a store's project identity from the database. Nil means
 	// "unavailable": a missing BEADS_DIR cannot be created and its wrapper waits.
 	ProjectID func(store string) (string, error)
@@ -269,6 +270,11 @@ func syncWrapperBody(e storeregistry.Entry, env shimEnv) string {
 	}
 	fmt.Fprintf(&b, "export BRAIN_KNOWLEDGE_ROOT=\"$HOME/%s\"\n", knowledgeRoot)
 	b.WriteString("export BRAIN_EXFIL_FLAT=1\n")
+	if env.OffHost {
+		// The host renders the markdown ('brain host render'); a client that also
+		// wrote ~/data/<store>/ would grow a second, diverging copy.
+		b.WriteString("export BRAIN_NO_EXFIL=1\n")
+	}
 	b.WriteString("export BEADS_DOLT_SERVER_MODE=1\n")
 	b.WriteString("export BEADS_DOLT_SHARED_SERVER=1\n")
 	host, port := env.Host, env.Port
