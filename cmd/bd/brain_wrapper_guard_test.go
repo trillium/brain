@@ -73,7 +73,7 @@ func TestRemoteInstallRefusesAWrapperTargetThatIsAWrapper(t *testing.T) {
 	brain := filepath.Join(dir, "brain")
 	mustWrite(t, brain, remoteWrapperBody("brain", bd), 0o755)
 
-	got, err := installRemoteWrappers(dir, brain, []string{"task"}, false, false)
+	got, err := installRemoteWrappers(dir, brain, "", []string{"task"}, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestRemoteInstallRefusesAWrapperTargetThatIsAWrapper(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "task")); err == nil {
 		t.Error("no wrapper may be written whose exec target is a wrapper")
 	}
-	got, _ = installRemoteWrappers(dir, bd, []string{"task"}, false, false)
+	got, _ = installRemoteWrappers(dir, bd, "", []string{"task"}, false, false)
 	if got[0].Action != "created" {
 		t.Errorf("the real binary is accepted: %+v", got)
 	}
@@ -182,7 +182,7 @@ func TestClientSyncWritesTheSameWrapperAsRemoteInstall(t *testing.T) {
 	}
 
 	ref := t.TempDir()
-	if _, err := installRemoteWrappers(ref, c.bin, []string{"brain", "recipes"}, false, false); err != nil {
+	if _, err := installRemoteWrappers(ref, c.bin, "", []string{"brain", "recipes"}, false, false); err != nil {
 		t.Fatal(err)
 	}
 	for _, n := range []string{"brain", "recipes"} {
