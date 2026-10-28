@@ -94,8 +94,8 @@ The host keeps the markdown current with `brain host render`, which runs
 wrappers export the same `BRAIN_KNOWLEDGE_ROOT` render once. A render that
 exits nonzero but wrote some beads (`Exfiltrated N / M beads (K failed)`) is a
 logged warning, not a failure. A failing store is reported and the rest still
-render. Each root may take up to 30 minutes (`--timeout`). It refuses to run on a machine whose Dolt
-host is elsewhere. A launchd job runs it every five minutes:
+render. Each root may take up to 30 minutes (`--timeout`). It refuses to run
+on a machine whose Dolt host is elsewhere. A launchd job runs it every five minutes:
 
 ```sh
 brain host render-job install     # com.brain.host-render; also declares it part of the host role
