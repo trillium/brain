@@ -90,8 +90,11 @@ second copy. The line follows the host: if the machine becomes the host, the nex
 sync removes it.
 
 The host keeps the markdown current with `brain host render`, which runs
-`<store> render-all` through each wrapper in `stores.yaml` (a failing store is
-reported and the rest still render). It refuses to run on a machine whose Dolt
+`<store> render-all` through each wrapper in `stores.yaml`. Stores whose
+wrappers export the same `BRAIN_KNOWLEDGE_ROOT` render once. A render that
+exits nonzero but wrote some beads (`Exfiltrated N / M beads (K failed)`) is a
+logged warning, not a failure. A failing store is reported and the rest still
+render. Each root may take up to 30 minutes (`--timeout`). It refuses to run on a machine whose Dolt
 host is elsewhere. A launchd job runs it every five minutes:
 
 ```sh
