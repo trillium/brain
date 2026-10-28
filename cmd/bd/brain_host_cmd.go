@@ -461,6 +461,10 @@ func runHostStatus(cmd *cobra.Command) error {
 		return err
 	}
 	rc, _ := loadRemoteConfig()
+	var relay relayInfo
+	if cfg == nil {
+		relay = detectRelay(home, portListening)
+	}
 	cur := currentPromoteID(home)
 	last := lastPromoteID(home)
 	var st *promoteState
@@ -472,6 +476,9 @@ func runHostStatus(cmd *cobra.Command) error {
 
 	if jsonOutput {
 		out := map[string]any{"home": home, "host": cfg, "client_of": rc.Host, "promotion_in_progress": cur}
+		if cfg == nil && relay.Role != relayNone {
+			out["relay"] = map[string]any{"role": string(relay.Role), "target": relay.Target, "reason": relay.Reason}
+		}
 		if st != nil {
 			out["promotion"] = map[string]any{"id": st.ID, "target": st.Target, "outcome": st.Outcome, "done": st.Done, "generation": st.Generation}
 		}
@@ -479,6 +486,8 @@ func runHostStatus(cmd *cobra.Command) error {
 	}
 	fmt.Printf("machine:   %s\n", home)
 	switch {
+	case cfg == nil && relay.Role != relayNone:
+		fmt.Printf("role:      %s\n", relay.describe())
 	case cfg == nil && rc.Host != "":
 		fmt.Printf("role:      client of %s (no host.yaml)\n", rc.Host)
 	case cfg == nil:
