@@ -4,7 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 )
 
 // A machine can sit between clients and the brain host without being either:
@@ -68,5 +67,3 @@ func (r relayInfo) describe() string {
 	}
 	return "relay — forwards port 3307 to " + target + "; not a Dolt host"
 }
-
-func (r relayInfo) String() string { return strings.TrimSpace(string(r.Role)) }
