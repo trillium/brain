@@ -23,6 +23,25 @@ whose stated reason (the host's Dolt accepted passwordless logins on all
 interfaces) no longer describes the deployment: the host's server now requires
 the `brain_app` password.
 
+## Current deployment
+
+Since 2026-10-17 the brain host is **mini0** (it was mini1). On mini0, launchd
+job `com.brain.dolt-server` runs:
+
+```
+dolt sql-server -H 0.0.0.0 -P 3307 --remotesapi-port 3310 --data-dir /Users/mini0/dolt-host/data
+```
+
+- **Binding:** the Dolt port is exposed on all interfaces (`-H 0.0.0.0`), so
+  tailnet clients reach `mini0:3307` directly. The remotesapi port is 3310.
+- **Auth:** clients log in as `brain_app` with a password. mini0's own
+  `~/.config/brain/store-host.env` sets `HOST` to mini0's tailnet address and
+  `USER=brain_app`; the password lives in `~/.config/beads/credentials`.
+- **mini1 is not a Dolt host.** Its `com.brain.dolt-server` plist is disabled.
+  It only relays port 3307 to mini0 through a small forwarder
+  (`~/.local/share/dolt-forward/fwd.py`), so a client pointed at mini1 still
+  lands on mini0's database.
+
 ## Direct transport
 
 ```
@@ -110,7 +129,7 @@ describes it.
  client                                           brain host
  ──────                                           ──────────
  task create "ship it"                              ~/.local/bin/task  (the host's own wrapper)
-   └─ wrapper: BRAIN_REMOTE_STORE=task brain …        └─ bd → Dolt on 127.0.0.1:3307
+   └─ wrapper: BRAIN_REMOTE_STORE=task brain …        └─ bd → Dolt on :3307 (host-local)
         └─ brain binary sees remote.yaml
              └─ ssh host  exec /bin/sh -c '…' task create 'ship it'
 ```
