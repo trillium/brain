@@ -170,3 +170,82 @@ func TestNewShimEnvMarksAMachineOffHostByItsStoreHost(t *testing.T) {
 		t.Error("store-host.env names another machine: this machine is off-host")
 	}
 }
+
+func TestRenderStoresViaWrappersRendersASharedRootOnce(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, ".local", "bin")
+	body := func(root string) string {
+		return "#!/bin/sh\nexport BRAIN_KNOWLEDGE_ROOT=\"" + root + "\"\necho x >> \"$HOME/$(basename \"$0\").runs\"\n"
+	}
+	mustWrite(t, filepath.Join(bin, "brain"), body("$HOME/data/brain"), 0o755)
+	mustWrite(t, filepath.Join(bin, "inbox"), body("$HOME/data/brain"), 0o755)
+	mustWrite(t, filepath.Join(bin, "task"), body("$HOME/data/task"), 0o755)
+
+	res := renderStoresViaWrappers(context.Background(), home, []string{"brain", "inbox", "task"}, 10*time.Second)
+	for _, r := range res {
+		if !r.OK {
+			t.Errorf("%s: %s", r.Store, r.Error)
+		}
+	}
+	if res[1].SharedWith != "brain" || res[0].SharedWith != "" || res[2].SharedWith != "" {
+		t.Errorf("inbox should share brain's render and nothing else: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(home, "inbox.runs")); err == nil {
+		t.Error("a store on an already-rendered root must not run again")
+	}
+	for _, n := range []string{"brain.runs", "task.runs"} {
+		if _, err := os.Stat(filepath.Join(home, n)); err != nil {
+			t.Errorf("%s: distinct root must render", n)
+		}
+	}
+}
+
+func TestRenderStoresViaWrappersPartialExfilIsAWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, ".local", "bin")
+	mustWrite(t, filepath.Join(bin, "partial"),
+		"#!/bin/sh\necho 'Exfiltrated 2380 / 2484 beads to /d/entries/ (104 failed)' >&2\nexit 1\n", 0o755)
+	mustWrite(t, filepath.Join(bin, "none"),
+		"#!/bin/sh\necho 'Exfiltrated 0 / 12 beads to /d/entries/ (12 failed)' >&2\nexit 1\n", 0o755)
+	mustWrite(t, filepath.Join(bin, "crash"), "#!/bin/sh\necho 'panic: boom' >&2\nexit 2\n", 0o755)
+
+	res := renderStoresViaWrappers(context.Background(), home, []string{"partial", "none", "crash"}, 10*time.Second)
+	if !res[0].OK || !strings.Contains(res[0].Warning, "2380 / 2484") || res[0].Error != "" {
+		t.Errorf("partial exfil is a warning, not a failure: %+v", res[0])
+	}
+	if res[1].OK {
+		t.Errorf("zero beads written is a real failure: %+v", res[1])
+	}
+	if res[2].OK {
+		t.Errorf("a crash is a real failure: %+v", res[2])
+	}
+}
+
+func TestRenderStoresViaWrappersTimeoutStillFailsAStuckStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	bin := filepath.Join(home, ".local", "bin")
+	mustWrite(t, filepath.Join(bin, "slow"),
+		"#!/bin/sh\necho 'Exfiltrated 5 / 9 beads to /d/entries/ (4 failed)' >&2\nexec sleep 30\n", 0o755)
+	res := renderStoresViaWrappers(context.Background(), home, []string{"slow"}, 300*time.Millisecond)
+	if res[0].OK {
+		t.Errorf("a store killed by the timeout is a failure even if it printed a summary: %+v", res[0])
+	}
+	if hostRenderDefaultTimeout < 15*time.Minute {
+		t.Errorf("default timeout %v would kill large stores that are still rendering", hostRenderDefaultTimeout)
+	}
+	if f := brainHostRenderCmd.Flags().Lookup("timeout"); f == nil || f.DefValue != hostRenderDefaultTimeout.String() {
+		t.Error("--timeout must default to hostRenderDefaultTimeout")
+	}
+}

@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -29,6 +30,20 @@ import (
 const (
 	renderJobLabel       = "com.brain.host-render"
 	renderJobDefaultSecs = 300
+
+	// hostRenderDefaultTimeout bounds one distinct markdown root. A large store
+	// takes well over the 5 minute job interval to render, and killing it
+	// mid-write only makes the next pass start over; launchd never overlaps two
+	// runs of one job, so a long pass just delays the next one.
+	hostRenderDefaultTimeout = 30 * time.Minute
+)
+
+var (
+	// wrapperRootRe finds the markdown root a store wrapper exports.
+	wrapperRootRe = regexp.MustCompile(`(?m)^export BRAIN_KNOWLEDGE_ROOT=("[^"\n]*"|[^\s"]+)`)
+	// partialExfilRe matches the render-all summary line, which also appears
+	// on a nonzero exit when only some beads failed.
+	partialExfilRe = regexp.MustCompile(`Exfiltrated (\d+) / (\d+) beads .*\((\d+) failed\)`)
 )
 
 // effectiveStoreHost is the Dolt host a store wrapper on this machine ends up
@@ -90,14 +105,54 @@ type hostRenderResult struct {
 	Store string `json:"store"`
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
+	// Warning is set on an OK result whose render wrote files but left some
+	// beads out; the store is not a failure.
+	Warning string `json:"warning,omitempty"`
+	// SharedWith names the store whose render already covered this store's
+	// markdown root; the store was not run again.
+	SharedWith string `json:"shared_with,omitempty"`
+}
+
+// wrapperRenderRoot returns the markdown root a store's wrapper writes, or ""
+// when the wrapper does not say (an embedded store, an unreadable file).
+func wrapperRenderRoot(wrapper, home string) string {
+	data, err := os.ReadFile(wrapper) //nolint:gosec // wrapper path is built from our own stores.yaml names
+	if err != nil {
+		return ""
+	}
+	m := wrapperRootRe.FindSubmatch(data)
+	if m == nil {
+		return ""
+	}
+	root := strings.Trim(string(m[1]), `"`)
+	root = strings.ReplaceAll(root, "${HOME}", home)
+	root = strings.ReplaceAll(root, "$HOME", home)
+	return filepath.Clean(root)
+}
+
+// partialExfil reports whether stderr carries a render-all summary that wrote
+// at least one bead but failed others, and returns that summary line.
+func partialExfil(stderr string) (string, bool) {
+	ms := partialExfilRe.FindAllStringSubmatch(stderr, -1)
+	if len(ms) == 0 {
+		return "", false
+	}
+	m := ms[len(ms)-1]
+	ok, _ := strconv.Atoi(m[1])
+	failed, _ := strconv.Atoi(m[3])
+	return m[0], ok > 0 && failed > 0
 }
 
 // renderStoresViaWrappers runs '<store> render-all' through each store's own
 // wrapper (so pins, host and credentials are the ones every other command
-// uses). One failing store never stops the rest.
+// uses). One failing store never stops the rest. Stores whose wrappers write
+// the same markdown root render once: the first one runs, the rest report
+// SharedWith. A render that exits nonzero but wrote some beads is OK with a
+// Warning; one that wrote nothing, or died, is a failure.
 func renderStoresViaWrappers(ctx context.Context, home string, stores []string, perStore time.Duration) []hostRenderResult {
 	bin := filepath.Join(home, ".local", "bin")
 	results := make([]hostRenderResult, 0, len(stores))
+	rendered := map[string]string{} // markdown root -> store that rendered it
 	for _, name := range stores {
 		res := hostRenderResult{Store: name}
 		wrapper := filepath.Join(bin, name)
@@ -106,12 +161,28 @@ func renderStoresViaWrappers(ctx context.Context, home string, stores []string, 
 			results = append(results, res)
 			continue
 		}
+		if root := wrapperRenderRoot(wrapper, home); root != "" {
+			if first, dup := rendered[root]; dup {
+				res.OK = true
+				res.SharedWith = first
+				results = append(results, res)
+				continue
+			}
+			rendered[root] = name
+		}
 		cctx, cancel := context.WithTimeout(ctx, perStore)
 		cmd := exec.CommandContext(cctx, wrapper, "render-all") //nolint:gosec // wrapper path is built from our own stores.yaml names
 		cmd.Env = append(os.Environ(), "BRAIN_REGISTRY=off")
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		if err := cmd.Run(); err != nil {
+			if line, partial := partialExfil(stderr.String()); partial && cctx.Err() == nil {
+				res.OK = true
+				res.Warning = line
+				cancel()
+				results = append(results, res)
+				continue
+			}
 			res.Error = err.Error()
 			if msg := strings.TrimSpace(stderr.String()); msg != "" {
 				res.Error += ": " + lastOutputLine(msg)
@@ -160,7 +231,9 @@ brain host writes. A machine whose wrappers reach a Dolt server on another
 machine runs with BRAIN_NO_EXFIL=1, so this command refuses to run there.
 
 It runs '<store> render-all' through each store's wrapper, one store at a time;
-a store that fails is reported and the rest still render. The host role carries
+stores that write the same markdown root render once, a render that wrote files
+but left some beads out is a warning, and a store that fails is reported while
+the rest still render. The host role carries
 a launchd job that runs it every 5 minutes (see 'brain host render-job').`,
 	Args:        cobra.NoArgs,
 	Annotations: hostAnno(),
@@ -182,6 +255,10 @@ a launchd job that runs it every 5 minutes (see 'brain host render-job').`,
 			case !r.OK:
 				failed++
 				fmt.Fprintf(os.Stderr, "%s: render failed: %s\n", r.Store, r.Error)
+			case r.Warning != "":
+				fmt.Fprintf(os.Stderr, "%s: render warning: %s\n", r.Store, r.Warning)
+			case !hostRenderQuiet && r.SharedWith != "":
+				fmt.Printf("%s: rendered with %s\n", r.Store, r.SharedWith)
 			case !hostRenderQuiet:
 				fmt.Printf("%s: rendered\n", r.Store)
 			}
@@ -303,7 +380,7 @@ var brainHostRenderJobUninstallCmd = &cobra.Command{
 
 func init() {
 	brainHostRenderCmd.Flags().BoolVar(&hostRenderQuiet, "quiet", false, "Print only failures")
-	brainHostRenderCmd.Flags().DurationVar(&hostRenderTimeout, "timeout", 5*time.Minute, "Longest one store may take")
+	brainHostRenderCmd.Flags().DurationVar(&hostRenderTimeout, "timeout", hostRenderDefaultTimeout, "Longest one markdown root may take")
 	for _, c := range []*cobra.Command{brainHostRenderJobPrintCmd, brainHostRenderJobInstallCmd} {
 		c.Flags().StringVar(&renderJobWrapper, "wrapper", "", "Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)")
 		c.Flags().IntVar(&renderJobInterval, "interval", renderJobDefaultSecs, "Seconds between runs")
