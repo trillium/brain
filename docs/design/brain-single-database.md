@@ -593,9 +593,9 @@ visible while it happens rather than an hour later.
 ## The namespace model at runtime: narrow reads, wide reads, and prefixes on demand
 
 Unification's point is that every store can see every store while keeping its
-own view. Three rules make that hold for reads, creations and the namespace
-record itself; all three are behaviour on the merged database only, and every
-legacy store keeps its exact pre-cutover behaviour.
+own view. Four rules make that hold for reads, creations, edges and the
+namespace record itself; all four are behaviour on the merged database only,
+and every legacy store keeps its exact pre-cutover behaviour.
 
 ### 1. Narrow and wide are both deliberate read modes
 
@@ -614,6 +614,16 @@ substitutes one mode for another inside a single command. `bd search
 --federated` is the wide view's precedent rather than a rival mechanism: on
 the unified database it walks the same unscoped rows and buckets the
 sections by owning store, so `--wide` is the flat form of the one wide read.
+
+**An id-addressed read is never narrowed**, and that is not a third mode: the
+scope answers "which beads does this wrapper list", and a read that names the
+ids it wants is not listing. `task show brain-c56qg` names one id, so it
+resolves whichever store owns it (`types.IssueFilter.IDs`; a partial-id search
+that cannot name its ids in advance says the same thing with
+`types.IssueFilter.IDLookup`). Narrowing such a read can only ever *exclude* an
+id the caller already named — which is how `task show brain-c56qg` came to
+answer "no issue found" for a bead the database plainly held. Every listing
+keeps its scope; nothing about `--wide` changes.
 
 ### 2. Nothing mints a bead that does not fit a store
 
@@ -647,3 +657,22 @@ recorded for a *different* store refuses with that owner's name and the
 reason its claim was decided. Two stores converging on the same fresh prefix
 therefore end with exactly one owner and every other claimant refused —
 never a silent takeover.
+
+### 4. An edge to a bead this database holds is a real edge
+
+The same "whose namespace is this?" rule decides where a dependency edge is
+stored, one layer down. A `blocks` edge whose target another store owns is
+still a real edge — the target is a row in this database, so the edge belongs
+in `depends_on_issue_id` (or `depends_on_wisp_id`), where the graph traverses
+it and the block state can be derived from it. `depends_on_external` is for
+targets this database does not hold: a bead the owning store has not minted, a
+typo, or the explicitly foreign `external:<project>:<capability>` form.
+
+Classification therefore asks the database whether it holds the target
+(`issueops.ProbeDepTarget`) instead of comparing the two ids' prefixes. The
+prefix comparison was correct while a prefix was a rig and a rig was a
+database; on the merged database it demoted every cross-store edge to text,
+which is why a bead blocked by another store's bead still listed as ready.
+Rows written under the old comparison are repaired by `bd dep reclassify`
+(dry run by default; `--apply` lands the whole repair as one Dolt commit),
+and the writes that would have created them now produce real edges.

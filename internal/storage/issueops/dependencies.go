@@ -52,28 +52,108 @@ func depTargetIn(alias, placeholders string) string {
 	return depTargetExpr(alias) + " IN (" + placeholders + ")"
 }
 
-func ClassifyDepTarget(ctx context.Context, tx *sql.Tx, dep *types.Dependency, isCrossPrefix bool) DepTargetKind {
-	if isCrossPrefix || strings.HasPrefix(dep.DependsOnID, "external:") {
-		return DepTargetExternal
+// IsCrossPrefix answers whether two bead ids sit in different store
+// namespaces: their id prefixes differ. Under namespace model A a namespace is
+// a store's slice of the one `issues` table (docs/design/
+// brain-single-database.md), so this answers "another store's namespace" — it
+// does NOT answer "another database", which is the question that decides
+// whether an edge can be a foreign key. ProbeDepTarget answers that one by
+// looking for the row.
+func IsCrossPrefix(sourceID, targetID string) bool {
+	return types.ExtractPrefix(sourceID) != types.ExtractPrefix(targetID)
+}
+
+// DepTargetProbe is the store-aware answer about an edge's target: which typed
+// target column the edge belongs in, and — when this database holds the target
+// — which table holds it and what type it is.
+type DepTargetProbe struct {
+	// Kind is the column decision: DepTargetIssue or DepTargetWisp for a
+	// target this database holds, DepTargetExternal for one it does not.
+	Kind DepTargetKind
+	// Table is "issues" or "wisps" when the database holds the target, and
+	// empty otherwise.
+	Table string
+	// IssueType is the held row's issue_type; empty when Table is empty.
+	IssueType string
+	// Hold reports whether this database holds a row for the target id.
+	Hold bool
+	// SameNamespace reports whether the target id sits in the source's own
+	// store namespace. It is only meaningful when Hold is false: the add path
+	// refuses a target its own namespace names but this database does not
+	// hold (a name that does not exist here), while it keeps the
+	// pre-unification tolerance for another store's unheld id (a text
+	// reference to a bead that store has not minted yet).
+	SameNamespace bool
+}
+
+// ProbeDepTarget classifies a dependency edge's target store-aware: it asks the
+// database in front of the edge whether it holds the target, instead of asking
+// whether the two ids share a prefix.
+//
+// The prefix comparison was correct while a prefix was a rig and a rig was a
+// database: a different prefix meant a target in another database that no
+// foreign key could reach, so the edge was stored as text in
+// depends_on_external. On the unified database every store's beads share one
+// `issues` table, so the same comparison silently demoted every cross-store
+// edge to text — task-dena0's "blocks on brain-c56qg" carries prefix `task`,
+// landed in depends_on_external, and so is never traversed and never blocks
+// (docs/design/brain-single-database.md, namespace model A; brain-e5tlj plan
+// item 3). A held row is a real edge with a real target column, whichever
+// store's namespace carries the id; only an id this database does not hold
+// stays a text reference, which is what depends_on_external is for.
+//
+// The probe resolves the target once, in the caller's transaction or
+// connection: an "external:<...>" id is external by construction, an active
+// wisp row is a wisp target, an issues row is an issue target, and an id with
+// no row anywhere is external — refused by the add path when the source's own
+// namespace names it (see DepTargetProbe.SameNamespace).
+func ProbeDepTarget(ctx context.Context, q DBTX, sourceID, targetID string) (DepTargetProbe, error) {
+	if strings.HasPrefix(targetID, "external:") {
+		return DepTargetProbe{Kind: DepTargetExternal, SameNamespace: false}, nil
 	}
-	if IsActiveWispInTx(ctx, tx, dep.DependsOnID) {
-		return DepTargetWisp
+
+	// A wisp row first, matching the pre-unification preference: wisp routing
+	// outranks an issues row with the same id. A database without a wisps
+	// table answers "no" (IsActiveWispInTx swallows the probe failure).
+	if IsActiveWispInTx(ctx, q, targetID) {
+		var issueType string
+		if err := q.QueryRowContext(ctx, `SELECT issue_type FROM wisps WHERE id = ?`, targetID).Scan(&issueType); err != nil {
+			return DepTargetProbe{}, fmt.Errorf("failed to check target issue existence: %w", err)
+		}
+		return DepTargetProbe{Kind: DepTargetWisp, Table: "wisps", IssueType: issueType, Hold: true}, nil
 	}
-	return DepTargetIssue
+
+	var issueType string
+	err := q.QueryRowContext(ctx, `SELECT issue_type FROM issues WHERE id = ?`, targetID).Scan(&issueType)
+	switch {
+	case err == nil:
+		return DepTargetProbe{Kind: DepTargetIssue, Table: "issues", IssueType: issueType, Hold: true}, nil
+	case errors.Is(err, sql.ErrNoRows):
+		if IsCrossPrefix(sourceID, targetID) {
+			return DepTargetProbe{Kind: DepTargetExternal, SameNamespace: false}, nil
+		}
+		// Own namespace, no row: the caller named a bead that does not exist
+		// here. Kind stays DepTargetIssue so the wisp write path behaves as it
+		// did before; the issue write path refuses on SameNamespace instead.
+		return DepTargetProbe{Kind: DepTargetIssue, SameNamespace: true}, nil
+	default:
+		return DepTargetProbe{}, fmt.Errorf("failed to check target issue existence: %w", err)
+	}
 }
 
 // AddDependencyOpts configures AddDependencyInTx behavior.
-// When fields are left empty, AddDependencyInTx performs wisp routing
-// automatically via IsActiveWispInTx. Callers that have already determined
-// routing (e.g., DoltStore with its pre-tx wisp cache) can set fields
-// explicitly to skip the redundant DB check.
+// When fields are left empty, AddDependencyInTx performs SOURCE routing
+// automatically via IsActiveWispInTx. Callers that have already determined the
+// source's class (e.g., DoltStore with its pre-tx wisp cache) can set
+// SourceTable/WriteTable explicitly to skip the redundant DB check.
+//
+// There is deliberately no target-routing field: the edge's target is
+// classified from the database itself (ProbeDepTarget), in one place, so a
+// caller cannot hand in a stale or prefix-derived answer.
 type AddDependencyOpts struct {
 	// SourceTable is the table to validate the source issue exists in.
 	// Auto-detected via wisp routing if empty.
 	SourceTable string
-	// TargetTable is the table to validate the target issue exists in.
-	// Auto-detected via wisp routing if empty. Ignored when target validation is skipped.
-	TargetTable string
 	// WriteTable is the dependency table to insert/update/check existing deps in.
 	// Auto-detected from source wisp routing if empty.
 	WriteTable string
@@ -81,13 +161,9 @@ type AddDependencyOpts struct {
 	// dependency tables; edge storage is source-routed, so same-class endpoints
 	// can still have mixed-table interior paths.
 	DepTables []string
-	// IsCrossPrefix is true when source and target have different prefixes,
-	// meaning the target lives in another rig's database.
-	IsCrossPrefix bool
 	// SkipCycleCheck skips the recursive pre-insert cycle check for callers
 	// that intentionally trade validation cost for bulk graph wiring speed.
 	SkipCycleCheck bool
-	TargetKind     *DepTargetKind
 }
 
 // AddDependencyInTx validates and inserts a dependency within an existing
@@ -116,16 +192,6 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	// Auto-detect target routing if not provided (skip for external/cross-prefix).
-	targetTable := opts.TargetTable
-	if targetTable == "" && !strings.HasPrefix(dep.DependsOnID, "external:") && !opts.IsCrossPrefix {
-		targetIsWisp := IsActiveWispInTx(ctx, tx, dep.DependsOnID)
-		targetTable, _, _, _ = WispTableRouting(targetIsWisp)
-	}
-	if targetTable == "" {
-		targetTable = "issues"
-	}
-
 	depTables := opts.DepTables
 	if len(depTables) == 0 {
 		depTables = cycleDetectionTables()
@@ -146,17 +212,18 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		return fmt.Errorf("failed to check issue existence: %w", err)
 	}
 
-	// Validate target issue exists (skip for external and cross-prefix refs).
-	var targetType string
-	if !strings.HasPrefix(dep.DependsOnID, "external:") && !opts.IsCrossPrefix {
-		//nolint:gosec // G201: targetTable is from WispTableRouting ("issues" or "wisps")
-		if err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT issue_type FROM %s WHERE id = ?`, targetTable), dep.DependsOnID).Scan(&targetType); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("issue %s not found", dep.DependsOnID)
-			}
-			return fmt.Errorf("failed to check target issue existence: %w", err)
-		}
+	// Classify the target store-aware and validate it in the same probe: the
+	// database this edge is written to answers which typed column the edge
+	// belongs in, so an id it holds is a real edge whichever store's namespace
+	// carries it (see ProbeDepTarget).
+	probe, err := ProbeDepTarget(ctx, tx, dep.IssueID, dep.DependsOnID)
+	if err != nil {
+		return err
 	}
+	if !probe.Hold && probe.SameNamespace {
+		return fmt.Errorf("issue %s not found", dep.DependsOnID)
+	}
+	targetType := probe.IssueType
 
 	// Cross-type blocking validation (GH#1495): tasks can only block tasks,
 	// epics can only block epics.
@@ -177,12 +244,7 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 		}
 	}
 
-	var kind DepTargetKind
-	if opts.TargetKind != nil {
-		kind = *opts.TargetKind
-	} else {
-		kind = ClassifyDepTarget(ctx, tx, dep, opts.IsCrossPrefix)
-	}
+	kind := probe.Kind
 	targetCol := kind.Column()
 
 	// Check for existing dependency between the same pair. Use the resolved
@@ -190,7 +252,7 @@ func AddDependencyInTx(ctx context.Context, tx *sql.Tx, dep *types.Dependency, a
 	// target column cannot bypass the idempotency/conflict check.
 	var existingType string
 	//nolint:gosec // G201: writeTable from WispTableRouting; depTargetEquals has no user input.
-	err := tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT type FROM %s WHERE issue_id = ? AND %s`, writeTable, depTargetEquals("")),
+	err = tx.QueryRowContext(ctx, fmt.Sprintf(`SELECT type FROM %s WHERE issue_id = ? AND %s`, writeTable, depTargetEquals("")),
 		dep.IssueID, dep.DependsOnID).Scan(&existingType)
 	if err == nil {
 		if existingType == string(dep.Type) {

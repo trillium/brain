@@ -89,6 +89,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd dep add](#bd-dep-add) — Add a dependency
   - [bd dep cycles](#bd-dep-cycles) — Detect dependency cycles
   - [bd dep list](#bd-dep-list) — List dependencies or dependents of one or more issues
+  - [bd dep reclassify](#bd-dep-reclassify) — Turn external text dependency links into real edges where the target lives here
   - [bd dep relate](#bd-dep-relate) — Create a bidirectional relates_to link between issues
   - [bd dep remove](#bd-dep-remove) — Remove a dependency
   - [bd dep tree](#bd-dep-tree) — Show dependency tree
@@ -2415,6 +2416,55 @@ bd dep list [issue-id...] [flags]
 ```
       --direction string   Direction: 'down' (dependencies), 'up' (dependents) (default "down")
   -t, --type string        Filter by dependency type (e.g., tracks, blocks, parent-child)
+```
+
+#### bd dep reclassify
+
+Find dependency rows whose target is stored as text in depends_on_external
+and make the ones this database actually holds into real edges.
+
+An edge whose target this database holds belongs in depends_on_issue_id (or
+depends_on_wisp_id). A text row is invisible to every graph reader: nothing
+traverses it, nothing blocks on it, and 'bd ready' lists a blocked bead as
+ready. On the unified database every store's beads share one issues table, so
+most text rows are this case — a cross-store edge filed as foreign because the
+two ids carried different prefixes (see docs/design/brain-single-database.md,
+and issueops.ProbeDepTarget for the rule that replaced the prefix comparison).
+
+What this command does with each text row:
+  - target this database holds  → move it into its typed column (a real edge);
+  - target of a pair that already carries a real edge of the same type
+                               → remove the redundant text row (one edge, one id);
+  - target of a pair that already carries a real edge of a DIFFERENT type
+                               → left alone and reported: a pair carries one
+                                 type, so which one survives is your call;
+  - target this database holds nowhere, and the "external:..." form
+                               → left exactly as it is: depends_on_external is
+                                 for genuinely foreign targets.
+
+A row whose target becomes a real blocking edge is also checked for cycles over
+the current graph (text rows included, as the write path traverses it); rows
+that would close one are named in the plan and still reclassified.
+
+A dependency whose cross-store target is not held when it is persisted (bulk
+import or any batch) is kept as a text reference in depends_on_external, never
+dropped. Within one batch every issue is created before any dependency row is
+persisted, so only cross-batch references land as text; once the target exists,
+this same command repairs them.
+
+Without --apply nothing is written: the command prints the plan, every row it
+would touch, and the exact command that would apply it. With --apply the whole
+repair is one Dolt commit (staging only the edge table and issues), so it is
+one 'dolt revert' away.
+
+```
+bd dep reclassify [flags]
+```
+
+**Flags:**
+
+```
+      --apply   Apply the repair (default: dry run, nothing written)
 ```
 
 #### bd dep relate

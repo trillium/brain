@@ -507,8 +507,11 @@ func (s *DoltStore) getWispsByIDs(ctx context.Context, ids []string) ([]*types.I
 	return issues, nil
 }
 
-// addWispDependency adds a dependency to the wisp_dependencies table.
-func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency, actor string, isCrossPrefix bool) error {
+// addWispDependency adds a dependency to the wisp_dependencies table. Its
+// target is classified store-aware, exactly as the dependency table's is: an
+// id this database holds is a real target column, whichever store's namespace
+// carries it (see issueops.ProbeDepTarget).
+func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency, actor string) error {
 	metadata := dep.Metadata
 	if metadata == "" {
 		metadata = "{}"
@@ -535,8 +538,11 @@ func (s *DoltStore) addWispDependency(ctx context.Context, dep *types.Dependency
 		}
 	}
 
-	kind := issueops.ClassifyDepTarget(ctx, tx, dep, isCrossPrefix)
-	targetCol := kind.Column()
+	probe, err := issueops.ProbeDepTarget(ctx, tx, dep.IssueID, dep.DependsOnID)
+	if err != nil {
+		return err
+	}
+	targetCol := probe.Kind.Column()
 
 	// Check for existing dependency to prevent silent type overwrites.
 	var existingType string

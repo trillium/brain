@@ -79,6 +79,42 @@ Cross-store linking is a primary use case for a multi-store brain federation.
 Hiding a successfully persisted edge made users retry it, accumulate unseen
 rows, and work around the CLI with metadata fields.
 
+## Superseded in part (2026-10-18) — a held cross-store target becomes a real edge
+
+The resolution above kept a cross-store `dep add` in `depends_on_external` and
+fixed only the reading of it. That was the right shape while a store was a
+rig and a rig was a database: a foreign prefix meant a target no foreign key
+could reach. On the unified database every store's beads share one `issues`
+table, so the same prefix comparison demoted edges whose target was a plain
+local row — `task-dena0`'s "blocks on `brain-c56qg`" was filed as text, never
+traversed, and never blocked, which is why a blocked bead still listed as
+ready (`brain-e5tlj` plan item 3).
+
+What changed:
+
+- Edge classification is store-aware (`issueops.ProbeDepTarget`): the database
+  in front of the edge is asked whether it holds the target. A held row is
+  written to `depends_on_issue_id`/`depends_on_wisp_id` — a real, traversed,
+  blocking edge — and only an id this database does not hold stays a text
+  reference. The rule holds for both write paths (`bd dep add`, bulk import)
+  and for wisp edges.
+- Id-addressed reads resolve any id: `task show brain-c56qg` no longer answers
+  "no issue found", while listings stay narrow (`IssueFilter.IDs`, `IDLookup`).
+- `bd dep reclassify` (dry run by default, `--apply` for one Dolt commit)
+  repairs the rows written before the fix: the 214 text links that resolve
+  locally become 213 real edges, and the one redundant text row is collapsed.
+  Rows whose target this database does not hold, and every `external:`
+  reference, are left exactly as they are.
+
+The reader behaviour this doc resolved is unchanged for the targets that are
+still text: an unheld bare id, a legacy `external:<store>:<id>` value, and an
+unresolved target render exactly as described below.
+
+Regression coverage: `internal/storage/embeddeddolt/dep_reclassify_test.go`
+(the repair and the classification), `internal/storage/dolt/dep_classification_test.go`
+(the classification and id-addressed reads under a pinned namespace scope), and
+`internal/storage/dolt/unified_namespace_test.go` (the scoping rule).
+
 ## Historical PAI mitigation
 
 Before the reader fix, the audit recommended canonicalizing

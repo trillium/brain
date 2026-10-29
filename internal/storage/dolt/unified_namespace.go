@@ -148,8 +148,16 @@ func resolveNamespacePrefixes(ctx context.Context, q issueops.DBTX) ([]string, b
 // caller that set Namespaces itself (e.g. the federated search walker). In
 // wide mode the filter is returned untouched: unscoped on the unified
 // database means "every store".
+//
+// An id-addressed read is never scoped: a read that names the ids it wants —
+// IssueFilter.IDs, or IssueFilter.IDLookup for an id search that cannot name
+// them yet (a partial-id resolve) — resolves any store's bead, while lists
+// stay narrow (docs/design/brain-single-database.md, "Id-addressed reads
+// resolve any id; lists stay narrow"). The namespace clause can only ever
+// exclude explicitly named ids, which is what made `task show brain-c56qg`
+// answer "no issue found" on a database that plainly held it.
 func (s *DoltStore) scopeNamespaces(ctx context.Context, f types.IssueFilter) types.IssueFilter {
-	if f.Namespaces != nil || readScopeWide() {
+	if f.Namespaces != nil || f.IDLookup || len(f.IDs) > 0 || readScopeWide() {
 		return f
 	}
 	if prefixes, unified := s.namespacePrefixes(ctx); unified && len(prefixes) > 0 {
