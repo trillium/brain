@@ -570,6 +570,12 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 		wrapperPath = wp
 	}
 
+	// Agent link: ~/.pi/agent/bin/<name> -> the wrapper, when that dir exists.
+	linkPath, linkNote := ensureAgentLink(name, wrapperPath)
+	if linkNote != "" {
+		fmt.Fprintf(os.Stderr, "note: %s\n", linkNote)
+	}
+
 	// Step 4: register in stores.yaml.
 	stores, err := loadStoresRegistry()
 	if err != nil {
@@ -595,6 +601,7 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 			"beads_dir":   beadsDir,
 			"entries_dir": entriesDir,
 			"wrapper":     wrapperPath,
+			"agent_link":  linkPath,
 			"registry":    storesYamlFile(),
 			"env_file":    envPath,
 		}
@@ -607,6 +614,9 @@ func runBrainStoresCreate(_ *cobra.Command, args []string) {
 	fmt.Printf("    entries:  %s\n", entriesDir)
 	if wrapperPath != "" {
 		fmt.Printf("    wrapper:  %s\n", wrapperPath)
+	}
+	if linkPath != "" {
+		fmt.Printf("    link:     %s\n", linkPath)
 	}
 	fmt.Printf("    registry: %s\n", storesYamlFile())
 	fmt.Printf("    env:      %s\n", envPath)
@@ -1682,4 +1692,32 @@ func storesEnvBody(stores map[string]storeEntry) string {
 	}
 	sb.WriteString(fmt.Sprintf("\nexport BRAIN_STORES_LIST=%q\n", strings.Join(names, ":")))
 	return sb.String()
+}
+
+// ensureAgentLink creates ~/.pi/agent/bin/<name> -> wrapperPath when the link
+// directory exists. Idempotent; an existing different file is never replaced
+// (note explains why). linkPath is empty when no link is in place.
+func ensureAgentLink(name, wrapperPath string) (linkPath, note string) {
+	if wrapperPath == "" {
+		return "", ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", ""
+	}
+	dir := filepath.Join(home, agentLinkDirPath)
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return "", ""
+	}
+	link := filepath.Join(dir, name)
+	if t, err := os.Readlink(link); err == nil && t == wrapperPath {
+		return link, ""
+	}
+	if _, err := os.Lstat(link); err == nil {
+		return "", fmt.Sprintf("agent link %s already exists and is not a link to %s; left alone", link, wrapperPath)
+	}
+	if err := os.Symlink(wrapperPath, link); err != nil {
+		return "", fmt.Sprintf("creating agent link %s: %v", link, err)
+	}
+	return link, ""
 }
