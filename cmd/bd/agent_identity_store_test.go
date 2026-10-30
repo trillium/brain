@@ -74,3 +74,56 @@ func TestAgentFiledBeadKeepsHumanClaimIdentity(t *testing.T) {
 		t.Errorf("prior claim = %q/%s, want %q/in_progress", got.Assignee, got.Status, "Human Owner")
 	}
 }
+
+// TestAgentSwarmCreateStampsFilingAgent runs an agent-run `bd swarm create` on
+// a single issue: the auto-wrapper epic and the swarm molecule both record the
+// agent in created_by, not the human's git identity (robots-0x8).
+func TestAgentSwarmCreateStampsFilingAgent(t *testing.T) {
+	ensureCleanGlobalState(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	humanGitIdentity(t, home, "Human Owner")
+	t.Setenv("BEADS_ACTOR", "")
+	t.Setenv("BD_ACTOR", "")
+	t.Setenv(agentNameEnvVar, "Volt")
+	t.Setenv(agentIDEnvVar, "volt")
+
+	s := newTestStore(t, filepath.Join(t.TempDir(), ".beads", "beads.db"))
+	ctx := context.Background()
+
+	origStore, origActor, origCtx, origJSON := store, actor, rootCtx, jsonOutput
+	t.Cleanup(func() {
+		store, actor, rootCtx, jsonOutput = origStore, origActor, origCtx, origJSON
+	})
+	setStore(s)
+	rootCtx = ctx
+	jsonOutput = false
+	actor = ""
+	actor = getActorWithGit()
+
+	task := &types.Issue{Title: "swarm me", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+	if err := s.CreateIssue(ctx, task, actor); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	captureStdout(t, func() error { return swarmCreateCmd.RunE(swarmCreateCmd, []string{task.ID}) })
+
+	for _, title := range []string{"Swarm Epic: swarm me", "Swarm: Swarm Epic: swarm me"} {
+		issues, err := s.SearchIssues(ctx, "", types.IssueFilter{TitleSearch: title})
+		if err != nil {
+			t.Fatalf("SearchIssues(%q): %v", title, err)
+		}
+		var found *types.Issue
+		for _, issue := range issues {
+			if issue.Title == title {
+				found = issue
+			}
+		}
+		if found == nil {
+			t.Fatalf("no issue titled %q after swarm create", title)
+		}
+		if found.CreatedBy != "Volt" {
+			t.Errorf("%q created_by = %q, want agent %q", title, found.CreatedBy, "Volt")
+		}
+	}
+}

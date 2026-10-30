@@ -951,7 +951,7 @@ Examples:
 				Status:      types.StatusOpen,
 				Priority:    issue.Priority,
 				IssueType:   types.TypeEpic,
-				CreatedBy:   actor,
+				CreatedBy:   getFilingActor(),
 			}
 
 			if err := store.CreateIssue(ctx, wrapperEpic, actor); err != nil {
@@ -1031,7 +1031,7 @@ Examples:
 			IssueType:   "molecule",
 			MolType:     types.MolTypeSwarm,
 			Assignee:    coordinator,
-			CreatedBy:   actor,
+			CreatedBy:   getFilingActor(),
 		}
 
 		if err := store.CreateIssue(ctx, swarmMol, actor); err != nil {
