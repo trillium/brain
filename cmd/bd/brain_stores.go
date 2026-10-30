@@ -1110,21 +1110,21 @@ BD_NAME: %q
 // file (and the unusable key) when it is missing or unusable. The placeholders
 // are rendered from the configfile constants so the shell text and the Go
 // reader share one definition.
-const sharedServerHostBlockTemplate = `# The federation's one source for the Dolt server; a process env value of the
-# same name wins over the file, and a missing file is a loud refusal below.
+const sharedServerHostBlockTemplate = `# The federation's one source for the Dolt server, sourced whenever present; a
+# process env host or port wins over the file, and a missing file is a loud
+# refusal below unless both are already set.
 _store_host_file="{hostfile}"
 _want_host="${{keyhost}:-}"
 _want_port="${{keyport}:-}"
-if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
-  if [ ! -f "$_store_host_file" ]; then
-    echo "beads: missing shared store host config: $_store_host_file" >&2
-    echo "beads: write {keyhost}=<host> and {keyport}=<port> there, or export them for this shell" >&2
-    exit 78
-  fi
+if [ -f "$_store_host_file" ]; then
   . "$_store_host_file"
-  [ -n "$_want_host" ] || _want_host="${{keyhost}:-}"
-  [ -n "$_want_port" ] || _want_port="${{keyport}:-}"
+elif [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
+  echo "beads: missing shared store host config: $_store_host_file" >&2
+  echo "beads: write {keyhost}=<host> and {keyport}=<port> there, or export them for this shell" >&2
+  exit 78
 fi
+[ -n "$_want_host" ] || _want_host="${{keyhost}:-}"
+[ -n "$_want_port" ] || _want_port="${{keyport}:-}"
 if [ -z "$_want_host" ] || [ -z "$_want_port" ]; then
   echo "beads: $_store_host_file does not define {keyhost} and {keyport}" >&2
   exit 78

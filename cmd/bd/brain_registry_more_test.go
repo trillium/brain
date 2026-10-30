@@ -301,7 +301,7 @@ func TestSyncAndRewriteWrappersAgree(t *testing.T) {
 
 	// No shared store host config and no env value: a loud refusal naming the
 	// file, never a silent 127.0.0.1.
-	mustWrite(t, filepath.Join(bin, "bd"), "#!/bin/sh\necho \"host=$BEADS_DOLT_SERVER_HOST\"\n", 0o755)
+	mustWrite(t, filepath.Join(bin, "bd"), "#!/bin/sh\necho \"host=$BEADS_DOLT_SERVER_HOST port=$BEADS_DOLT_SERVER_PORT user=$BEADS_DOLT_SERVER_USER\"\n", 0o755)
 	cmd := exec.Command(wrapper)
 	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(bin, "bd")}
 	out, err := cmd.CombinedOutput()
@@ -310,11 +310,20 @@ func TestSyncAndRewriteWrappersAgree(t *testing.T) {
 		t.Errorf("missing store-host.env: exit=%v out=%q", err, out)
 	}
 	mustWrite(t, filepath.Join(home, ".config", "brain", "store-host.env"),
-		"BEADS_DOLT_SERVER_HOST=100.84.99.99\nBEADS_DOLT_SERVER_PORT=3307\n", 0o644)
+		"export BEADS_DOLT_SERVER_HOST=100.84.99.99\nexport BEADS_DOLT_SERVER_PORT=3307\nexport BEADS_DOLT_SERVER_USER=brain_app\n", 0o644)
 	cmd = exec.Command(wrapper)
 	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(bin, "bd")}
-	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "host=100.84.99.99" {
+	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "host=100.84.99.99 port=3307 user=brain_app" {
 		t.Errorf("with store-host.env: %q %v", out, err)
+	}
+
+	// An env host and port win over the file, but the file is still sourced:
+	// the rest of what it exports (the login user) reaches bd.
+	cmd = exec.Command(wrapper)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(bin, "bd"),
+		"BEADS_DOLT_SERVER_HOST=10.0.0.5", "BEADS_DOLT_SERVER_PORT=3308"}
+	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "host=10.0.0.5 port=3308 user=brain_app" {
+		t.Errorf("env host/port with store-host.env: %q %v", out, err)
 	}
 }
 
