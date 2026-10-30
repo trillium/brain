@@ -147,14 +147,6 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			r := probeStore(self, name, stores[name], timeout)
-			// A wrapper that resolves a different store than the registry names
-			// answers reads from the wrong place and sends writes there, which a
-			// plain read probe cannot see (robots-bfenw, robots-3pfky,
-			// robots-q7f52). Check the pin itself, after the probe, so the
-			// store's own readability is still reported when the read works.
-			if status, reason := wrapperMisroute(name, stores); status != "" && r.Status != "fail" {
-				r.Status, r.Reason = status, reason
-			}
 			// A store whose metadata.json pins its own Dolt host or port reads
 			// from the shared file through its wrapper but diverges from the
 			// federation on a bare bd run in the store directory. It is
@@ -356,42 +348,6 @@ func storeWrapperPath(name string) (string, bool) {
 		return path, false
 	}
 	return path, true
-}
-
-// wrapperMisroute reports when a registered store's own CLI wrapper resolves a
-// different store than the registry names, or a path that does not exist at
-// all. A read probe cannot see the first case — the read answers, from the
-// wrong store — so the pin itself is checked. The second case is the class that
-// silently walks up to an unrelated ancestor store (robots-bfenw,
-// robots-3pfky, robots-q7f52). Returns "" when the wrapper agrees with the
-// registry, carries no BEADS_DIR of its own, or is a forwarding wrapper that
-// never opens a store locally.
-func wrapperMisroute(name string, stores map[string]storeEntry) (status, reason string) {
-	wrapper, ok := storeWrapperPath(name)
-	if !ok || isRemoteWrapper(wrapper) {
-		return "", ""
-	}
-	pinned, ok := wrapperBeadsDir(wrapper)
-	if !ok {
-		return "", ""
-	}
-	mine := expandPath(stores[name].Path)
-	if pinned == filepath.Clean(mine) {
-		return "", ""
-	}
-	for _, other := range sortedKeys(stores) {
-		if other == name {
-			continue
-		}
-		op := expandPath(stores[other].Path)
-		if op == pinned {
-			return "fail", fmt.Sprintf("wrapper %s resolves %s, the %q store, not this store at %s", wrapper, pinned, other, mine)
-		}
-	}
-	if _, err := os.Stat(pinned); err != nil {
-		return "fail", fmt.Sprintf("wrapper %s resolves %s, which does not exist (registry says %s)", wrapper, pinned, mine)
-	}
-	return "warn", fmt.Sprintf("wrapper %s pins %s; the registry says %s", wrapper, pinned, mine)
 }
 
 // metadataServerPin reports a store whose metadata.json pins its own Dolt host

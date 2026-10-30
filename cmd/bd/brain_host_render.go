@@ -47,9 +47,12 @@ var (
 )
 
 // effectiveStoreHost is the Dolt host a store wrapper on this machine ends up
-// using: store-host.env wins over the baked default, as it does in the wrapper;
-// fallback is the process environment, then "" (the loopback default).
+// using: a process env value wins over store-host.env, as it does in the
+// wrapper's run-time host block; then the file, then "" (the loopback default).
 func effectiveStoreHost(home, envHost string) string {
+	if envHost != "" {
+		return envHost
+	}
 	f, err := os.Open(filepath.Join(home, ".config", "brain", "store-host.env")) //nolint:gosec // our own config file
 	if err == nil {
 		defer f.Close()

@@ -29,7 +29,7 @@ func TestOffHostWrapperExportsNoExfil(t *testing.T) {
 	if strings.Contains(emb, "BRAIN_NO_EXFIL") {
 		t.Errorf("an embedded store is local data, not a client of the host:\n%s", emb)
 	}
-	if sameWrapper([]byte(off), []byte(on)) {
+	if off == on {
 		t.Error("moving between host and client must rewrite the wrapper")
 	}
 	// Behaviour, not just text: the exported variable reaches the command.
@@ -41,7 +41,8 @@ func TestOffHostWrapperExportsNoExfil(t *testing.T) {
 	wrapper := filepath.Join(dir, "task")
 	mustWrite(t, wrapper, off, 0o755)
 	cmd := exec.Command(wrapper)
-	cmd.Env = []string{"HOME=" + dir, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(dir, "bd")}
+	cmd.Env = []string{"HOME=" + dir, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(dir, "bd"),
+		"BEADS_DOLT_SERVER_HOST=127.0.0.1", "BEADS_DOLT_SERVER_PORT=3307"}
 	out, err := cmd.CombinedOutput()
 	if err != nil || strings.TrimSpace(string(out)) != "exfil-off=1" {
 		t.Errorf("wrapper run: %q %v", out, err)
@@ -55,8 +56,11 @@ func TestEffectiveStoreHostAndLocality(t *testing.T) {
 	}
 	mustWrite(t, filepath.Join(home, ".config", "brain", "store-host.env"),
 		"# comment\nexport BEADS_DOLT_SERVER_HOST=100.84.99.99\nexport BEADS_DOLT_SERVER_PORT=3307\nexport BEADS_DOLT_SERVER_USER=brain_app\n", 0o644)
-	if got := effectiveStoreHost(home, "127.0.0.1"); got != "100.84.99.99" {
-		t.Errorf("store-host.env wins over the baked default, got %q", got)
+	if got := effectiveStoreHost(home, ""); got != "100.84.99.99" {
+		t.Errorf("without an env value store-host.env decides, got %q", got)
+	}
+	if got := effectiveStoreHost(home, "127.0.0.1"); got != "127.0.0.1" {
+		t.Errorf("an env value wins over store-host.env, as in the wrapper, got %q", got)
 	}
 	for _, h := range []string{"", "127.0.0.1", "localhost", "::1", "127.0.0.2"} {
 		if !hostIsLocal(h) {

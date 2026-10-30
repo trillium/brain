@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -232,10 +233,88 @@ func TestGeneratedWrappersAreValidShellAndHomeRelative(t *testing.T) {
 	if emb := syncWrapperBody(cases[3], env); strings.Contains(emb, "BEADS_DOLT_SERVER") {
 		t.Errorf("an embedded store gets no server pins:\n%s", emb)
 	}
-	// The baked host default must not make two runs differ.
+	// The invoking environment's host must not make two runs differ.
 	other := syncWrapperBody(cases[0], shimEnv{Home: "/home/u", Host: "127.0.0.1", Port: 3310})
-	if !sameWrapper([]byte(syncWrapperBody(cases[0], env)), []byte(other)) {
-		t.Error("wrappers that differ only in the baked host/port must compare equal")
+	if other != syncWrapperBody(cases[0], env) {
+		t.Error("the sync wrapper must not depend on the invoking environment's host/port")
+	}
+}
+
+// A store wrapper written by 'brain stores sync' is already what
+// 'brain stores rewrite-wrappers' installs: sync, rewrite, sync changes
+// nothing and leaves no repoint backup, and a wrapper an older sync baked
+// host defaults into converges after one pass of each.
+func TestSyncAndRewriteWrappersAgree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh")
+	}
+	home := t.TempDir()
+	e := storeregistry.New("recipes")
+	body := syncWrapperBody(e, shimEnv{Home: home, Host: "100.84.99.99", Port: 3307})
+	bin := filepath.Join(home, ".local", "bin")
+	wrapper := filepath.Join(bin, "recipes")
+
+	assertNoop := func(stage string) {
+		t.Helper()
+		plan := &syncPlan{Missing: map[string][]string{"wrappers": nil}}
+		plan.addWrapper("recipes", wrapper, []byte(body), "generated wrapper")
+		if len(plan.Actions) != 0 {
+			t.Errorf("%s: sync wants to change the wrapper: %+v", stage, plan.Actions)
+		}
+	}
+	assertNoBackup := func(stage string) {
+		t.Helper()
+		ents, err := os.ReadDir(bin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ent := range ents {
+			if strings.Contains(ent.Name(), wrapperBackupMarker) {
+				t.Errorf("%s: rewrite left a backup %s", stage, ent.Name())
+			}
+		}
+	}
+
+	mustWrite(t, wrapper, body, 0o755)
+	assertNoop("after sync")
+	repointed, err := rewriteWrapperInPlace(wrapper, true)
+	if err != nil || repointed {
+		t.Fatalf("rewrite of a sync wrapper: repointed=%v err=%v", repointed, err)
+	}
+	assertNoBackup("after rewrite")
+	assertNoop("after rewrite")
+
+	legacy := strings.Replace(body, sharedServerHostBlock, "", 1)
+	legacy = strings.Replace(legacy, "exec ", "export BEADS_DOLT_SERVER_HOST=\"${BEADS_DOLT_SERVER_HOST:-127.0.0.1}\"\n"+
+		"export BEADS_DOLT_SERVER_PORT=\"${BEADS_DOLT_SERVER_PORT:-3307}\"\nexec ", 1)
+	mustWrite(t, wrapper, legacy, 0o755)
+	plan := &syncPlan{Missing: map[string][]string{"wrappers": nil}}
+	plan.addWrapper("recipes", wrapper, []byte(body), "generated wrapper")
+	if len(plan.Actions) != 1 || plan.Actions[0].Op != "update" {
+		t.Fatalf("a wrapper with baked host defaults must be updated: %+v", plan.Actions)
+	}
+	mustWrite(t, wrapper, body, 0o755)
+	if repointed, err := rewriteWrapperInPlace(wrapper, true); err != nil || repointed {
+		t.Fatalf("rewrite after the update: repointed=%v err=%v", repointed, err)
+	}
+	assertNoBackup("after the update")
+
+	// No shared store host config and no env value: a loud refusal naming the
+	// file, never a silent 127.0.0.1.
+	mustWrite(t, filepath.Join(bin, "bd"), "#!/bin/sh\necho \"host=$BEADS_DOLT_SERVER_HOST\"\n", 0o755)
+	cmd := exec.Command(wrapper)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(bin, "bd")}
+	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 78 || !strings.Contains(string(out), filepath.Join(home, ".config", "brain", "store-host.env")) {
+		t.Errorf("missing store-host.env: exit=%v out=%q", err, out)
+	}
+	mustWrite(t, filepath.Join(home, ".config", "brain", "store-host.env"),
+		"BEADS_DOLT_SERVER_HOST=100.84.99.99\nBEADS_DOLT_SERVER_PORT=3307\n", 0o644)
+	cmd = exec.Command(wrapper)
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "BD_BIN=" + filepath.Join(bin, "bd")}
+	if out, err := cmd.Output(); err != nil || strings.TrimSpace(string(out)) != "host=100.84.99.99" {
+		t.Errorf("with store-host.env: %q %v", out, err)
 	}
 }
 
