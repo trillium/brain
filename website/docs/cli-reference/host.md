@@ -113,6 +113,82 @@ bd host promote <ssh-target> [flags]
   -y, --yes                        Do not ask for confirmation
 ```
 
+### bd host render
+
+Markdown under ~/data/&lt;store&gt;/ is a derived view of the database that only the
+brain host writes. A machine whose wrappers reach a Dolt server on another
+machine runs with BRAIN_NO_EXFIL=1, so this command refuses to run there.
+
+It runs '&lt;store&gt; render-all' through each store's wrapper, one store at a time;
+stores that write the same markdown root render once, a render that wrote files
+but left some beads out is a warning, and a store that fails is reported while
+the rest still render. The host role carries
+a launchd job that runs it every 5 minutes (see 'brain host render-job').
+
+```
+bd host render [flags]
+```
+
+**Flags:**
+
+```
+      --quiet              Print only failures
+      --timeout duration   Longest one markdown root may take (default 30m0s)
+```
+
+### bd host render-job
+
+The launchd job that renders store markdown on the host (print, install, uninstall)
+
+```
+bd host render-job [flags]
+```
+
+#### bd host render-job install
+
+Install the job, load it and declare it part of the host role
+
+```
+bd host render-job install [flags]
+```
+
+**Flags:**
+
+```
+      --interval int     Seconds between runs (default 300)
+      --no-load          Write the plist but do not run launchctl
+      --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
+```
+
+#### bd host render-job print
+
+Print the launch agent plist (writes nothing)
+
+```
+bd host render-job print [flags]
+```
+
+**Flags:**
+
+```
+      --interval int     Seconds between runs (default 300)
+      --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
+```
+
+#### bd host render-job uninstall
+
+Unload and remove the job and stop carrying it with the host role
+
+```
+bd host render-job uninstall [flags]
+```
+
+**Flags:**
+
+```
+      --no-load   Remove the plist without running launchctl
+```
+
 ### bd host rollback
 
 Undo a promotion. Everything either machine changed was journaled first, so

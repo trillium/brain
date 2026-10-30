@@ -350,7 +350,7 @@ func collectWrapperTargets(stores map[string]storeEntry) []wrapperTarget {
 		if !ok {
 			continue
 		}
-		data, err := os.ReadFile(wp)
+		data, err := os.ReadFile(wp) //nolint:gosec // wrapper path from our own registry
 		if err != nil || !strings.Contains(string(data), aliasWrapperHeader) {
 			continue
 		}

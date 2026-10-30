@@ -214,7 +214,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 }
 
 // storeTally folds the doctor's probe results into the summary and exit
-// counts. A store labelled informational still answered the read, so it counts
+// counts. A store labeled informational still answered the read, so it counts
 // as answered and ok; it is not a warning, so --strict does not fail on it.
 type storeTally struct {
 	ok       int

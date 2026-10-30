@@ -25,7 +25,7 @@ import (
 // 'brain stores rewrite-wrappers' refuse up front when it is absent, and the
 // generated store wrappers read it at run time and exit non-zero when it is
 // missing or unusable. Core bd resolution is untouched: the wrappers export the
-// two variables, which bd already honours. Credentials never live here:
+// two variables, which bd already honors. Credentials never live here:
 // passwords stay in the environment or in ~/.config/beads/credentials.
 const (
 	// StoreHostFileName is the basename of the shared store-host config.

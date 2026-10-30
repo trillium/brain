@@ -298,6 +298,8 @@ Reference for bd Latest. Generated from `bd help --all`.
 - [bd host](#bd-host) — Move the brain host role between machines (promote, verify, rollback)
   - [bd host clients](#bd-host-clients) — The machines known to follow this host (they are updated by a promotion)
   - [bd host promote](#bd-host-promote) — Move the brain host role from this machine to the target
+  - [bd host render](#bd-host-render) — Render every store's markdown on the host (clients never write it)
+  - [bd host render-job](#bd-host-render-job) — The launchd job that renders store markdown on the host (print, install, uninstall)
   - [bd host rollback](#bd-host-rollback) — Undo a promotion (finished or not): both machines go back as they were
   - [bd host service](#bd-host-service) — launchd jobs that belong to the host role and move with it
   - [bd host status](#bd-host-status) — Show this machine's role and any promotion in progress
@@ -361,7 +363,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores remove](#bd-stores-remove) — Remove a store from the fleet: tombstone in the shared registry, then each machine drops its generated wrapper
   - [bd stores rename](#bd-stores-rename) — Rename a registered store: move directory, update wrapper, registry, env
   - [bd stores render-all](#bd-stores-render-all) — Run 'bd render-all' against every store in the federation registry
-  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative in place and verify each resolves a database
+  - [bd stores rewrite-wrappers](#bd-stores-rewrite-wrappers) — Make every store/alias CLI wrapper $HOME-relative, resolve the Dolt host from the shared config, and verify each resolves a database
   - [bd stores set-about](#bd-stores-set-about) — Set the human-readable 'about' blurb for a registered store
   - [bd stores shell-hook](#bd-stores-shell-hook) — Print a command-not-found handler that resolves registry stores at call time
   - [bd stores sync](#bd-stores-sync) — Make this machine's store shims match the shared registry (idempotent)
@@ -6683,30 +6685,41 @@ bd stores alias <existing-store> <new-name> [flags]
 
 Provision a new connected store end-to-end. Does, in order:
 
-  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
-     as exported by the brain wrapper) the store is created as a database in the
-     running shared dolt sql-server: metadata.json (dolt_mode=server) and
-     config.yaml are written first, then bd CREATEs the database and initializes
-     the schema. Without the server pins it falls back to an embedded 'dolt init'
-     in &lt;path&gt;/.beads/.
-  2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
-     wrapper exports the four server pins (mirroring the review/brain wrappers);
-     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
-  4. Register the store in ~/.config/brain/stores.yaml.
-  5. Regenerate ~/.config/brain/stores.env.
+  1. Provision the Dolt store on the federation's shared Dolt sql-server, the
+     server the shared store host config (~/.config/brain/store-host.env)
+     names. That file must already exist and be usable. A BEADS_DOLT_SERVER_*
+     value in the process environment must match it: a differing value is
+     refused, because the wrapper reads the file at run time and would reach a
+     server other than the one the store was provisioned on. A missing file, or
+     a server that does not answer, is a loud refusal: never a store silently
+     pinned to a host that cannot be read, and never a silent fallback to an
+     embedded store. Pass --embedded to ask for the embedded shape explicitly;
+     then metadata.json (dolt_mode=server) and config.yaml are written first,
+     and 'dolt init' runs in &lt;path&gt;/.beads.
+  2. Write &lt;path&gt;/.beads/config.yaml (issue-prefix + BD_NAME), in either
+     shape.
+  3. Create &lt;path&gt;/entries/ for exfiltrated markdown.
+  4. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. A shared-server wrapper
+     resolves the Dolt host and port from the shared store host config at run
+     time (a process env value of either key wins) and refuses loudly when
+     that file is missing; embedded stores get the minimal BEADS_DIR/BD_NAME
+     wrapper. Either way it exec's bd.
+  5. Register the store in ~/.config/brain/stores.yaml.
+  6. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
 
 If any step fails after files have been written, the verb leaves the
 partial state in place and exits non-zero — re-running with the same
-arguments resumes idempotently.
+arguments resumes idempotently. An abandoned server-side store must be
+dropped by hand on the shared server; the verb never drops a database.
 
 Examples:
   brain stores create recipes
   brain stores create recipes --path /Volumes/extra/recipes
   brain stores create recipes --bd-binary /opt/homebrew/bin/bd
+  brain stores create scratch --embedded
 
 ```
 bd stores create <name> [flags]
@@ -6718,6 +6731,7 @@ bd stores create <name> [flags]
       --bd-binary string    Path to bd that the wrapper should exec (default: "bd", resolved by PATH)
       --dolt-email string   --email arg to pass to 'dolt init' (skipped if empty)
       --dolt-name string    --name arg to pass to 'dolt init' (skipped if empty)
+      --embedded            Create an embedded (self-starting) store even when a shared Dolt sql-server is known
       --local-only          Act on this machine only; do not write the shared store registry (other machines are not told)
       --no-wrapper          Skip writing the CLI wrapper at ~/.local/bin/<name>
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
@@ -7074,9 +7088,26 @@ bd stores render-all [flags]
 
 Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
 ~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
-"$HOME/…" in place, preserving every other env pin and the exec line. Stores
-with no wrapper are skipped. Each wrapper is then read through the way
-'brain stores doctor' does.
+"$HOME/\u2026" in place, preserving every other line. A server-mode store's
+wrapper is also repointed at the shared store host config
+(~/.config/brain/store-host.env): the run-time host block is installed before
+the wrapper's first bd invocation path (never only above the final exec) and
+any whole-line baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped. A wrapper that
+still contains a host or port assignment the verb cannot safely rewrite is
+reported as failed, not verified. Each rewritten wrapper is first copied to
+&lt;wrapper&gt;.bak-repoint-&lt;timestamp&gt;, so the repoint can be rolled back. The backup
+is a plain data copy without the exec bit, so host promotion never installs it.
+
+The shared file must already exist: this verb refuses up front rather than
+repointing the fleet into wrappers that would refuse every invocation. Embedded
+stores keep their minimal wrapper, and forwarding wrappers installed by 'brain
+remote install' are left alone. Registry entries are left exactly as recorded:
+an entry whose path names another machine's home is reported by 'brain stores
+doctor'. Stores with no wrapper are skipped. Each wrapper is then read through
+the way 'brain stores doctor' does.
+
+This is the one step that repoints a host's stores at the federation's shared
+server. It prints what it changed.
 
 Exits non-zero, naming every store that failed, if any wrapper cannot be
 written or does not resolve a database. 'brain remote set' and
@@ -8021,6 +8052,82 @@ bd host promote <ssh-target> [flags]
       --stop-after string          Run up to and including this phase, then stop (preflight, seed, files, freeze, delta, restore, serve, parity, fence, flip, clients, verify)
       --stop-source-server         Stop this machine's Dolt server after the switch (default: leave it running, refusing brain writes)
   -y, --yes                        Do not ask for confirmation
+```
+
+#### bd host render
+
+Markdown under ~/data/&lt;store&gt;/ is a derived view of the database that only the
+brain host writes. A machine whose wrappers reach a Dolt server on another
+machine runs with BRAIN_NO_EXFIL=1, so this command refuses to run there.
+
+It runs '&lt;store&gt; render-all' through each store's wrapper, one store at a time;
+stores that write the same markdown root render once, a render that wrote files
+but left some beads out is a warning, and a store that fails is reported while
+the rest still render. The host role carries
+a launchd job that runs it every 5 minutes (see 'brain host render-job').
+
+```
+bd host render [flags]
+```
+
+**Flags:**
+
+```
+      --quiet              Print only failures
+      --timeout duration   Longest one markdown root may take (default 30m0s)
+```
+
+#### bd host render-job
+
+The launchd job that renders store markdown on the host (print, install, uninstall)
+
+```
+bd host render-job
+```
+
+##### bd host render-job install
+
+Install the job, load it and declare it part of the host role
+
+```
+bd host render-job install [flags]
+```
+
+**Flags:**
+
+```
+      --interval int     Seconds between runs (default 300)
+      --no-load          Write the plist but do not run launchctl
+      --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
+```
+
+##### bd host render-job print
+
+Print the launch agent plist (writes nothing)
+
+```
+bd host render-job print [flags]
+```
+
+**Flags:**
+
+```
+      --interval int     Seconds between runs (default 300)
+      --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
+```
+
+##### bd host render-job uninstall
+
+Unload and remove the job and stop carrying it with the host role
+
+```
+bd host render-job uninstall [flags]
+```
+
+**Flags:**
+
+```
+      --no-load   Remove the plist without running launchctl
 ```
 
 #### bd host rollback
@@ -9138,8 +9245,11 @@ bd remote disconnect
 Reads the host's store registry ('brain stores list' there) and writes one
 small wrapper per store into --dir (default: the directory of this binary).
 Re-run it whenever the host gains a store. It only ever replaces files it
-generated itself, never writes a command called 'bd', and reports any wrapper
-that shadows (or is shadowed by) another command on PATH.
+generated itself plus old local-style store wrappers (a sh script that only
+exports BEADS_DIR/BD_NAME/… and execs bd), which it replaces after copying them
+to &lt;dir&gt;.bak-remote-&lt;timestamp&gt;. Any other file needs --force (also backed up).
+It never writes a command called 'bd' or the brain binary, and reports any
+wrapper that shadows (or is shadowed by) another command on PATH.
 
 ```
 bd remote install [flags]
@@ -9208,8 +9318,8 @@ bd remote verify [flags]
 **Flags:**
 
 ```
-      --dir string          Directory holding the wrappers (default: this binary's directory)
-      --timeout duration    Per-store timeout for 'list' (default 1m0s)
+      --dir string         Directory holding the wrappers (default: this binary's directory)
+      --timeout duration   Per-store timeout for 'list' (default 1m0s)
 ```
 
 ### bd rename
@@ -9524,30 +9634,41 @@ bd stores alias <existing-store> <new-name> [flags]
 
 Provision a new connected store end-to-end. Does, in order:
 
-  1. Provision the Dolt store. In shared-server mode (BEADS_DOLT_SERVER_MODE=1,
-     as exported by the brain wrapper) the store is created as a database in the
-     running shared dolt sql-server: metadata.json (dolt_mode=server) and
-     config.yaml are written first, then bd CREATEs the database and initializes
-     the schema. Without the server pins it falls back to an embedded 'dolt init'
-     in &lt;path&gt;/.beads/.
-  2. Create &lt;path&gt;/entries/ for exfiltrated markdown.
-  3. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. In shared-server mode the
-     wrapper exports the four server pins (mirroring the review/brain wrappers);
-     otherwise it pins only BEADS_DIR and BD_NAME. Either way it exec's bd.
-  4. Register the store in ~/.config/brain/stores.yaml.
-  5. Regenerate ~/.config/brain/stores.env.
+  1. Provision the Dolt store on the federation's shared Dolt sql-server, the
+     server the shared store host config (~/.config/brain/store-host.env)
+     names. That file must already exist and be usable. A BEADS_DOLT_SERVER_*
+     value in the process environment must match it: a differing value is
+     refused, because the wrapper reads the file at run time and would reach a
+     server other than the one the store was provisioned on. A missing file, or
+     a server that does not answer, is a loud refusal: never a store silently
+     pinned to a host that cannot be read, and never a silent fallback to an
+     embedded store. Pass --embedded to ask for the embedded shape explicitly;
+     then metadata.json (dolt_mode=server) and config.yaml are written first,
+     and 'dolt init' runs in &lt;path&gt;/.beads.
+  2. Write &lt;path&gt;/.beads/config.yaml (issue-prefix + BD_NAME), in either
+     shape.
+  3. Create &lt;path&gt;/entries/ for exfiltrated markdown.
+  4. Write a CLI wrapper at ~/.local/bin/&lt;name&gt;. A shared-server wrapper
+     resolves the Dolt host and port from the shared store host config at run
+     time (a process env value of either key wins) and refuses loudly when
+     that file is missing; embedded stores get the minimal BEADS_DIR/BD_NAME
+     wrapper. Either way it exec's bd.
+  5. Register the store in ~/.config/brain/stores.yaml.
+  6. Regenerate ~/.config/brain/stores.env.
 
 Default path is $HOME/data/&lt;name&gt;. Override with --path. Skip the wrapper
 with --no-wrapper if you manage shell shims another way.
 
 If any step fails after files have been written, the verb leaves the
 partial state in place and exits non-zero — re-running with the same
-arguments resumes idempotently.
+arguments resumes idempotently. An abandoned server-side store must be
+dropped by hand on the shared server; the verb never drops a database.
 
 Examples:
   brain stores create recipes
   brain stores create recipes --path /Volumes/extra/recipes
   brain stores create recipes --bd-binary /opt/homebrew/bin/bd
+  brain stores create scratch --embedded
 
 ```
 bd stores create <name> [flags]
@@ -9559,6 +9680,7 @@ bd stores create <name> [flags]
       --bd-binary string    Path to bd that the wrapper should exec (default: "bd", resolved by PATH)
       --dolt-email string   --email arg to pass to 'dolt init' (skipped if empty)
       --dolt-name string    --name arg to pass to 'dolt init' (skipped if empty)
+      --embedded            Create an embedded (self-starting) store even when a shared Dolt sql-server is known
       --local-only          Act on this machine only; do not write the shared store registry (other machines are not told)
       --no-wrapper          Skip writing the CLI wrapper at ~/.local/bin/<name>
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
@@ -9915,9 +10037,26 @@ bd stores render-all [flags]
 
 Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
 ~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
-"$HOME/…" in place, preserving every other env pin and the exec line. Stores
-with no wrapper are skipped. Each wrapper is then read through the way
-'brain stores doctor' does.
+"$HOME/\u2026" in place, preserving every other line. A server-mode store's
+wrapper is also repointed at the shared store host config
+(~/.config/brain/store-host.env): the run-time host block is installed before
+the wrapper's first bd invocation path (never only above the final exec) and
+any whole-line baked BEADS_DOLT_SERVER_HOST/PORT pin is dropped. A wrapper that
+still contains a host or port assignment the verb cannot safely rewrite is
+reported as failed, not verified. Each rewritten wrapper is first copied to
+&lt;wrapper&gt;.bak-repoint-&lt;timestamp&gt;, so the repoint can be rolled back. The backup
+is a plain data copy without the exec bit, so host promotion never installs it.
+
+The shared file must already exist: this verb refuses up front rather than
+repointing the fleet into wrappers that would refuse every invocation. Embedded
+stores keep their minimal wrapper, and forwarding wrappers installed by 'brain
+remote install' are left alone. Registry entries are left exactly as recorded:
+an entry whose path names another machine's home is reported by 'brain stores
+doctor'. Stores with no wrapper are skipped. Each wrapper is then read through
+the way 'brain stores doctor' does.
+
+This is the one step that repoints a host's stores at the federation's shared
+server. It prints what it changed.
 
 Exits non-zero, naming every store that failed, if any wrapper cannot be
 written or does not resolve a database. 'brain remote set' and
