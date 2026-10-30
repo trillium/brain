@@ -72,7 +72,7 @@ Examples:
 		// production storage write the slug column without growing a new
 		// method on every storage backend.
 		creator := &brainNewStoreAdapter{ctx: rootCtx, inner: store}
-		verb := newverb.New(creator, actor)
+		verb := newverb.New(creator, actor, getFilingActor())
 
 		result, err := verb.Run(rootCtx, newverb.Args{
 			Kind:  kind,

@@ -29,7 +29,7 @@
 //   - Verb     — implements verb.BrainVerb[Args, Result]. Holds the
 //     narrow IssueCreator dependency so the verb is unit-
 //     testable against a fake without bringing up Dolt.
-//   - New(store, actor) — constructor that returns Verb.
+//   - New(store, actor, createdBy) — constructor that returns Verb.
 //
 // # Why a narrow IssueCreator interface (not storage.Storage)
 //
@@ -179,8 +179,9 @@ type IssueCreator interface {
 
 // Verb implements verb.BrainVerb[Args, Result].
 type Verb struct {
-	store IssueCreator
-	actor string
+	store     IssueCreator
+	actor     string
+	createdBy string
 }
 
 // New constructs a Verb bound to the given storage and actor.
@@ -188,9 +189,11 @@ type Verb struct {
 // store is the IssueCreator the verb writes through. In cmd/bd/, this
 // is the global `store` (typed *storage.DoltStorage but used through
 // the narrower IssueCreator). actor is the audit-trail actor string —
-// in cmd/bd/ it comes from getActorWithGit().
-func New(store IssueCreator, actor string) Verb {
-	return Verb{store: store, actor: actor}
+// in cmd/bd/ it comes from getActorWithGit(). createdBy is the filing
+// attribution stamped on the new doc's created_by — in cmd/bd/ it comes
+// from getFilingActor().
+func New(store IssueCreator, actor, createdBy string) Verb {
+	return Verb{store: store, actor: actor, createdBy: createdBy}
 }
 
 // Compile-time proof that Verb satisfies BrainVerb with the concrete
@@ -284,7 +287,7 @@ func (v Verb) Run(ctx context.Context, args Args) (Result, error) {
 		Status:      types.StatusOpen,
 		Priority:    2, // bd create's default — matches cmd/bd/create.go registerPriorityFlag("2")
 		IssueType:   types.IssueType(args.Kind),
-		CreatedBy:   v.actor,
+		CreatedBy:   v.createdBy,
 	}
 	if args.Kind == string(types.TypeISA) {
 		// Drives issueops.CreateIssueInTxWithResult to allocate

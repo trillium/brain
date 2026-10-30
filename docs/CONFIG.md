@@ -211,6 +211,13 @@ The actor name (used for `created_by` in issues and audit trails) is resolved in
 
 For most developers, no configuration is needed - beads will use your git identity automatically. This ensures your issue authorship matches your commit authorship.
 
+When no explicit actor is set (no `--actor`, `actor` config key, `BEADS_ACTOR`
+or `BD_ACTOR`) and the process is running as a fleet agent, a new issue's
+`created_by` names that agent instead of the git identity: `PARLAY_AGENT_NAME`,
+else the `name:` field of `~/.parlay/agents/$PARLAY_AGENT_ID/identity.md`, else
+`PARLAY_AGENT_ID`. Only the filing attribution changes; the actor used for
+claims, assignees, comments and events still resolves as listed above.
+
 To override, set `BEADS_ACTOR` in your shell profile:
 ```bash
 export BEADS_ACTOR="my-github-handle"

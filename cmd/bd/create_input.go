@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/debug"
-	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/storage/issueops"
+	"github.com/steveyegge/beads/internal/timeparsing"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/validation"
@@ -267,7 +267,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 		in.estimatedMinutes = &est
 	}
 
-	in.createdBy = getActorWithGit()
+	in.createdBy = getFilingActor()
 	in.owner = getOwner()
 
 	in.jsonOutput = jsonOutput
