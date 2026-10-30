@@ -95,10 +95,9 @@ The actor identity (used for `sender` on messages) is resolved in order:
 1. `--actor` flag on the command
 2. `BEADS_ACTOR` environment variable
 3. `BD_ACTOR` environment variable (deprecated alias)
-4. the fleet agent identity, when the process is an agent (`PARLAY_AGENT_NAME`, else the `name:` field of `~/.parlay/agents/$PARLAY_AGENT_ID/identity.md`, else `PARLAY_AGENT_ID`)
-5. `git config user.name`
-6. `$USER` environment variable
-7. `"unknown"`
+4. `git config user.name`
+5. `$USER` environment variable
+6. `"unknown"`
 
 ## Beads Event Hooks
 

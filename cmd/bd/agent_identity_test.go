@@ -198,3 +198,90 @@ func TestFrontmatterName(t *testing.T) {
 		})
 	}
 }
+
+// humanGitIdentity points git at a config naming a human, so the git fallback
+// is deterministic under a stubbed $HOME.
+func humanGitIdentity(t *testing.T, home, name string) {
+	t.Helper()
+	gitconfig := filepath.Join(home, "gitconfig")
+	if err := os.WriteFile(gitconfig, []byte("[user]\n\tname = "+name+"\n"), 0o644); err != nil {
+		t.Fatalf("write gitconfig: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", gitconfig)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_COUNT", "0")
+}
+
+// TestGetFilingActor pins the filing attribution (robots-0x8): created_by names
+// the fleet agent over the human's git identity, every explicit actor still
+// wins, and the global actor from getActorWithGit is untouched.
+func TestGetFilingActor(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	humanGitIdentity(t, home, "Human Owner")
+	t.Setenv(agentNameEnvVar, "Volt")
+	t.Setenv(agentIDEnvVar, "volt")
+
+	origActor := actor
+	t.Cleanup(func() { actor = origActor })
+
+	t.Run("agent identity outranks git user.name for filing only", func(t *testing.T) {
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		actor = ""
+		actor = getActorWithGit()
+		if actor != "Human Owner" {
+			t.Fatalf("getActorWithGit() = %q, want %q", actor, "Human Owner")
+		}
+		if got := getFilingActor(); got != "Volt" {
+			t.Errorf("getFilingActor() = %q, want %q", got, "Volt")
+		}
+	})
+
+	t.Run("BEADS_ACTOR outranks the agent identity", func(t *testing.T) {
+		t.Setenv("BEADS_ACTOR", "explicit-actor")
+		t.Setenv("BD_ACTOR", "")
+		actor = ""
+		actor = getActorWithGit()
+		if got := getFilingActor(); got != "explicit-actor" {
+			t.Errorf("getFilingActor() = %q, want %q", got, "explicit-actor")
+		}
+	})
+
+	t.Run("BD_ACTOR outranks the agent identity", func(t *testing.T) {
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "bd-actor")
+		actor = ""
+		actor = getActorWithGit()
+		if got := getFilingActor(); got != "bd-actor" {
+			t.Errorf("getFilingActor() = %q, want %q", got, "bd-actor")
+		}
+	})
+
+	t.Run("--actor outranks the agent identity", func(t *testing.T) {
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		if err := rootCmd.PersistentFlags().Set("actor", "flag-actor"); err != nil {
+			t.Fatalf("set --actor: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = rootCmd.PersistentFlags().Set("actor", "")
+			rootCmd.PersistentFlags().Lookup("actor").Changed = false
+		})
+		if got := getFilingActor(); got != "flag-actor" {
+			t.Errorf("getFilingActor() = %q, want %q", got, "flag-actor")
+		}
+	})
+
+	t.Run("no agent identity falls back to the global actor", func(t *testing.T) {
+		t.Setenv(agentNameEnvVar, "")
+		t.Setenv(agentIDEnvVar, "")
+		t.Setenv("BEADS_ACTOR", "")
+		t.Setenv("BD_ACTOR", "")
+		actor = ""
+		actor = getActorWithGit()
+		if got := getFilingActor(); got != actor {
+			t.Errorf("getFilingActor() = %q, want %q", got, actor)
+		}
+	})
+}

@@ -527,12 +527,9 @@ func resolveCommandBeadsDir(dbPath string) string {
 }
 
 // getActorWithGit returns the actor for audit trails with git config fallback.
-// Priority: --actor flag (or the actor config key) > BEADS_ACTOR env > BD_ACTOR env
-// (deprecated) > fleet agent identity > git config user.name > $USER > "unknown"
+// Priority: --actor flag > BEADS_ACTOR env > BD_ACTOR env (deprecated) > git config user.name > $USER > "unknown"
 // This provides a sensible default for developers: their git identity is used unless
-// explicitly overridden. A process running as a fleet agent names that agent
-// instead, so an agent-filed bead is not stamped with the human's git identity
-// (robots-0x8).
+// explicitly overridden
 func getActorWithGit() string {
 	// If actor is already set (from --actor flag), use it
 	if actor != "" {
@@ -547,12 +544,6 @@ func getActorWithGit() string {
 	// Check BD_ACTOR env var (deprecated alias, kept for backwards compatibility)
 	if bdActor := os.Getenv("BD_ACTOR"); bdActor != "" {
 		return bdActor
-	}
-
-	// Fall back to the fleet agent identity: the agent filing the bead, not the
-	// human whose git identity is configured on this checkout.
-	if agentActor := agentIdentityActor(); agentActor != "" {
-		return agentActor
 	}
 
 	// Try git config user.name - the natural default for a git-native tool
@@ -600,7 +591,7 @@ func init() {
 	// Register persistent flags
 	rootCmd.PersistentFlags().StringVarP(&changeDir, "directory", "C", "", "Change to this directory before running the command (like git -C)")
 	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db)")
-	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, fleet agent identity, git user.name, $USER)")
+	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	rootCmd.PersistentFlags().String("format", "", "Output format (json). Alias for --json")
 	_ = rootCmd.PersistentFlags().MarkHidden("format") // Hidden alias for CLI ergonomics

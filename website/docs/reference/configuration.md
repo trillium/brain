@@ -87,7 +87,7 @@ Secrets in this list are refused on git-tracked `config.yaml` files unless you p
 |---|---|---|---|---|
 | `json` | `--json` | `BD_JSON` | `false` | JSON output for scripting |
 | `db` | `--db` | `BD_DB` | (auto-discover) | Database path |
-| `actor` | `--actor` | `BEADS_ACTOR` | `git config user.name` | Actor name for audit trail. A process running as a fleet agent (`PARLAY_AGENT_ID`) names that agent instead of `git config user.name` |
+| `actor` | `--actor` | `BEADS_ACTOR` | `git config user.name` | Actor name for audit trail |
 | `identity` | `--identity` | `BEADS_IDENTITY` | (git user / hostname) | Sender identity for `bd mail` |
 | `no-db` | `--no-db` | `BD_NO_DAEMON` (related) | `false` | Run without opening the database |
 | `no-push` | `--no-push` | — | `false` | Skip pushing to Dolt remote |
@@ -195,7 +195,7 @@ Selected commonly-used variables:
 | `BD_NON_INTERACTIVE` | Disable prompts |
 | `BD_DEBUG` | Enable debug logging |
 | `BEADS_DIR` | Force the active beads workspace directory |
-| `BEADS_ACTOR` | Actor identity (preferred over `BD_ACTOR`, which is a deprecated alias). Defaults to the fleet agent identity when the process is an agent, else `git config user.name` |
+| `BEADS_ACTOR` | Actor identity (preferred over `BD_ACTOR`, which is a deprecated alias) |
 | `BEADS_IDENTITY` | Sender identity for `bd mail` |
 | `BEADS_DOLT_SERVER_MODE`, `BEADS_DOLT_SHARED_SERVER`, `BEADS_DOLT_DATA_DIR`, `BEADS_DOLT_PORT`, ... | Embedded/server Dolt overrides |
 

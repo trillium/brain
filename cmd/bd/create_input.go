@@ -267,7 +267,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 		in.estimatedMinutes = &est
 	}
 
-	in.createdBy = getActorWithGit()
+	in.createdBy = getFilingActor()
 	in.owner = getOwner()
 
 	in.jsonOutput = jsonOutput

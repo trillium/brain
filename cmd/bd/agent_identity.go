@@ -5,26 +5,31 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/steveyegge/beads/internal/config"
 )
 
 // Fleet agent identity — "federated stores don't stamp the filing agent"
 // (robots-0x8).
 //
-// Every store write already carries an actor: bd records it as created_by on the
-// bead and as the actor on that bead's audit events, and getActorWithGit
-// resolves the actor from an explicit override down to the human's git
-// identity. What was missing was the middle of that chain — an agent process
-// knows its own name, and nothing passed it on — so a bead an agent filed was
-// stamped with whichever human git identity happened to be configured on the
-// checkout, and "which agent filed this bead" was unanswerable.
+// A new bead records who filed it in created_by, and that value came from
+// getActorWithGit, which resolves an explicit override down to the human's git
+// identity. An agent process knows its own name, and nothing passed it on, so
+// a bead an agent filed was stamped with whichever human git identity happened
+// to be configured on the checkout, and "which agent filed this bead" was
+// unanswerable.
 //
 // The fleet already keys agent identity on PARLAY_AGENT_ID: parlay's launch,
 // identity, scratchpad and handoff tooling all resolve agents through it, and
 // an agent's human-readable display name is either exported beside it
 // (PARLAY_AGENT_NAME) or held in that agent's identity.md frontmatter. bd adds
 // no second identity concept, no new field, and no schema: it reads the
-// identity that already exists and hands it to the actor channel that already
-// exists.
+// identity that already exists and stamps it on created_by.
+//
+// Only the filing attribution changes. The global actor — claim assignee,
+// comment author, the current-issue lookup, todo assignee, and the actor on
+// every event — keeps resolving through getActorWithGit exactly as before, so
+// work an agent claimed under the human's name stays claimed by that name.
 
 const (
 	// agentIDEnvVar names this process's fleet agent.
@@ -33,6 +38,29 @@ const (
 	// together when it launches an agent.
 	agentNameEnvVar = "PARLAY_AGENT_NAME"
 )
+
+// getFilingActor returns the actor stamped as created_by on a new bead: an
+// explicit actor (--actor, the actor config key, BEADS_ACTOR, BD_ACTOR) when
+// one is set, else the fleet agent running this process, else
+// getActorWithGit's git/$USER fallback.
+func getFilingActor() string {
+	if !explicitActorSet() {
+		if agentActor := agentIdentityActor(); agentActor != "" {
+			return agentActor
+		}
+	}
+	return getActorWithGit()
+}
+
+// explicitActorSet reports whether the actor was named explicitly rather than
+// defaulted. The global actor cannot answer this itself: PersistentPreRun
+// overwrites it with getActorWithGit's result, git fallback included.
+func explicitActorSet() bool {
+	return rootCmd.PersistentFlags().Changed("actor") ||
+		config.GetString("actor") != "" ||
+		os.Getenv("BEADS_ACTOR") != "" ||
+		os.Getenv("BD_ACTOR") != ""
+}
 
 // agentIDRe is parlay's own agent-id shape (^[A-Za-z0-9._-]+$). An id outside
 // it is refused so a stray environment value can never name a path outside the
@@ -50,7 +78,7 @@ var agentIDRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 //     bead" when no richer name is available.
 //
 // An explicit actor (--actor, the actor config key, BEADS_ACTOR, BD_ACTOR)
-// always outranks this: see getActorWithGit.
+// always outranks this: see getFilingActor.
 func agentIdentityActor() string {
 	if name := strings.TrimSpace(os.Getenv(agentNameEnvVar)); name != "" {
 		return name

@@ -300,7 +300,7 @@ Examples:
 			AwaitType:   gateType,
 			AwaitID:     awaitID,
 			Timeout:     timeout,
-			CreatedBy:   getActorWithGit(),
+			CreatedBy:   getFilingActor(),
 			Owner:       getOwner(),
 		}
 

@@ -136,7 +136,7 @@ func syncMemoryBead(ctx context.Context, key, insight string) (string, error) {
 		Description: insight,
 		Priority:    memoryBeadPriority,
 		IssueType:   types.TypeKnowledge,
-		CreatedBy:   getActorWithGit(),
+		CreatedBy:   getFilingActor(),
 		Owner:       getOwner(),
 		Metadata:    metadata,
 	})
