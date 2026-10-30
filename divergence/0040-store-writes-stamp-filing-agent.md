@@ -75,8 +75,8 @@ and drop out of the current-issue lookup.
   key, `BEADS_ACTOR`, `BD_ACTOR`) when one is set, else that agent identity,
   else `getActorWithGit()`'s fallback. Every `CreatedBy` stamp on issue
   creation (`bd create` and its form, gate, memory, state event, the swarm
-  wrapper epic and swarm molecule, todo, `bd brain new`) reads it. Dependency edges keep the
-  global actor.
+  wrapper epic and swarm molecule, todo, `bd brain new`) reads it. Dependency
+  edges keep the global actor.
 - No new field, no new environment variable, no schema change, no migration.
 - Docs: `docs/CONFIG.md` describes the `created_by` rule beside the actor
   resolution chain, which is unchanged.
