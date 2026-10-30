@@ -1091,25 +1091,10 @@ BD_NAME: %q
 	return nil
 }
 
-// sharedServerHostBlock is the runtime host resolution every generated
-// shared-server store wrapper carries. It deliberately does NOT bake a Dolt
-// host or port: the federation's server is one fact per machine, kept in the
-// shared store host config (~/.config/brain/store-host.env), and it is read
-// here at run time. Repointing a machine — or moving the whole federation — is
-// then one file edit, and no wrapper can disagree with another about where the
-// store lives. A process env value of either key overrides the file, and a
-// missing file is a loud refusal that names it rather than a silent 127.0.0.1.
-//
-// The literal env var and file names in the template are rendered from
-// configfile.StoreHostFileName / configfile.StoreHostKeyHost /
-// configfile.StoreHostKeyPort below, so the shell text and the Go reader share
-// one definition.
 // sharedServerHostBlockTemplate is the shell text of the run-time host block
-// every generated shared-server wrapper carries: it reads the shared store host
-// config and exports both variables, stopping with a clear error naming the
-// file (and the unusable key) when it is missing or unusable. The placeholders
-// are rendered from the configfile constants so the shell text and the Go
-// reader share one definition.
+// every generated shared-server wrapper carries: it sources the shared store
+// host config whenever present, exports both variables, and stops with a clear
+// error naming the file (and the unusable key) when it is unusable.
 const sharedServerHostBlockTemplate = `# The federation's one source for the Dolt server, sourced whenever present; a
 # process env host or port wins over the file, and a missing file is a loud
 # refusal below unless both are already set.
@@ -1140,9 +1125,19 @@ export {keyport}="$_want_port"
 unset _store_host_file _want_host _want_port
 `
 
-// sharedServerHostBlock is sharedServerHostBlockTemplate rendered from the
-// configfile constants (path and key names), so only one definition of each
-// exists.
+// sharedServerHostBlock is the runtime host resolution every generated
+// shared-server store wrapper carries. It deliberately does NOT bake a Dolt
+// host or port: the federation's server is one fact per machine, kept in the
+// shared store host config (~/.config/brain/store-host.env), and it is read
+// here at run time. Repointing a machine — or moving the whole federation — is
+// then one file edit, and no wrapper can disagree with another about where the
+// store lives. The file is sourced whenever it exists, so its other exports
+// (such as BEADS_DOLT_SERVER_USER) reach bd; a process env value of the host or
+// port overrides the file's. A missing file is a loud refusal that names it,
+// never a silent 127.0.0.1, unless the env already sets both host and port.
+// It is sharedServerHostBlockTemplate rendered from the configfile constants
+// (path and key names), so the shell text and the Go reader share one
+// definition.
 var sharedServerHostBlock = strings.NewReplacer(
 	"{hostfile}", configfile.StoreHostHomeRelativePath(),
 	"{keyhost}", configfile.StoreHostKeyHost,
