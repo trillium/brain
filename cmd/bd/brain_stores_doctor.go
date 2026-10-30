@@ -9,11 +9,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/configfile"
 )
 
 // defaultStoreProbeTimeout bounds a single store read so one wedged store
@@ -53,7 +55,7 @@ type storeHealth struct {
 	Path    string `json:"path"`
 	Wrapper string `json:"wrapper,omitempty"` // CLI wrapper actually probed, if any
 	Probe   string `json:"probe"`             // "wrapper" | "direct"
-	Status  string `json:"status"`            // "ok" | "warn" | "fail"
+	Status  string `json:"status"`            // "ok" | "info" | "warn" | "fail"
 	Reason  string `json:"reason,omitempty"`  // one-line human cause
 	Detail  string `json:"detail,omitempty"`  // first lines of the failing output
 	Millis  int64  `json:"ms"`
@@ -103,6 +105,10 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 		runBrainStoresDoctorFleet(cmd)
 		return
 	}
+	// Read the registry exactly as recorded and probe each entry as it stands:
+	// an entry whose path names another home, or no longer exists, is reported
+	// by that store's own result — never guessed at or rewritten
+	// (robots-1nri, robots-1o77, robots-1ypiy).
 	stores, err := loadStoresRegistry()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
@@ -140,35 +146,37 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			results[i] = probeStore(self, name, stores[name], timeout)
+			r := probeStore(self, name, stores[name], timeout)
+			// A store whose metadata.json pins its own Dolt host or port reads
+			// from the shared file through its wrapper but diverges from the
+			// federation on a bare bd run in the store directory. It is
+			// informational: shown, but it does not make --strict fail.
+			if status, reason := metadataServerPin(name, stores[name]); status != "" && r.Status != "fail" {
+				if r.Status == "ok" {
+					r.Status, r.Reason = status, reason
+				} else {
+					r.Reason += "; " + reason
+				}
+			}
+			results[i] = r
 		}(i, name)
 	}
 	wg.Wait()
 	elapsed := time.Since(started)
 
-	okCount, warnCount, failCount := 0, 0, 0
-	failed := make([]string, 0, len(names))
-	for _, r := range results {
-		switch r.Status {
-		case "fail":
-			failCount++
-			failed = append(failed, r.Name)
-		case "warn":
-			warnCount++
-		default:
-			okCount++
-		}
-	}
+	tally := tallyStoreHealth(results)
 
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
-			"stores":   results,
-			"ok":       okCount,
-			"warnings": warnCount,
-			"failed":   failCount,
-			"total":    len(results),
-			"failing":  failed,
-			"ms":       elapsed.Milliseconds(),
+			"stores":        results,
+			"ok":            tally.ok + tally.info,
+			"answered":      tally.answered,
+			"warnings":      tally.warn,
+			"informational": tally.info,
+			"failed":        tally.fail,
+			"total":         len(results),
+			"failing":       tally.failed,
+			"ms":            elapsed.Milliseconds(),
 		}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -181,7 +189,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			}
 		}
 		for _, r := range results {
-			label := map[string]string{"ok": "ok  ", "warn": "WARN", "fail": "FAIL"}[r.Status]
+			label := map[string]string{"ok": "ok  ", "info": "info", "warn": "WARN", "fail": "FAIL"}[r.Status]
 			line := fmt.Sprintf("%s  %-*s  %5dms", label, width, r.Name, r.Millis)
 			if r.Reason != "" {
 				line += "  " + r.Reason
@@ -193,16 +201,48 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 				}
 			}
 		}
-		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings) in %.1fs\n",
-			okCount+warnCount, len(results), failCount, warnCount, elapsed.Seconds())
-		if failCount > 0 {
-			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(failed, " "))
+		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings, %d informational) in %.1fs\n",
+			tally.answered, len(results), tally.fail, tally.warn, tally.info, elapsed.Seconds())
+		if tally.fail > 0 {
+			fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", strings.Join(tally.failed, " "))
 		}
 	}
 
-	if code := doctorExitCode(failCount, warnCount); code != 0 {
+	if code := doctorExitCode(tally.fail, tally.warn); code != 0 {
 		os.Exit(code)
 	}
+}
+
+// storeTally folds the doctor's probe results into the summary and exit
+// counts. A store labeled informational still answered the read, so it counts
+// as answered and ok; it is not a warning, so --strict does not fail on it.
+type storeTally struct {
+	ok       int
+	warn     int
+	fail     int
+	info     int
+	answered int
+	failed   []string
+}
+
+func tallyStoreHealth(results []storeHealth) storeTally {
+	var t storeTally
+	t.failed = make([]string, 0, len(results))
+	for _, r := range results {
+		switch r.Status {
+		case "fail":
+			t.fail++
+			t.failed = append(t.failed, r.Name)
+		case "warn":
+			t.warn++
+		case "info":
+			t.info++
+		default:
+			t.ok++
+		}
+	}
+	t.answered = t.ok + t.info + t.warn
+	return t
 }
 
 // doctorExitCode maps probe tallies to the process exit code. Kept separate
@@ -308,6 +348,71 @@ func storeWrapperPath(name string) (string, bool) {
 		return path, false
 	}
 	return path, true
+}
+
+// metadataServerPin reports a store whose metadata.json pins its own Dolt host
+// or port. The generated wrapper resolves the shared store host config, but a
+// bare bd run in the store directory would use the pinned value instead and
+// silently diverge from the federation's one server. It is informational, not
+// a warning: the store itself still answers through its wrapper.
+func metadataServerPin(name string, entry storeEntry) (status, reason string) {
+	beadsDir := expandPath(entry.Path)
+	if wrapper, ok := storeWrapperPath(name); ok {
+		if pinned, ok := wrapperBeadsDir(wrapper); ok {
+			beadsDir = pinned
+		}
+	}
+	if beadsDir == "" {
+		return "", ""
+	}
+	cfg, err := configfile.Load(beadsDir)
+	if err != nil || cfg == nil {
+		return "", ""
+	}
+	var pins []string
+	if cfg.DoltServerHost != "" {
+		pins = append(pins, "dolt_server_host="+cfg.DoltServerHost)
+	}
+	if cfg.DoltServerPort > 0 {
+		pins = append(pins, "dolt_server_port="+strconv.Itoa(cfg.DoltServerPort))
+	}
+	if len(pins) == 0 {
+		return "", ""
+	}
+	return "info", fmt.Sprintf("%s pins %s in metadata.json; a bare bd run would use it instead of the shared store host config",
+		beadsDir, strings.Join(pins, ", "))
+}
+
+// wrapperBeadsDir reads the BEADS_DIR a wrapper effectively assigns, with
+// $HOME/~ expanded so it can be compared with a registry path. Comment lines
+// documenting an override are not assignments. Reports false when the wrapper
+// assigns no BEADS_DIR (then bd's own discovery decides the store, which no
+// probe here can predict).
+func wrapperBeadsDir(wrapperPath string) (string, bool) {
+	data, err := os.ReadFile(wrapperPath) //nolint:gosec // the store's own wrapper
+	if err != nil {
+		return "", false
+	}
+	v, ok := wrapperAssignedValue(string(data), wrapperBeadsAssignRe)
+	if !ok || v == "" {
+		return "", false
+	}
+	return expandWrapperHome(v), true
+}
+
+// expandWrapperHome expands the $HOME / ${HOME} / ~ prefix a generated wrapper
+// may use, so a pinned path compares equal to a registry path.
+func expandWrapperHome(v string) string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return v
+	}
+	v = strings.ReplaceAll(v, "${HOME}", home)
+	v = strings.ReplaceAll(v, "$HOME", home)
+	if strings.HasPrefix(v, "~/") {
+		v = filepath.Join(home, v[2:])
+	}
+	return filepath.Clean(v)
 }
 
 func firstLine(b []byte) string {

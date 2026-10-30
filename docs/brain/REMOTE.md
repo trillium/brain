@@ -210,10 +210,11 @@ the same way. `bd` and the brain binary are never written.
 
 Before it writes anything, `brain remote install` (unless `--dry-run`) and
 `brain remote set` (unless `--no-check`) run `brain stores rewrite-wrappers` on
-the host. That rewrites only the `BEADS_DIR` line (and `BRAIN_KNOWLEDGE_ROOT`
+the host. That rewrites the `BEADS_DIR` line (and `BRAIN_KNOWLEDGE_ROOT`
 if it holds an absolute home path) of each existing store and alias wrapper to
-the `$HOME`-relative form, keeping every other line, and never creates a
-wrapper that is missing. It then probes each store through its wrapper. If any
+the `$HOME`-relative form, repoints server-mode wrappers at `store-host.env`
+(see `brain stores rewrite-wrappers --help`), and never creates a wrapper that
+is missing. It then probes each store through its wrapper. If any
 store cannot resolve a database, the command exits non-zero and lists them
 under `FAILING STORES`; `set` does not save the host in that case.
 

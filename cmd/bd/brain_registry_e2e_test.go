@@ -55,7 +55,7 @@ func newFleet(t *testing.T) *fleet {
 
 // addMachine creates a machine whose HOME already has the `task` store the way
 // a long-lived machine does: a directory, an unmanaged (not generated) wrapper,
-// a stores.yaml line and an agent-link directory.
+// a stores.yaml line, an agent-link directory and the shared store host config.
 func (f *fleet) addMachine(name string) *machine {
 	f.t.Helper()
 	m := &machine{f: f, name: name, home: f.t.TempDir(), db: f.srv.Open(f.t)}
@@ -65,6 +65,8 @@ func (f *fleet) addMachine(name string) *machine {
 		}
 	}
 	mustWrite(f.t, filepath.Join(m.home, "data/tasks/.beads/metadata.json"), "{}\n", 0o644)
+	mustWrite(f.t, filepath.Join(m.home, ".config/brain/store-host.env"),
+		"export BEADS_DOLT_SERVER_HOST=127.0.0.1\nexport BEADS_DOLT_SERVER_PORT=3307\n", 0o644)
 	mustWrite(f.t, filepath.Join(m.home, ".local/bin/task"), "#!/bin/sh\n# Brain federation wrapper — hand written\nexec bd \"$@\"\n", 0o755)
 	if err := os.Symlink(filepath.Join(m.home, ".local/bin/task"), filepath.Join(m.home, ".pi/agent/bin/task")); err != nil {
 		f.t.Fatal(err)

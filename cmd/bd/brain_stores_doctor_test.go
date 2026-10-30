@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/configfile"
 )
 
 func TestBrainStoresDoctorCmd_Registered(t *testing.T) {
@@ -266,5 +268,149 @@ func TestDoctorRegistrySentinel(t *testing.T) {
 	}
 	if strings.Contains(doctorRegistrySentinel, " ") {
 		t.Errorf("sentinel %q must not contain spaces — the scheduler splits FAILING STORES on whitespace", doctorRegistrySentinel)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Registry paths as recorded and wrapper misroute detection: the two ways a
+// registered store silently stops being the store it says it is.
+// ---------------------------------------------------------------------------
+
+// A registry carried from another machine names that machine's home. The probe
+// reports the registry path as recorded — it never guesses a $HOME-equivalent
+// folder and never rewrites the entry.
+func TestProbeStore_ReportsForeignRegistryPathAsRecorded(t *testing.T) {
+	home := isolatedHome(t)
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	wrapper := filepath.Join(binDir, "task")
+	if err := os.WriteFile(wrapper, []byte("#!/bin/sh\necho ok\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatalf("writing wrapper: %v", err)
+	}
+	// A coincidental $HOME copy must not be adopted as the store.
+	real := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatalf("mkdir store: %v", err)
+	}
+	recorded := "/Users/someone-else/data/task/.beads"
+
+	h := probeStore("unused", "task", storeEntry{Path: recorded}, 10*time.Second)
+
+	if h.Path != recorded {
+		t.Errorf("resolved path = %q, want the recorded %q", h.Path, recorded)
+	}
+	if h.Status != "warn" || !strings.Contains(h.Reason, "registry path missing") {
+		t.Fatalf("status = %q reason = %q, want a stale-path warning", h.Status, h.Reason)
+	}
+}
+
+// A store whose metadata pins its own Dolt host or port diverges from the
+// shared server on a bare bd run, so the doctor reports it as informational:
+// it is shown, but it does not make --strict fail.
+// TestTallyStoreHealth_InformationalDoesNotWarn locks the exit and summary
+// contract: an informational metadata-pin finding still counts as an answered
+// (and ok) store, but --strict does not fail on it.
+func TestTallyStoreHealth_InformationalDoesNotWarn(t *testing.T) {
+	oldStrict := storesDoctorStrict
+	storesDoctorStrict = true
+	defer func() { storesDoctorStrict = oldStrict }()
+
+	tally := tallyStoreHealth([]storeHealth{{Status: "info"}, {Status: "ok"}, {Status: "warn"}})
+	if tally.warn != 1 {
+		t.Errorf("warn = %d, want only the warned store", tally.warn)
+	}
+	if tally.ok != 1 || tally.info != 1 {
+		t.Errorf("ok/info = %d/%d, want 1/1", tally.ok, tally.info)
+	}
+	if tally.answered != 3 {
+		t.Errorf("answered = %d, want 3 (ok, informational and warned stores all answered)", tally.answered)
+	}
+	if tally.ok+tally.info != 2 {
+		t.Errorf("ok+informational = %d, want 2 stores reported ok", tally.ok+tally.info)
+	}
+	if code := doctorExitCode(0, 0); code != 0 {
+		t.Errorf("an informational finding alone must not fail --strict; exit = %d", code)
+	}
+}
+
+func TestMetadataServerPin_ReportsPinnedStore(t *testing.T) {
+	home := isolatedHome(t)
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeWrapperForStore(t, home, "task", beadsDir)
+	if err := (&configfile.Config{DoltServerHost: "10.0.0.1", DoltServerPort: 3307}).Save(beadsDir); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	status, reason := metadataServerPin("task", storeEntry{Path: beadsDir})
+	if status != "info" {
+		t.Fatalf("status = %q, want info (reason=%q)", status, reason)
+	}
+	if !strings.Contains(reason, "dolt_server_host=10.0.0.1") || !strings.Contains(reason, "dolt_server_port=3307") {
+		t.Errorf("reason = %q, want both pins named", reason)
+	}
+}
+
+// A store whose metadata carries no server pin is not reported.
+func TestMetadataServerPin_IgnoresUnpinnedStore(t *testing.T) {
+	home := isolatedHome(t)
+	beadsDir := filepath.Join(home, "data", "task", ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := (&configfile.Config{}).Save(beadsDir); err != nil {
+		t.Fatalf("write metadata.json: %v", err)
+	}
+
+	if status, reason := metadataServerPin("task", storeEntry{Path: beadsDir}); status != "" {
+		t.Fatalf("status = %q (%s), want no finding", status, reason)
+	}
+}
+
+// A comment that documents an override is not the wrapper's effective
+// BEADS_DIR: the doctor must compare the assignment the wrapper actually makes.
+func TestWrapperBeadsDir_SkipsCommentedOverrides(t *testing.T) {
+	home := isolatedHome(t)
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	wrapper := filepath.Join(binDir, "inbox")
+	body := "#!/bin/sh\n# BEADS_DIR=/tmp/itest/.beads INBOX_EVENTS_FILE=/tmp/x inbox list\n" +
+		"export BEADS_DIR=\"$HOME/data/inbox/.beads\"\nexec bd \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(body), 0o755); err != nil { //nolint:gosec
+		t.Fatalf("writing wrapper: %v", err)
+	}
+
+	want := filepath.Join(home, "data", "inbox", ".beads")
+	got, ok := wrapperBeadsDir(wrapper)
+	if !ok || got != want {
+		t.Fatalf("wrapperBeadsDir = %q, %v; want %q", got, ok, want)
+	}
+}
+
+// writeWrapperForStore writes a wrapper pinning BEADS_DIR to a literal path.
+func writeWrapperForStore(t *testing.T, home, name, beadsDir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	binDir := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "#!/bin/sh\nexport BEADS_DIR=\"" + beadsDir + "\"\nexport BD_NAME=\"" + name + "\"\necho ok\n"
+	if err := os.WriteFile(filepath.Join(binDir, name), []byte(body), 0o755); err != nil { //nolint:gosec
+		t.Fatalf("writing wrapper: %v", err)
 	}
 }

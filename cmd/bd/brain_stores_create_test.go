@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/doltserver"
-	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
 func TestWriteStoreWrapper_WritesExecutableWrapper(t *testing.T) {
@@ -97,61 +100,217 @@ func TestRegenerateStoresEnv_WritesShellExports(t *testing.T) {
 	}
 }
 
-func TestResolveSharedServerCreate(t *testing.T) {
-	t.Run("off when no server env", func(t *testing.T) {
-		t.Setenv("BEADS_DOLT_SERVER_MODE", "")
-		t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+func TestResolveCreateServer(t *testing.T) {
+	// A store-host file in a private HOME. 'brain stores create' provisions
+	// from this file: the wrapper it writes reads the file at run time, so a
+	// process env value may only agree with it.
+	writeStoreHostFile := func(t *testing.T, body string) string {
+		t.Helper()
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		path := configfile.DefaultStoreHostPath()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write store-host.env: %v", err)
+		}
+		return path
+	}
+	clearEnv := func(t *testing.T) {
 		t.Setenv("BEADS_DOLT_SERVER_HOST", "")
 		t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-		if _, _, shared := resolveSharedServerCreate(); shared {
-			t.Fatal("expected shared=false when no server env is set")
+	}
+	alwaysAnswers := func(_ context.Context, host string, port int) (string, bool, error) {
+		if host == "" || port == 0 {
+			t.Errorf("probe called with empty target %q:%d", host, port)
+		}
+		return "brain_unified", true, nil
+	}
+
+	t.Run("missing shared config is a loud refusal naming the file", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		_, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err == nil {
+			t.Fatal("expected an error when no shared store host config exists")
+		}
+		want := configfile.DefaultStoreHostPath()
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the missing file %q; got: %v", want, err)
+		}
+		if !strings.Contains(err.Error(), "BEADS_DOLT_SERVER_HOST") {
+			t.Errorf("error must name the key to write; got: %v", err)
 		}
 	})
 
-	t.Run("on via SERVER_MODE with explicit host/port", func(t *testing.T) {
-		t.Setenv("BEADS_DOLT_SERVER_MODE", "1")
-		t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
-		t.Setenv("BEADS_DOLT_SERVER_HOST", "10.0.0.5")
+	t.Run("a present-but-unusable shared file is refused", func(t *testing.T) {
+		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\n")
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		if _, err := resolveCreateServer(context.Background(), alwaysAnswers); err == nil {
+			t.Fatal("expected a refusal for a file that does not define both keys")
+		}
+	})
+
+	t.Run("the shared file supplies host and port", func(t *testing.T) {
+		writeStoreHostFile(t, "# the federation's server\nBEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		got, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err != nil {
+			t.Fatalf("resolveCreateServer: %v", err)
+		}
+		if got.Host != "10.1.2.3" || got.Port != 3307 || got.Source != createServerFile {
+			t.Errorf("target = %+v, want 10.1.2.3:3307 from the file", got)
+		}
+	})
+
+	t.Run("an env host differing from the file is refused, naming both", func(t *testing.T) {
+		path := writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		_, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err == nil {
+			t.Fatal("expected a refusal when the env host differs from the shared file")
+		}
+		for _, want := range []string{"127.0.0.1", "10.1.2.3", path, configfile.StoreHostKeyHost} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must name %q; got: %v", want, err)
+			}
+		}
+	})
+
+	t.Run("an env port differing from the file is refused, naming both", func(t *testing.T) {
+		path := writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "")
 		t.Setenv("BEADS_DOLT_SERVER_PORT", "3399")
-		host, port, shared := resolveSharedServerCreate()
-		if !shared {
-			t.Fatal("expected shared=true when BEADS_DOLT_SERVER_MODE=1")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		_, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err == nil {
+			t.Fatal("expected a refusal when the env port differs from the shared file")
 		}
-		if host != "10.0.0.5" {
-			t.Errorf("host = %q, want 10.0.0.5", host)
-		}
-		if port != 3399 {
-			t.Errorf("port = %d, want 3399", port)
+		for _, want := range []string{"3399", "3307", path, configfile.StoreHostKeyPort} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must name %q; got: %v", want, err)
+			}
 		}
 	})
 
-	t.Run("on via SHARED_SERVER with default host/port", func(t *testing.T) {
-		t.Setenv("BEADS_DOLT_SERVER_MODE", "")
-		t.Setenv("BEADS_DOLT_SHARED_SERVER", "1")
-		t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-		t.Setenv("BEADS_DOLT_SERVER_PORT", "")
-		host, port, shared := resolveSharedServerCreate()
-		if !shared {
-			t.Fatal("expected shared=true when BEADS_DOLT_SHARED_SERVER=1")
+	t.Run("env values matching the file are accepted", func(t *testing.T) {
+		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "10.1.2.3")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3307")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		got, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err != nil {
+			t.Fatalf("resolveCreateServer: %v", err)
 		}
-		if host != "127.0.0.1" {
-			t.Errorf("host = %q, want 127.0.0.1 default", host)
-		}
-		if port != dolt.DefaultSQLPort {
-			t.Errorf("port = %d, want default %d", port, dolt.DefaultSQLPort)
+		if got.Host != "10.1.2.3" || got.Port != 3307 || got.Source != createServerFile {
+			t.Errorf("target = %+v, want the file's 10.1.2.3:3307", got)
 		}
 	})
 
-	t.Run("bad port falls back to default", func(t *testing.T) {
-		t.Setenv("BEADS_DOLT_SERVER_MODE", "1")
-		t.Setenv("BEADS_DOLT_SERVER_HOST", "")
-		t.Setenv("BEADS_DOLT_SERVER_PORT", "not-a-number")
-		_, port, shared := resolveSharedServerCreate()
-		if !shared {
-			t.Fatal("expected shared=true")
+	t.Run("an env-only config without the shared file is refused", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("BEADS_DOLT_SERVER_HOST", "127.0.0.1")
+		t.Setenv("BEADS_DOLT_SERVER_PORT", "3399")
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		_, err := resolveCreateServer(context.Background(), alwaysAnswers)
+		if err == nil {
+			t.Fatal("expected a refusal: the generated wrapper resolves its host from the shared file, which does not exist")
 		}
-		if port != dolt.DefaultSQLPort {
-			t.Errorf("port = %d, want default %d on unparseable port", port, dolt.DefaultSQLPort)
+		want := configfile.DefaultStoreHostPath()
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must name the file %q; got: %v", want, err)
+		}
+		if !strings.Contains(err.Error(), "BEADS_DOLT_SERVER_HOST") || !strings.Contains(err.Error(), "BEADS_DOLT_SERVER_PORT") {
+			t.Errorf("error must name both keys to write; got: %v", err)
+		}
+	})
+
+	t.Run("a server that does not answer is refused, never baked", func(t *testing.T) {
+		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\nBEADS_DOLT_SERVER_PORT=3307\n")
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		dead := func(context.Context, string, int) (string, bool, error) {
+			return "", false, errors.New("connection refused")
+		}
+		_, err := resolveCreateServer(context.Background(), dead)
+		if err == nil {
+			t.Fatal("expected a refusal when the configured server does not answer")
+		}
+		if !strings.Contains(err.Error(), "10.1.2.3:3307") {
+			t.Errorf("error must name the host that did not answer; got: %v", err)
+		}
+	})
+
+	t.Run("--embedded provisions locally without touching the shared server", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = true
+		defer func() { createStoreEmbedded = old }()
+
+		probed := false
+		probe := func(context.Context, string, int) (string, bool, error) {
+			probed = true
+			return "", false, errors.New("should not be probed")
+		}
+		got, err := resolveCreateServer(context.Background(), probe)
+		if err != nil {
+			t.Fatalf("resolveCreateServer with --embedded: %v", err)
+		}
+		if got.Source != createServerEmbedded {
+			t.Errorf("source = %q, want %q", got.Source, createServerEmbedded)
+		}
+		if probed {
+			t.Error("--embedded must not probe a shared server")
+		}
+	})
+
+	t.Run("a half-written shared file is an error, not a default", func(t *testing.T) {
+		writeStoreHostFile(t, "BEADS_DOLT_SERVER_HOST=10.1.2.3\n")
+		clearEnv(t)
+		old := createStoreEmbedded
+		createStoreEmbedded = false
+		defer func() { createStoreEmbedded = old }()
+
+		if _, err := resolveCreateServer(context.Background(), alwaysAnswers); err == nil {
+			t.Fatal("expected an error for a file that defines only the host")
 		}
 	})
 }
@@ -204,7 +363,7 @@ func TestBuildServerStoreConfig_RoundTripsThroughMetadataJSON(t *testing.T) {
 	}
 }
 
-func TestWriteServerStoreWrapper_EmitsServerPins(t *testing.T) {
+func TestWriteServerStoreWrapper_ResolvesHostAtRunTime(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	wp, err := writeServerStoreWrapper("friction", "/data/friction/.beads", "", "127.0.0.1", 3307, "friction")
@@ -237,14 +396,137 @@ func TestWriteServerStoreWrapper_EmitsServerPins(t *testing.T) {
 		`export BRAIN_KNOWLEDGE_ROOT="/data/friction"`,
 		"export BRAIN_EXFIL_FLAT=1",
 		"export BEADS_DOLT_SERVER_MODE=1",
-		"export BEADS_DOLT_SERVER_HOST=127.0.0.1",
-		"export BEADS_DOLT_SERVER_PORT=3307",
 		"export BEADS_DOLT_SHARED_SERVER=1",
 		`exec bd "$@"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("wrapper missing %q. Got:\n%s", want, got)
 		}
+	}
+}
+
+// TestServerStoreWrapper_RuntimeHostResolution runs the generated wrapper for
+// real: with no shared config file it must refuse loudly, with the file it must
+// hand the two variables to bd, and a process env value must win over the file.
+// This is the executable contract behind 'no silent 127.0.0.1 default'.
+func TestServerStoreWrapper_RuntimeHostResolution(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	wp, err := writeServerStoreWrapper("friction", filepath.Join(home, "data", "friction", ".beads"), "", "127.0.0.1", 3307, "brain_unified")
+	if err != nil {
+		t.Fatalf("writeServerStoreWrapper: %v", err)
+	}
+	// A stub bd that echoes the host/port it was handed.
+	binDir := t.TempDir()
+	bdStub := filepath.Join(binDir, "bd-stub")
+	if err := os.WriteFile(bdStub, []byte("#!/bin/sh\necho \"host=$BEADS_DOLT_SERVER_HOST port=$BEADS_DOLT_SERVER_PORT mode=$BEADS_DOLT_SERVER_MODE\"\n"), 0o755); err != nil { //nolint:gosec
+		t.Fatalf("write bd stub: %v", err)
+	}
+	if _, err := writeServerStoreWrapper("friction", filepath.Join(home, "data", "friction", ".beads"), bdStub, "127.0.0.1", 3307, "brain_unified"); err != nil {
+		t.Fatalf("rewrite wrapper with stub: %v", err)
+	}
+
+	run := func(env ...string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(wp, "list") //nolint:gosec // the wrapper we just wrote
+		cmd.Env = append([]string{"HOME=" + home, "PATH=" + binDir + ":" + os.Getenv("PATH")}, env...)
+		out, err := cmd.CombinedOutput()
+		code := 0
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			code = ee.ExitCode()
+		} else if err != nil {
+			t.Fatalf("running wrapper: %v", err)
+		}
+		return string(out), code
+	}
+
+	out, code := run()
+	if code == 0 {
+		t.Fatalf("a missing shared store host config must refuse; wrapper said: %s", out)
+	}
+	if !strings.Contains(out, "store-host.env") {
+		t.Errorf("refusal must name the missing file; got: %s", out)
+	}
+
+	hostFile := configfile.DefaultStoreHostPath()
+	if err := os.MkdirAll(filepath.Dir(hostFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=3311\n"), 0o600); err != nil {
+		t.Fatalf("write shared config: %v", err)
+	}
+
+	out, code = run()
+	if code != 0 {
+		t.Fatalf("wrapper failed with a shared config present (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "host=10.9.9.9 port=3311 mode=1") {
+		t.Errorf("wrapper must read host/port from the shared config; got: %s", out)
+	}
+
+	out, code = run("BEADS_DOLT_SERVER_HOST=127.0.0.9", "BEADS_DOLT_SERVER_PORT=3399")
+	if code != 0 {
+		t.Fatalf("wrapper failed with an env override (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "host=127.0.0.9 port=3399") {
+		t.Errorf("a process env value must win over the shared config; got: %s", out)
+	}
+
+	// A canonical wrapper that already carries the runtime block must survive
+	// the repoint pass: the block's own exports are the resolution, so they are
+	// never stripped and the child still receives the file's host and port.
+	repointed, err := rewriteWrapperInPlace(wp, true)
+	if err != nil {
+		t.Fatalf("rewriteWrapperInPlace: %v", err)
+	}
+	if repointed {
+		t.Error("canonical wrapper reported as repointed; the runtime block was rewritten")
+	}
+	out, code = run()
+	if code != 0 {
+		t.Fatalf("wrapper failed after the repoint pass (exit %d): %s", code, out)
+	}
+	if !strings.Contains(out, "host=10.9.9.9 port=3311 mode=1") {
+		t.Errorf("the repoint pass must leave the runtime host block intact; got: %s", out)
+	}
+}
+
+// A shared file whose port is not a number is unusable: the generated wrapper
+// must refuse and name the key rather than hand a bad value to bd.
+func TestServerStoreWrapper_RefusesUnusablePort(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wrapper convention is POSIX-only")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	wp, err := writeServerStoreWrapper("friction", filepath.Join(home, "data", "friction", ".beads"), "/bin/true", "127.0.0.1", 3307, "brain_unified")
+	if err != nil {
+		t.Fatalf("writeServerStoreWrapper: %v", err)
+	}
+	hostFile := configfile.DefaultStoreHostPath()
+	if err := os.MkdirAll(filepath.Dir(hostFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(hostFile, []byte("BEADS_DOLT_SERVER_HOST=10.9.9.9\nBEADS_DOLT_SERVER_PORT=thirty-three\n"), 0o600); err != nil {
+		t.Fatalf("write shared config: %v", err)
+	}
+
+	cmd := exec.Command(wp) //nolint:gosec // the wrapper we just wrote
+	cmd.Env = []string{"HOME=" + home, "PATH=" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("an unusable shared port must refuse; wrapper said: %s", out)
+	}
+	if !strings.Contains(string(out), "BEADS_DOLT_SERVER_PORT") {
+		t.Errorf("refusal must name the unusable key; got: %s", out)
 	}
 }
 
