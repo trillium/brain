@@ -10,6 +10,7 @@ touches:
   - cmd/bd/agent_identity.go
   - cmd/bd/agent_identity_test.go
   - cmd/bd/agent_identity_store_test.go
+  - cmd/bd/brain_new.go
   - cmd/bd/create.go
   - cmd/bd/create_form.go
   - cmd/bd/create_input.go
@@ -19,9 +20,14 @@ touches:
   - cmd/bd/swarm.go
   - cmd/bd/todo.go
   - docs/CONFIG.md
+  - internal/brain/verb/new/new.go
+  - internal/brain/verb/new/new_test.go
   - divergence/0040-store-writes-stamp-filing-agent.md
 upstream_rebase_notes: |
-  `cmd/bd/agent_identity.go` and its tests are brain-only — resolve `ours`.
+  `cmd/bd/agent_identity.go` and its tests are brain-only — resolve `ours`,
+  as are `cmd/bd/brain_new.go` and `internal/brain/verb/new/`, where
+  `newverb.New` takes a separate `createdBy` (from `getFilingActor()`) for
+  the doc's `CreatedBy` while its event actor stays the global actor.
   Upstream files only change at their `CreatedBy:` fields, which read
   `getFilingActor()` instead of `getActorWithGit()` (create.go, create_form.go,
   create_input.go's `in.createdBy`, gate.go, memory.go, state.go, the
@@ -69,7 +75,7 @@ and drop out of the current-issue lookup.
   key, `BEADS_ACTOR`, `BD_ACTOR`) when one is set, else that agent identity,
   else `getActorWithGit()`'s fallback. Every `CreatedBy` stamp on issue
   creation (`bd create` and its form, gate, memory, state event, the swarm
-  wrapper epic and swarm molecule, todo) reads it. Dependency edges keep the
+  wrapper epic and swarm molecule, todo, `bd brain new`) reads it. Dependency edges keep the
   global actor.
 - No new field, no new environment variable, no schema change, no migration.
 - Docs: `docs/CONFIG.md` describes the `created_by` rule beside the actor
@@ -86,7 +92,10 @@ while `getActorWithGit()` keeps answering the git identity.
 `bd todo add` stamps the agent in `created_by` and the human in `assignee`, a
 claim with the global actor succeeds, and a claim the human identity already
 holds stays idempotent; an agent-run `bd swarm create` on a single issue
-stamps the agent on both the wrapper epic and the swarm molecule.
+stamps the agent on both the wrapper epic and the swarm molecule; an agent-run
+`bd brain new` stamps the agent in `created_by` while its created event keeps
+the human's git identity. `internal/brain/verb/new/new_test.go` pins that the
+verb stamps `createdBy` and hands `CreateIssue` the separate event actor.
 
 # Brain-spec link
 

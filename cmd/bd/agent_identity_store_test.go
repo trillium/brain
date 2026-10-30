@@ -127,3 +127,60 @@ func TestAgentSwarmCreateStampsFilingAgent(t *testing.T) {
 		}
 	}
 }
+
+// TestAgentBrainNewStampsFilingAgent runs an agent-run `bd brain new`: the new
+// brain doc records the agent in created_by, while its creation event keeps
+// the global actor, the human's git identity (robots-0x8).
+func TestAgentBrainNewStampsFilingAgent(t *testing.T) {
+	ensureCleanGlobalState(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	humanGitIdentity(t, home, "Human Owner")
+	t.Setenv("BEADS_ACTOR", "")
+	t.Setenv("BD_ACTOR", "")
+	t.Setenv(agentNameEnvVar, "Volt")
+	t.Setenv(agentIDEnvVar, "volt")
+
+	s := newTestStore(t, filepath.Join(t.TempDir(), ".beads", "beads.db"))
+	ctx := context.Background()
+
+	origStore, origActor, origCtx, origJSON := store, actor, rootCtx, jsonOutput
+	t.Cleanup(func() {
+		store, actor, rootCtx, jsonOutput = origStore, origActor, origCtx, origJSON
+	})
+	setStore(s)
+	rootCtx = ctx
+	jsonOutput = false
+	actor = ""
+	actor = getActorWithGit()
+
+	captureStdout(t, func() error {
+		brainNewCmd.Run(brainNewCmd, []string{"task", "brain doc by agent"})
+		return nil
+	})
+
+	issues, err := s.SearchIssues(ctx, "brain doc by agent", types.IssueFilter{})
+	if err != nil || len(issues) != 1 {
+		t.Fatalf("SearchIssues = %d issues, err %v; want 1", len(issues), err)
+	}
+	doc := issues[0]
+	if doc.CreatedBy != "Volt" {
+		t.Errorf("created_by = %q, want agent %q", doc.CreatedBy, "Volt")
+	}
+	events, err := s.GetEvents(ctx, doc.ID, 10)
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	var created *types.Event
+	for _, e := range events {
+		if e.EventType == types.EventCreated {
+			created = e
+		}
+	}
+	if created == nil {
+		t.Fatalf("no created event for %s", doc.ID)
+	}
+	if created.Actor != "Human Owner" {
+		t.Errorf("created event actor = %q, want human %q", created.Actor, "Human Owner")
+	}
+}

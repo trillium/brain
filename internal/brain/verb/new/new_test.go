@@ -111,7 +111,7 @@ func TestRun_HappyPath_Task(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
@@ -146,13 +146,39 @@ func TestRun_HappyPath_Task(t *testing.T) {
 	}
 }
 
+// TestRun_CreatedByIsFilingActor pins that created_by carries the filing
+// attribution while CreateIssue still receives the audit-trail actor
+// (robots-0x8).
+func TestRun_CreatedByIsFilingActor(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "human", "agent")
+
+	if _, err := v.Run(context.Background(), newverb.Args{
+		Kind:  string(types.TypeTask),
+		Title: "filed by an agent",
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if len(rec.created) != 1 {
+		t.Fatalf("recorder saw %d issues, want 1", len(rec.created))
+	}
+	if got := rec.created[0].CreatedBy; got != "agent" {
+		t.Errorf("issue.CreatedBy = %q, want %q", got, "agent")
+	}
+	if rec.actors[0] != "human" {
+		t.Errorf("CreateIssue actor = %q, want %q", rec.actors[0], "human")
+	}
+}
+
 // TestRun_HappyPath_Knowledge exercises WHAT_IS_BRAIN.md § 4.1 scenario
 // "create a new knowledge doc mid-conversation".
 func TestRun_HappyPath_Knowledge(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeKnowledge),
@@ -179,7 +205,7 @@ func TestRun_HappyPath_Both(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeBoth),
@@ -211,7 +237,7 @@ func TestRun_InvalidKind(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  "junk",
@@ -243,7 +269,7 @@ func TestRun_EmptyKind(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  "",
@@ -273,7 +299,7 @@ func TestRun_EmptyTitle(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
@@ -301,7 +327,7 @@ func TestRun_BodyPassthrough(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeKnowledge),
@@ -328,7 +354,7 @@ func TestRun_BodyPassthrough(t *testing.T) {
 func TestRun_NilStoreReturnsError(t *testing.T) {
 	t.Parallel()
 
-	v := newverb.New(nil, "tester")
+	v := newverb.New(nil, "tester", "tester")
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
 		Title: "irrelevant",
@@ -349,7 +375,7 @@ func TestRun_StorageErrorIsWrapped(t *testing.T) {
 
 	sentinel := errors.New("dolt write failed: connection refused")
 	rec := &recorderStore{createErr: sentinel}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
@@ -406,7 +432,7 @@ func TestRun_ISA_ExplicitSlug(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeISA),
@@ -443,7 +469,7 @@ func TestRun_ISA_AutoSlugFromTitle(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeISA),
@@ -467,7 +493,7 @@ func TestRun_ISA_TitleWithNoAlphanumericsFailsWithHint(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeISA),
@@ -492,7 +518,7 @@ func TestRun_ISA_InvalidSlugFailsWithValidationError(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeISA),
@@ -524,7 +550,7 @@ func TestRun_ISA_SlugCollisionReturnsTypedError(t *testing.T) {
 	rec := &recorderStore{
 		setSlugErr: errors.New("Duplicate entry 'foo-bar' for key 'slug_unique'"),
 	}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeISA),
@@ -553,7 +579,7 @@ func TestRun_Task_WithSlug(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
@@ -582,7 +608,7 @@ func TestRun_Task_NoSlug(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	got, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeTask),
@@ -605,7 +631,7 @@ func TestRun_Knowledge_EmptySlug(t *testing.T) {
 	t.Parallel()
 
 	rec := &recorderStore{}
-	v := newverb.New(rec, "tester")
+	v := newverb.New(rec, "tester", "tester")
 
 	_, err := v.Run(context.Background(), newverb.Args{
 		Kind:  string(types.TypeKnowledge),
