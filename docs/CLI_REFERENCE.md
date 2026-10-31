@@ -6774,8 +6774,8 @@ command (exit 0 converged, 1 not converged, 2 registry unreadable).
 --fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
 binary's build stamp against the repo's main, store-host.env against the live
 host, wrapper and shim env-file host pins that disagree, a read and a write
-probe of each store (the write probe creates and drops the table
-brain_fleet_probe; --no-write-probe skips it), backup freshness, reachability
+probe of each store (the write probe creates and drops its own table
+brain_fleet_probe_&lt;nonce&gt;; --no-write-probe skips it), backup freshness, reachability
 (an unreachable machine is reported and never touched), and orphan beads on
 --old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
@@ -6862,8 +6862,8 @@ a read probe of every store through its wrapper, the age of each store's last
 backup, and the Dolt servers running here. It decides nothing; 'brain stores
 doctor --fleet' compares these facts across machines.
 
-With --write-probe it also writes through each store's wrapper: it creates the
-table brain_fleet_probe, inserts one row, reads it back, deletes it and drops
+With --write-probe it also writes through each store's wrapper: it creates its
+own table brain_fleet_probe_&lt;nonce&gt;, inserts one row, reads it back, deletes it and drops
 the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.
 
 ```
@@ -6873,8 +6873,7 @@ bd stores host-audit [flags]
 **Flags:**
 
 ```
-      --backup-max-age duration   Accepted for symmetry with the fleet view; the audit reports ages only (default 48h0m0s)
-      --write-probe               Also write+read+delete a probe row in each store (see --help)
+      --write-probe   Also write+read+delete a probe row in each store (see --help)
 ```
 
 ##### bd brain stores list
@@ -9769,8 +9768,8 @@ command (exit 0 converged, 1 not converged, 2 registry unreadable).
 --fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
 binary's build stamp against the repo's main, store-host.env against the live
 host, wrapper and shim env-file host pins that disagree, a read and a write
-probe of each store (the write probe creates and drops the table
-brain_fleet_probe; --no-write-probe skips it), backup freshness, reachability
+probe of each store (the write probe creates and drops its own table
+brain_fleet_probe_&lt;nonce&gt;; --no-write-probe skips it), backup freshness, reachability
 (an unreachable machine is reported and never touched), and orphan beads on
 --old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
@@ -9857,8 +9856,8 @@ a read probe of every store through its wrapper, the age of each store's last
 backup, and the Dolt servers running here. It decides nothing; 'brain stores
 doctor --fleet' compares these facts across machines.
 
-With --write-probe it also writes through each store's wrapper: it creates the
-table brain_fleet_probe, inserts one row, reads it back, deletes it and drops
+With --write-probe it also writes through each store's wrapper: it creates its
+own table brain_fleet_probe_&lt;nonce&gt;, inserts one row, reads it back, deletes it and drops
 the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.
 
 ```
@@ -9868,8 +9867,7 @@ bd stores host-audit [flags]
 **Flags:**
 
 ```
-      --backup-max-age duration   Accepted for symmetry with the fleet view; the audit reports ages only (default 48h0m0s)
-      --write-probe               Also write+read+delete a probe row in each store (see --help)
+      --write-probe   Also write+read+delete a probe row in each store (see --help)
 ```
 
 #### bd stores list

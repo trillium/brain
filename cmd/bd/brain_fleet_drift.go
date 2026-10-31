@@ -142,6 +142,16 @@ func fetchHostAudit(ctx context.Context, m fleetMember, run fleetRunner, o fleet
 	return &a, nil
 }
 
+// expectedStoreHost is the store host a machine should use: its roster
+// store_host when declared, else the live host.
+func expectedStoreHost(m fleetMember, o fleetAuditOptions) hostAddr {
+	if m.StoreHost != "" {
+		exp, _ := parseHostAddr(m.StoreHost)
+		return exp
+	}
+	return o.Live
+}
+
 // classifyHostAudit compares one machine's facts with the live host and the
 // repo. It is pure.
 func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift []driftItem, bin binaryCheck) {
@@ -153,10 +163,7 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 		add(driftBinary, "bd", bin.Reason+" (installed "+a.BdVersion+")", bin.Fix, false)
 	}
 
-	exp := o.Live
-	if m.StoreHost != "" {
-		exp, _ = parseHostAddr(m.StoreHost)
-	}
+	exp := expectedStoreHost(m, o)
 	want := exp
 	sh := a.StoreHost
 	switch {
@@ -368,6 +375,9 @@ func replayHint(server, live hostAddr, db string) string {
 type orphanTarget struct {
 	Addr   hostAddr
 	Origin string
+	// Required targets (an operator's --old-host) are drift when they cannot
+	// be scanned; a discovered stray server that cannot be scanned is not.
+	Required bool
 }
 
 // checkOrphans scans the live server and each target and reports ids that are
@@ -391,9 +401,13 @@ func checkOrphans(ctx context.Context, scan idScanner, live hostAddr, targets []
 		}
 		ids, err := scan(ctx, t.Addr)
 		if err != nil {
-			// A server that is not there holds no orphans we can prove or disprove.
 			os_.Error = firstErrLine(err)
 			res = append(res, os_)
+			if t.Required {
+				drift = append(drift, driftItem{Machine: "fleet", Kind: driftOrphans, Subject: t.Addr.String(),
+					Detail: "cannot scan " + t.Origin + " " + t.Addr.String() + " for orphan beads: " + os_.Error,
+					Fix:    "make " + t.Addr.String() + " reachable with valid credentials, or drop it from --old-host"})
+			}
 			continue
 		}
 		os_.Scanned = len(ids)
@@ -500,7 +514,7 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 
 	var targets []orphanTarget
 	for _, h := range o.OldHosts {
-		targets = append(targets, orphanTarget{Addr: h, Origin: "configured old host"})
+		targets = append(targets, orphanTarget{Addr: h, Origin: "configured old host", Required: true})
 	}
 	var unscannable []orphanServer
 	if o.Live.Host != "" {
@@ -577,9 +591,18 @@ func repairHost(ctx context.Context, m fleetMember, run fleetRunner, o fleetAudi
 	}
 	out := &repairOutcome{Attempted: true}
 	r.Repaired = out
-	if !r.Audit.StoreHost.Present || r.Audit.StoreHost.Error != "" {
+	sh, exp := r.Audit.StoreHost, expectedStoreHost(m, o)
+	switch {
+	case !sh.Present || sh.Error != "":
 		out.Attempted, out.Status = false, "refused"
 		out.Detail = "store-host.env is missing or unusable on " + m.Name + "; rewrite-wrappers refuses, and --repair never writes it"
+		return
+	case exp.Host == "" || sh.Host != exp.Host || sh.Port != exp.Port:
+		out.Attempted, out.Status = false, "refused"
+		out.Detail = fmt.Sprintf("store-host.env on %s says %s:%d but the expected store host is %s; rewrite-wrappers would point its wrappers there, and --repair never edits store-host.env", m.Name, sh.Host, sh.Port, exp)
+		if exp.Host == "" {
+			out.Detail = "the live store host is unknown, so store-host.env on " + m.Name + " cannot be confirmed; --repair rewrites pins only when store-host.env agrees with the live host"
+		}
 		return
 	}
 	rctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
@@ -680,7 +703,7 @@ func fleetAuditOptionsFromFlags(ctx context.Context) (fleetAuditOptions, error) 
 	}
 	o.MainSHA, o.IsAncestor = repoMain(ctx, repo)
 	o.Local = func(c context.Context, writeProbe bool) hostAudit {
-		return buildHostAudit(c, auditOptions{WriteProbe: writeProbe, BackupMax: o.BackupMax, Servers: discoverDoltServers})
+		return buildHostAudit(c, auditOptions{WriteProbe: writeProbe, Servers: discoverDoltServers})
 	}
 	return o, nil
 }
@@ -693,6 +716,8 @@ func printFleetAudit(w interface{ Write([]byte) (int, error) }, a *fleetAuditRep
 	fmt.Fprintf(w, "\nlive store host: %s (from %s)\n", live, a.LiveSource)
 	for _, h := range a.Hosts {
 		switch {
+		case h.Audit == nil && h.Reachable:
+			fmt.Fprintf(w, "%-12s %-11s %s\n", h.Name, "AUDIT-N/A", h.Error)
 		case h.Audit == nil:
 			fmt.Fprintf(w, "%-12s %-11s %s\n", h.Name, "UNREACHABLE", h.Error)
 		default:

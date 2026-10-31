@@ -96,7 +96,6 @@ type auditOptions struct {
 	Home       string
 	Jobs       int
 	Timeout    time.Duration
-	BackupMax  time.Duration
 	StoresFunc func() (map[string]storeEntry, error)
 	Self       string
 	Servers    func() []localServer
@@ -455,7 +454,6 @@ func buildHostAudit(ctx context.Context, o auditOptions) hostAudit {
 
 var (
 	hostAuditWriteProbe bool
-	hostAuditBackupMax  time.Duration
 )
 
 var brainStoresHostAuditCmd = &cobra.Command{
@@ -477,7 +475,7 @@ the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.`,
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		a := buildHostAudit(ctx, auditOptions{WriteProbe: hostAuditWriteProbe, BackupMax: hostAuditBackupMax, Servers: discoverDoltServers})
+		a := buildHostAudit(ctx, auditOptions{WriteProbe: hostAuditWriteProbe, Servers: discoverDoltServers})
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(a)
@@ -486,6 +484,5 @@ the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.`,
 
 func init() {
 	brainStoresHostAuditCmd.Flags().BoolVar(&hostAuditWriteProbe, "write-probe", false, "Also write+read+delete a probe row in each store (see --help)")
-	brainStoresHostAuditCmd.Flags().DurationVar(&hostAuditBackupMax, "backup-max-age", 48*time.Hour, "Accepted for symmetry with the fleet view; the audit reports ages only")
 	brainStoresCmd.AddCommand(brainStoresHostAuditCmd)
 }

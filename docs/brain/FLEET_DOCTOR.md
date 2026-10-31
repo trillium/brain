@@ -54,7 +54,10 @@ a leftover table is named in the result. Embedded stores (no SQL server) are
 
 Default is report-only. `--repair` runs the existing `brain stores
 rewrite-wrappers` on each **reachable** machine that has wrapper-pin drift and a
-valid `store-host.env`, then re-audits it. It never installs binaries, edits
+valid `store-host.env` that agrees with the expected store host (the live host,
+or the machine's roster `store_host`), then re-audits it. A machine whose
+`store-host.env` is missing, unusable, or names another host is refused with
+the reason: rewriting its pins would follow the wrong host. It never installs binaries, edits
 `store-host.env`, touches Dolt servers, edits env files (those pins are reported
 with a manual fix), or acts on an unreachable machine.
 
@@ -65,7 +68,9 @@ non-live Dolt server with the live host, per database: `--old-host host:port`
 (repeatable) plus any `dolt sql-server` the machines report running locally
 (stray servers). An id present there but not live is an orphan; a database the
 live host lacks entirely is listed with `live_database_missing`. Any orphan is
-drift. Credentials: `BEADS_DOLT_SERVER_USER` (default root) and
+drift. An `--old-host` that cannot be scanned (refused login, timeout, down) is
+drift too, with the cause; a stray server that cannot be scanned is reported
+but not fatal. Credentials: `BEADS_DOLT_SERVER_USER` (default root) and
 `BEADS_DOLT_PASSWORD`. Replay is only **offered**: the JSON lists a review-first
 export/import command per database; nothing is replayed automatically.
 

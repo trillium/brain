@@ -282,7 +282,7 @@ func TestCheckOrphansFindsIdsMissingFromLive(t *testing.T) {
 		stray.String(): {"projects": idset("projects-9")},
 	})
 	res, drift := checkOrphans(context.Background(), scan, live, []orphanTarget{
-		{old, "configured old host"}, {stray, "stray"}, {gone, "gone"}, {live, "dup of live"}, {old, "dup"}})
+		{Addr: old, Origin: "configured old host"}, {Addr: stray, Origin: "stray"}, {Addr: gone, Origin: "gone"}, {Addr: live, Origin: "dup of live"}, {Addr: old, Origin: "dup"}})
 	if len(res) != 3 {
 		t.Fatalf("results = %+v", res)
 	}
@@ -293,7 +293,7 @@ func TestCheckOrphansFindsIdsMissingFromLive(t *testing.T) {
 		t.Errorf("stray server with a database the live host lacks: %+v", res[1])
 	}
 	if res[2].Error == "" || res[2].Total != 0 {
-		t.Errorf("an unreachable old host is reported, not counted: %+v", res[2])
+		t.Errorf("an unscannable stray server is reported, not counted: %+v", res[2])
 	}
 	if len(drift) != 2 || drift[0].Kind != driftOrphans {
 		t.Errorf("drift = %+v", drift)
@@ -307,7 +307,7 @@ func TestCheckOrphansCleanWhenLiveHasEverything(t *testing.T) {
 	live, old := hostAddr{Host: "l", Port: 1}, hostAddr{Host: "o", Port: 1}
 	scan := fakeScanner(map[string]map[string]map[string]struct{}{
 		live.String(): {"task": idset("a", "b", "c")}, old.String(): {"task": idset("a", "b")}})
-	if _, d := checkOrphans(context.Background(), scan, live, []orphanTarget{{old, "old"}}); len(d) != 0 {
+	if _, d := checkOrphans(context.Background(), scan, live, []orphanTarget{{Addr: old, Origin: "old"}}); len(d) != 0 {
 		t.Fatalf("drift = %+v", d)
 	}
 }
@@ -596,5 +596,45 @@ func TestRepairReauditOfSelfIsReadOnly(t *testing.T) {
 	_, _ = fetchHostAudit(context.Background(), m, nil, o)
 	if len(probes) != 2 || !probes[0] || probes[1] {
 		t.Fatalf("Local must follow each call's WriteProbe, got %v", probes)
+	}
+}
+
+func TestRepairRefusesWhenStoreHostEnvIsStale(t *testing.T) {
+	// store-host.env names a stale host X while the wrapper pins the live host L:
+	// rewrite-wrappers would move the wrapper onto X, so --repair must refuse.
+	f := &auditFake{audits: map[string]string{"mini0": auditJSON("100.64.0.9", "100.84.99.99")}}
+	rep := runFleetAudit(context.Background(), []fleetMember{{Name: "mini0", SSH: "mini0"}}, f.run,
+		fleetAuditOptions{Live: liveMini0, Repair: true, MainSHA: "aaaaaaaaaaaa", LiveChecker: func(context.Context, hostAddr) error { return nil }}, time.Second)
+	if len(f.repaired) != 0 {
+		t.Fatalf("repair ran against a stale store-host.env: %v", f.repaired)
+	}
+	h := rep.Hosts[0]
+	if h.Repaired == nil || h.Repaired.Status != "refused" || !strings.Contains(h.Repaired.Detail, "100.64.0.9") || !strings.Contains(h.Repaired.Detail, liveMini0.String()) {
+		t.Fatalf("repair outcome = %+v", h.Repaired)
+	}
+}
+
+func TestOrphanCheckUnscannableOldHostIsDrift(t *testing.T) {
+	live, old, stray := hostAddr{Host: "l", Port: 1}, hostAddr{Host: "o", Port: 1}, hostAddr{Host: "s", Port: 1}
+	scan := fakeScanner(map[string]map[string]map[string]struct{}{live.String(): {"task": idset("a")}})
+	res, d := checkOrphans(context.Background(), scan, live, []orphanTarget{
+		{Addr: old, Origin: "configured old host", Required: true},
+		{Addr: stray, Origin: "Dolt server running on x"},
+	})
+	if len(res) != 2 || res[0].Error == "" || res[1].Error == "" {
+		t.Fatalf("both servers must be reported unscanned: %+v", res)
+	}
+	if len(d) != 1 || d[0].Subject != old.String() || !strings.Contains(d[0].Detail, "connection refused") {
+		t.Fatalf("only the configured old host is drift, with its cause: %+v", d)
+	}
+}
+
+func TestPrintFleetAuditLabelsOldBinaryAuditUnavailable(t *testing.T) {
+	rep := runFleetAudit(context.Background(), []fleetMember{{Name: "mini1", SSH: "mini1"}}, fleetOld{}.run,
+		fleetAuditOptions{Live: liveMini0, LiveChecker: func(context.Context, hostAddr) error { return nil }}, time.Second)
+	var b strings.Builder
+	printFleetAudit(&b, rep)
+	if strings.Contains(b.String(), "UNREACHABLE") || !strings.Contains(b.String(), "AUDIT-N/A") {
+		t.Fatalf("an old binary that answered is not unreachable:\n%s", b.String())
 	}
 }
