@@ -9,7 +9,7 @@ SHELL := $(subst cmd,bin,$(subst git.exe,bash.exe,$(GIT_BASH)))
 endif
 endif
 
-.PHONY: install-from-repo all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-emit-wrappers help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version deploy deploy-check
+.PHONY: all build test test-icu-path test-full-cgo test-regression test-upgrade test-cross-version test-migration bench bench-quick clean clean-test-tmp install install-force install-emit-wrappers help check-up-to-date fmt fmt-check check-testing-short brain-release brain-version deploy deploy-check
 .PHONY: ci-pr-core ci-pr-policy ci-pr-lint ci-package-mcp ci-package-npm ci-website
 
 # Default target
@@ -83,11 +83,6 @@ ifeq ($(shell uname),Darwin)
 	@echo "Signed bd for macOS"
 endif
 endif
-
-# The single repo-owned install path: build THIS checkout, stamped, and install
-# it atomically (see scripts/install-from-repo.sh; never touches the bd wrapper).
-install-from-repo:
-	@./scripts/install-from-repo.sh
 
 # Rebuild ~/.local/bin/beads from origin/main and install it (robots-k2r4).
 #

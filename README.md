@@ -83,7 +83,7 @@ Every host's installed binary must be built from this repo, so every machine
 runs the commands the repo documents. The single repo-owned install path:
 
 ```sh
-scripts/install-from-repo.sh            # also: make install-from-repo
+scripts/install-from-repo.sh            # build + install HEAD of this checkout
 scripts/install-from-repo.sh --dry-run  # build + verify the stamp, install nothing
 ```
 
