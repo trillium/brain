@@ -653,3 +653,13 @@ func TestPrintFleetAuditLabelsOldBinaryAuditUnavailable(t *testing.T) {
 		t.Fatalf("an old binary that answered is not unreachable:\n%s", b.String())
 	}
 }
+
+func TestPinFixWhenLiveHostUnknownNamesTheLiveHost(t *testing.T) {
+	a := &hostAudit{Stamp: stamped(), StoreHost: storeHostView{Present: true, Host: "100.84.99.99", Port: 3307},
+		Pins:   []hostPin{{Name: "task", Path: "/h/.local/bin/task", Source: "wrapper", Host: "100.102.238.78", Port: 3307}},
+		Stores: []storeAudit{okStore("task")}}
+	d, _ := classifyHostAudit(fleetMember{Name: "mini0"}, a, fleetAuditOptions{MainSHA: "aaaaaaaaaaaa"})
+	if kinds(d) != driftPin || d[0].Repairable || !strings.Contains(d[0].Fix, "--live-host") || strings.Contains(d[0].Fix, "correct store-host.env") {
+		t.Fatalf("pin with unknown live host = %+v", d)
+	}
+}

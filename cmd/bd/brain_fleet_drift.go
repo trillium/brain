@@ -206,7 +206,10 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 			if shValid && exp.Host != "" && !shAgrees {
 				detail = fmt.Sprintf("%s pins %s but store-host.env says %s, and the expected store host is %s: %s", p.Source, pinAddr(p), want, exp, p.Line)
 			}
-			if !shAgrees {
+			switch {
+			case exp.Host == "":
+				fix = "establish the live store host first (pass --live-host host:port), then run brain stores rewrite-wrappers on " + m.Name + " if store-host.env agrees"
+			case !shAgrees:
 				fix = "correct store-host.env on " + m.Name + " first (doctor --repair never edits it), then run brain stores rewrite-wrappers"
 			}
 			if p.Source != "wrapper" {
