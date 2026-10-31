@@ -300,13 +300,14 @@ func storeSQL(ctx context.Context, wrapper string, args ...string) (string, erro
 }
 
 const (
-	writeProbeTable = "brain_fleet_probe"
-	writeProbeSkip  = "not yet supported in embedded mode"
+	writeProbeTablePrefix = "brain_fleet_probe_"
+	writeProbeSkip        = "not yet supported in embedded mode"
 )
 
 // probeStoreWrite proves a store accepts a write and reads it back, through
-// its own wrapper. Footprint: it creates the table brain_fleet_probe, inserts
-// one row keyed by a random nonce, reads that row back, deletes it and drops
+// its own wrapper. Footprint: it creates the table brain_fleet_probe_<nonce>
+// (its own table, so concurrent probes of one store from several machines
+// never share or drop each other's table), inserts one row keyed by the nonce, reads that row back, deletes it and drops
 // the table. No issue, dependency or other bead data is read or written; when
 // every step succeeds the store ends as it began (the table is gone). A
 // failure part-way still attempts the delete and drop, and says if that
@@ -317,6 +318,7 @@ func probeStoreWrite(ctx context.Context, wrapper string, nonce string) probeRes
 	r := probeResult{Status: "ok"}
 	finish := func() probeResult { r.Millis = time.Since(started).Milliseconds(); return r }
 	run := func(args ...string) (string, error) { return storeSQL(ctx, wrapper, args...) }
+	writeProbeTable := writeProbeTablePrefix + strings.ReplaceAll(nonce, "-", "_")
 
 	cleanup := func() error {
 		var errs []string
@@ -466,8 +468,8 @@ a read probe of every store through its wrapper, the age of each store's last
 backup, and the Dolt servers running here. It decides nothing; 'brain stores
 doctor --fleet' compares these facts across machines.
 
-With --write-probe it also writes through each store's wrapper: it creates the
-table brain_fleet_probe, inserts one row, reads it back, deletes it and drops
+With --write-probe it also writes through each store's wrapper: it creates its
+own table brain_fleet_probe_<nonce>, inserts one row, reads it back, deletes it and drops
 the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.`,
 	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, _ []string) {

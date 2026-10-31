@@ -37,11 +37,12 @@ pin counts (`pin_count`), and mini2 unreachable (`unreachable`, never touched).
 Per store, through the store's own wrapper (so a host pin that misroutes the
 wrapper is caught), using `sql` statements:
 
-1. `CREATE TABLE IF NOT EXISTS brain_fleet_probe (id, ts)`
+1. `CREATE TABLE IF NOT EXISTS brain_fleet_probe_<nonce> (id, ts)`: a table of
+   its own per probe, so machines probing the same store at once never collide
 2. `INSERT` one row keyed by a random nonce
 3. `SELECT` that row back
 4. `DELETE` it
-5. `DROP TABLE brain_fleet_probe`
+5. `DROP TABLE brain_fleet_probe_<nonce>`
 
 No issue, dependency, label or other bead table is read or written. On success
 the store is left exactly as found apart from what Dolt's auto-commit may record

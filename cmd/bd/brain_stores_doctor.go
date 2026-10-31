@@ -98,8 +98,8 @@ command (exit 0 converged, 1 not converged, 2 registry unreadable).
 --fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
 binary's build stamp against the repo's main, store-host.env against the live
 host, wrapper and shim env-file host pins that disagree, a read and a write
-probe of each store (the write probe creates and drops the table
-brain_fleet_probe; --no-write-probe skips it), backup freshness, reachability
+probe of each store (the write probe creates and drops its own table
+brain_fleet_probe_<nonce>; --no-write-probe skips it), backup freshness, reachability
 (an unreachable machine is reported and never touched), and orphan beads on
 --old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does

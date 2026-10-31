@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -508,5 +509,92 @@ func TestStoreHostRosterOverride(t *testing.T) {
 	}
 	if d, _ := classifyHostAudit(fleetMember{Name: "x", StoreHost: "127.0.0.1:3307"}, a, o); has(d) {
 		t.Fatalf("declared store_host must not drift: %+v", d)
+	}
+}
+
+func TestFleetAuditOptionsAncestryOutlivesSetup(t *testing.T) {
+	repo := t.TempDir()
+	runGit(t, repo, "init", "-q", "-b", "main")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "first")
+	first := runGit(t, repo, "rev-parse", "HEAD")
+	runGit(t, repo, "commit", "-q", "--allow-empty", "-m", "second")
+	t.Setenv("BRAIN_REPO", repo)
+	o, err := fleetAuditOptionsFromFlags(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := classifyBinary(buildStamp{Commit: first, Dirty: "no"}, o.MainSHA, o.IsAncestor); !strings.Contains(got.Reason, "behind main") {
+		t.Fatalf("an older main commit must classify 'behind main' after setup returns, got %+v", got)
+	}
+}
+
+func TestProbeStoreWriteUsesItsOwnTable(t *testing.T) {
+	w, state := fakeStoreWrapper(t, false)
+	probeStoreWrite(context.Background(), w, "fleetprobe-1-1")
+	probeStoreWrite(context.Background(), w, "fleetprobe-2-1")
+	log, _ := os.ReadFile(filepath.Join(state, "log"))
+	tables := map[string]bool{}
+	for _, l := range strings.Split(strings.TrimSpace(string(log)), "\n") {
+		if strings.HasPrefix(l, "CREATE") {
+			tables[strings.Fields(l)[5]] = true
+		}
+		if strings.HasPrefix(l, "DROP") && !strings.Contains(l, "brain_fleet_probe_fleetprobe_") {
+			t.Fatalf("probe dropped a table it does not own: %s", l)
+		}
+	}
+	if len(tables) != 2 {
+		t.Fatalf("two probes must use two tables, got %v", tables)
+	}
+}
+
+func TestStrayServerTargetsDialTheMachine(t *testing.T) {
+	live := hostAddr{Host: "100.84.99.99", Port: 3307}
+	remote := hostAddr{Host: "mini3", Port: 3310}
+	self := hostAddr{Host: "127.0.0.1", Port: 3311}
+	servers := func(host string, port int) string {
+		return fmt.Sprintf(`"local_servers":[{"host":%q,"port":%d,"args":"dolt sql-server"},{"host":%q,"args":"dolt sql-server --config x"}],"stores"`, host, port, host)
+	}
+	f := &auditFake{audits: map[string]string{
+		"mini3": strings.Replace(auditJSON("100.84.99.99", ""), `"stores"`, servers("127.0.0.1", 3310), 1),
+	}}
+	scan := fakeScanner(map[string]map[string]map[string]struct{}{
+		live.String():   {"task": idset("task-1")},
+		remote.String(): {"task": idset("task-1", "task-lost")},
+		self.String():   {"task": idset("task-1")},
+	})
+	local := func(context.Context, bool) hostAudit {
+		var a hostAudit
+		_ = json.Unmarshal([]byte(strings.Replace(auditJSON("100.84.99.99", ""), `"stores"`, servers("127.0.0.1", 3311), 1)), &a)
+		return a
+	}
+	rep := runFleetAudit(context.Background(), []fleetMember{{Name: "mini1", SSH: "mini1"}, {Name: "mini3", SSH: "ops@mini3"}}, f.run,
+		fleetAuditOptions{Live: live, Self: "mini1", Local: local, MainSHA: "aaaaaaaaaaaa", Scanner: scan, LiveChecker: func(context.Context, hostAddr) error { return nil }}, time.Second)
+	got := map[string]orphanServer{}
+	for _, o := range rep.Orphans {
+		got[o.Server+" "+o.Origin] = o
+	}
+	if o, ok := got[remote.String()+" Dolt server running on mini3"]; !ok || o.Total != 1 {
+		t.Errorf("mini3's loopback server must be dialled through its ssh host: %+v", rep.Orphans)
+	}
+	if o, ok := got[self.String()+" Dolt server running on mini1"]; !ok || o.Error != "" {
+		t.Errorf("the orchestrator's own loopback server must be scanned on loopback: %+v", rep.Orphans)
+	}
+	if o, ok := got["mini3 Dolt server running on mini3"]; !ok || o.Error == "" {
+		t.Errorf("a server without a port on its command line must be reported unscanned: %+v", rep.Orphans)
+	}
+}
+
+func TestRepairReauditOfSelfIsReadOnly(t *testing.T) {
+	var probes []bool
+	o := fleetAuditOptions{Self: "mini1", WriteProbe: true, Local: func(_ context.Context, wp bool) hostAudit {
+		probes = append(probes, wp)
+		return hostAudit{}
+	}}
+	m := fleetMember{Name: "mini1"}
+	_, _ = fetchHostAudit(context.Background(), m, nil, o)
+	o.WriteProbe = false
+	_, _ = fetchHostAudit(context.Background(), m, nil, o)
+	if len(probes) != 2 || !probes[0] || probes[1] {
+		t.Fatalf("Local must follow each call's WriteProbe, got %v", probes)
 	}
 }

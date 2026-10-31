@@ -102,7 +102,7 @@ type fleetAuditOptions struct {
 	Repair      bool
 	MainSHA     string
 	IsAncestor  func(string) bool
-	Local       func(ctx context.Context) hostAudit
+	Local       func(ctx context.Context, writeProbe bool) hostAudit
 	Self        string
 	Scanner     idScanner
 	LiveChecker func(ctx context.Context, a hostAddr) error
@@ -122,7 +122,7 @@ func hostAuditArgs(o fleetAuditOptions) []string {
 
 func fetchHostAudit(ctx context.Context, m fleetMember, run fleetRunner, o fleetAuditOptions) (*hostAudit, error) {
 	if m.Name == o.Self && o.Local != nil {
-		a := o.Local(ctx)
+		a := o.Local(ctx, o.WriteProbe)
 		return &a, nil
 	}
 	out, err := run(ctx, m, hostAuditArgs(o)...)
@@ -502,20 +502,20 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 	for _, h := range o.OldHosts {
 		targets = append(targets, orphanTarget{Addr: h, Origin: "configured old host"})
 	}
+	var unscannable []orphanServer
 	if o.Live.Host != "" {
 		for i, r := range results {
 			if r.Audit == nil {
 				continue
 			}
 			for _, s := range r.Audit.Servers {
+				host := strayServerHost(s, roster[i], r.Name == o.Self)
+				origin := "Dolt server running on " + r.Name
 				if s.Port == 0 {
+					unscannable = append(unscannable, orphanServer{Server: host, Origin: origin, Error: "port not on its command line: " + s.Args})
 					continue
 				}
-				host := roster[i].SSH
-				if s.Host != "" && s.Host != "0.0.0.0" && s.Host != "::" {
-					host = s.Host
-				}
-				targets = append(targets, orphanTarget{Addr: hostAddr{Host: host, Port: s.Port}, Origin: "Dolt server running on " + r.Name})
+				targets = append(targets, orphanTarget{Addr: hostAddr{Host: host, Port: s.Port}, Origin: origin})
 			}
 		}
 	}
@@ -524,6 +524,7 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 		rep.Orphans, od = checkOrphans(ctx, o.Scanner, o.Live, targets)
 		rep.Drift = append(rep.Drift, od...)
 	}
+	rep.Orphans = append(rep.Orphans, unscannable...)
 
 	rep.Hosts = results
 	for _, r := range results {
@@ -532,6 +533,22 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 	sort.SliceStable(rep.Drift, func(i, j int) bool { return rep.Drift[i].Machine < rep.Drift[j].Machine })
 	rep.Clean = len(rep.Drift) == 0
 	return rep
+}
+
+// strayServerHost is the address the orchestrator dials for a Dolt server a
+// machine reported. A wildcard bind, or a loopback bind on another machine,
+// is reached through the machine's roster ssh host (without any user@).
+func strayServerHost(s localServer, m fleetMember, self bool) string {
+	h := s.Host
+	ip := net.ParseIP(h)
+	loopback := h == "localhost" || (ip != nil && ip.IsLoopback())
+	if h == "" || (ip != nil && ip.IsUnspecified()) || (loopback && !self) {
+		h = m.SSH
+		if at := strings.LastIndexByte(h, '@'); at >= 0 {
+			h = h[at+1:]
+		}
+	}
+	return h
 }
 
 var errAuditUnsupported = errors.New("unknown command \"host-audit\"")
@@ -661,11 +678,9 @@ func fleetAuditOptionsFromFlags(ctx context.Context) (fleetAuditOptions, error) 
 	if repo == "" {
 		repo = SourceRepo
 	}
-	rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	o.MainSHA, o.IsAncestor = repoMain(rctx, repo)
-	o.Local = func(c context.Context) hostAudit {
-		return buildHostAudit(c, auditOptions{WriteProbe: o.WriteProbe, BackupMax: o.BackupMax, Servers: discoverDoltServers})
+	o.MainSHA, o.IsAncestor = repoMain(ctx, repo)
+	o.Local = func(c context.Context, writeProbe bool) hostAudit {
+		return buildHostAudit(c, auditOptions{WriteProbe: writeProbe, BackupMax: o.BackupMax, Servers: discoverDoltServers})
 	}
 	return o, nil
 }
