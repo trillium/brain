@@ -104,7 +104,9 @@ func repoMain(ctx context.Context, repo string) (string, func(string) bool) {
 		return "", nil
 	}
 	rev := func(ref string) string {
-		out, err := exec.CommandContext(ctx, "git", "-C", repo, "rev-parse", "--verify", "-q", ref+"^{commit}").Output() //nolint:gosec // repo is operator config / build stamp
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(c, "git", "-C", repo, "rev-parse", "--verify", "-q", ref+"^{commit}").Output() //nolint:gosec // repo is operator config / build stamp
 		if err != nil {
 			return ""
 		}
@@ -118,7 +120,9 @@ func repoMain(ctx context.Context, repo string) (string, func(string) bool) {
 		return "", nil
 	}
 	return sha, func(commit string) bool {
-		return exec.CommandContext(ctx, "git", "-C", repo, "merge-base", "--is-ancestor", commit, sha).Run() == nil //nolint:gosec // see above
+		c, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		return exec.CommandContext(c, "git", "-C", repo, "merge-base", "--is-ancestor", commit, sha).Run() == nil //nolint:gosec // see above
 	}
 }
 
