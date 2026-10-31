@@ -663,3 +663,20 @@ func TestPinFixWhenLiveHostUnknownNamesTheLiveHost(t *testing.T) {
 		t.Fatalf("pin with unknown live host = %+v", d)
 	}
 }
+
+func TestEnvHostFromBrainWrapperIsNotBlamedOnProfile(t *testing.T) {
+	o := fleetAuditOptions{Live: liveMini0, MainSHA: "bbbbbbbbbbbb", IsAncestor: func(string) bool { return true }}
+	brainPin := hostPin{Name: "brain", Path: "/h/.local/bin/brain", Source: "wrapper", Host: "100.102.238.78", Port: 3307, Line: "export BEADS_DOLT_SERVER_HOST=100.102.238.78"}
+	a := &hostAudit{Stamp: buildStamp{Commit: "bbbbbbbbbbbb", Dirty: "no"},
+		StoreHost: storeHostView{Present: true, Host: liveMini0.Host, Port: liveMini0.Port},
+		EnvHost:   "100.102.238.78", Pins: []hostPin{brainPin}, Stores: []storeAudit{okStore("a")}}
+	d, _ := classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
+	if kinds(d) != "pin" || !d[0].Repairable {
+		t.Fatalf("brain wrapper's own env must be reported once, as a repairable pin: %+v", d)
+	}
+	a.Pins = []hostPin{{Name: "task", Path: "/h/.local/bin/task", Source: "wrapper", Host: "100.102.238.78", Port: 3307}}
+	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
+	if kinds(d) != "store-host,pin" {
+		t.Fatalf("an env host not set by the brain wrapper is still reported: %+v", d)
+	}
+}

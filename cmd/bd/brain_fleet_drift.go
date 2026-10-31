@@ -152,6 +152,17 @@ func expectedStoreHost(m fleetMember, o fleetAuditOptions) hostAddr {
 	return o.Live
 }
 
+// brainWrapperPinsHost reports whether the brain wrapper, which the audit runs
+// through, itself exports host; the pin check already judges that pin.
+func brainWrapperPinsHost(pins []hostPin, host string) bool {
+	for _, p := range pins {
+		if p.Source == "wrapper" && p.Name == "brain" && p.Host == host {
+			return true
+		}
+	}
+	return false
+}
+
 // classifyHostAudit compares one machine's facts with the live host and the
 // repo. It is pure.
 func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift []driftItem, bin binaryCheck) {
@@ -183,7 +194,7 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 		}
 		add(driftStoreHost, sh.Path, detail, fix, false)
 	}
-	if a.EnvHost != "" && exp.Host != "" && a.EnvHost != exp.Host {
+	if a.EnvHost != "" && exp.Host != "" && a.EnvHost != exp.Host && !brainWrapperPinsHost(a.Pins, a.EnvHost) {
 		add(driftStoreHost, "BEADS_DOLT_SERVER_HOST", fmt.Sprintf("this machine's process environment sets BEADS_DOLT_SERVER_HOST=%s, which overrides store-host.env; expected %s", a.EnvHost, exp), "unset it in the shell profile / launchd plist", false)
 	}
 
