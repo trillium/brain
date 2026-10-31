@@ -1,31 +1,34 @@
-# brain stores doctor --fleet: live READ-ONLY run from the final binary
-# date: 2026-10-31T19:23:48Z  host: mini1  binary: bd built with go build -tags gms_pure_go from 64c21b382857 plus the uncommitted review fix (stamped dirty)
-# env: BEADS_DIR=$HOME/data/brain/.beads BEADS_DOLT_SERVER_MODE=1 BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_SERVER_PORT=3307 BEADS_DOLT_SHARED_SERVER=1 (the brain wrapper env)
-# roster ~/.config/brain/fleet.yaml: mini0, mini1, macbook (mini2 is not on the roster and was never contacted)
-# no --repair; write probe disabled with --no-write-probe
-$ bd stores doctor --fleet --no-write-probe --live-host 100.84.99.99:3307
+# Read-only live run of the final binary (merged main b62768834), 2026-10-31
+# command: brain stores doctor --fleet --no-write-probe --roster <mini0, mini1 (store_host 127.0.0.1:3307), macbook, mini3> --live-host 100.84.99.99:3307
+# no --repair, no write probe, no installs or host config changes; mini2 deliberately not contacted
+# (its unreachable path is covered by the TestRunFleetAudit* tests with a fake runner).
+# Only mini1 has a build with 'stores host-audit'; mini0, macbook and mini3 still run the old brain and are
+# reported audit-unavailable (not unreachable). Rolling out the new binary stays with main, so their pins/probes appear after upgrade.
+# exit status: 1
 REGISTRY  registry store "glossary" has no brain_stores row
 mini0        CONVERGED   epoch 14, 61/61 wrappers
 mini1        CONVERGED   epoch 14, 61/61 wrappers
 macbook      CONVERGED   epoch 14, 61/61 wrappers
+mini3        CONVERGED   epoch 14, 61/61 wrappers
 NOT CONVERGED at epoch 14: registry: registry store "glossary" has no brain_stores row
 
 live store host: 100.84.99.99:3307 (from --live-host)
 mini0        AUDIT-N/A   unknown command "host-audit"
-mini1        bd 1.1.0-rc.1 (64c21b382857)  store-host.env 127.0.0.1:3307  pins 97  read 61/61  write 0/0
+mini1        bd 1.1.0-rc.1 (unstamped)  store-host.env 127.0.0.1:3307  pins 97  read 61/61  write 0/0
 macbook      AUDIT-N/A   unknown command "host-audit"
+mini3        AUDIT-N/A   unknown command "host-audit"
 DRIFT macbook      audit-unavailable : installed brain predates 'stores host-audit': it has no build stamp and cannot report pins or probes
       fix: rebuild from the repo: scripts/install-from-repo.sh
 DRIFT mini0        audit-unavailable : installed brain predates 'stores host-audit': it has no build stamp and cannot report pins or probes
       fix: rebuild from the repo: scripts/install-from-repo.sh
-DRIFT mini1        binary           bd: binary built from 64c21b382857, not on main (main is 8e7199bbab68) (installed 1.1.0-rc.1)
+DRIFT mini1        binary           bd: binary carries no build stamp (built before stamping, or by plain 'go build') (installed 1.1.0-rc.1)
       fix: rebuild from the repo: scripts/install-from-repo.sh
-DRIFT mini1        store-host       /Users/mini1/.config/brain/store-host.env: store-host.env says 127.0.0.1:3307 but the live host is 100.84.99.99:3307; a loopback host is right only on the Dolt host itself or behind a forwarder to it
-      fix: if that is intended, declare store_host: 127.0.0.1:3307 for mini1 in fleet.yaml; otherwise edit store-host.env by hand
 DRIFT mini1        backup           61 store(s): last backup is over 336h0m0s old (limit 48h0m0s): ability advisor applications assertions brain …(+56)
       fix: bd backup sync
+DRIFT mini3        audit-unavailable : installed brain predates 'stores host-audit': it has no build stamp and cannot report pins or probes
+      fix: rebuild from the repo: scripts/install-from-repo.sh
 FLEET AUDIT: 5 drift item(s)
---- stderr ---
+
+--- stderr
 FAILING MACHINES: (registry inconsistent)
-FLEET DRIFT: 5 item(s) on macbook mini0 mini1
---- exit status: 1 ---
+FLEET DRIFT: 5 item(s) on macbook mini0 mini1 mini3
