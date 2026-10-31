@@ -94,6 +94,9 @@ var versionCmd = &cobra.Command{
 			if branch != "" {
 				result["branch"] = branch
 			}
+			if st := currentBuildStamp(); st.stamped() {
+				result["stamp"] = st
+			}
 			// Only report landedness when the build actually determined it;
 			// "unknown" stays absent rather than asserting a guess.
 			if Landed == "yes" || Landed == "no" {
@@ -109,6 +112,12 @@ var versionCmd = &cobra.Command{
 				fmt.Printf("bd version %s (%s: %s)%s\n", combinedVersion(), Build, shortCommit(commit), landedSuffix())
 			} else {
 				fmt.Printf("bd version %s (%s)%s\n", combinedVersion(), Build, landedSuffix())
+			}
+		}
+
+		if !jsonOutput {
+			if line := currentBuildStamp().stampLine(); line != "" {
+				fmt.Println("  " + line)
 			}
 		}
 
@@ -129,12 +138,14 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 }
 
+var readBuildInfo = debug.ReadBuildInfo
+
 func resolveCommitHash() string {
 	if Commit != "" {
 		return Commit
 	}
 
-	if info, ok := debug.ReadBuildInfo(); ok {
+	if info, ok := readBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.revision" && setting.Value != "" {
 				return setting.Value
@@ -158,7 +169,7 @@ func resolveBranch() string {
 	}
 
 	// Try to get branch from build info (build-time VCS detection)
-	if info, ok := debug.ReadBuildInfo(); ok {
+	if info, ok := readBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.branch" && setting.Value != "" {
 				return setting.Value

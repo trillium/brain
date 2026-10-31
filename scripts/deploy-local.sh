@@ -132,7 +132,7 @@ git worktree add --detach --quiet "$worktree_dir" "$target_sha"
 
 # SKIP_UPDATE_CHECK: the worktree is a detached checkout of the target ref by
 # construction, so the "are you on origin/main" guard is redundant here.
-make -C "$worktree_dir" build SKIP_UPDATE_CHECK=1
+make -C "$worktree_dir" build SKIP_UPDATE_CHECK=1 SOURCE_REPO="$repo_root"
 
 built="$worktree_dir/bd"
 [ -x "$built" ] || { echo "deploy-local.sh: ERROR: build produced no binary at $built" >&2; exit 1; }

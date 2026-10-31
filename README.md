@@ -77,6 +77,36 @@ exec "$HOME/.local/bin/bd" "$@"
 
 Argv[0] dispatch via `BD_NAME` controls display name and brain-mode behavior.
 
+### Installing from the repo
+
+Every host's installed binary must be built from this repo, so every machine
+runs the commands the repo documents. The single repo-owned install path:
+
+```sh
+scripts/install-from-repo.sh            # build + install HEAD of this checkout
+scripts/install-from-repo.sh --dry-run  # build + verify the stamp, install nothing
+```
+
+It builds the checked-out commit, stamps it (commit, dirty flag, build time,
+source repo) and atomically installs it to `$BEADS_BIN` (default
+`~/.local/bin/beads`; the `bd` federation wrapper is never touched).
+`scripts/deploy-local.sh` (`make deploy`) does the same for `origin/main`.
+
+Check any host's build against the repo:
+
+```sh
+bd version          # second line: commit <sha>  dirty <yes|no>  built <time>
+bd version --json   # "stamp": {commit, dirty, build_time}
+brain stores doctor # WARN binary ... if not repo main, dirty, or unstamped
+```
+
+`brain stores doctor` compares the stamp with the repo's `origin/main` (the
+clone recorded in the stamp, or `$BRAIN_REPO`) and warns on a stale, unlanded,
+dirty or unstamped binary (a plain `go build` carries no stamp), with the fix
+command. A warning fails the run under `--strict`. A pre-stamp binary (e.g.
+1.3.1) has no `stores` command, so it cannot run the doctor on itself: there
+the signal is `bd version` printing no stamp line, or `stores` missing.
+
 ## Versioning
 
 Double semver: upstream beads version + brain fork version.

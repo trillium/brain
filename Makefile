@@ -32,6 +32,13 @@ GIT_LANDED := $(shell \
 	if ! git rev-parse --verify -q origin/main >/dev/null 2>&1; then echo unknown; \
 	elif git merge-base --is-ancestor HEAD origin/main >/dev/null 2>&1; then echo yes; \
 	else echo no; fi)
+# Build stamp (commit, dirty flag, time, source repo) baked in so any installed
+# binary can be compared with the repo: `bd version`, `brain stores doctor`.
+GIT_COMMIT := $(shell git rev-parse HEAD 2>/dev/null)
+GIT_DIRTY := $(shell if [ -n "$$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then echo yes; else echo no; fi)
+BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+SOURCE_REPO := $(CURDIR)
+STAMP_LDFLAGS := -X main.Commit=$(GIT_COMMIT) -X main.Dirty=$(GIT_DIRTY) -X main.BuildTime=$(BUILD_TIME) -X main.SourceRepo=$(SOURCE_REPO)
 ifeq ($(OS),Windows_NT)
 INSTALL_DIR := $(USERPROFILE)/.local/bin
 else
@@ -68,9 +75,9 @@ REGRESSION_TIMEOUT ?= 20m
 build:
 	@echo "Building bd..."
 ifeq ($(OS),Windows_NT)
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED) $(STAMP_LDFLAGS)" -o $(BUILD_DIR)/bd.exe ./cmd/bd
 else
-	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED)" -o $(BUILD_DIR)/bd ./cmd/bd
+	go build -tags "$(BUILD_TAGS)" -ldflags="-X main.Build=$(GIT_BUILD) -X main.BrainVersion=$(BRAIN_VERSION) -X main.Landed=$(GIT_LANDED) $(STAMP_LDFLAGS)" -o $(BUILD_DIR)/bd ./cmd/bd
 ifeq ($(shell uname),Darwin)
 	@codesign -s - -f $(BUILD_DIR)/bd 2>/dev/null || true
 	@echo "Signed bd for macOS"
