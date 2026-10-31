@@ -10,10 +10,12 @@ import (
 )
 
 // Build stamp: which repo commit this binary was built from, and whether the
-// tree was dirty. Set via -ldflags by `make build` (and so by
-// scripts/install-from-repo.sh and scripts/deploy-local.sh). A binary without
-// a stamp predates this check (e.g. a 1.3.1 build) or came from a plain
-// `go build`, and `brain stores doctor` flags it.
+// tree was dirty. Set only via -ldflags by `make build` (and so by
+// scripts/install-from-repo.sh and scripts/deploy-local.sh); the vcs.revision
+// Go embeds in a plain `go build` does not count. `brain stores doctor` flags
+// an unstamped build of this code. A pre-stamp build (e.g. 1.3.1) has no
+// `stores` command to run that check: there the signal is `bd version` showing
+// no stamp line, or `stores` missing entirely.
 var (
 	// Dirty is "yes" when the working tree had uncommitted changes at build
 	// time, "no" when clean, "" when the build did not record it.
@@ -36,9 +38,9 @@ type buildStamp struct {
 // stamped reports whether the build recorded the commit it came from.
 func (s buildStamp) stamped() bool { return s.Commit != "" }
 
-// currentBuildStamp reads the stamp of the running binary.
+// currentBuildStamp reads the ldflags-set stamp of the running binary.
 func currentBuildStamp() buildStamp {
-	return buildStamp{Commit: resolveCommitHash(), Dirty: Dirty, BuildTime: BuildTime}
+	return buildStamp{Commit: Commit, Dirty: Dirty, BuildTime: BuildTime}
 }
 
 // stampLine renders the stamp for `bd version`; "" when unstamped.

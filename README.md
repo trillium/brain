@@ -102,8 +102,10 @@ brain stores doctor # WARN binary ... if not repo main, dirty, or unstamped
 
 `brain stores doctor` compares the stamp with the repo's `origin/main` (the
 clone recorded in the stamp, or `$BRAIN_REPO`) and warns on a stale, unlanded,
-dirty or entirely unstamped binary (e.g. a pre-stamp 1.3.1), with the fix
-command. A warning fails the run under `--strict`.
+dirty or unstamped binary (a plain `go build` carries no stamp), with the fix
+command. A warning fails the run under `--strict`. A pre-stamp binary (e.g.
+1.3.1) has no `stores` command, so it cannot run the doctor on itself: there
+the signal is `bd version` printing no stamp line, or `stores` missing.
 
 ## Versioning
 

@@ -23,6 +23,24 @@ func TestStampLine(t *testing.T) {
 	}
 }
 
+func TestCurrentBuildStampUsesOnlyLdflagCommit(t *testing.T) {
+	saved := Commit
+	t.Cleanup(func() { Commit = saved })
+
+	Commit = ""
+	if st := currentBuildStamp(); st.stamped() {
+		t.Fatalf("build without ldflag commit must be unstamped, got %+v", st)
+	}
+	if got := classifyBinary(currentBuildStamp(), "1111111111111111111111111111111111111111", nil); got.Status != "warn" {
+		t.Fatalf("unstamped build must warn, got %+v", got)
+	}
+
+	Commit = "1111111111111111111111111111111111111111"
+	if st := currentBuildStamp(); st.Commit != Commit {
+		t.Fatalf("stamp commit = %q, want ldflag %q", st.Commit, Commit)
+	}
+}
+
 func TestClassifyBinary(t *testing.T) {
 	const mainSHA = "1111111111111111111111111111111111111111"
 	const old = "2222222222222222222222222222222222222222"
