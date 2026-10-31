@@ -16,7 +16,7 @@ report: the convergence verdicts plus an `audit` object (`hosts`, `drift`,
 | --- | --- | --- |
 | Installed binary | `stores host-audit` build stamp, compared with the orchestrating clone's `origin/main` using the same classification as single-host `stores doctor` (PR 72) | not on main, behind main, dirty, or unstamped; a binary too old to have `host-audit` is `audit-unavailable` |
 | `store-host.env` | the file on that machine | missing, unusable, or different from the **live host** |
-| Process env | `BEADS_DOLT_SERVER_HOST` in the audit process | differs from the live host (it overrides the file) |
+| Process env | `BEADS_DOLT_SERVER_HOST` in the audit process | differs from the expected host (it overrides the file), unless the `brain` wrapper's own pin or `store-host.env` supplies that value (then it is reported there) |
 | Host pins | every literal `BEADS_DOLT_SERVER_HOST/PORT` in `~/.local/bin` wrappers, in env files those wrappers `.`/`source`, and in `~/.config/brain-remote/*.env` | differs from the machine's `store-host.env` (else the live host) |
 | Read probe | each store through its own wrapper (`list --limit 1`) | fails or times out |
 | Write probe | each store through its own wrapper, see below | fails |

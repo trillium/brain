@@ -319,7 +319,7 @@ func scanServerIDs(ctx context.Context, addr hostAddr) (map[string]map[string]st
 	_ = rows.Close()
 	out := map[string]map[string]struct{}{}
 	for _, d := range dbs {
-		q := "SELECT id FROM `" + strings.ReplaceAll(d, "`", "``") + "`.issues"
+		q := "SELECT id FROM `" + strings.ReplaceAll(d, "`", "``") + "`.issues" //nolint:gosec // identifier backtick-escaped; databases come from SHOW DATABASES
 		r, err := conn.QueryContext(ctx, q)
 		if err != nil {
 			continue // no issues table: not a bead database
@@ -532,7 +532,7 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 
 	if o.Repair {
 		for i := range results {
-			repairHost(ctx, roster[i], run, o, &results[i], timeout)
+			repairHost(ctx, roster[i], run, o, &results[i])
 		}
 	}
 
@@ -600,7 +600,7 @@ func isUnknownCommand(err error) bool {
 // existing rewrite-wrappers verb, then re-audits it. It never installs
 // binaries, edits store-host.env, touches Dolt servers or acts on an
 // unreachable machine, and it leaves env-file pins to the operator.
-func repairHost(ctx context.Context, m fleetMember, run fleetRunner, o fleetAuditOptions, r *fleetHostResult, timeout time.Duration) {
+func repairHost(ctx context.Context, m fleetMember, run fleetRunner, o fleetAuditOptions, r *fleetHostResult) {
 	if !r.Reachable || r.Audit == nil {
 		return
 	}
