@@ -194,7 +194,7 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 		}
 		add(driftStoreHost, sh.Path, detail, fix, false)
 	}
-	if a.EnvHost != "" && exp.Host != "" && a.EnvHost != exp.Host && !brainWrapperPinsHost(a.Pins, a.EnvHost) {
+	if a.EnvHost != "" && exp.Host != "" && a.EnvHost != exp.Host && !brainWrapperPinsHost(a.Pins, a.EnvHost) && !(sh.Present && sh.Error == "" && a.EnvHost == sh.Host) {
 		add(driftStoreHost, "BEADS_DOLT_SERVER_HOST", fmt.Sprintf("this machine's process environment sets BEADS_DOLT_SERVER_HOST=%s, which overrides store-host.env; expected %s", a.EnvHost, exp), "unset it in the shell profile / launchd plist", false)
 	}
 

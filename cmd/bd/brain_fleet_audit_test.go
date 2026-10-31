@@ -679,6 +679,11 @@ func TestEnvHostFromBrainWrapperIsNotBlamedOnProfile(t *testing.T) {
 	if kinds(d) != "pin" || !strings.Contains(d[0].Fix, "by hand") {
 		t.Fatalf("an env file sourced by the brain wrapper must be reported once, as its pin: %+v", d)
 	}
+	shOnly := &hostAudit{Stamp: a.Stamp, StoreHost: storeHostView{Present: true, Host: "127.0.0.1", Port: 3307}, EnvHost: "127.0.0.1", Stores: a.Stores}
+	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, shOnly, o)
+	if kinds(d) != "store-host" || !strings.Contains(d[0].Detail, "store-host.env says") {
+		t.Fatalf("an env host exported from store-host.env must be reported once, against store-host.env: %+v", d)
+	}
 	a.Pins = []hostPin{{Name: "task", Path: "/h/.local/bin/task", Source: "wrapper", Host: "100.102.238.78", Port: 3307}}
 	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
 	if kinds(d) != "store-host,pin" {
