@@ -138,12 +138,14 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 }
 
+var readBuildInfo = debug.ReadBuildInfo
+
 func resolveCommitHash() string {
 	if Commit != "" {
 		return Commit
 	}
 
-	if info, ok := debug.ReadBuildInfo(); ok {
+	if info, ok := readBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.revision" && setting.Value != "" {
 				return setting.Value
@@ -167,7 +169,7 @@ func resolveBranch() string {
 	}
 
 	// Try to get branch from build info (build-time VCS detection)
-	if info, ok := debug.ReadBuildInfo(); ok {
+	if info, ok := readBuildInfo(); ok {
 		for _, setting := range info.Settings {
 			if setting.Key == "vcs.branch" && setting.Value != "" {
 				return setting.Value

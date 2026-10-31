@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -24,10 +25,17 @@ func TestStampLine(t *testing.T) {
 }
 
 func TestCurrentBuildStampUsesOnlyLdflagCommit(t *testing.T) {
-	saved := Commit
-	t.Cleanup(func() { Commit = saved })
+	const vcsRev = "3333333333333333333333333333333333333333"
+	saved, savedRead := Commit, readBuildInfo
+	t.Cleanup(func() { Commit, readBuildInfo = saved, savedRead })
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{Settings: []debug.BuildSetting{{Key: "vcs.revision", Value: vcsRev}, {Key: "vcs.modified", Value: "true"}}}, true
+	}
 
 	Commit = ""
+	if got := resolveCommitHash(); got != vcsRev {
+		t.Fatalf("stubbed build info not in effect: resolveCommitHash = %q", got)
+	}
 	if st := currentBuildStamp(); st.stamped() {
 		t.Fatalf("build without ldflag commit must be unstamped, got %+v", st)
 	}
