@@ -195,6 +195,13 @@ func collectHostPins(home string) (pins []hostPin, wrappers int) {
 	seenEnv := map[string]bool{sharedFile: true}
 	addEnv := func(path, name, via string) {
 		if seenEnv[path] {
+			if via == "brain" {
+				for i := range pins {
+					if pins[i].Path == path {
+						pins[i].Via = via
+					}
+				}
+			}
 			return
 		}
 		seenEnv[path] = true

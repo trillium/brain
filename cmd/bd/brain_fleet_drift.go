@@ -156,7 +156,7 @@ func expectedStoreHost(m fleetMember, o fleetAuditOptions) hostAddr {
 // through, itself exports host; the pin check already judges that pin.
 func brainWrapperPinsHost(pins []hostPin, host string) bool {
 	for _, p := range pins {
-		if p.Source == "wrapper" && p.Name == "brain" && p.Host == host {
+		if p.Host == host && ((p.Source == "wrapper" && p.Name == "brain") || (p.Source == "env-file" && p.Via == "brain")) {
 			return true
 		}
 	}

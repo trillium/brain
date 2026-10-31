@@ -674,9 +674,26 @@ func TestEnvHostFromBrainWrapperIsNotBlamedOnProfile(t *testing.T) {
 	if kinds(d) != "pin" || !d[0].Repairable {
 		t.Fatalf("brain wrapper's own env must be reported once, as a repairable pin: %+v", d)
 	}
+	a.Pins = []hostPin{{Name: "mini1.env", Path: "/h/.config/brain-remote/mini1.env", Source: "env-file", Via: "brain", Host: "100.102.238.78", Port: 3307}}
+	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
+	if kinds(d) != "pin" || !strings.Contains(d[0].Fix, "by hand") {
+		t.Fatalf("an env file sourced by the brain wrapper must be reported once, as its pin: %+v", d)
+	}
 	a.Pins = []hostPin{{Name: "task", Path: "/h/.local/bin/task", Source: "wrapper", Host: "100.102.238.78", Port: 3307}}
 	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
 	if kinds(d) != "store-host,pin" {
 		t.Fatalf("an env host not set by the brain wrapper is still reported: %+v", d)
+	}
+}
+
+func TestCollectHostPinsCreditsEnvFileSourcedByBrain(t *testing.T) {
+	home := t.TempDir()
+	src := "#!/bin/sh\n. \"$HOME/.config/brain-remote/mini1.env\"\nexec bd \"$@\"\n"
+	mustWrite(t, filepath.Join(home, ".local/bin/ability"), src, 0o755)
+	mustWrite(t, filepath.Join(home, ".local/bin/brain"), src, 0o755)
+	mustWrite(t, filepath.Join(home, ".config/brain-remote/mini1.env"), "BEADS_DOLT_SERVER_HOST=100.102.238.78\n", 0o644)
+	pins, _ := collectHostPins(home)
+	if len(pins) != 1 || pins[0].Via != "brain" {
+		t.Fatalf("env file sourced by brain must be attributed to brain: %+v", pins)
 	}
 }
