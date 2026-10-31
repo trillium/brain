@@ -272,7 +272,10 @@ func parseDoltServers(psOut string) []localServer {
 	var out []localServer
 	for _, line := range strings.Split(psOut, "\n") {
 		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "dolt") || !strings.Contains(line, "sql-server") {
+		// Only a real server: argv[0] is the dolt binary and argv[1] is
+		// sql-server. A shell, grep or pgrep naming it in its args is not one.
+		argv := strings.Fields(line)
+		if len(argv) < 2 || filepath.Base(argv[0]) != "dolt" || argv[1] != "sql-server" {
 			continue
 		}
 		s := localServer{Args: line}

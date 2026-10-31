@@ -79,7 +79,8 @@ func TestReadStoreHostView(t *testing.T) {
 }
 
 func TestParseDoltServers(t *testing.T) {
-	ps := "/usr/bin/vim x\n/opt/homebrew/bin/dolt sql-server -H 0.0.0.0 -P 3307 --data-dir /x\ndolt sql-server --port=3310\n"
+	ps := "/usr/bin/vim x\n/opt/homebrew/bin/dolt sql-server -H 0.0.0.0 -P 3307 --data-dir /x\ndolt sql-server --port=3310\n" +
+		"pgrep -f dolt sql-server -H 127.0.0.1 -P 3391\n/bin/zsh -c pgrep -f 'dolt sql-server -P 3391'\ntail -f dolt sql-server.log\n"
 	s := parseDoltServers(ps)
 	if len(s) != 2 || s[0].Port != 3307 || s[0].Host != "0.0.0.0" || s[1].Port != 3310 {
 		t.Fatalf("servers = %+v", s)
@@ -700,5 +701,21 @@ func TestCollectHostPinsCreditsEnvFileSourcedByBrain(t *testing.T) {
 	pins, _ := collectHostPins(home)
 	if len(pins) != 1 || pins[0].Via != "brain" {
 		t.Fatalf("env file sourced by brain must be attributed to brain: %+v", pins)
+	}
+}
+
+func TestFleetDoctorLocalJSONFlagSelectsJSON(t *testing.T) {
+	oldLocal, oldGlobal := storesDoctorJSON, jsonOutput
+	t.Cleanup(func() {
+		storesDoctorJSON, jsonOutput = oldLocal, oldGlobal
+		_ = brainStoresDoctorCmd.Flags().Set("json", "false")
+		_ = brainStoresDoctorCmd.Flags().Set("fleet", "false")
+	})
+	jsonOutput = false
+	if err := brainStoresDoctorCmd.ParseFlags([]string{"--fleet", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if !fleetJSONRequested() {
+		t.Fatal("stores doctor --fleet --json must emit the JSON report")
 	}
 }

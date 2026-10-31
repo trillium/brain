@@ -379,6 +379,10 @@ var (
 	fleetBackupMax    time.Duration
 )
 
+// fleetJSONRequested reports whether the fleet report should be JSON. The
+// doctor command's local --json flag shadows the global one, so honor both.
+func fleetJSONRequested() bool { return jsonOutput || storesDoctorJSON }
+
 func runBrainStoresDoctorFleet(cmd *cobra.Command) {
 	ctx := rootCtx
 	if ctx == nil {
@@ -413,7 +417,7 @@ func runBrainStoresDoctorFleet(cmd *cobra.Command) {
 		}
 		rep.Audit = runFleetAudit(ctx, roster, sshFleetRunner, ao, fleetTimeout)
 	}
-	if jsonOutput {
+	if fleetJSONRequested() {
 		_ = outputJSON(rep)
 	} else {
 		printFleetReport(os.Stdout, rep)
