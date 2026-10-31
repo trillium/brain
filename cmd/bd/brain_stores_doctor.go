@@ -80,6 +80,11 @@ for as long as nobody happens to use it; for queue-shaped stores (staleness,
 review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
 so the failure is invisible by construction until something asserts it.
 
+It also checks the identity of the installed bd/brain binary: it warns when
+the build stamp's commit is not the brain repo's current main (checked
+against the clone's origin/main; set BRAIN_REPO to point at the clone) or
+when the binary carries no stamp at all. Fix: scripts/install-from-repo.sh.
+
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
 
@@ -104,6 +109,12 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	if doctorFleet {
 		runBrainStoresDoctorFleet(cmd)
 		return
+	}
+	// Identity of the installed binary vs the repo's main: a stale or
+	// unstamped build runs different commands than the repo documents.
+	binCheck := checkInstalledBinary()
+	if !storesDoctorJSON {
+		printBinaryCheck(os.Stderr, binCheck)
 	}
 	// Read the registry exactly as recorded and probe each entry as it stands:
 	// an entry whose path names another home, or no longer exists, is reported
@@ -165,10 +176,14 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	elapsed := time.Since(started)
 
 	tally := tallyStoreHealth(results)
+	if binCheck.Status == "warn" {
+		tally.warn++
+	}
 
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
 			"stores":        results,
+			"binary":        binCheck,
 			"ok":            tally.ok + tally.info,
 			"answered":      tally.answered,
 			"warnings":      tally.warn,

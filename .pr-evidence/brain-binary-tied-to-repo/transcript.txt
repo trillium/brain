@@ -1,0 +1,10 @@
+$ scripts/install-from-repo.sh --dry-run
+install-from-repo.sh: dry run OK — built /Users/mini1/.treehouse/brain-691a32/1/brain/bd stamped 278ebfa250e6aa1a41d9682a3d012498c0ba2de5; nothing installed
+
+$ bd version
+bd version 1.1.0-rc.1+brain.0.5.1 (278ebfa25: 278ebfa250e6)
+  commit 278ebfa250e6aa1a41d9682a3d012498c0ba2de5  dirty yes  built 2026-10-31T17:41:24Z
+
+$ brain stores doctor   (binary line)
+WARN  binary  binary built from main 278ebfa250e6 with uncommitted changes
+      fix: rebuild from the repo: scripts/install-from-repo.sh

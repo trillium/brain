@@ -6755,6 +6755,11 @@ for as long as nobody happens to use it; for queue-shaped stores (staleness,
 review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
 so the failure is invisible by construction until something asserts it.
 
+It also checks the identity of the installed bd/brain binary: it warns when
+the build stamp's commit is not the brain repo's current main (checked
+against the clone's origin/main; set BRAIN_REPO to point at the clone) or
+when the binary carries no stamp at all. Fix: scripts/install-from-repo.sh.
+
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
 
@@ -9703,6 +9708,11 @@ was registered but never initialized. Such a store is silently non-functional
 for as long as nobody happens to use it; for queue-shaped stores (staleness,
 review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
 so the failure is invisible by construction until something asserts it.
+
+It also checks the identity of the installed bd/brain binary: it warns when
+the build stamp's commit is not the brain repo's current main (checked
+against the clone's origin/main; set BRAIN_REPO to point at the clone) or
+when the binary carries no stamp at all. Fix: scripts/install-from-repo.sh.
 
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
