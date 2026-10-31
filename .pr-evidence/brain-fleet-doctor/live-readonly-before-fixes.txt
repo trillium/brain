@@ -1,0 +1,143 @@
+REGISTRY  registry store "glossary" has no brain_stores row
+mini0        CONVERGED   epoch 14, 61/61 wrappers
+mini1        CONVERGED   epoch 14, 61/61 wrappers
+macbook      CONVERGED   epoch 14, 61/61 wrappers
+NOT CONVERGED at epoch 14: registry: registry store "glossary" has no brain_stores row
+
+live store host: 100.84.99.99:3307 (from --live-host)
+mini0        UNREACHABLE no JSON from mini0: "Manage the registry of bd stores federated under brain.\n\nThe registry lives at ~/.config/brain/stores.yaml. Each registered store\ncan be searched via 'brain search', transferre
+mini1        bd 1.1.0-rc.1 (8e7199bbab68)  store-host.env 127.0.0.1:3307  pins 194  read 61/61  write 0/0
+macbook      UNREACHABLE no JSON from macbook: "Manage the registry of bd stores federated under brain.\n\nThe registry lives at ~/.config/brain/stores.yaml. Each registered store\ncan be searched via 'brain search', transfer
+DRIFT macbook      unreachable      : unreachable: no JSON from macbook: "Manage the registry of bd stores federated under brain.\n\nThe registry lives at ~/.config/brain/stores.yaml. Each registered store\ncan be searched via 'brain search', transfer
+      fix: wake or reach macbook (this tool never touches an unreachable host)
+DRIFT mini0        unreachable      : unreachable: no JSON from mini0: "Manage the registry of bd stores federated under brain.\n\nThe registry lives at ~/.config/brain/stores.yaml. Each registered store\ncan be searched via 'brain search', transferre
+      fix: wake or reach mini0 (this tool never touches an unreachable host)
+DRIFT mini1        binary           bd: binary built from main 8e7199bbab68 with uncommitted changes (installed 1.1.0-rc.1)
+      fix: rebuild from the repo: scripts/install-from-repo.sh
+DRIFT mini1        store-host       /Users/mini1/.config/brain/store-host.env: store-host.env says 127.0.0.1:3307 but the live host is 100.84.99.99:3307
+      fix: edit store-host.env by hand (doctor --repair never edits it)
+DRIFT mini1        store-host       BEADS_DOLT_SERVER_HOST: this machine's process environment sets BEADS_DOLT_SERVER_HOST=127.0.0.1, which overrides store-host.env; live host is 100.84.99.99:3307
+      fix: unset it in the shell profile / launchd plist
+DRIFT mini1        backup           ability: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           advisor: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           applications: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           assertions: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           brain: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           career: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           chatgpt: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           chores: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           companies: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           danny: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           day: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           decisions: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           dump: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           education: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           employment: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           errors: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           external_llm_tasks: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           feature: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           fleet: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           friction: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           glossary: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           goal: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           grandma_queue: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           hackathon: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           handoff: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           ideas: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           inbox: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           interviews: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           isa: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           job: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           life: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           lifespan: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           month: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           nightshift-tasks: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           person: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           pomodoros: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           projects: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           quarter: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           questions: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           research: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           resume_bullets: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           resumes: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           review: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           robots: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           runbooks: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           scratch: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           staleness: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           state: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           status: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           stories: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           talon: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           task: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           tech_talks: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           therapy: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           travel: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           violations: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           vrms: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           week: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           whisp: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           workflows: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+DRIFT mini1        backup           year: last backup is 325h10m0s old (limit 48h0m0s)
+      fix: bd backup sync
+FLEET AUDIT: 66 drift item(s)

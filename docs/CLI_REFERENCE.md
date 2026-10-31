@@ -356,6 +356,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores edit-back](#bd-stores-edit-back) — Declare whether a store accepts edits from its rendered markdown files
   - [bd stores env](#bd-stores-env) — Write ~/.config/brain/stores.env from the registry (for shell wrappers)
   - [bd stores epoch](#bd-stores-epoch) — Print the registry epoch (database) and the epoch applied on this machine
+  - [bd stores host-audit](#bd-stores-host-audit) — Report this machine's store-host, host pins, per-store probes and build stamp (used by 'stores doctor --fleet')
   - [bd stores list](#bd-stores-list) — List all registered stores
   - [bd stores poller](#bd-stores-poller) — The per-machine launchd job that runs 'brain stores sync' (print, install, uninstall, status)
   - [bd stores reconcile](#bd-stores-reconcile) — One-time recovery: adopt this machine's stores into the shared registry and report what needs a human
@@ -6770,6 +6771,16 @@ agent links, stores.yaml/env) on every machine of the roster over ssh,
 read-only, and reports converged / lagging / drifted with the exact fix
 command (exit 0 converged, 1 not converged, 2 registry unreadable).
 
+--fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
+binary's build stamp against the repo's main, store-host.env against the live
+host, wrapper and shim env-file host pins that disagree, a read and a write
+probe of each store (the write probe creates and drops the table
+brain_fleet_probe; --no-write-probe skips it), backup freshness, reachability
+(an unreachable machine is reported and never touched), and orphan beads on
+--old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
+wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
+nothing else.
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -6785,14 +6796,20 @@ bd stores doctor [flags]
 **Flags:**
 
 ```
-      --fleet                    Prove the whole fleet converged: read the registry epoch and generated artefacts on every roster machine (read-only, over ssh)
-      --fleet-timeout duration   Per-machine time limit for --fleet (default 30s)
-      --jobs int                 Probe this many stores concurrently (default 8)
-      --json                     Emit a structured JSON object instead of per-store text lines
-      --machines strings         Only these roster machines
-      --roster string            Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
-      --strict                   Exit non-zero on warnings too (missing wrapper, stale registry path)
-      --timeout duration         Per-store read timeout (default 20s)
+      --backup-max-age duration   With --fleet: a store whose last backup is older than this is drift (0 disables) (default 48h0m0s)
+      --fleet                     Prove the whole fleet converged: read the registry epoch and generated artefacts on every roster machine (read-only, over ssh)
+      --fleet-timeout duration    Per-machine time limit for --fleet (default 30s)
+      --jobs int                  Probe this many stores concurrently (default 8)
+      --json                      Emit a structured JSON object instead of per-store text lines
+      --live-host string          With --fleet: the live store host as host:port (default: this machine's store-host.env)
+      --machines strings          Only these roster machines
+      --no-audit                  With --fleet: skip the host audit (stamp, store-host, pins, probes, backups, orphans) and run only the convergence check
+      --no-write-probe            With --fleet: skip the per-store write probe (read probes still run)
+      --old-host strings          With --fleet: an old/other Dolt server (host:port) to check for orphan beads missing on the live host; repeatable
+      --repair                    With --fleet: rewrite drifted wrapper host pins on reachable machines through 'stores rewrite-wrappers' (never installs binaries, edits store-host.env, touches Dolt servers or acts on an unreachable machine)
+      --roster string             Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
+      --strict                    Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration          Per-store read timeout (default 20s)
 ```
 
 ##### bd brain stores edit-back
@@ -6834,6 +6851,30 @@ Print the registry epoch (database) and the epoch applied on this machine
 
 ```
 bd stores epoch
+```
+
+##### bd brain stores host-audit
+
+Reports, as JSON, what this machine says about itself: the build stamp, the
+shared store-host.env, every literal Dolt host/port pin in the ~/.local/bin
+wrappers and the env files they source (including ~/.config/brain-remote/*.env),
+a read probe of every store through its wrapper, the age of each store's last
+backup, and the Dolt servers running here. It decides nothing; 'brain stores
+doctor --fleet' compares these facts across machines.
+
+With --write-probe it also writes through each store's wrapper: it creates the
+table brain_fleet_probe, inserts one row, reads it back, deletes it and drops
+the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.
+
+```
+bd stores host-audit [flags]
+```
+
+**Flags:**
+
+```
+      --backup-max-age duration   Accepted for symmetry with the fleet view; the audit reports ages only (default 48h0m0s)
+      --write-probe               Also write+read+delete a probe row in each store (see --help)
 ```
 
 ##### bd brain stores list
@@ -9725,6 +9766,16 @@ agent links, stores.yaml/env) on every machine of the roster over ssh,
 read-only, and reports converged / lagging / drifted with the exact fix
 command (exit 0 converged, 1 not converged, 2 registry unreadable).
 
+--fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
+binary's build stamp against the repo's main, store-host.env against the live
+host, wrapper and shim env-file host pins that disagree, a read and a write
+probe of each store (the write probe creates and drops the table
+brain_fleet_probe; --no-write-probe skips it), backup freshness, reachability
+(an unreachable machine is reported and never touched), and orphan beads on
+--old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
+wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
+nothing else.
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -9740,14 +9791,20 @@ bd stores doctor [flags]
 **Flags:**
 
 ```
-      --fleet                    Prove the whole fleet converged: read the registry epoch and generated artefacts on every roster machine (read-only, over ssh)
-      --fleet-timeout duration   Per-machine time limit for --fleet (default 30s)
-      --jobs int                 Probe this many stores concurrently (default 8)
-      --json                     Emit a structured JSON object instead of per-store text lines
-      --machines strings         Only these roster machines
-      --roster string            Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
-      --strict                   Exit non-zero on warnings too (missing wrapper, stale registry path)
-      --timeout duration         Per-store read timeout (default 20s)
+      --backup-max-age duration   With --fleet: a store whose last backup is older than this is drift (0 disables) (default 48h0m0s)
+      --fleet                     Prove the whole fleet converged: read the registry epoch and generated artefacts on every roster machine (read-only, over ssh)
+      --fleet-timeout duration    Per-machine time limit for --fleet (default 30s)
+      --jobs int                  Probe this many stores concurrently (default 8)
+      --json                      Emit a structured JSON object instead of per-store text lines
+      --live-host string          With --fleet: the live store host as host:port (default: this machine's store-host.env)
+      --machines strings          Only these roster machines
+      --no-audit                  With --fleet: skip the host audit (stamp, store-host, pins, probes, backups, orphans) and run only the convergence check
+      --no-write-probe            With --fleet: skip the per-store write probe (read probes still run)
+      --old-host strings          With --fleet: an old/other Dolt server (host:port) to check for orphan beads missing on the live host; repeatable
+      --repair                    With --fleet: rewrite drifted wrapper host pins on reachable machines through 'stores rewrite-wrappers' (never installs binaries, edits store-host.env, touches Dolt servers or acts on an unreachable machine)
+      --roster string             Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
+      --strict                    Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration          Per-store read timeout (default 20s)
 ```
 
 #### bd stores edit-back
@@ -9789,6 +9846,30 @@ Print the registry epoch (database) and the epoch applied on this machine
 
 ```
 bd stores epoch [flags]
+```
+
+#### bd stores host-audit
+
+Reports, as JSON, what this machine says about itself: the build stamp, the
+shared store-host.env, every literal Dolt host/port pin in the ~/.local/bin
+wrappers and the env files they source (including ~/.config/brain-remote/*.env),
+a read probe of every store through its wrapper, the age of each store's last
+backup, and the Dolt servers running here. It decides nothing; 'brain stores
+doctor --fleet' compares these facts across machines.
+
+With --write-probe it also writes through each store's wrapper: it creates the
+table brain_fleet_probe, inserts one row, reads it back, deletes it and drops
+the table. No bead data is touched; see docs/brain/FLEET_DOCTOR.md.
+
+```
+bd stores host-audit [flags]
+```
+
+**Flags:**
+
+```
+      --backup-max-age duration   Accepted for symmetry with the fleet view; the audit reports ages only (default 48h0m0s)
+      --write-probe               Also write+read+delete a probe row in each store (see --help)
 ```
 
 #### bd stores list

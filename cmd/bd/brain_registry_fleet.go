@@ -33,6 +33,10 @@ type fleetMember struct {
 	SSH string `yaml:"ssh,omitempty"`
 	// Command is how to run brain there (default puts ~/.local/bin on PATH).
 	Command string `yaml:"command,omitempty"`
+	// StoreHost is the host:port this machine's store-host.env is expected to
+	// hold when that is not the live host itself: a machine that reaches the
+	// live Dolt server through a local forwarder declares 127.0.0.1:<port>.
+	StoreHost string `yaml:"store_host,omitempty"`
 }
 
 type fleetRoster struct {
@@ -69,6 +73,11 @@ func loadFleetRoster(path string, only []string) ([]fleetMember, error) {
 		}
 		if strings.HasPrefix(m.SSH, "-") || strings.ContainsAny(m.SSH, " \t\n;&|$`'\"") {
 			return nil, fmt.Errorf("roster machine %s: invalid ssh target %q", m.Name, m.SSH)
+		}
+		if m.StoreHost != "" {
+			if _, err := parseHostAddr(m.StoreHost); err != nil {
+				return nil, fmt.Errorf("roster machine %s: store_host: %w", m.Name, err)
+			}
 		}
 		if len(only) > 0 && !sliceHas(only, m.Name) {
 			continue
@@ -151,6 +160,8 @@ type fleetReport struct {
 	Converged  bool                 `json:"converged"`
 	Summary    string               `json:"summary"`
 	Failing    []string             `json:"failing_machines,omitempty"`
+	// Audit is the host/pin/probe/orphan half of the fleet view (nil with --no-audit).
+	Audit *fleetAuditReport `json:"audit,omitempty"`
 }
 
 // asleepWindow: an unreachable machine whose last acknowledgement is at the
@@ -359,6 +370,13 @@ var (
 	fleetMachines       []string
 	fleetTimeout        time.Duration
 	fleetRosterExplicit bool
+
+	fleetNoAudit      bool
+	fleetNoWriteProbe bool
+	fleetRepair       bool
+	fleetLiveHost     string
+	fleetOldHosts     []string
+	fleetBackupMax    time.Duration
 )
 
 func runBrainStoresDoctorFleet(cmd *cobra.Command) {
@@ -387,16 +405,31 @@ func runBrainStoresDoctorFleet(cmd *cobra.Command) {
 		fmt.Fprintf(os.Stderr, "Error: %v\nFAILING MACHINES: (database unreadable)\n", err)
 		os.Exit(2)
 	}
+	if !fleetNoAudit {
+		ao, aerr := fleetAuditOptionsFromFlags(ctx)
+		if aerr != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", aerr)
+			os.Exit(2)
+		}
+		rep.Audit = runFleetAudit(ctx, roster, sshFleetRunner, ao, fleetTimeout)
+	}
 	if jsonOutput {
 		_ = outputJSON(rep)
 	} else {
 		printFleetReport(os.Stdout, rep)
+		if rep.Audit != nil {
+			printFleetAudit(os.Stdout, rep.Audit)
+		}
 	}
-	if !rep.Converged {
+	auditClean := rep.Audit == nil || rep.Audit.Clean
+	if !rep.Converged || !auditClean {
 		if len(rep.Failing) > 0 {
 			fmt.Fprintf(os.Stderr, "FAILING MACHINES: %s\n", strings.Join(rep.Failing, " "))
-		} else {
+		} else if !rep.Converged {
 			fmt.Fprintln(os.Stderr, "FAILING MACHINES: (registry inconsistent)")
+		}
+		if !auditClean {
+			fmt.Fprintf(os.Stderr, "FLEET DRIFT: %d item(s) on %s\n", len(rep.Audit.Drift), strings.Join(driftMachines(rep.Audit.Drift), " "))
 		}
 		os.Exit(1)
 	}
@@ -446,5 +479,11 @@ func init() {
 		"Prove the whole fleet converged: read the registry epoch and generated artefacts on every roster machine (read-only, over ssh)")
 	brainStoresDoctorCmd.Flags().StringVar(&fleetRoster_, "roster", "", "Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)")
 	brainStoresDoctorCmd.Flags().StringSliceVar(&fleetMachines, "machines", nil, "Only these roster machines")
+	brainStoresDoctorCmd.Flags().BoolVar(&fleetNoAudit, "no-audit", false, "With --fleet: skip the host audit (stamp, store-host, pins, probes, backups, orphans) and run only the convergence check")
+	brainStoresDoctorCmd.Flags().BoolVar(&fleetNoWriteProbe, "no-write-probe", false, "With --fleet: skip the per-store write probe (read probes still run)")
+	brainStoresDoctorCmd.Flags().BoolVar(&fleetRepair, "repair", false, "With --fleet: rewrite drifted wrapper host pins on reachable machines through 'stores rewrite-wrappers' (never installs binaries, edits store-host.env, touches Dolt servers or acts on an unreachable machine)")
+	brainStoresDoctorCmd.Flags().StringVar(&fleetLiveHost, "live-host", "", "With --fleet: the live store host as host:port (default: this machine's store-host.env)")
+	brainStoresDoctorCmd.Flags().StringSliceVar(&fleetOldHosts, "old-host", nil, "With --fleet: an old/other Dolt server (host:port) to check for orphan beads missing on the live host; repeatable")
+	brainStoresDoctorCmd.Flags().DurationVar(&fleetBackupMax, "backup-max-age", 48*time.Hour, "With --fleet: a store whose last backup is older than this is drift (0 disables)")
 	brainStoresDoctorCmd.Flags().DurationVar(&fleetTimeout, "fleet-timeout", 30*time.Second, "Per-machine time limit for --fleet")
 }
