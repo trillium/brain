@@ -600,16 +600,31 @@ func TestRepairReauditOfSelfIsReadOnly(t *testing.T) {
 }
 
 func TestRepairRefusesWhenStoreHostEnvIsStale(t *testing.T) {
-	// store-host.env names a stale host X while the wrapper pins the live host L:
-	// rewrite-wrappers would move the wrapper onto X, so --repair must refuse.
+	// store-host.env names a stale host X while the wrapper pins the live host
+	// L: rewrite-wrappers would move the wrapper onto X, so the pin is not
+	// repairable, its fix says to correct store-host.env first, and --repair
+	// refuses naming both hosts.
 	f := &auditFake{audits: map[string]string{"mini0": auditJSON("100.64.0.9", "100.84.99.99")}}
 	rep := runFleetAudit(context.Background(), []fleetMember{{Name: "mini0", SSH: "mini0"}}, f.run,
 		fleetAuditOptions{Live: liveMini0, Repair: true, MainSHA: "aaaaaaaaaaaa", LiveChecker: func(context.Context, hostAddr) error { return nil }}, time.Second)
 	if len(f.repaired) != 0 {
 		t.Fatalf("repair ran against a stale store-host.env: %v", f.repaired)
 	}
+	pins := 0
+	for _, d := range rep.Drift {
+		if d.Kind != driftPin {
+			continue
+		}
+		pins++
+		if d.Repairable || strings.Contains(d.Detail, "should be 100.64.0.9") || !strings.Contains(d.Fix, "store-host.env") || strings.Contains(d.Fix, "--repair)") {
+			t.Errorf("a pin under a stale store-host.env must not be offered to rewrite-wrappers: %+v", d)
+		}
+	}
+	if pins != 1 {
+		t.Errorf("drift = %+v", rep.Drift)
+	}
 	h := rep.Hosts[0]
-	if h.Repaired == nil || h.Repaired.Status != "refused" || !strings.Contains(h.Repaired.Detail, "100.64.0.9") || !strings.Contains(h.Repaired.Detail, liveMini0.String()) {
+	if h.Repaired == nil || h.Repaired.Status != "refused" || h.Repaired.Attempted || !strings.Contains(h.Repaired.Detail, "100.64.0.9") || !strings.Contains(h.Repaired.Detail, liveMini0.String()) {
 		t.Fatalf("repair outcome = %+v", h.Repaired)
 	}
 }

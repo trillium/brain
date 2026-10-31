@@ -188,21 +188,31 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 	}
 
 	// A pin disagrees with what the machine should use: its store-host.env when
-	// valid, else the live host.
-	if sh.Present && sh.Error == "" {
+	// valid, else the live host. rewrite-wrappers re-pins to store-host.env, so
+	// a wrapper pin is repairable only when store-host.env agrees with the
+	// expected store host.
+	shValid := sh.Present && sh.Error == ""
+	if shValid {
 		want = hostAddr{Host: sh.Host, Port: sh.Port}
 	}
+	shAgrees := shValid && exp.Host != "" && sh.Host == exp.Host && sh.Port == exp.Port
 	for _, p := range a.Pins {
 		if want.Host == "" || (p.Host == "" && p.Port == 0) {
 			continue
 		}
 		if (p.Host != "" && p.Host != want.Host) || (p.Port != 0 && p.Port != want.Port) {
+			detail := fmt.Sprintf("%s pins %s but the host should be %s: %s", p.Source, pinAddr(p), want, p.Line)
 			fix := "brain stores rewrite-wrappers on " + m.Name + " (or doctor --fleet --repair)"
-			repairable := p.Source == "wrapper"
-			if !repairable {
+			if shValid && exp.Host != "" && !shAgrees {
+				detail = fmt.Sprintf("%s pins %s but store-host.env says %s, and the expected store host is %s: %s", p.Source, pinAddr(p), want, exp, p.Line)
+			}
+			if !shAgrees {
+				fix = "correct store-host.env on " + m.Name + " first (doctor --repair never edits it), then run brain stores rewrite-wrappers"
+			}
+			if p.Source != "wrapper" {
 				fix = "remove the pin from " + p.Path + " by hand (rewrite-wrappers does not edit env files)"
 			}
-			add(driftPin, p.Path, fmt.Sprintf("%s pins %s but the host should be %s: %s", p.Source, pinAddr(p), want, p.Line), fix, repairable)
+			add(driftPin, p.Path, detail, fix, p.Source == "wrapper" && shAgrees)
 		}
 	}
 
@@ -580,31 +590,31 @@ func repairHost(ctx context.Context, m fleetMember, run fleetRunner, o fleetAudi
 	if !r.Reachable || r.Audit == nil {
 		return
 	}
-	var fixable []driftItem
+	pins, fixable := false, false
 	for _, d := range r.Drift {
-		if d.Repairable {
-			fixable = append(fixable, d)
-		}
+		pins = pins || d.Kind == driftPin
+		fixable = fixable || d.Repairable
 	}
-	if len(fixable) == 0 {
+	if !pins {
+		return
+	}
+	sh, exp := r.Audit.StoreHost, expectedStoreHost(m, o)
+	refuse := func(detail string) { r.Repaired = &repairOutcome{Status: "refused", Detail: detail} }
+	switch {
+	case !sh.Present || sh.Error != "":
+		refuse("store-host.env is missing or unusable on " + m.Name + "; rewrite-wrappers refuses, and --repair never writes it")
+		return
+	case exp.Host == "":
+		refuse("the live store host is unknown, so store-host.env on " + m.Name + " cannot be confirmed; --repair rewrites pins only when store-host.env agrees with the live host")
+		return
+	case sh.Host != exp.Host || sh.Port != exp.Port:
+		refuse(fmt.Sprintf("store-host.env on %s says %s:%d but the expected store host is %s; rewrite-wrappers would point its wrappers there, and --repair never edits store-host.env", m.Name, sh.Host, sh.Port, exp))
+		return
+	case !fixable:
 		return
 	}
 	out := &repairOutcome{Attempted: true}
 	r.Repaired = out
-	sh, exp := r.Audit.StoreHost, expectedStoreHost(m, o)
-	switch {
-	case !sh.Present || sh.Error != "":
-		out.Attempted, out.Status = false, "refused"
-		out.Detail = "store-host.env is missing or unusable on " + m.Name + "; rewrite-wrappers refuses, and --repair never writes it"
-		return
-	case exp.Host == "" || sh.Host != exp.Host || sh.Port != exp.Port:
-		out.Attempted, out.Status = false, "refused"
-		out.Detail = fmt.Sprintf("store-host.env on %s says %s:%d but the expected store host is %s; rewrite-wrappers would point its wrappers there, and --repair never edits store-host.env", m.Name, sh.Host, sh.Port, exp)
-		if exp.Host == "" {
-			out.Detail = "the live store host is unknown, so store-host.env on " + m.Name + " cannot be confirmed; --repair rewrites pins only when store-host.env agrees with the live host"
-		}
-		return
-	}
 	rctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
 	var raw []byte
