@@ -52,7 +52,11 @@ func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, e
 		return nil, fmt.Errorf("proxy server store should be uow provider")
 	}
 	if cfg.ServerMode {
-		return dolt.New(ctx, cfg)
+		st, err := dolt.New(ctx, cfg)
+		if err != nil {
+			return nil, annotateStoreConnectError(err, cfg.BeadsDir)
+		}
+		return st, nil
 	}
 	if cfg.ReadOnly {
 		// Read-only commands must not be bricked by the #4259
@@ -105,7 +109,11 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 		// 	})
 	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
-		return dolt.NewFromConfig(ctx, beadsDir)
+		st, err := dolt.NewFromConfig(ctx, beadsDir)
+		if err != nil {
+			return nil, annotateStoreConnectError(err, beadsDir)
+		}
+		return st, nil
 	}
 	database := configfile.DefaultDoltDatabase
 	if cfg != nil {
@@ -179,7 +187,11 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 		// })
 	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
-		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
+		st, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
+		if err != nil {
+			return nil, annotateStoreConnectError(err, beadsDir)
+		}
+		return st, nil
 	}
 	database := configfile.DefaultDoltDatabase
 	if cfg != nil {

@@ -89,3 +89,25 @@ machines:
 Hosts running an older `brain` without `stores host-audit` are reported as
 `audit-unavailable` (not unreachable). Backup drift is grouped to one item per
 distinct reason, and `pin_count` counts distinct wrapper/env files.
+
+## Login and connect errors name the server
+
+When a store open fails with a MySQL 1045, connection refused, timeout or
+unknown host, `bd`/`brain` keeps the driver's error text and appends the tried
+`host:port`, where it came from (wrapper pin, env file, `BEADS_DOLT_SERVER_HOST`,
+`store-host.env`, `metadata.json`, `config.yaml`, built-in default), the live
+host from `store-host.env` when it differs, and exactly one fix line that
+replaces the store's generic hint and matches the cause: `brain stores
+rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST` (or
+`_PORT`) for an environment override, the env file line to remove for an
+env-file pin, running through the store wrapper (or `brain stores
+rewrite-wrappers` when the wrapper is missing or stale) when bd ran without it
+and took its address from `metadata.json`, `config.yaml`, the
+`.beads/dolt-server.port` file or the built-in default (core bd never reads
+`store-host.env`; only the wrappers do), the `[host:port]` section of the credentials file (or
+`BEADS_DOLT_PASSWORD`) to update for a rejected login, `bd dolt start` for an
+unreachable loopback server, and the auto-start log when bd just auto-started
+the server and it still does not answer. A fix never writes a host or port into
+store config: `store-host.env` stays the one record of the live server. Only an
+unknown cause falls back to `brain stores doctor`. It uses the same pin scan and
+`store-host.env` reader as `stores doctor --fleet`, and never prints passwords.

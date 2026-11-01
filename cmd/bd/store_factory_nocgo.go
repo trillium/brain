@@ -37,7 +37,11 @@ func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, e
 	if !cfg.ServerMode {
 		return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
 	}
-	return dolt.New(ctx, cfg)
+	st, err := dolt.New(ctx, cfg)
+	if err != nil {
+		return nil, annotateStoreConnectError(err, cfg.BeadsDir)
+	}
+	return st, nil
 }
 
 // acquireEmbeddedLock returns a no-op lock in non-CGO builds.
@@ -58,7 +62,11 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 		// 	})
 	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
-		return dolt.NewFromConfig(ctx, beadsDir)
+		st, err := dolt.NewFromConfig(ctx, beadsDir)
+		if err != nil {
+			return nil, annotateStoreConnectError(err, beadsDir)
+		}
+		return st, nil
 	}
 	return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
 }
@@ -77,7 +85,11 @@ func newReadOnlyStoreFromConfig(ctx context.Context, beadsDir string) (storage.D
 		// })
 	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
-		return dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
+		st, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{ReadOnly: true})
+		if err != nil {
+			return nil, annotateStoreConnectError(err, beadsDir)
+		}
+		return st, nil
 	}
 	return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
 }
