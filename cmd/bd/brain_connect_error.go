@@ -15,6 +15,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -22,6 +24,7 @@ import (
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 )
 
@@ -81,13 +84,34 @@ type connectDiagInput struct {
 	// (BEADS_DOLT_PASSWORD), "file" (a credentials-file entry) or "". Presence only.
 	PasswordFrom string
 	CredPath     string
+	// AutoStartLog is the log of a server bd auto-started that still did not answer.
+	AutoStartLog string
 }
 
-// hostSource says where the tried host came from.
+// hostSource says where the tried host (or port) came from.
 type hostSource struct {
 	Label string // "wrapper pin /path/to/task", "store-host.env", ...
-	Kind  string // "pin" | "env-file" | "store-host" | "env" | "metadata" | "config" | "default"
-	Path  string // file holding the assignment, for "pin" and "env-file"
+	Kind  string // "pin" | "env-file" | "store-host" | "env" | "metadata" | "config" | "port-file" | "default" | ""
+	Path  string // file holding the assignment
+	Field string // variable or key holding the assignment
+}
+
+const (
+	envHostVar = "BEADS_DOLT_SERVER_HOST"
+	envPortVar = "BEADS_DOLT_SERVER_PORT"
+)
+
+// pinSource attributes an env value to the wrapper or env file that exports it.
+func pinSource(pins []hostPin, match func(hostPin) bool, field string) (hostSource, bool) {
+	for _, p := range pins {
+		if match(p) {
+			if p.Source == "wrapper" {
+				return hostSource{Kind: "pin", Label: "wrapper pin " + p.Path + ": " + p.Line, Path: p.Path, Field: field}, true
+			}
+			return hostSource{Kind: "env-file", Label: "env file " + p.Path + ": " + p.Line, Path: p.Path, Field: field}, true
+		}
+	}
+	return hostSource{}, false
 }
 
 // resolveHostSource attributes the tried host. A wrapper exports whatever it
@@ -97,30 +121,91 @@ func resolveHostSource(in connectDiagInput, sh storeHostView, pins []hostPin) ho
 	shMatches := sh.Present && sh.Error == "" && sh.Host == host
 	if in.EnvHost != "" && in.EnvHost == host {
 		if !shMatches {
-			for _, p := range pins {
-				if p.Host == host && (p.Port == 0 || p.Port == in.Tried.Port) {
-					if p.Source == "wrapper" {
-						return hostSource{Kind: "pin", Label: "wrapper pin " + p.Path + ": " + p.Line}
-					}
-					return hostSource{Kind: "env-file", Label: "env file " + p.Path + ": " + p.Line, Path: p.Path}
-				}
+			if src, ok := pinSource(pins, func(p hostPin) bool {
+				return p.Host == host && (p.Port == 0 || p.Port == in.Tried.Port)
+			}, envHostVar); ok {
+				return src
 			}
-			return hostSource{Kind: "env", Label: "environment variable BEADS_DOLT_SERVER_HOST"}
+			return hostSource{Kind: "env", Label: "environment variable " + envHostVar, Field: envHostVar}
 		}
 		return hostSource{Kind: "store-host", Label: "store-host.env " + sh.Path}
 	}
 	if in.EnvHost == "" && in.BeadsDir != "" {
 		if cfg, err := configfile.Load(in.BeadsDir); err == nil && cfg != nil && cfg.DoltServerHost == host {
-			return hostSource{Kind: "metadata", Label: "metadata.json dolt_server_host in " + in.BeadsDir}
+			path := filepath.Join(in.BeadsDir, configfile.ConfigFileName)
+			return hostSource{Kind: "metadata", Label: "metadata.json dolt_server_host in " + path, Path: path, Field: "dolt_server_host"}
 		}
 	}
 	if in.EnvHost == "" && config.GetYamlConfig("dolt.host") == host {
-		return hostSource{Kind: "config", Label: "config.yaml dolt.host"}
+		path := yamlConfigPath()
+		return hostSource{Kind: "config", Label: "config.yaml dolt.host in " + path, Path: path, Field: "dolt.host"}
 	}
 	if in.EnvHost == "" && host == configfile.DefaultDoltServerHost {
 		return hostSource{Kind: "default", Label: "built-in default (no host configured)"}
 	}
-	return hostSource{Label: "configuration (BEADS_DOLT_SERVER_HOST=" + in.EnvHost + ")"}
+	return hostSource{Label: "configuration (" + envHostVar + "=" + in.EnvHost + ")"}
+}
+
+// resolvePortSource attributes the tried port, in the order the store resolves
+// it: env, the .beads port file, config.yaml dolt.port, metadata.json.
+func resolvePortSource(in connectDiagInput, pins []hostPin) hostSource {
+	port := in.Tried.Port
+	if in.EnvPort != "" {
+		if in.EnvPort == strconv.Itoa(port) {
+			if src, ok := pinSource(pins, func(p hostPin) bool {
+				return p.Port == port && (p.Host == "" || p.Host == in.Tried.Host)
+			}, envPortVar); ok {
+				return src
+			}
+			return hostSource{Kind: "env", Label: "environment variable " + envPortVar, Field: envPortVar}
+		}
+		return hostSource{Label: "configuration (" + envPortVar + "=" + in.EnvPort + ")"}
+	}
+	if in.BeadsDir != "" {
+		path := filepath.Join(in.BeadsDir, doltserver.PortFileName)
+		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(port) {
+			return hostSource{Kind: "port-file", Label: "port file " + path, Path: path}
+		}
+	}
+	if config.GetYamlConfig("dolt.port") == strconv.Itoa(port) {
+		path := yamlConfigPath()
+		return hostSource{Kind: "config", Label: "config.yaml dolt.port in " + path, Path: path, Field: "dolt.port"}
+	}
+	if in.BeadsDir != "" {
+		if cfg, err := configfile.Load(in.BeadsDir); err == nil && cfg != nil && cfg.DoltServerPort == port {
+			path := filepath.Join(in.BeadsDir, configfile.ConfigFileName)
+			return hostSource{Kind: "metadata", Label: "metadata.json dolt_server_port in " + path, Path: path, Field: "dolt_server_port"}
+		}
+	}
+	return hostSource{Label: "derived port (no port configured)"}
+}
+
+func yamlConfigPath() string {
+	if p := config.ConfigFileUsed(); p != "" {
+		return p
+	}
+	return "config.yaml"
+}
+
+// sourceFix is the single action that removes a source pointing away from
+// store-host.env. It never writes a host or port anywhere: store-host.env stays
+// the one record of the live server.
+func sourceFix(src hostSource) string {
+	switch src.Kind {
+	case "pin":
+		return "brain stores rewrite-wrappers"
+	case "env":
+		return "unset " + src.Field
+	case "env-file":
+		return "remove the " + src.Field + " line from " + src.Path + " so store-host.env applies"
+	case "metadata", "config":
+		return "remove " + src.Field + " from " + src.Path + " so store-host.env applies"
+	case "port-file":
+		return "rm " + src.Path + " so store-host.env applies"
+	case "default":
+		return "run bd through the store wrapper (brain store <name> ...) so store-host.env applies"
+	}
+	return "brain stores doctor"
 }
 
 // explainStoreConnect builds the diagnosis block appended to the driver error.
@@ -135,6 +220,9 @@ func explainStoreConnect(in connectDiagInput) string {
 		live = hostAddr{Host: sh.Host, Port: sh.Port}
 	}
 	differs := liveKnown && (live.Host != in.Tried.Host || live.Port != in.Tried.Port)
+	if differs && live.Host == in.Tried.Host {
+		src = resolvePortSource(in, pins)
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "brain: store server %s\n", in.Failure)
@@ -153,27 +241,32 @@ func explainStoreConnect(in connectDiagInput) string {
 	key := in.Tried.String()
 	fix := "brain stores doctor"
 	switch {
-	case differs && src.Kind == "pin":
-		b.WriteString("  cause: the wrapper pins a different server than store-host.env names\n")
-		fix = "brain stores rewrite-wrappers"
-	case differs && src.Kind == "env":
-		b.WriteString("  cause: BEADS_DOLT_SERVER_HOST in this environment overrides store-host.env\n")
-		fix = "unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT"
-	case differs && src.Kind == "env-file":
-		b.WriteString("  cause: an env file pins a different server than store-host.env names\n")
-		fix = fmt.Sprintf("set BEADS_DOLT_SERVER_HOST=%s and BEADS_DOLT_SERVER_PORT=%d in %s", live.Host, live.Port, src.Path)
-	case differs && in.Failure == failAuth && hostIsLoopback(in.Tried.Host):
-		b.WriteString("  cause: this store connects to loopback while the live host is elsewhere; the loopback server rejected the login (a stale credentials entry for it is the usual reason)\n")
-		fix = pointAtLive(live)
 	case differs:
-		b.WriteString("  cause: this store's own configuration points away from store-host.env\n")
-		fix = pointAtLive(live)
+		switch src.Kind {
+		case "pin":
+			b.WriteString("  cause: the wrapper pins a different server than store-host.env names\n")
+		case "env":
+			fmt.Fprintf(&b, "  cause: %s in this environment overrides store-host.env\n", src.Field)
+		case "env-file":
+			b.WriteString("  cause: an env file pins a different server than store-host.env names\n")
+		case "default":
+			b.WriteString("  cause: bd ran without the store wrapper, so store-host.env never applied\n")
+		default:
+			b.WriteString("  cause: this store's own configuration points away from store-host.env\n")
+		}
+		if in.Failure == failAuth && hostIsLoopback(in.Tried.Host) {
+			b.WriteString("  note:  the loopback server rejected the login (a stale credentials entry for it is the usual reason)\n")
+		}
+		fix = sourceFix(src)
 	case in.Failure == failAuth && hostIsLoopback(in.Tried.Host):
 		b.WriteString("  cause: a loopback address reached a server that rejected the login; the credentials entry for it is stale or that is not the store server\n")
 		fix = credentialFix(in, key)
 	case in.Failure == failAuth:
 		b.WriteString("  cause: the server is the expected one but rejected the login\n")
 		fix = credentialFix(in, key)
+	case hostIsLoopback(in.Tried.Host) && in.AutoStartLog != "":
+		b.WriteString("  cause: bd auto-started a local server but it still does not answer\n")
+		fix = "tail -n 50 " + in.AutoStartLog
 	case hostIsLoopback(in.Tried.Host):
 		b.WriteString("  cause: no local store server is answering at that address\n")
 		fix = "bd dolt start"
@@ -192,11 +285,6 @@ func explainStoreConnect(in connectDiagInput) string {
 	}
 	fmt.Fprintf(&b, "  fix:   %s", fix)
 	return b.String()
-}
-
-// pointAtLive is the command that points this store at the live server.
-func pointAtLive(live hostAddr) string {
-	return fmt.Sprintf("bd dolt set host %s && bd dolt set port %d", live.Host, live.Port)
 }
 
 // credentialFix names the edit that replaces the rejected (or missing) password.
@@ -253,6 +341,7 @@ func annotateStoreConnectError(err error, beadsDir string) error {
 		Failure:      failure,
 		PasswordFrom: pwFrom,
 		CredPath:     credPath,
+		AutoStartLog: ce.LogPath,
 	}
 	return &storeConnectError{err: ce, diag: explainStoreConnect(in)}
 }

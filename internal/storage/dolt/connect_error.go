@@ -16,6 +16,8 @@ type ServerConnectError struct {
 	Socket string // unix socket path, when the connection was socket-based
 	Err    error
 	Hint   string // generic next step, shown when nothing better is known
+	// LogPath is set when bd auto-started the server and it still did not answer.
+	LogPath string
 }
 
 func (e *ServerConnectError) Error() string {

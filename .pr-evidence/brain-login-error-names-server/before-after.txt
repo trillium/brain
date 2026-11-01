@@ -21,9 +21,10 @@ failed to check if database "beads_task" exists on server 127.0.0.1:3307: Error 
 brain: store server login refused (MySQL 1045 access denied)
   tried: 127.0.0.1:3307  (from built-in default (no host configured))
   live:  100.84.99.99:3307  (store-host.env ~/.config/brain/store-host.env)
-  cause: this store connects to loopback while the live host is elsewhere; the loopback server rejected the login (a stale credentials entry for it is the usual reason)
+  cause: bd ran without the store wrapper, so store-host.env never applied
+  note:  the loopback server rejected the login (a stale credentials entry for it is the usual reason)
   credentials: no BEADS_DOLT_PASSWORD and no [127.0.0.1:3307] entry in ~/.config/beads/credentials
-  fix:   bd dolt set host 100.84.99.99 && bd dolt set port 3307
+  fix:   run bd through the store wrapper (brain store <name> ...) so store-host.env applies
 
 === connection refused
 --- before:

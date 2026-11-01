@@ -98,11 +98,15 @@ unknown host, `bd`/`brain` keeps the driver's error text and appends the tried
 `store-host.env`, `metadata.json`, `config.yaml`, built-in default), the live
 host from `store-host.env` when it differs, and exactly one fix line that
 replaces the store's generic hint and matches the cause: `brain stores
-rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST ...` for an
-environment override, the env file to edit for an env-file pin, `bd dolt set
-host ... && bd dolt set port ...` when the store's own config points away from
-the live host, the `[host:port]` section of the credentials file (or
-`BEADS_DOLT_PASSWORD`) to update for a rejected login, and `bd dolt start` for an
-unreachable loopback server. Only an unknown cause falls back to `brain stores
-doctor`. It uses the same pin scan and `store-host.env` reader as `stores doctor
---fleet`, and never prints passwords.
+rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST` (or
+`_PORT`) for an environment override, the env file line to remove for an
+env-file pin, the exact `metadata.json` / `config.yaml` field or
+`.beads/dolt-server.port` file to remove when the store's own config points
+away from `store-host.env`, running through the store wrapper when bd ran
+without it, the `[host:port]` section of the credentials file (or
+`BEADS_DOLT_PASSWORD`) to update for a rejected login, `bd dolt start` for an
+unreachable loopback server, and the auto-start log when bd just auto-started
+the server and it still does not answer. A fix never writes a host or port into
+store config: `store-host.env` stays the one record of the live server. Only an
+unknown cause falls back to `brain stores doctor`. It uses the same pin scan and
+`store-host.env` reader as `stores doctor --fleet`, and never prints passwords.

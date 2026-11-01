@@ -1086,8 +1086,10 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 				if breaker != nil {
 					breaker.RecordFailure()
 				}
-				return nil, connectErr(cfg, fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w\n\n"+
-					"Check logs: %s", addr, dialErr, doltserver.LogPath(resolvedBeadsDir)), "")
+				logPath := doltserver.LogPath(resolvedBeadsDir)
+				return nil, &ServerConnectError{Host: cfg.ServerHost, Port: cfg.ServerPort, LogPath: logPath,
+					Err:  fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w", addr, dialErr),
+					Hint: "Check logs: " + logPath}
 			}
 		} else {
 			if breaker != nil {

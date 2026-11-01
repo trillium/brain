@@ -86,8 +86,11 @@ func TestExplainLoopbackStaleCredential(t *testing.T) {
 		"built-in default",
 		"live:  "+mini0Self+":3307",
 		"a password is configured for 127.0.0.1:3307 in "+credPath+" (value not shown); it was rejected",
-		"fix:   bd dolt set host "+mini0Self+" && bd dolt set port 3307",
+		"fix:   run bd through the store wrapper (brain store <name> ...) so store-host.env applies",
 	)
+	if strings.Contains(got, "bd dolt set") {
+		t.Fatalf("fix must never write the live host into store config:\n%s", got)
+	}
 
 	// Same loopback address, and it IS the live host: the stale entry is the cause.
 	home = mini0Home(t, "127.0.0.1")
@@ -123,6 +126,71 @@ func TestExplainEnvFilePinNamesFile(t *testing.T) {
 	if src.Kind != "env-file" || src.Path != envFile {
 		t.Fatalf("env file pin not attributed: %+v", src)
 	}
+}
+
+// The env overrides only the port; the host is store-host.env's. The env var is
+// to blame, not the store's own configuration.
+func TestExplainEnvPortOnlyOverride(t *testing.T) {
+	home := mini0Home(t, mini0Self)
+	got := explainStoreConnect(connectDiagInput{
+		Home: home, EnvHost: mini0Self, EnvPort: "3399", Tried: hostAddr{Host: mini0Self, Port: 3399},
+		Failure: failRefused,
+	})
+	wantAll(t, got,
+		"tried: "+mini0Self+":3399  (from environment variable BEADS_DOLT_SERVER_PORT)",
+		"BEADS_DOLT_SERVER_PORT in this environment overrides store-host.env",
+		"fix:   unset BEADS_DOLT_SERVER_PORT",
+	)
+
+	mustWrite(t, filepath.Join(home, ".local/bin/task"), "#!/bin/sh\nexport BEADS_DOLT_SERVER_PORT=3399\nexec bd \"$@\"\n", 0o755)
+	got = explainStoreConnect(connectDiagInput{
+		Home: home, EnvHost: mini0Self, EnvPort: "3399", Tried: hostAddr{Host: mini0Self, Port: 3399},
+		Failure: failRefused,
+	})
+	wantAll(t, got, "wrapper pin "+filepath.Join(home, ".local/bin/task"), "fix:   brain stores rewrite-wrappers")
+}
+
+// metadata.json pins a host other than store-host.env: name the file and field.
+func TestExplainMetadataPin(t *testing.T) {
+	home := mini0Home(t, mini0Self)
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	mustWrite(t, filepath.Join(beadsDir, "metadata.json"),
+		`{"backend":"dolt","dolt_mode":"server","dolt_server_host":"`+mini1Addr+`"}`, 0o644)
+	got := explainStoreConnect(connectDiagInput{
+		Home: home, BeadsDir: beadsDir, Tried: hostAddr{Host: mini1Addr, Port: 3307}, Failure: failAuth,
+	})
+	meta := filepath.Join(beadsDir, "metadata.json")
+	wantAll(t, got,
+		"metadata.json dolt_server_host in "+meta,
+		"this store's own configuration points away from store-host.env",
+		"fix:   remove dolt_server_host from "+meta+" so store-host.env applies",
+	)
+
+	// A stale .beads port file points at the wrong port on the live host.
+	mustWrite(t, filepath.Join(beadsDir, "metadata.json"), `{"backend":"dolt","dolt_mode":"server"}`, 0o644)
+	mustWrite(t, filepath.Join(beadsDir, "dolt-server.port"), "3399\n", 0o644)
+	got = explainStoreConnect(connectDiagInput{
+		Home: home, BeadsDir: beadsDir, EnvHost: mini0Self, Tried: hostAddr{Host: mini0Self, Port: 3399}, Failure: failRefused,
+	})
+	wantAll(t, got, "fix:   rm "+filepath.Join(beadsDir, "dolt-server.port")+" so store-host.env applies")
+}
+
+// Auto-start just ran and the server still does not answer: point at its log,
+// not at starting it again.
+func TestAnnotateAutoStartFailurePointsAtLog(t *testing.T) {
+	home := mini0Home(t, "127.0.0.1")
+	t.Setenv("HOME", home)
+	t.Setenv("BEADS_DOLT_SERVER_HOST", "")
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	orig := &dolt.ServerConnectError{Host: "127.0.0.1", Port: 3307, LogPath: "/x/.beads/dolt-server.log",
+		Err:  fmt.Errorf("Dolt server auto-started but still unreachable at 127.0.0.1:3307: %w", refused),
+		Hint: "Check logs: /x/.beads/dolt-server.log"}
+	msg := annotateStoreConnectError(orig, "").Error()
+	if strings.Contains(msg, "bd dolt start") || strings.Count(msg, "fix:") != 1 || strings.Contains(msg, "Check logs") {
+		t.Fatalf("want exactly one fix line pointing at the log:\n%s", msg)
+	}
+	wantAll(t, msg, "auto-started a local server", "fix:   tail -n 50 /x/.beads/dolt-server.log")
 }
 
 func TestExplainConnectionRefused(t *testing.T) {
