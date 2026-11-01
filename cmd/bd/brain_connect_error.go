@@ -163,6 +163,7 @@ func resolvePortSource(in connectDiagInput, pins []hostPin) hostSource {
 	}
 	if in.BeadsDir != "" {
 		path := filepath.Join(in.BeadsDir, doltserver.PortFileName)
+		// #nosec G304 -- fixed file name inside the store's .beads dir
 		if data, err := os.ReadFile(path); err == nil && strings.TrimSpace(string(data)) == strconv.Itoa(port) {
 			return hostSource{Kind: "port-file", Label: "port file " + path, Path: path}
 		}
