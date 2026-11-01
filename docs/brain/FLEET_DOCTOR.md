@@ -89,3 +89,14 @@ machines:
 Hosts running an older `brain` without `stores host-audit` are reported as
 `audit-unavailable` (not unreachable). Backup drift is grouped to one item per
 distinct reason, and `pin_count` counts distinct wrapper/env files.
+
+## Login and connect errors name the server
+
+When a store open fails with a MySQL 1045, connection refused, timeout or
+unknown host, `bd`/`brain` keeps the driver's error text and appends the tried
+`host:port`, where it came from (wrapper pin, env file, `BEADS_DOLT_SERVER_HOST`,
+`store-host.env`, `metadata.json`, `config.yaml`, built-in default), the live
+host from `store-host.env` when it differs, and one fix command
+(`brain stores rewrite-wrappers` for a wrapper pin that disagrees with
+`store-host.env`, otherwise `brain stores doctor`). It uses the same pin scan and
+`store-host.env` reader as `stores doctor --fleet`, and never prints passwords.

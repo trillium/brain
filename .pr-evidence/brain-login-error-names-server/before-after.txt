@@ -1,0 +1,44 @@
+
+=== pin overrides store-host.env (mini0 -> mini1)
+--- before:
+failed to check if database "beads_task" exists on server 100.102.238.78:3307: Error 1045 (28000): Access denied for user 'root'@'100.84.99.99' (using password: YES)
+--- after:
+failed to check if database "beads_task" exists on server 100.102.238.78:3307: Error 1045 (28000): Access denied for user 'root'@'100.84.99.99' (using password: YES)
+
+brain: store server login refused (MySQL 1045 access denied)
+  tried: 100.102.238.78:3307  (from wrapper pin ~/.local/bin/task: export BEADS_DOLT_SERVER_HOST=100.102.238.78)
+  live:  100.84.99.99:3307  (store-host.env ~/.config/brain/store-host.env)
+  cause: the wrapper pins a different server than store-host.env names
+  credentials: no BEADS_DOLT_PASSWORD and no [100.102.238.78:3307] entry in ~/.config/beads/credentials
+  fix:   brain stores rewrite-wrappers
+
+=== loopback 1045, stale credentials
+--- before:
+failed to check if database "beads_task" exists on server 127.0.0.1:3307: Error 1045 (28000): Access denied for user 'root'@'100.84.99.99' (using password: YES)
+--- after:
+failed to check if database "beads_task" exists on server 127.0.0.1:3307: Error 1045 (28000): Access denied for user 'root'@'100.84.99.99' (using password: YES)
+
+brain: store server login refused (MySQL 1045 access denied)
+  tried: 127.0.0.1:3307  (from built-in default (no host configured))
+  live:  100.84.99.99:3307  (store-host.env ~/.config/brain/store-host.env)
+  cause: this store connects to loopback while the live host is elsewhere; the loopback server rejected the login (a stale credentials entry for it is the usual reason)
+  credentials: no BEADS_DOLT_PASSWORD and no [127.0.0.1:3307] entry in ~/.config/beads/credentials
+  fix:   brain stores doctor
+
+=== connection refused
+--- before:
+Dolt server unreachable at 100.84.99.99:3307: dial tcp: connect: connection refused
+
+The Dolt server may not be running. Try:
+  bd dolt start
+--- after:
+Dolt server unreachable at 100.84.99.99:3307: dial tcp: connect: connection refused
+
+The Dolt server may not be running. Try:
+  bd dolt start
+
+brain: store server connection refused
+  tried: 100.84.99.99:3307  (from store-host.env ~/.config/brain/store-host.env)
+  live:  100.84.99.99:3307  (store-host.env ~/.config/brain/store-host.env; same as tried)
+  cause: nothing is listening at that address
+  fix:   brain stores doctor
