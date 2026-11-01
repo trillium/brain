@@ -177,7 +177,7 @@ func resolvePortSource(in connectDiagInput, pins []hostPin) hostSource {
 			return hostSource{Kind: "metadata", Label: "metadata.json dolt_server_port in " + path, Path: path, Field: "dolt_server_port"}
 		}
 	}
-	return hostSource{Label: "derived port (no port configured)"}
+	return hostSource{Kind: "default", Label: "derived port (no port configured)"}
 }
 
 func yamlConfigPath() string {

@@ -179,6 +179,18 @@ func TestExplainMetadataPin(t *testing.T) {
 	if strings.Contains(got, "so store-host.env applies") {
 		t.Fatalf("fix must not claim store-host.env applies to bare bd:\n%s", got)
 	}
+	// No port configured anywhere: bd derived one because it ran without the wrapper.
+	if err := os.Remove(filepath.Join(beadsDir, "dolt-server.port")); err != nil {
+		t.Fatal(err)
+	}
+	got = explainStoreConnect(connectDiagInput{
+		Home: home, BeadsDir: beadsDir, Tried: hostAddr{Host: mini0Self, Port: 13421}, Failure: failRefused,
+	})
+	wantAll(t, got,
+		"derived port (no port configured)",
+		"bd ran without the store wrapper",
+		"fix:   run bd through the store wrapper (brain store <name> ...); if the wrapper is missing or stale, brain stores rewrite-wrappers",
+	)
 }
 
 // Auto-start just ran and the server still does not answer: point at its log,
