@@ -100,10 +100,11 @@ host from `store-host.env` when it differs, and exactly one fix line that
 replaces the store's generic hint and matches the cause: `brain stores
 rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST` (or
 `_PORT`) for an environment override, the env file line to remove for an
-env-file pin, the exact `metadata.json` / `config.yaml` field or
-`.beads/dolt-server.port` file to remove when the store's own config points
-away from `store-host.env`, running through the store wrapper when bd ran
-without it, the `[host:port]` section of the credentials file (or
+env-file pin, running through the store wrapper (or `brain stores
+rewrite-wrappers` when the wrapper is missing or stale) when bd ran without it
+and took its address from `metadata.json`, `config.yaml`, the
+`.beads/dolt-server.port` file or the built-in default (core bd never reads
+`store-host.env`; only the wrappers do), the `[host:port]` section of the credentials file (or
 `BEADS_DOLT_PASSWORD`) to update for a rejected login, `bd dolt start` for an
 unreachable loopback server, and the auto-start log when bd just auto-started
 the server and it still does not answer. A fix never writes a host or port into

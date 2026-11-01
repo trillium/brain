@@ -86,7 +86,7 @@ func TestExplainLoopbackStaleCredential(t *testing.T) {
 		"built-in default",
 		"live:  "+mini0Self+":3307",
 		"a password is configured for 127.0.0.1:3307 in "+credPath+" (value not shown); it was rejected",
-		"fix:   run bd through the store wrapper (brain store <name> ...) so store-host.env applies",
+		"fix:   run bd through the store wrapper (brain store <name> ...); if the wrapper is missing or stale, brain stores rewrite-wrappers",
 	)
 	if strings.Contains(got, "bd dolt set") {
 		t.Fatalf("fix must never write the live host into store config:\n%s", got)
@@ -126,6 +126,9 @@ func TestExplainEnvFilePinNamesFile(t *testing.T) {
 	if src.Kind != "env-file" || src.Path != envFile {
 		t.Fatalf("env file pin not attributed: %+v", src)
 	}
+	if fix := sourceFix(src); fix != "remove the BEADS_DOLT_SERVER_HOST line from "+envFile {
+		t.Fatalf("env file fix: %q", fix)
+	}
 }
 
 // The env overrides only the port; the host is store-host.env's. The env var is
@@ -162,8 +165,8 @@ func TestExplainMetadataPin(t *testing.T) {
 	meta := filepath.Join(beadsDir, "metadata.json")
 	wantAll(t, got,
 		"metadata.json dolt_server_host in "+meta,
-		"this store's own configuration points away from store-host.env",
-		"fix:   remove dolt_server_host from "+meta+" so store-host.env applies",
+		"bd ran without the store wrapper, so store-host.env never applied",
+		"fix:   run bd through the store wrapper (brain store <name> ...); if the wrapper is missing or stale, brain stores rewrite-wrappers",
 	)
 
 	// A stale .beads port file points at the wrong port on the live host.
@@ -172,7 +175,10 @@ func TestExplainMetadataPin(t *testing.T) {
 	got = explainStoreConnect(connectDiagInput{
 		Home: home, BeadsDir: beadsDir, EnvHost: mini0Self, Tried: hostAddr{Host: mini0Self, Port: 3399}, Failure: failRefused,
 	})
-	wantAll(t, got, "fix:   rm "+filepath.Join(beadsDir, "dolt-server.port")+" so store-host.env applies")
+	wantAll(t, got, "port file "+filepath.Join(beadsDir, "dolt-server.port"), "fix:   run bd through the store wrapper (brain store <name> ...); if the wrapper is missing or stale, brain stores rewrite-wrappers")
+	if strings.Contains(got, "so store-host.env applies") {
+		t.Fatalf("fix must not claim store-host.env applies to bare bd:\n%s", got)
+	}
 }
 
 // Auto-start just ran and the server still does not answer: point at its log,

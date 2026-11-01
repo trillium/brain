@@ -187,9 +187,9 @@ func yamlConfigPath() string {
 	return "config.yaml"
 }
 
-// sourceFix is the single action that removes a source pointing away from
+// sourceFix is the single action for a source pointing away from
 // store-host.env. It never writes a host or port anywhere: store-host.env stays
-// the one record of the live server.
+// the one record of the live server, and only the wrappers read it.
 func sourceFix(src hostSource) string {
 	switch src.Kind {
 	case "pin":
@@ -197,13 +197,9 @@ func sourceFix(src hostSource) string {
 	case "env":
 		return "unset " + src.Field
 	case "env-file":
-		return "remove the " + src.Field + " line from " + src.Path + " so store-host.env applies"
-	case "metadata", "config":
-		return "remove " + src.Field + " from " + src.Path + " so store-host.env applies"
-	case "port-file":
-		return "rm " + src.Path + " so store-host.env applies"
-	case "default":
-		return "run bd through the store wrapper (brain store <name> ...) so store-host.env applies"
+		return "remove the " + src.Field + " line from " + src.Path
+	case "metadata", "config", "port-file", "default":
+		return "run bd through the store wrapper (brain store <name> ...); if the wrapper is missing or stale, brain stores rewrite-wrappers"
 	}
 	return "brain stores doctor"
 }
@@ -249,10 +245,10 @@ func explainStoreConnect(in connectDiagInput) string {
 			fmt.Fprintf(&b, "  cause: %s in this environment overrides store-host.env\n", src.Field)
 		case "env-file":
 			b.WriteString("  cause: an env file pins a different server than store-host.env names\n")
-		case "default":
-			b.WriteString("  cause: bd ran without the store wrapper, so store-host.env never applied\n")
+		case "metadata", "config", "port-file", "default":
+			b.WriteString("  cause: bd ran without the store wrapper, so store-host.env never applied and the address came from the source above\n")
 		default:
-			b.WriteString("  cause: this store's own configuration points away from store-host.env\n")
+			b.WriteString("  cause: the tried address does not match store-host.env\n")
 		}
 		if in.Failure == failAuth && hostIsLoopback(in.Tried.Host) {
 			b.WriteString("  note:  the loopback server rejected the login (a stale credentials entry for it is the usual reason)\n")
