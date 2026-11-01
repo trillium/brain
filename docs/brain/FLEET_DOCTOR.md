@@ -96,7 +96,13 @@ When a store open fails with a MySQL 1045, connection refused, timeout or
 unknown host, `bd`/`brain` keeps the driver's error text and appends the tried
 `host:port`, where it came from (wrapper pin, env file, `BEADS_DOLT_SERVER_HOST`,
 `store-host.env`, `metadata.json`, `config.yaml`, built-in default), the live
-host from `store-host.env` when it differs, and one fix command
-(`brain stores rewrite-wrappers` for a wrapper pin that disagrees with
-`store-host.env`, otherwise `brain stores doctor`). It uses the same pin scan and
-`store-host.env` reader as `stores doctor --fleet`, and never prints passwords.
+host from `store-host.env` when it differs, and exactly one fix line that
+replaces the store's generic hint and matches the cause: `brain stores
+rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST ...` for an
+environment override, the env file to edit for an env-file pin, `bd dolt set
+host ... && bd dolt set port ...` when the store's own config points away from
+the live host, the `[host:port]` section of the credentials file (or
+`BEADS_DOLT_PASSWORD`) to update for a rejected login, and `bd dolt start` for an
+unreachable loopback server. Only an unknown cause falls back to `brain stores
+doctor`. It uses the same pin scan and `store-host.env` reader as `stores doctor
+--fleet`, and never prints passwords.

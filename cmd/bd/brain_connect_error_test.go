@@ -76,25 +76,53 @@ func TestExplainPinOverridesStoreHost(t *testing.T) {
 // host is the machine's own address.
 func TestExplainLoopbackStaleCredential(t *testing.T) {
 	home := mini0Home(t, mini0Self)
+	credPath := filepath.Join(home, ".config/beads/credentials")
 	got := explainStoreConnect(connectDiagInput{
 		Home: home, EnvHost: "", Tried: hostAddr{Host: "127.0.0.1", Port: 3307},
-		Failure: failAuth, HasPassword: true, CredPath: filepath.Join(home, ".config/beads/credentials"),
+		Failure: failAuth, PasswordFrom: "file", CredPath: credPath,
 	})
 	wantAll(t, got,
 		"tried: 127.0.0.1:3307",
 		"built-in default",
 		"live:  "+mini0Self+":3307",
-		"a password is configured for 127.0.0.1:3307 (value not shown); it was rejected",
-		"fix:   brain stores doctor",
+		"a password is configured for 127.0.0.1:3307 in "+credPath+" (value not shown); it was rejected",
+		"fix:   bd dolt set host "+mini0Self+" && bd dolt set port 3307",
 	)
 
 	// Same loopback address, and it IS the live host: the stale entry is the cause.
 	home = mini0Home(t, "127.0.0.1")
 	got = explainStoreConnect(connectDiagInput{
 		Home: home, Tried: hostAddr{Host: "127.0.0.1", Port: 3307},
-		Failure: failAuth, HasPassword: true, CredPath: "/x/credentials",
+		Failure: failAuth, PasswordFrom: "file", CredPath: "/x/credentials",
 	})
-	wantAll(t, got, "same as tried", "credentials entry for it is stale", "fix:   brain stores doctor")
+	wantAll(t, got, "same as tried", "credentials entry for it is stale",
+		"fix:   update or remove the [127.0.0.1:3307] section in /x/credentials")
+}
+
+func TestExplainAuthFixNamesPasswordSource(t *testing.T) {
+	home := mini0Home(t, mini0Self)
+	for _, c := range []struct{ from, fix string }{
+		{"env", "fix:   set BEADS_DOLT_PASSWORD to the password " + mini0Self + ":3307 accepts, or unset it to use [" + mini0Self + ":3307] in /x/credentials"},
+		{"", "fix:   add a [" + mini0Self + ":3307] section with password=... to /x/credentials"},
+	} {
+		got := explainStoreConnect(connectDiagInput{
+			Home: home, EnvHost: mini0Self, Tried: hostAddr{Host: mini0Self, Port: 3307},
+			Failure: failAuth, PasswordFrom: c.from, CredPath: "/x/credentials",
+		})
+		wantAll(t, got, "rejected the login", c.fix)
+	}
+}
+
+func TestExplainEnvFilePinNamesFile(t *testing.T) {
+	home := mini0Home(t, mini0Self)
+	envFile := filepath.Join(home, ".config/beads/task.env")
+	mustWrite(t, envFile, "BEADS_DOLT_SERVER_HOST="+mini1Addr+"\n", 0o644)
+	pins := []hostPin{{Source: "env-file", Path: envFile, Host: mini1Addr, Port: 3307, Line: "BEADS_DOLT_SERVER_HOST=" + mini1Addr}}
+	in := connectDiagInput{Home: home, EnvHost: mini1Addr, Tried: hostAddr{Host: mini1Addr, Port: 3307}, Failure: failAuth}
+	src := resolveHostSource(in, readStoreHostView(home), pins)
+	if src.Kind != "env-file" || src.Path != envFile {
+		t.Fatalf("env file pin not attributed: %+v", src)
+	}
 }
 
 func TestExplainConnectionRefused(t *testing.T) {
@@ -108,6 +136,11 @@ func TestExplainConnectionRefused(t *testing.T) {
 		"nothing is listening at that address",
 		"fix:   brain stores doctor",
 	)
+
+	// A loopback server that is down is started locally.
+	home = mini0Home(t, "127.0.0.1")
+	got = diagFor(t, home, "", "127.0.0.1", failRefused)
+	wantAll(t, got, "no local store server is answering", "fix:   bd dolt start")
 }
 
 func TestExplainEnvOverrideSuggestsUnset(t *testing.T) {
@@ -117,8 +150,28 @@ func TestExplainEnvOverrideSuggestsUnset(t *testing.T) {
 }
 
 func TestExplainMissingStoreHostFile(t *testing.T) {
-	got := diagFor(t, t.TempDir(), "", "127.0.0.1", failRefused)
+	got := diagFor(t, t.TempDir(), "", "10.9.9.9", failRefused)
 	wantAll(t, got, "live:  unknown", "is missing", "fix:   brain stores doctor")
+}
+
+// The store's own "bd dolt start" hint is replaced by the diagnosis, so the
+// message carries exactly one fix.
+func TestAnnotateShowsExactlyOneFix(t *testing.T) {
+	home := mini0Home(t, mini0Self)
+	t.Setenv("HOME", home)
+	t.Setenv("BEADS_DOLT_SERVER_HOST", mini0Self)
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	orig := &dolt.ServerConnectError{Host: mini0Self, Port: 3307,
+		Err:  fmt.Errorf("Dolt server unreachable at %s:3307: %w", mini0Self, refused),
+		Hint: "The Dolt server may not be running. Try:\n  bd dolt start"}
+	if !strings.Contains(orig.Error(), "bd dolt start") {
+		t.Fatalf("unannotated error must keep the store hint: %s", orig.Error())
+	}
+	msg := annotateStoreConnectError(orig, "").Error()
+	if strings.Contains(msg, "bd dolt start") || strings.Count(msg, "fix:") != 1 {
+		t.Fatalf("want exactly one fix line:\n%s", msg)
+	}
+	wantAll(t, msg, "Dolt server unreachable at "+mini0Self+":3307", "fix:   brain stores doctor")
 }
 
 func TestExplainNeverPrintsSecrets(t *testing.T) {
@@ -128,7 +181,7 @@ func TestExplainNeverPrintsSecrets(t *testing.T) {
 	mustWrite(t, filepath.Join(home, ".local/bin/task"), fmt.Sprintf(wrapperPin, mini1Addr), 0o755)
 	got := explainStoreConnect(connectDiagInput{
 		Home: home, EnvHost: mini1Addr, Tried: hostAddr{Host: mini1Addr, Port: 3307},
-		Failure: failAuth, HasPassword: true, CredPath: filepath.Join(home, ".config/beads/credentials"),
+		Failure: failAuth, PasswordFrom: "env", CredPath: filepath.Join(home, ".config/beads/credentials"),
 	})
 	if strings.Contains(got, "hunter2") {
 		t.Fatalf("diagnosis leaked a secret:\n%s", got)
@@ -210,6 +263,7 @@ func TestExplainTranscript(t *testing.T) {
 	}
 	show("pin overrides store-host.env (mini0 -> mini1)", mini1Addr, connectErrFor(mini1Addr, access1045(mini1Addr)))
 	show("loopback 1045, stale credentials", "", connectErrFor("127.0.0.1", access1045("127.0.0.1")))
-	show("connection refused", mini0Self, connectErrFor(mini0Self, fmt.Errorf("Dolt server unreachable at %s:3307: %w\n\nThe Dolt server may not be running. Try:\n  bd dolt start",
-		mini0Self, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)})))
+	show("connection refused", mini0Self, &dolt.ServerConnectError{Host: mini0Self, Port: 3307,
+		Err:  fmt.Errorf("Dolt server unreachable at %s:3307: %w", mini0Self, &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}),
+		Hint: "The Dolt server may not be running. Try:\n  bd dolt start"})
 }

@@ -77,16 +77,17 @@ type connectDiagInput struct {
 	BeadsDir string // store's .beads dir, for the metadata.json/config.yaml source
 	Tried    hostAddr
 	Failure  connectFailure
-	// HasPassword reports whether any password is configured for the tried
-	// address (BEADS_DOLT_PASSWORD or a credentials-file entry). Presence only.
-	HasPassword bool
-	CredPath    string
+	// PasswordFrom says which configured password the login used: "env"
+	// (BEADS_DOLT_PASSWORD), "file" (a credentials-file entry) or "". Presence only.
+	PasswordFrom string
+	CredPath     string
 }
 
 // hostSource says where the tried host came from.
 type hostSource struct {
 	Label string // "wrapper pin /path/to/task", "store-host.env", ...
 	Kind  string // "pin" | "env-file" | "store-host" | "env" | "metadata" | "config" | "default"
+	Path  string // file holding the assignment, for "pin" and "env-file"
 }
 
 // resolveHostSource attributes the tried host. A wrapper exports whatever it
@@ -101,7 +102,7 @@ func resolveHostSource(in connectDiagInput, sh storeHostView, pins []hostPin) ho
 					if p.Source == "wrapper" {
 						return hostSource{Kind: "pin", Label: "wrapper pin " + p.Path + ": " + p.Line}
 					}
-					return hostSource{Kind: "env-file", Label: "env file " + p.Path + ": " + p.Line}
+					return hostSource{Kind: "env-file", Label: "env file " + p.Path + ": " + p.Line, Path: p.Path}
 				}
 			}
 			return hostSource{Kind: "env", Label: "environment variable BEADS_DOLT_SERVER_HOST"}
@@ -119,7 +120,7 @@ func resolveHostSource(in connectDiagInput, sh storeHostView, pins []hostPin) ho
 	if in.EnvHost == "" && host == configfile.DefaultDoltServerHost {
 		return hostSource{Kind: "default", Label: "built-in default (no host configured)"}
 	}
-	return hostSource{Kind: "env", Label: "configuration (BEADS_DOLT_SERVER_HOST=" + in.EnvHost + ")"}
+	return hostSource{Label: "configuration (BEADS_DOLT_SERVER_HOST=" + in.EnvHost + ")"}
 }
 
 // explainStoreConnect builds the diagnosis block appended to the driver error.
@@ -149,6 +150,7 @@ func explainStoreConnect(in connectDiagInput) string {
 		fmt.Fprintf(&b, "  live:  unknown, %s is unusable: %s\n", sh.Path, sh.Error)
 	}
 
+	key := in.Tried.String()
 	fix := "brain stores doctor"
 	switch {
 	case differs && src.Kind == "pin":
@@ -159,22 +161,31 @@ func explainStoreConnect(in connectDiagInput) string {
 		fix = "unset BEADS_DOLT_SERVER_HOST BEADS_DOLT_SERVER_PORT"
 	case differs && src.Kind == "env-file":
 		b.WriteString("  cause: an env file pins a different server than store-host.env names\n")
+		fix = fmt.Sprintf("set BEADS_DOLT_SERVER_HOST=%s and BEADS_DOLT_SERVER_PORT=%d in %s", live.Host, live.Port, src.Path)
 	case differs && in.Failure == failAuth && hostIsLoopback(in.Tried.Host):
 		b.WriteString("  cause: this store connects to loopback while the live host is elsewhere; the loopback server rejected the login (a stale credentials entry for it is the usual reason)\n")
+		fix = pointAtLive(live)
 	case differs:
 		b.WriteString("  cause: this store's own configuration points away from store-host.env\n")
+		fix = pointAtLive(live)
 	case in.Failure == failAuth && hostIsLoopback(in.Tried.Host):
 		b.WriteString("  cause: a loopback address reached a server that rejected the login; the credentials entry for it is stale or that is not the store server\n")
+		fix = credentialFix(in, key)
 	case in.Failure == failAuth:
 		b.WriteString("  cause: the server is the expected one but rejected the login\n")
+		fix = credentialFix(in, key)
+	case hostIsLoopback(in.Tried.Host):
+		b.WriteString("  cause: no local store server is answering at that address\n")
+		fix = "bd dolt start"
 	case in.Failure == failRefused:
 		b.WriteString("  cause: nothing is listening at that address\n")
 	}
 	if in.Failure == failAuth {
-		key := in.Tried.String()
-		switch {
-		case in.HasPassword:
-			fmt.Fprintf(&b, "  credentials: a password is configured for %s (value not shown); it was rejected\n", key)
+		switch in.PasswordFrom {
+		case "env":
+			fmt.Fprintf(&b, "  credentials: BEADS_DOLT_PASSWORD is set (value not shown); it was rejected by %s\n", key)
+		case "file":
+			fmt.Fprintf(&b, "  credentials: a password is configured for %s in %s (value not shown); it was rejected\n", key, in.CredPath)
 		default:
 			fmt.Fprintf(&b, "  credentials: no BEADS_DOLT_PASSWORD and no [%s] entry in %s\n", key, in.CredPath)
 		}
@@ -183,27 +194,38 @@ func explainStoreConnect(in connectDiagInput) string {
 	return b.String()
 }
 
-// storeConnectError is the original error plus its diagnosis.
+// pointAtLive is the command that points this store at the live server.
+func pointAtLive(live hostAddr) string {
+	return fmt.Sprintf("bd dolt set host %s && bd dolt set port %d", live.Host, live.Port)
+}
+
+// credentialFix names the edit that replaces the rejected (or missing) password.
+func credentialFix(in connectDiagInput, key string) string {
+	switch in.PasswordFrom {
+	case "env":
+		return "set BEADS_DOLT_PASSWORD to the password " + key + " accepts, or unset it to use [" + key + "] in " + in.CredPath
+	case "file":
+		return "update or remove the [" + key + "] section in " + in.CredPath
+	default:
+		return "add a [" + key + "] section with password=... to " + in.CredPath
+	}
+}
+
+// storeConnectError is the original error plus its diagnosis, which replaces
+// the store's generic hint with the fix that matches the cause.
 type storeConnectError struct {
-	err  error
+	err  *dolt.ServerConnectError
 	diag string
 }
 
-func (e *storeConnectError) Error() string { return e.err.Error() + "\n\n" + e.diag }
+func (e *storeConnectError) Error() string { return e.err.Err.Error() + "\n\n" + e.diag }
 func (e *storeConnectError) Unwrap() error { return e.err }
 
 // annotateStoreConnectError appends the diagnosis to a store open error. Errors
 // that are not connection or login failures pass through untouched.
 func annotateStoreConnectError(err error, beadsDir string) error {
-	if err == nil {
-		return nil
-	}
-	var ce *dolt.ServerConnectError
-	if !errors.As(err, &ce) || ce.Socket != "" {
-		return err
-	}
-	var already *storeConnectError
-	if errors.As(err, &already) {
+	ce, ok := err.(*dolt.ServerConnectError)
+	if !ok || ce.Socket != "" {
 		return err
 	}
 	failure := classifyConnectFailure(err)
@@ -215,16 +237,22 @@ func annotateStoreConnectError(err error, beadsDir string) error {
 	if credPath == "" {
 		credPath = configfile.DefaultCredentialsPath()
 	}
-	hasPW := os.Getenv("BEADS_DOLT_PASSWORD") != "" || configfile.LookupCredentialsPassword(ce.Host, ce.Port) != ""
-	in := connectDiagInput{
-		Home:        home,
-		EnvHost:     os.Getenv("BEADS_DOLT_SERVER_HOST"),
-		EnvPort:     os.Getenv("BEADS_DOLT_SERVER_PORT"),
-		BeadsDir:    beadsDir,
-		Tried:       hostAddr{Host: ce.Host, Port: ce.Port},
-		Failure:     failure,
-		HasPassword: hasPW,
-		CredPath:    credPath,
+	pwFrom := ""
+	switch {
+	case os.Getenv("BEADS_DOLT_PASSWORD") != "":
+		pwFrom = "env"
+	case configfile.LookupCredentialsPassword(ce.Host, ce.Port) != "":
+		pwFrom = "file"
 	}
-	return &storeConnectError{err: err, diag: explainStoreConnect(in)}
+	in := connectDiagInput{
+		Home:         home,
+		EnvHost:      os.Getenv("BEADS_DOLT_SERVER_HOST"),
+		EnvPort:      os.Getenv("BEADS_DOLT_SERVER_PORT"),
+		BeadsDir:     beadsDir,
+		Tried:        hostAddr{Host: ce.Host, Port: ce.Port},
+		Failure:      failure,
+		PasswordFrom: pwFrom,
+		CredPath:     credPath,
+	}
+	return &storeConnectError{err: ce, diag: explainStoreConnect(in)}
 }

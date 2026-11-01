@@ -23,7 +23,7 @@ brain: store server login refused (MySQL 1045 access denied)
   live:  100.84.99.99:3307  (store-host.env ~/.config/brain/store-host.env)
   cause: this store connects to loopback while the live host is elsewhere; the loopback server rejected the login (a stale credentials entry for it is the usual reason)
   credentials: no BEADS_DOLT_PASSWORD and no [127.0.0.1:3307] entry in ~/.config/beads/credentials
-  fix:   brain stores doctor
+  fix:   bd dolt set host 100.84.99.99 && bd dolt set port 3307
 
 === connection refused
 --- before:
@@ -33,9 +33,6 @@ The Dolt server may not be running. Try:
   bd dolt start
 --- after:
 Dolt server unreachable at 100.84.99.99:3307: dial tcp: connect: connection refused
-
-The Dolt server may not be running. Try:
-  bd dolt start
 
 brain: store server connection refused
   tried: 100.84.99.99:3307  (from store-host.env ~/.config/brain/store-host.env)

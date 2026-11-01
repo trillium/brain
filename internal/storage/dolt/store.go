@@ -1087,7 +1087,7 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 					breaker.RecordFailure()
 				}
 				return nil, connectErr(cfg, fmt.Errorf("Dolt server auto-started but still unreachable at %s: %w\n\n"+
-					"Check logs: %s", addr, dialErr, doltserver.LogPath(resolvedBeadsDir)))
+					"Check logs: %s", addr, dialErr, doltserver.LogPath(resolvedBeadsDir)), "")
 			}
 		} else {
 			if breaker != nil {
@@ -1106,8 +1106,8 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 			} else {
 				hint = "The Dolt server may not be running. Try:\n  bd dolt start"
 			}
-			return nil, connectErr(cfg, fmt.Errorf("Dolt server unreachable at %s: %w\n\n%s",
-				addr, dialErr, hint))
+			return nil, connectErr(cfg, fmt.Errorf("Dolt server unreachable at %s: %w",
+				addr, dialErr), hint)
 		}
 	}
 	_ = conn.Close()
@@ -1127,13 +1127,13 @@ func newServerMode(ctx context.Context, cfg *Config) (*DoltStore, error) {
 	// Server mode: connect via MySQL protocol to dolt sql-server
 	db, connStr, err := openServerConnection(ctx, cfg)
 	if err != nil {
-		return nil, connectErr(cfg, err)
+		return nil, connectErr(cfg, err, "")
 	}
 
 	// Test connection
 	if err := db.PingContext(ctx); err != nil {
 		_ = db.Close()
-		return nil, connectErr(cfg, fmt.Errorf("failed to ping Dolt database: %w", err))
+		return nil, connectErr(cfg, fmt.Errorf("failed to ping Dolt database: %w", err), "")
 	}
 
 	beadsDir := cfg.BeadsDir
