@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/steveyegge/beads/internal/configfile"
 )
 
 // defaultStoreProbeTimeout bounds a single store read so one wedged store
@@ -85,6 +84,13 @@ binary: it warns when the build stamp's commit is not the brain repo's
 current main (checked against the clone's origin/main; set BRAIN_REPO to
 point at the clone), when it was built from a dirty tree, or when the binary
 carries no stamp at all. Fix: scripts/install-from-repo.sh.
+
+It also checks that this machine really reads its store host from the shared
+store-host.env, and reports each finding with a fix command: a wrapper (also
+copies in ~/.pi/agent/bin) that sets the host itself, a loopback store-host.env
+with no Dolt server here (a relay), no credentials entry for the host it names,
+a wrapper whose BEADS_DIR does not exist, and a store whose metadata.json names
+another server. See docs/brain/FLEET_DOCTOR.md.
 
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
@@ -159,6 +165,9 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	names := sortedKeys(stores)
 	results := make([]storeHealth, len(names))
 	sem := make(chan struct{}, storesDoctorJobs)
+	home, _ := os.UserHomeDir()
+	shView := readStoreHostView(home)
+	hostFacts := &hostAudit{Servers: discoverDoltServers(), ServerScan: true}
 	var wg sync.WaitGroup
 
 	started := time.Now()
@@ -173,7 +182,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			// from the shared file through its wrapper but diverges from the
 			// federation on a bare bd run in the store directory. It is
 			// informational: shown, but it does not make --strict fail.
-			if status, reason := metadataServerPin(name, stores[name]); status != "" && r.Status != "fail" {
+			if status, reason := metadataServerPinAgainst(name, stores[name], shView, hostFacts); status != "" && r.Status != "fail" {
 				if r.Status == "ok" {
 					r.Status, r.Reason = status, reason
 				} else {
@@ -190,11 +199,16 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	if binCheck.Status == "warn" {
 		tally.warn++
 	}
+	// Host-level conformance: does this machine read its store host from the
+	// one shared setting, or only happen to agree with it today?
+	hostFindings := localHostFindings(home, shView, hostFacts.Servers, results)
+	tally.warn += len(hostFindings)
 
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
 			"stores":        results,
 			"binary":        binCheck,
+			"host_findings": hostFindings,
 			"ok":            tally.ok + tally.info,
 			"answered":      tally.answered,
 			"warnings":      tally.warn,
@@ -378,35 +392,42 @@ func storeWrapperPath(name string) (string, bool) {
 
 // metadataServerPin reports a store whose metadata.json pins its own Dolt host
 // or port. The generated wrapper resolves the shared store host config, but a
-// bare bd run in the store directory would use the pinned value instead and
-// silently diverge from the federation's one server. It is informational, not
-// a warning: the store itself still answers through its wrapper.
+// bare bd run in the store directory would use the pinned value instead. It is
+// informational while the pin agrees with the shared store host config (or
+// there is none to compare with); see metadataServerPinAgainst.
 func metadataServerPin(name string, entry storeEntry) (status, reason string) {
-	beadsDir := expandPath(entry.Path)
-	if wrapper, ok := storeWrapperPath(name); ok {
-		if pinned, ok := wrapperBeadsDir(wrapper); ok {
-			beadsDir = pinned
-		}
-	}
-	if beadsDir == "" {
-		return "", ""
-	}
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
+	return metadataServerPinAgainst(name, entry, storeHostView{}, nil)
+}
+
+// metadataServerPinAgainst is metadataServerPin judged against this machine's
+// store-host.env: a metadata.json that names a different server is a warning,
+// because everything that runs bd with BEADS_DIR and no wrapper (hooks, the
+// bridge, launchd jobs) follows it, and it decides whether a relay can be
+// retired safely. local is the machine's server facts, or nil when unknown.
+func metadataServerPinAgainst(name string, entry storeEntry, sh storeHostView, local *hostAudit) (status, reason string) {
+	pin, ok := storeMetadataPin(name, entry)
+	if !ok {
 		return "", ""
 	}
 	var pins []string
-	if cfg.DoltServerHost != "" {
-		pins = append(pins, "dolt_server_host="+cfg.DoltServerHost)
+	if pin.Host != "" {
+		pins = append(pins, "dolt_server_host="+pin.Host)
 	}
-	if cfg.DoltServerPort > 0 {
-		pins = append(pins, "dolt_server_port="+strconv.Itoa(cfg.DoltServerPort))
+	if pin.Port > 0 {
+		pins = append(pins, "dolt_server_port="+strconv.Itoa(pin.Port))
 	}
-	if len(pins) == 0 {
-		return "", ""
+	if sh.Present && sh.Error == "" {
+		want := hostAddr{Host: sh.Host, Port: sh.Port}
+		if local == nil {
+			local = &hostAudit{}
+		}
+		if !metaPinAgrees(local, pin, want) {
+			return "warn", fmt.Sprintf("%s pins %s in metadata.json but store-host.env says %s; a bare bd run (hooks, bridge, launchd jobs) follows metadata.json. fix: %s",
+				pin.BeadsDir, strings.Join(pins, ", "), want, metadataPinFix(pin.BeadsDir, want))
+		}
 	}
 	return "info", fmt.Sprintf("%s pins %s in metadata.json; a bare bd run would use it instead of the shared store host config",
-		beadsDir, strings.Join(pins, ", "))
+		pin.BeadsDir, strings.Join(pins, ", "))
 }
 
 // wrapperBeadsDir reads the BEADS_DIR a wrapper effectively assigns, with

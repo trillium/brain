@@ -52,6 +52,9 @@ type driftItem struct {
 	// Repairable is true only for drift --repair may fix: wrapper host pins,
 	// through rewrite-wrappers.
 	Repairable bool `json:"repairable,omitempty"`
+	// Subjects names every item a grouped finding covers (stores, for one
+	// metadata.json item), so Detail can stay short.
+	Subjects []string `json:"subjects,omitempty"`
 }
 
 // hostAddr is a Dolt server address.
@@ -211,24 +214,46 @@ func classifyHostAudit(m fleetMember, a *hostAudit, o fleetAuditOptions) (drift 
 		if want.Host == "" || (p.Host == "" && p.Port == 0) {
 			continue
 		}
-		if (p.Host != "" && p.Host != want.Host) || (p.Port != 0 && p.Port != want.Port) {
-			detail := fmt.Sprintf("%s pins %s but the host should be %s: %s", p.Source, pinAddr(p), want, p.Line)
-			fix := "brain stores rewrite-wrappers on " + m.Name + " (or doctor --fleet --repair)"
-			if shValid && exp.Host != "" && !shAgrees {
-				detail = fmt.Sprintf("%s pins %s but store-host.env says %s, and the expected store host is %s: %s", p.Source, pinAddr(p), want, exp, p.Line)
-			}
-			switch {
-			case exp.Host == "":
-				fix = "establish the live store host first (pass --live-host host:port), then run brain stores rewrite-wrappers on " + m.Name + " if store-host.env agrees"
-			case !shAgrees:
-				fix = "correct store-host.env on " + m.Name + " first (doctor --repair never edits it), then run brain stores rewrite-wrappers"
-			}
-			if p.Source != "wrapper" {
-				fix = "remove the pin from " + p.Path + " by hand (rewrite-wrappers does not edit env files)"
-			}
-			add(driftPin, p.Path, detail, fix, p.Source == "wrapper" && shAgrees)
+		disagrees := (p.Host != "" && p.Host != want.Host) || (p.Port != 0 && p.Port != want.Port)
+		if !disagrees && p.Source != "wrapper" {
+			continue
 		}
+		detail := fmt.Sprintf("%s pins %s but the host should be %s: %s", p.Source, pinAddr(p), want, p.Line)
+		fix := "brain stores rewrite-wrappers on " + m.Name + " (or doctor --fleet --repair)"
+		if !disagrees {
+			// Agrees today, but it overrides store-host.env, so repointing the
+			// store host would leave this wrapper behind (the mini1 relay case).
+			detail = fmt.Sprintf("%s sets the store host %s unconditionally instead of reading store-host.env (it agrees today, repointing would leave it behind): %s", p.Source, pinAddr(p), p.Line)
+		} else if shValid && exp.Host != "" && !shAgrees {
+			detail = fmt.Sprintf("%s pins %s but store-host.env says %s, and the expected store host is %s: %s", p.Source, pinAddr(p), want, exp, p.Line)
+		}
+		switch {
+		case exp.Host == "":
+			fix = "establish the live store host first (pass --live-host host:port), then run brain stores rewrite-wrappers on " + m.Name + " if store-host.env agrees"
+		case !shAgrees:
+			fix = "correct store-host.env on " + m.Name + " first (doctor --repair never edits it), then run brain stores rewrite-wrappers"
+		}
+		repairable := p.Source == "wrapper" && !p.Agent && shAgrees
+		switch {
+		case p.Source != "wrapper":
+			fix = "remove the pin from " + p.Path + " by hand (rewrite-wrappers does not edit env files)"
+		case p.Agent && p.LinkTo != "":
+			fix = "replace the copy with a link to the store wrapper (rewrite-wrappers only repairs ~/.local/bin): ln -sf " + p.LinkTo + " " + p.Path
+		case p.Agent:
+			fix = "no ~/.local/bin wrapper of that name: remove " + p.Path + ", or re-create the store wrapper with brain stores create/sync and link it"
+		}
+		add(driftPin, p.Path, detail, fix, repairable)
 	}
+
+	storeHostDrifted := false
+	for _, d := range drift {
+		storeHostDrifted = storeHostDrifted || d.Kind == driftStoreHost
+	}
+	wantConf := hostAddr{}
+	if shValid {
+		wantConf = want
+	}
+	drift = append(drift, classifyConformance(m, a, wantConf, exp, storeHostDrifted)...)
 
 	backups := map[string][]string{} // reason -> store names
 	for _, s := range a.Stores {
@@ -565,6 +590,9 @@ func runFleetAudit(ctx context.Context, roster []fleetMember, run fleetRunner, o
 	rep.Orphans = append(rep.Orphans, unscannable...)
 
 	rep.Hosts = results
+	if d := fleetStoreHostDisagreement(roster, results); d != nil {
+		rep.Drift = append(rep.Drift, *d)
+	}
 	for _, r := range results {
 		rep.Drift = append(rep.Drift, r.Drift...)
 	}

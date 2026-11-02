@@ -18,6 +18,12 @@ report: the convergence verdicts plus an `audit` object (`hosts`, `drift`,
 | `store-host.env` | the file on that machine | missing, unusable, or different from the **live host** |
 | Process env | `BEADS_DOLT_SERVER_HOST` in the audit process | differs from the expected host (it overrides the file), unless the `brain` wrapper's own pin or `store-host.env` supplies that value (then it is reported there) |
 | Host pins | every literal `BEADS_DOLT_SERVER_HOST/PORT` in `~/.local/bin` wrappers, in env files those wrappers `.`/`source`, and in `~/.config/brain-remote/*.env` | differs from the machine's `store-host.env` (else the live host) |
+| Unconditional wrapper pins | a wrapper (in `~/.local/bin`, or a copy in `~/.pi/agent/bin`) that sets `BEADS_DOLT_SERVER_HOST/PORT` itself instead of reading `store-host.env`, **even when the value agrees today**; a default that a later `. store-host.env` overrides is the conforming pattern and is not reported | fix: `brain stores rewrite-wrappers`; for an agent-bin copy, `ln -sf ~/.local/bin/<name> <copy>` (rewrite-wrappers repairs only `~/.local/bin`) |
+| Relay store host | `store-host.env` names a loopback address but no `dolt sql-server` runs on that machine, so the host depends on a local relay/forwarder (not reported for a machine running Dolt, or one that declares `store_host` in `fleet.yaml`) | point `store-host.env` at the Dolt host, add its credentials entry, run `rewrite-wrappers`, then stop the relay |
+| Fleet agreement | every reachable machine's `store-host.env` | machines do not resolve to the same store host (`store-host-disagree`) |
+| Credentials | `~/.config/beads/credentials` (section names only, never passwords) | no `[host:port]` entry for the server `store-host.env` names, while the file has entries for other servers or reads fail (a `BEADS_DOLT_PASSWORD` in the environment or `store-host.env` satisfies it) |
+| Wrapper `BEADS_DIR` | each wrapper's `BEADS_DIR` | the directory does not exist on this machine (e.g. a path under a retired home); fix is `rewrite-wrappers` for a foreign-home path, the link command for an agent copy, else restore or remove it |
+| Store `metadata.json` | each registered store's `dolt_server_host/port` | it names a different server than `store-host.env` (grouped to one `metadata-host` item; the full list is in `--json` `subjects`). Callers that run `bd` with `BEADS_DIR` and no wrapper (hooks, the bridge, launchd jobs) follow it, so this decides whether a relay can be retired. Fix: `BEADS_DIR=<dir> bd dolt set host <h> && ... set port <p>` per store |
 | Read probe | each store through its own wrapper (`list --limit 1`) | fails or times out |
 | Write probe | each store through its own wrapper, see below | fails |
 | Backup freshness | `backup status --json` through each wrapper | none recorded, unreadable, or older than `--backup-max-age` (default 48h; 0 disables) |
@@ -31,6 +37,11 @@ This reproduces the 2026-10-18 manual audit: a machine with no `store-host.env`
 `store-host.env` named itself (`pin`), the retired
 `~/.config/brain-remote/mini1.env` shim (`pin`, source `env-file`), per-machine
 pin counts (`pin_count`), and mini2 unreachable (`unreachable`, never touched).
+
+The single-host `brain stores doctor` reports the same host-level findings (as
+`WARN host <kind>` lines, JSON `host_findings`, each with its fix) and warns on
+a store whose `metadata.json` names a different server than `store-host.env`.
+None of these checks edits credentials, `store-host.env` or any service.
 
 ## Write probe footprint
 

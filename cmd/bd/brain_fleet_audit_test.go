@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -218,11 +219,15 @@ func TestClassifyHostAuditReproducesTheCaptainAudit(t *testing.T) {
 			{Name: "ok", Path: "/h/.local/bin/ok", Source: "wrapper", Host: "100.84.99.99", Port: 3307},
 		}, Stores: []storeAudit{okStore("task")}}
 	d, _ = classifyHostAudit(fleetMember{Name: "mini0"}, a, o)
-	if kinds(d) != "pin,pin" {
+	// The third pin agrees with store-host.env today but still overrides it.
+	if kinds(d) != "pin,pin,pin" {
 		t.Fatalf("mini0 drift = %+v", d)
 	}
-	if !d[0].Repairable || d[1].Repairable {
-		t.Errorf("only the wrapper pin is repairable by rewrite-wrappers: %+v", d)
+	if !d[0].Repairable || d[1].Repairable || !d[2].Repairable {
+		t.Errorf("only the wrapper pins are repairable by rewrite-wrappers: %+v", d)
+	}
+	if !strings.Contains(d[2].Detail, "unconditionally") || !strings.Contains(d[2].Fix, "rewrite-wrappers") {
+		t.Errorf("an agreeing wrapper pin is reported as unconditional with the rewrite fix: %+v", d[2])
 	}
 	if !strings.Contains(d[1].Detail, "env-file") || !strings.Contains(d[1].Fix, "by hand") {
 		t.Errorf("shim env pin must be reported with a manual fix: %+v", d[1])
@@ -359,7 +364,8 @@ func (f *auditFake) run(_ context.Context, m fleetMember, args ...string) ([]byt
 		return []byte(f.audits[m.Name]), nil
 	case "rewrite-wrappers":
 		f.repaired = append(f.repaired, m.Name)
-		f.audits[m.Name] = strings.ReplaceAll(f.audits[m.Name], `"host": "100.102.238.78"`, `"host": "100.84.99.99"`)
+		// rewrite-wrappers drops the baked pin and installs the run-time block.
+		f.audits[m.Name] = regexp.MustCompile(`"pins":\[[^\]]*\]`).ReplaceAllString(f.audits[m.Name], `"pins":[]`)
 		return []byte(`{"total":1,"failed":0,"stores":[{"name":"task","status":"ok"}]}`), nil
 	}
 	return nil, fmt.Errorf("unexpected %v", args)

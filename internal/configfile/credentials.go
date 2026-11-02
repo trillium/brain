@@ -100,3 +100,38 @@ func readPasswordFromFile(path string, sectionKey string) string {
 
 	return ""
 }
+
+// CredentialsFilePath returns the credentials file LookupCredentialsPassword
+// reads: BEADS_CREDENTIALS_FILE when set, else the platform default.
+func CredentialsFilePath() string {
+	if p := os.Getenv("BEADS_CREDENTIALS_FILE"); p != "" {
+		return p
+	}
+	return DefaultCredentialsPath()
+}
+
+// CredentialSections lists the [host:port] section names of an INI-style
+// credentials file, never the passwords. exists is false when the file cannot
+// be opened. A section counts even when it has no password line, so a caller
+// can tell "no entry for this server" from "an entry with nothing in it".
+func CredentialSections(path string) (sections []string, exists bool) {
+	if path == "" {
+		return nil, false
+	}
+	f, err := os.Open(path) //nolint:gosec // operator-owned config path
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = strings.TrimSpace(line[:idx])
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			sections = append(sections, strings.TrimSpace(line[1:len(line)-1]))
+		}
+	}
+	return sections, true
+}
