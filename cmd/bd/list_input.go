@@ -44,10 +44,11 @@ type listInput struct {
 	dueAfter      *time.Time
 	dueBefore     *time.Time
 
-	emptyDesc  bool
-	noAssignee bool
-	noLabels   bool
-	skipLabels bool
+	emptyDesc   bool
+	noAssignee  bool
+	noLabels    bool
+	skipLabels  bool
+	includeDeps bool
 
 	priority       int
 	prioritySet    bool
@@ -140,6 +141,7 @@ func gatherListInput(cmd *cobra.Command) (listInput, error) {
 	in.noLabels, _ = cmd.Flags().GetBool("no-labels")
 
 	in.skipLabels, _ = cmd.Flags().GetBool("skip-labels")
+	in.includeDeps, _ = cmd.Flags().GetBool("include-deps")
 	if in.skipLabels {
 		conflicts := skipLabelsConflicts(in.labels, in.labelsAny, in.labelPattern, in.labelRegex, in.excludeLabels, in.noLabels)
 		if len(conflicts) > 0 {

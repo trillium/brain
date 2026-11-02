@@ -1,0 +1,6 @@
+$ bd list --json --include-deps | jq rows
+t-b9z.1 Child [{"id": "t-b9z", "type": "parent-child"}]
+t-b9z Epic []
+$ bd list --json (default)
+t-b9z.1 Child True
+t-b9z Epic False

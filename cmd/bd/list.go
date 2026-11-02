@@ -342,6 +342,69 @@ func issueOrNil(iwc *types.IssueWithCounts) *types.Issue {
 type skipLabelsIssueView struct {
 	*types.IssueWithCounts
 	Labels []string `json:"labels"`
+	// Dependencies shadows Issue.Dependencies; nil pointer (no --include-deps)
+	// is omitted, so default output is unchanged.
+	Dependencies *[]listDepEdge `json:"dependencies,omitempty"`
+}
+
+// listDepEdge is one outgoing dependency edge in `bd list --include-deps`.
+type listDepEdge struct {
+	ID   string               `json:"id"`
+	Type types.DependencyType `json:"type"`
+}
+
+// listDepsIssueView adds the --include-deps dependencies array to a list row.
+// It shadows the embedded Issue.Dependencies field and is always emitted
+// (as [] when the issue has no outgoing edges).
+type listDepsIssueView struct {
+	*types.IssueWithCounts
+	Dependencies []listDepEdge `json:"dependencies"`
+}
+
+func listDepEdges(deps []*types.Dependency) []listDepEdge {
+	edges := make([]listDepEdge, 0, len(deps))
+	for _, d := range deps {
+		edges = append(edges, listDepEdge{ID: d.DependsOnID, Type: d.Type})
+	}
+	return edges
+}
+
+// loadListDeps fetches outgoing dependency edges for every listed row with a
+// single batched call (never one call per row).
+func loadListDeps(ctx context.Context, fetch func(context.Context, []string) (map[string][]*types.Dependency, error), iwc []*types.IssueWithCounts) (map[string][]*types.Dependency, error) {
+	if len(iwc) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(iwc))
+	for i, issue := range iwc {
+		ids[i] = issue.ID
+	}
+	return fetch(ctx, ids)
+}
+
+// listJSONPayload builds the JSON value for `bd list --json`. depsByIssue is
+// nil unless --include-deps was given, in which case output is unchanged from
+// the default shape apart from the added dependencies array.
+func listJSONPayload(iwc []*types.IssueWithCounts, skipLabels bool, depsByIssue map[string][]*types.Dependency, includeDeps bool) any {
+	if !includeDeps {
+		if skipLabels {
+			return newSkipLabelsListJSONResponse(iwc)
+		}
+		return iwc
+	}
+	if skipLabels {
+		resp := newSkipLabelsListJSONResponse(iwc)
+		for i := range resp.Issues {
+			edges := listDepEdges(depsByIssue[iwc[i].ID])
+			resp.Issues[i].Dependencies = &edges
+		}
+		return resp
+	}
+	views := make([]listDepsIssueView, len(iwc))
+	for i, issue := range iwc {
+		views[i] = listDepsIssueView{IssueWithCounts: issue, Dependencies: listDepEdges(depsByIssue[issue.ID])}
+	}
+	return views
 }
 
 type skipLabelsListJSONResponse struct {
@@ -538,14 +601,14 @@ func runListCore(cmd *cobra.Command, _ []string) error {
 		if iwc == nil {
 			iwc = []*types.IssueWithCounts{}
 		}
-		if in.skipLabels {
-			if err := outputJSON(newSkipLabelsListJSONResponse(iwc)); err != nil {
-				return err
+		var depsByIssue map[string][]*types.Dependency
+		if in.includeDeps {
+			depsByIssue, err = loadListDeps(ctx, activeStore.GetDependencyRecordsForIssues, iwc)
+			if err != nil {
+				return HandleError("%v", err)
 			}
-			printTruncationHint(truncated, in.effectiveLimit)
-			return nil
 		}
-		if err := outputJSON(iwc); err != nil {
+		if err := outputJSON(listJSONPayload(iwc, in.skipLabels, depsByIssue, in.includeDeps)); err != nil {
 			return err
 		}
 		printTruncationHint(truncated, in.effectiveLimit)
@@ -701,6 +764,7 @@ func init() {
 	listCmd.Flags().Bool("no-labels", false, "Filter issues with no labels")
 
 	// Hydration toggle (AD-02). Distinct from --no-labels (filter).
+	listCmd.Flags().Bool("include-deps", false, "With --json, add a dependencies array ({id, type} per outgoing edge) to each row from one batched query; ignored for text output")
 	listCmd.Flags().Bool("skip-labels", false,
 		"Skip label hydration. The labels field in output will be empty regardless "+
 			"of actual labels. Use only when the caller does not depend on label data. "+
