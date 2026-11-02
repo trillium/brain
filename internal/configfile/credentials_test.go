@@ -250,3 +250,22 @@ func TestDefaultCredentialsPath(t *testing.T) {
 		t.Errorf("DefaultCredentialsPath() = %q, want absolute path", path)
 	}
 }
+
+func TestCredentialSectionsListsNamesOnly(t *testing.T) {
+	credFile := filepath.Join(t.TempDir(), "credentials")
+	body := "# c\n[127.0.0.1:3307]\npassword=secret\n\n[100.84.99.99:3307] # mini0\n"
+	if err := os.WriteFile(credFile, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, exists := CredentialSections(credFile)
+	if !exists || len(got) != 2 || got[0] != "127.0.0.1:3307" || got[1] != "100.84.99.99:3307" {
+		t.Fatalf("sections = %v exists=%v", got, exists)
+	}
+	if _, exists := CredentialSections(filepath.Join(t.TempDir(), "none")); exists {
+		t.Fatal("a missing file must report exists=false")
+	}
+	t.Setenv("BEADS_CREDENTIALS_FILE", credFile)
+	if CredentialsFilePath() != credFile {
+		t.Fatalf("CredentialsFilePath ignores BEADS_CREDENTIALS_FILE")
+	}
+}

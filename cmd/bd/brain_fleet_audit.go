@@ -50,6 +50,11 @@ type hostPin struct {
 	Path   string `json:"path"`   // file holding the assignment
 	Source string `json:"source"` // "wrapper" | "env-file"
 	Via    string `json:"via,omitempty"`
+	// Agent is true for a wrapper copy in an agent bin directory (agentBinDirs)
+	// rather than in ~/.local/bin; LinkTo is the ~/.local/bin wrapper of the
+	// same name it should be a link to, when there is one.
+	Agent  bool   `json:"agent_copy,omitempty"`
+	LinkTo string `json:"link_to,omitempty"`
 	Host   string `json:"host,omitempty"`
 	Port   int    `json:"port,omitempty"`
 	Line   string `json:"line"`
@@ -88,7 +93,14 @@ type hostAudit struct {
 	WrapperCount int           `json:"wrappers"`
 	Stores       []storeAudit  `json:"stores"`
 	Servers      []localServer `json:"local_servers,omitempty"`
-	Notes        []string      `json:"notes,omitempty"`
+	// ServerScan is true when Servers was gathered, so an empty list means "no
+	// Dolt server runs here" rather than "not looked at".
+	ServerScan  bool              `json:"server_scan,omitempty"`
+	AgentCopies int               `json:"agent_copies,omitempty"`
+	MissingDirs []missingBeadsDir `json:"missing_beads_dirs,omitempty"`
+	MetaPins    []metadataPin     `json:"metadata_pins,omitempty"`
+	Creds       *credentialFact   `json:"credentials,omitempty"`
+	Notes       []string          `json:"notes,omitempty"`
 }
 
 type auditOptions struct {
@@ -98,7 +110,7 @@ type auditOptions struct {
 	Timeout    time.Duration
 	StoresFunc func() (map[string]storeEntry, error)
 	Self       string
-	Servers    func() []localServer
+	Servers    func() ([]localServer, bool)
 }
 
 // readStoreHostView reads home/.config/brain/store-host.env as written.
@@ -139,7 +151,7 @@ func readStoreHostView(home string) storeHostView {
 
 var (
 	pinDefaultRe = regexp.MustCompile(`^\$\{[A-Za-z_]+:?-([^}]*)\}$`)
-	sourceLineRe = regexp.MustCompile(`^\s*(?:\.|source)\s+("[^"]+"|'[^']+'|\S+)`)
+	sourceLineRe = regexp.MustCompile(`(?:^|[;&|{]|\bthen|\bdo|\belse)\s*(?:\.|source)\s+("[^"]+"|'[^']+'|[^\s;&|]+)`)
 )
 
 // pinLiteral reduces an assigned value to its literal: a ${VAR:-default}
@@ -191,14 +203,34 @@ func readScript(path string) (string, bool) {
 // ~/.local/bin wrappers, in env files those wrappers source, and in any
 // ~/.config/brain-remote/*.env shim file. It also returns the wrapper count.
 func collectHostPins(home string) (pins []hostPin, wrappers int) {
+	s := scanHostWrappers(home)
+	return s.Pins, s.Wrappers
+}
+
+// hostWrapperScan is everything one pass over the wrapper directories finds.
+type hostWrapperScan struct {
+	Pins        []hostPin
+	Wrappers    int
+	AgentCopies int
+	MissingDirs []missingBeadsDir
+}
+
+// scanHostWrappers walks the store wrappers in ~/.local/bin and the agent bin
+// directories (agentBinDirs) once. It records every literal host pin a wrapper
+// still sets over store-host.env, the env files they source, the shim env
+// files, and each wrapper whose BEADS_DIR does not exist on this machine. A
+// link in an agent directory to a wrapper already scanned adds nothing: it
+// can only ever be the same file.
+func scanHostWrappers(home string) hostWrapperScan {
+	var out hostWrapperScan
 	sharedFile := filepath.Join(home, ".config", "brain", configfile.StoreHostFileName)
 	seenEnv := map[string]bool{sharedFile: true}
 	addEnv := func(path, name, via string) {
 		if seenEnv[path] {
 			if via == "brain" {
-				for i := range pins {
-					if pins[i].Path == path {
-						pins[i].Via = via
+				for i := range out.Pins {
+					if out.Pins[i].Path == path {
+						out.Pins[i].Via = via
 					}
 				}
 			}
@@ -211,7 +243,7 @@ func collectHostPins(home string) (pins []hostPin, wrappers int) {
 		}
 		for _, p := range scanPinsInBody(body) {
 			p.Name, p.Path, p.Source, p.Via = name, path, "env-file", via
-			pins = append(pins, p)
+			out.Pins = append(out.Pins, p)
 		}
 	}
 	expand := func(v string) string {
@@ -224,26 +256,65 @@ func collectHostPins(home string) (pins []hostPin, wrappers int) {
 		return filepath.Clean(v)
 	}
 	binDir := filepath.Join(home, ".local", "bin")
-	ents, _ := os.ReadDir(binDir)
-	for _, e := range ents {
-		if e.IsDir() || strings.Contains(e.Name(), wrapperBackupMarker) {
-			continue
-		}
-		path := filepath.Join(binDir, e.Name())
-		body, ok := readScript(path)
-		if !ok || !strings.HasPrefix(body, "#!") {
-			continue
-		}
-		wrappers++
-		for _, p := range scanPinsInBody(body) {
-			p.Name, p.Path, p.Source = e.Name(), path, "wrapper"
-			pins = append(pins, p)
-		}
-		for _, line := range strings.Split(body, "\n") {
-			if m := sourceLineRe.FindStringSubmatch(line); m != nil && !strings.HasPrefix(strings.TrimSpace(line), "#") {
-				addEnv(expand(m[1]), filepath.Base(expand(m[1])), e.Name())
+	seenFile := map[string]bool{}
+	scanDir := func(dir string, agent bool) {
+		ents, _ := os.ReadDir(dir)
+		for _, e := range ents {
+			if e.IsDir() || strings.Contains(e.Name(), wrapperBackupMarker) {
+				continue
+			}
+			path := filepath.Join(dir, e.Name())
+			real, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				real = path
+			}
+			if agent && seenFile[real] {
+				continue
+			}
+			body, ok := readScript(path)
+			if !ok || !strings.HasPrefix(body, "#!") {
+				continue
+			}
+			seenFile[real] = true
+			if agent {
+				out.AgentCopies++
+			} else {
+				out.Wrappers++
+			}
+			linkTo := ""
+			if agent {
+				counterpart := filepath.Join(binDir, e.Name())
+				if _, serr := os.Stat(counterpart); serr == nil {
+					linkTo = counterpart
+				}
+			}
+			for _, p := range scanWrapperPins(body) {
+				p.Name, p.Path, p.Source, p.Agent, p.LinkTo = e.Name(), path, "wrapper", agent, linkTo
+				out.Pins = append(out.Pins, p)
+			}
+			if !isRemoteWrapper(path) {
+				if v, ok := wrapperAssignedValue(body, wrapperBeadsAssignRe); ok && v != "" {
+					dir := expand(v)
+					if !strings.ContainsAny(dir, "$`") {
+						if _, serr := os.Stat(dir); serr != nil {
+							out.MissingDirs = append(out.MissingDirs, missingBeadsDir{Name: e.Name(), Path: path, BeadsDir: dir, Agent: agent, LinkTo: linkTo})
+						}
+					}
+				}
+			}
+			for _, line := range strings.Split(body, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), "#") {
+					continue
+				}
+				for _, m := range sourceLineRe.FindAllStringSubmatch(line, -1) {
+					addEnv(expand(m[1]), filepath.Base(expand(m[1])), e.Name())
+				}
 			}
 		}
+	}
+	scanDir(binDir, false)
+	for _, d := range agentBinDirs(home) {
+		scanDir(d, true)
 	}
 	shimDir := filepath.Join(home, ".config", "brain-remote")
 	if es, err := os.ReadDir(shimDir); err == nil {
@@ -253,13 +324,14 @@ func collectHostPins(home string) (pins []hostPin, wrappers int) {
 			}
 		}
 	}
-	sort.SliceStable(pins, func(i, j int) bool {
-		if pins[i].Path != pins[j].Path {
-			return pins[i].Path < pins[j].Path
+	sort.SliceStable(out.Pins, func(i, j int) bool {
+		if out.Pins[i].Path != out.Pins[j].Path {
+			return out.Pins[i].Path < out.Pins[j].Path
 		}
-		return pins[i].Line < pins[j].Line
+		return out.Pins[i].Line < out.Pins[j].Line
 	})
-	return pins, wrappers
+	sort.SliceStable(out.MissingDirs, func(i, j int) bool { return out.MissingDirs[i].Path < out.MissingDirs[j].Path })
+	return out
 }
 
 var doltServerPortRe = regexp.MustCompile(`(?:^|\s)(?:-P|--port)[= ]\s*(\d+)`)
@@ -290,12 +362,12 @@ func parseDoltServers(psOut string) []localServer {
 	return out
 }
 
-func discoverDoltServers() []localServer {
+func discoverDoltServers() ([]localServer, bool) {
 	out, err := exec.Command("ps", "-axo", "args=").Output() //nolint:gosec // fixed argv
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return parseDoltServers(string(out))
+	return parseDoltServers(string(out)), true
 }
 
 // storeSQL runs one statement through a store's own wrapper (the way an agent
@@ -408,10 +480,12 @@ func buildHostAudit(ctx context.Context, o auditOptions) hostAudit {
 	}
 	a := hostAudit{Machine: machineName(), BdVersion: Version, Stamp: currentBuildStamp(),
 		StoreHost: readStoreHostView(home), EnvHost: os.Getenv(configfile.StoreHostKeyHost)}
-	a.Pins, a.WrapperCount = collectHostPins(home)
+	scan := scanHostWrappers(home)
+	a.Pins, a.WrapperCount, a.AgentCopies, a.MissingDirs = scan.Pins, scan.Wrappers, scan.AgentCopies, scan.MissingDirs
 	if o.Servers != nil {
-		a.Servers = o.Servers()
+		a.Servers, a.ServerScan = o.Servers()
 	}
+	a.Creds = readCredentialFact(a.StoreHost)
 	loader := o.StoresFunc
 	if loader == nil {
 		loader = loadStoresRegistry
@@ -426,6 +500,7 @@ func buildHostAudit(ctx context.Context, o auditOptions) hostAudit {
 		self, _ = os.Executable()
 	}
 	names := sortedKeys(stores)
+	a.MetaPins = collectMetadataPins(home, stores)
 	a.Stores = make([]storeAudit, len(names))
 	sem := make(chan struct{}, o.Jobs)
 	var wg sync.WaitGroup

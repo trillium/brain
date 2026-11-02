@@ -6762,6 +6762,13 @@ current main (checked against the clone's origin/main; set BRAIN_REPO to
 point at the clone), when it was built from a dirty tree, or when the binary
 carries no stamp at all. Fix: scripts/install-from-repo.sh.
 
+It also checks that this machine really reads its store host from the shared
+store-host.env, and reports each finding with a fix command: a wrapper (also
+copies in ~/.pi/agent/bin) that sets the host itself, a loopback store-host.env
+with no Dolt server here (a relay), no credentials entry for the host it names,
+a wrapper whose BEADS_DIR does not exist, and a store whose metadata.json names
+another server. See docs/brain/FLEET_DOCTOR.md.
+
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
 
@@ -9755,6 +9762,13 @@ binary: it warns when the build stamp's commit is not the brain repo's
 current main (checked against the clone's origin/main; set BRAIN_REPO to
 point at the clone), when it was built from a dirty tree, or when the binary
 carries no stamp at all. Fix: scripts/install-from-repo.sh.
+
+It also checks that this machine really reads its store host from the shared
+store-host.env, and reports each finding with a fix command: a wrapper (also
+copies in ~/.pi/agent/bin) that sets the host itself, a loopback store-host.env
+with no Dolt server here (a relay), no credentials entry for the host it names,
+a wrapper whose BEADS_DIR does not exist, and a store whose metadata.json names
+another server. See docs/brain/FLEET_DOCTOR.md.
 
 Run it from a scheduler (launchd/cron) or a session-start probe so a
 half-provisioned store surfaces within a day rather than a week.
