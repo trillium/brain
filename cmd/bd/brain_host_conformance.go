@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,6 +37,9 @@ const (
 	driftMetadataHost  = "metadata-host"
 	driftHostsDisagree = "store-host-disagree"
 )
+
+// storeHostVarRe is a shell variable assigned a path naming store-host.env.
+var storeHostVarRe = regexp.MustCompile(`^\s*(?:export\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=\S*` + regexp.QuoteMeta(configfile.StoreHostFileName))
 
 // agentBinDirs are the agent bin directories whose wrappers brain installs
 // links into or copies from (see ensureAgentLink). Wrapper copies there are
@@ -72,15 +76,25 @@ type credentialFact struct {
 }
 
 // scanWrapperPins is scanPinsInBody for a store wrapper. A literal host/port
-// assignment that a plain `. store-host.env` line follows is only a default:
-// the sourced file overrides it. The generated run-time block reads the process
+// assignment that a later sourcing of store-host.env follows (plain, guarded
+// by a test, or through a variable naming the file) is only a default: the
+// sourced file overrides it. The generated run-time block reads the process
 // environment first, so with it a pre-set value wins and stays a pin.
 func scanWrapperPins(body string) []hostPin {
 	lastSource := -1
+	fileVars := map[string]bool{}
 	for i, line := range strings.Split(body, "\n") {
-		if m := sourceLineRe.FindStringSubmatch(line); m != nil && !strings.HasPrefix(strings.TrimSpace(line), "#") &&
-			strings.Contains(m[1], configfile.StoreHostFileName) {
-			lastSource = i
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		if m := storeHostVarRe.FindStringSubmatch(line); m != nil {
+			fileVars[m[1]] = true
+		}
+		for _, m := range sourceLineRe.FindAllStringSubmatch(line, -1) {
+			target := strings.Trim(m[1], `"'`)
+			if strings.Contains(target, configfile.StoreHostFileName) || fileVars[strings.Trim(target, "${}")] {
+				lastSource = i
+			}
 		}
 	}
 	generated := strings.Contains(body, "_want_host")
@@ -271,10 +285,14 @@ func classifyConformance(m fleetMember, a *hostAudit, want, exp hostAddr, storeH
 // server as store-host.env: equal, or loopback on the machine that runs the
 // Dolt server itself.
 func metaPinAgrees(a *hostAudit, p metadataPin, want hostAddr) bool {
-	portOK := p.Port == 0 || p.Port == want.Port
+	port := p.Port
+	if port == 0 {
+		port = want.Port
+	}
+	portOK := port == want.Port
 	hostOK := p.Host == "" || p.Host == want.Host ||
 		(hostIsLoopback(p.Host) && hostIsLoopback(want.Host)) ||
-		(hostIsLoopback(p.Host) && a.ServerScan && a.localDoltOn(p.Port))
+		(hostIsLoopback(p.Host) && a.ServerScan && a.localDoltOn(port))
 	return hostOK && portOK
 }
 
@@ -314,14 +332,14 @@ func fleetStoreHostDisagreement(roster []fleetMember, results []fleetHostResult)
 // single-host 'stores doctor'. It reuses the fleet classification with this
 // machine's own store-host.env as the expected host, drops what the doctor
 // already reports another way (binary identity, per-store probes), and leaves
-// metadata.json to the per-store lines. Nothing is reported when store-host.env
+// metadata.json to the per-store lines. local carries the process scan. Nothing is reported when store-host.env
 // is missing or unusable: the store reads fail loudly then.
-func localHostFindings(home string, sh storeHostView, servers []localServer, results []storeHealth) []driftItem {
+func localHostFindings(home string, sh storeHostView, local *hostAudit, results []storeHealth) []driftItem {
 	if !sh.Present || sh.Error != "" {
 		return nil
 	}
 	scan := scanHostWrappers(home)
-	a := &hostAudit{Machine: machineName(), StoreHost: sh, Servers: servers, ServerScan: true,
+	a := &hostAudit{Machine: machineName(), StoreHost: sh, Servers: local.Servers, ServerScan: local.ServerScan,
 		Pins: scan.Pins, WrapperCount: scan.Wrappers, AgentCopies: scan.AgentCopies, MissingDirs: scan.MissingDirs,
 		Creds: readCredentialFact(sh), EnvHost: os.Getenv(configfile.StoreHostKeyHost)}
 	for _, r := range results {

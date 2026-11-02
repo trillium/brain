@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,7 +168,8 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	sem := make(chan struct{}, storesDoctorJobs)
 	home, _ := os.UserHomeDir()
 	shView := readStoreHostView(home)
-	hostFacts := &hostAudit{Servers: discoverDoltServers(), ServerScan: true}
+	hostFacts := &hostAudit{}
+	hostFacts.Servers, hostFacts.ServerScan = discoverDoltServers()
 	var wg sync.WaitGroup
 
 	started := time.Now()
@@ -180,8 +182,9 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			r := probeStore(self, name, stores[name], timeout)
 			// A store whose metadata.json pins its own Dolt host or port reads
 			// from the shared file through its wrapper but diverges from the
-			// federation on a bare bd run in the store directory. It is
-			// informational: shown, but it does not make --strict fail.
+			// federation on a bare bd run in the store directory. A pin that
+			// agrees with store-host.env is informational; one naming another
+			// server is a warning, so --strict fails on it.
 			if status, reason := metadataServerPinAgainst(name, stores[name], shView, hostFacts); status != "" && r.Status != "fail" {
 				if r.Status == "ok" {
 					r.Status, r.Reason = status, reason
@@ -201,7 +204,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	}
 	// Host-level conformance: does this machine read its store host from the
 	// one shared setting, or only happen to agree with it today?
-	hostFindings := localHostFindings(home, shView, hostFacts.Servers, results)
+	hostFindings := localHostFindings(home, shView, hostFacts, results)
 	tally.warn += len(hostFindings)
 
 	if storesDoctorJSON {
@@ -241,6 +244,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 				}
 			}
 		}
+		printHostFindings(os.Stderr, hostFindings)
 		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings, %d informational) in %.1fs\n",
 			tally.answered, len(results), tally.fail, tally.warn, tally.info, elapsed.Seconds())
 		if tally.fail > 0 {
@@ -250,6 +254,17 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 
 	if code := doctorExitCode(tally.fail, tally.warn); code != 0 {
 		os.Exit(code)
+	}
+}
+
+// printHostFindings writes the single-host doctor's host conformance findings,
+// each with its fix command.
+func printHostFindings(w io.Writer, items []driftItem) {
+	for _, d := range items {
+		_, _ = fmt.Fprintf(w, "WARN host %s  %s\n     %s\n", d.Kind, d.Subject, d.Detail)
+		if d.Fix != "" {
+			_, _ = fmt.Fprintf(w, "     fix: %s\n", d.Fix)
+		}
 	}
 }
 
@@ -390,17 +405,12 @@ func storeWrapperPath(name string) (string, bool) {
 	return path, true
 }
 
-// metadataServerPin reports a store whose metadata.json pins its own Dolt host
-// or port. The generated wrapper resolves the shared store host config, but a
-// bare bd run in the store directory would use the pinned value instead. It is
-// informational while the pin agrees with the shared store host config (or
-// there is none to compare with); see metadataServerPinAgainst.
-func metadataServerPin(name string, entry storeEntry) (status, reason string) {
-	return metadataServerPinAgainst(name, entry, storeHostView{}, nil)
-}
-
-// metadataServerPinAgainst is metadataServerPin judged against this machine's
-// store-host.env: a metadata.json that names a different server is a warning,
+// metadataServerPinAgainst reports a store whose metadata.json pins its own
+// Dolt host or port. The generated wrapper resolves the shared store host
+// config, but a bare bd run in the store directory would use the pinned value
+// instead. It is informational while the pin agrees with this machine's
+// store-host.env (or there is none to compare with); a metadata.json that
+// names a different server is a warning,
 // because everything that runs bd with BEADS_DIR and no wrapper (hooks, the
 // bridge, launchd jobs) follows it, and it decides whether a relay can be
 // retired safely. local is the machine's server facts, or nil when unknown.

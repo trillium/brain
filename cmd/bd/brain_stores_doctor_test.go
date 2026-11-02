@@ -349,7 +349,7 @@ func TestMetadataServerPin_ReportsPinnedStore(t *testing.T) {
 		t.Fatalf("write metadata.json: %v", err)
 	}
 
-	status, reason := metadataServerPin("task", storeEntry{Path: beadsDir})
+	status, reason := metadataServerPinAgainst("task", storeEntry{Path: beadsDir}, storeHostView{}, nil)
 	if status != "info" {
 		t.Fatalf("status = %q, want info (reason=%q)", status, reason)
 	}
@@ -369,7 +369,7 @@ func TestMetadataServerPin_IgnoresUnpinnedStore(t *testing.T) {
 		t.Fatalf("write metadata.json: %v", err)
 	}
 
-	if status, reason := metadataServerPin("task", storeEntry{Path: beadsDir}); status != "" {
+	if status, reason := metadataServerPinAgainst("task", storeEntry{Path: beadsDir}, storeHostView{}, nil); status != "" {
 		t.Fatalf("status = %q (%s), want no finding", status, reason)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -326,7 +327,7 @@ func TestMetadataServerPinAgainstWarnsOnlyWhenItDisagrees(t *testing.T) {
 	if status, _ := metadataServerPinAgainst("task", entry, mini0, &hostAudit{ServerScan: true, Servers: []localServer{{Port: 3307}}}); status != "info" {
 		t.Errorf("loopback on the Dolt host stays informational, got %q", status)
 	}
-	if status, _ := metadataServerPin("task", entry); status != "info" {
+	if status, _ := metadataServerPinAgainst("task", entry, storeHostView{}, nil); status != "info" {
 		t.Errorf("without a store-host.env to compare with it stays informational, got %q", status)
 	}
 }
@@ -345,7 +346,7 @@ func TestLocalHostFindingsReproducesTheMini1State(t *testing.T) {
 	mustWrite(t, filepath.Join(home, ".pi/agent/bin/status"), "#!/bin/sh\nexport BEADS_DIR=/Users/gone/status/.beads\nexec bd \"$@\"\n", 0o755)
 
 	view := readStoreHostView(home)
-	d := localHostFindings(home, view, nil, nil)
+	d := localHostFindings(home, view, &hostAudit{ServerScan: true}, nil)
 	got := map[string]int{}
 	for _, x := range d {
 		got[x.Kind]++
@@ -360,10 +361,28 @@ func TestLocalHostFindingsReproducesTheMini1State(t *testing.T) {
 		t.Errorf("findings by kind = %v\n%+v", got, d)
 	}
 
+	var out bytes.Buffer
+	printHostFindings(&out, d)
+	text := out.String()
+	for _, want := range []string{"WARN host relay  " + shFile, "WARN host pin  " + filepath.Join(home, ".local/bin/brain"),
+		"WARN host wrapper-beads-dir  " + filepath.Join(home, ".pi/agent/bin/status"), "fix: brain stores rewrite-wrappers"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text output lacks %q:\n%s", want, text)
+		}
+	}
+	if strings.Count(text, "\n     fix: ") != len(d) {
+		t.Errorf("every finding needs its fix line:\n%s", text)
+	}
+
+	// Without a process scan, nothing says this machine runs no Dolt server.
+	if got := conformanceItems(localHostFindings(home, view, &hostAudit{}, nil), driftRelay); len(got) != 0 {
+		t.Errorf("relay reported without a server scan: %+v", got)
+	}
+
 	// Pointing the setting at the real host without a credential entry is the
 	// follow-on failure the doctor must warn about before it happens.
 	mustWrite(t, shFile, "BEADS_DOLT_SERVER_HOST=100.84.99.99\nBEADS_DOLT_SERVER_PORT=3307\n", 0o644)
-	d = localHostFindings(home, readStoreHostView(home), nil, nil)
+	d = localHostFindings(home, readStoreHostView(home), &hostAudit{ServerScan: true}, nil)
 	got = map[string]int{}
 	for _, x := range d {
 		got[x.Kind]++
@@ -372,7 +391,47 @@ func TestLocalHostFindingsReproducesTheMini1State(t *testing.T) {
 		t.Errorf("after repointing: %v\n%+v", got, d)
 	}
 	// Nothing is reported when store-host.env is absent (reads fail loudly then).
-	if d := localHostFindings(home, storeHostView{}, nil, nil); d != nil {
+	if d := localHostFindings(home, storeHostView{}, &hostAudit{ServerScan: true}, nil); d != nil {
 		t.Errorf("no store-host.env: %+v", d)
+	}
+}
+
+// A literal default followed by a guarded, one-line or variable sourcing of
+// store-host.env conforms: the file overrides it.
+func TestScanWrapperPinsSourcedForms(t *testing.T) {
+	const pin = "#!/bin/sh\nexport BEADS_DOLT_SERVER_HOST=127.0.0.1\nexport BEADS_DOLT_SERVER_PORT=3307\n"
+	for name, src := range map[string]string{
+		"plain":    `. "$HOME/.config/brain/store-host.env"`,
+		"guarded":  `[ -f "$HOME/.config/brain/store-host.env" ] && . "$HOME/.config/brain/store-host.env"`,
+		"one-line": `if [ -f ~/.config/brain/store-host.env ]; then . ~/.config/brain/store-host.env; fi`,
+		"variable": "f=\"$HOME/.config/brain/store-host.env\"\n[ -r \"$f\" ] && . \"$f\"",
+	} {
+		if got := scanWrapperPins(pin + src + "\nexec bd \"$@\"\n"); len(got) != 0 {
+			t.Errorf("%s: conforming wrapper reported as pinned: %+v", name, got)
+		}
+	}
+	for name, src := range map[string]string{
+		"commented": `# . "$HOME/.config/brain/store-host.env"`,
+		"other":     `[ -f "$HOME/.config/brain/store-host.env" ] && . "$HOME/other.env"`,
+	} {
+		if got := scanWrapperPins(pin + src + "\nexec bd \"$@\"\n"); len(got) != 2 {
+			t.Errorf("%s: want both pins reported, got %+v", name, got)
+		}
+	}
+}
+
+// A metadata.json naming only a loopback host on the Dolt host itself uses the
+// store-host.env port, which the local server listens on.
+func TestMetaPinAgreesHostOnlyOnDoltHost(t *testing.T) {
+	want := hostAddr{Host: "100.84.99.99", Port: 3307}
+	p := metadataPin{Store: "task", Host: "127.0.0.1"}
+	if !metaPinAgrees(&hostAudit{ServerScan: true, Servers: []localServer{{Port: 3307}}}, p, want) {
+		t.Error("host-only loopback pin on the Dolt host must agree")
+	}
+	if metaPinAgrees(&hostAudit{ServerScan: true, Servers: []localServer{{Port: 3308}}}, p, want) {
+		t.Error("a local server on another port is not the store host")
+	}
+	if metaPinAgrees(&hostAudit{ServerScan: true, Servers: []localServer{{Port: 3307}}}, metadataPin{Host: "127.0.0.1", Port: 3308}, want) {
+		t.Error("a different metadata port must not agree")
 	}
 }

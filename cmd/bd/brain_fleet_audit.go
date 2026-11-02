@@ -110,7 +110,7 @@ type auditOptions struct {
 	Timeout    time.Duration
 	StoresFunc func() (map[string]storeEntry, error)
 	Self       string
-	Servers    func() []localServer
+	Servers    func() ([]localServer, bool)
 }
 
 // readStoreHostView reads home/.config/brain/store-host.env as written.
@@ -151,7 +151,7 @@ func readStoreHostView(home string) storeHostView {
 
 var (
 	pinDefaultRe = regexp.MustCompile(`^\$\{[A-Za-z_]+:?-([^}]*)\}$`)
-	sourceLineRe = regexp.MustCompile(`^\s*(?:\.|source)\s+("[^"]+"|'[^']+'|\S+)`)
+	sourceLineRe = regexp.MustCompile(`(?:^|[;&|{]|\bthen|\bdo|\belse)\s*(?:\.|source)\s+("[^"]+"|'[^']+'|[^\s;&|]+)`)
 )
 
 // pinLiteral reduces an assigned value to its literal: a ${VAR:-default}
@@ -303,7 +303,10 @@ func scanHostWrappers(home string) hostWrapperScan {
 				}
 			}
 			for _, line := range strings.Split(body, "\n") {
-				if m := sourceLineRe.FindStringSubmatch(line); m != nil && !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				if strings.HasPrefix(strings.TrimSpace(line), "#") {
+					continue
+				}
+				for _, m := range sourceLineRe.FindAllStringSubmatch(line, -1) {
 					addEnv(expand(m[1]), filepath.Base(expand(m[1])), e.Name())
 				}
 			}
@@ -359,12 +362,12 @@ func parseDoltServers(psOut string) []localServer {
 	return out
 }
 
-func discoverDoltServers() []localServer {
+func discoverDoltServers() ([]localServer, bool) {
 	out, err := exec.Command("ps", "-axo", "args=").Output() //nolint:gosec // fixed argv
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return parseDoltServers(string(out))
+	return parseDoltServers(string(out)), true
 }
 
 // storeSQL runs one statement through a store's own wrapper (the way an agent
@@ -480,7 +483,7 @@ func buildHostAudit(ctx context.Context, o auditOptions) hostAudit {
 	scan := scanHostWrappers(home)
 	a.Pins, a.WrapperCount, a.AgentCopies, a.MissingDirs = scan.Pins, scan.Wrappers, scan.AgentCopies, scan.MissingDirs
 	if o.Servers != nil {
-		a.Servers, a.ServerScan = o.Servers(), true
+		a.Servers, a.ServerScan = o.Servers()
 	}
 	a.Creds = readCredentialFact(a.StoreHost)
 	loader := o.StoresFunc
