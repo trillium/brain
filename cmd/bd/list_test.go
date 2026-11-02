@@ -4,7 +4,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1738,5 +1740,127 @@ func TestListCommandInit(t *testing.T) {
 	}
 	if excludeLabelFlag.DefValue != "[]" {
 		t.Errorf("--exclude-label default should be '[]', got %q", excludeLabelFlag.DefValue)
+	}
+}
+
+// TestListIncludeDeps covers `bd list --json --include-deps`: edges come from
+// one batched call, rows without edges get [], and the default output is
+// byte-for-byte unchanged.
+func TestListIncludeDeps(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	testDB := filepath.Join(tmpDir, ".beads", "beads.db")
+	store := newTestStore(t, testDB)
+	ctx := context.Background()
+
+	mk := func(title string, it types.IssueType) *types.Issue {
+		i := &types.Issue{Title: title, Priority: 2, IssueType: it, Status: types.StatusOpen}
+		if err := store.CreateIssue(ctx, i, "test-user"); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		return i
+	}
+	epic := mk("Epic", types.TypeEpic)
+	child := mk("Child", types.TypeTask)
+	blocker := mk("Blocker", types.TypeTask)
+	multi := mk("Multi", types.TypeTask)
+	lone := mk("Lone", types.TypeTask)
+	for _, d := range []*types.Dependency{
+		{IssueID: child.ID, DependsOnID: epic.ID, Type: types.DepParentChild},
+		{IssueID: multi.ID, DependsOnID: epic.ID, Type: types.DepParentChild},
+		{IssueID: multi.ID, DependsOnID: blocker.ID, Type: types.DepBlocks},
+	} {
+		if err := store.AddDependency(ctx, d, "test-user"); err != nil {
+			t.Fatalf("dep: %v", err)
+		}
+	}
+
+	iwc, err := store.SearchIssuesWithCounts(ctx, "", types.IssueFilter{})
+	if err != nil {
+		t.Fatalf("SearchIssuesWithCounts: %v", err)
+	}
+	if len(iwc) != 5 {
+		t.Fatalf("got %d rows, want 5", len(iwc))
+	}
+
+	calls := 0
+	fetch := func(c context.Context, ids []string) (map[string][]*types.Dependency, error) {
+		calls++
+		return store.GetDependencyRecordsForIssues(c, ids)
+	}
+	deps, err := loadListDeps(ctx, fetch, iwc)
+	if err != nil {
+		t.Fatalf("loadListDeps: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("dependency fetch called %d times for %d rows, want 1 (batched)", calls, len(iwc))
+	}
+
+	for _, skip := range []bool{false, true} {
+		raw, err := json.Marshal(listJSONPayload(iwc, skip, deps, true))
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var rows []map[string]json.RawMessage
+		if skip {
+			var resp struct {
+				Issues []map[string]json.RawMessage `json:"issues"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			rows = resp.Issues
+		} else if err := json.Unmarshal(raw, &rows); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		got := map[string]map[string]string{}
+		for _, row := range rows {
+			var id string
+			_ = json.Unmarshal(row["id"], &id)
+			rawDeps, ok := row["dependencies"]
+			if !ok {
+				t.Fatalf("skip=%v: row %s missing dependencies", skip, id)
+			}
+			var edges []struct {
+				ID   string `json:"id"`
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rawDeps, &edges); err != nil {
+				t.Fatalf("edges: %v", err)
+			}
+			if string(rawDeps) == "null" {
+				t.Errorf("skip=%v: row %s dependencies is null, want []", skip, id)
+			}
+			got[id] = map[string]string{}
+			for _, e := range edges {
+				got[id][e.ID] = e.Type
+			}
+		}
+		want := map[string]map[string]string{
+			epic.ID:    {},
+			lone.ID:    {},
+			blocker.ID: {},
+			child.ID:   {epic.ID: string(types.DepParentChild)},
+			multi.ID:   {epic.ID: string(types.DepParentChild), blocker.ID: string(types.DepBlocks)},
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("skip=%v: edges = %v, want %v", skip, got, want)
+		}
+	}
+
+	// Default output unchanged: payload without the flag marshals identically
+	// to the pre-existing shapes.
+	plain, _ := json.Marshal(iwc)
+	gotPlain, _ := json.Marshal(listJSONPayload(iwc, false, nil, false))
+	if string(plain) != string(gotPlain) {
+		t.Errorf("default list JSON changed:\n got %s\nwant %s", gotPlain, plain)
+	}
+	skipPlain, _ := json.Marshal(newSkipLabelsListJSONResponse(iwc))
+	gotSkip, _ := json.Marshal(listJSONPayload(iwc, true, nil, false))
+	if string(skipPlain) != string(gotSkip) {
+		t.Errorf("default --skip-labels JSON changed")
+	}
+	if listCmd.Flags().Lookup("include-deps") == nil {
+		t.Error("--include-deps flag missing on bd list")
 	}
 }
