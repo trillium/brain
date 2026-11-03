@@ -13,7 +13,7 @@ import (
 	"github.com/steveyegge/beads/internal/utils"
 )
 
-// groupLabel marks a bead as a finish-line group. Only labelled beads close
+// groupLabel marks a bead as a finish-line group. Only labeled beads close
 // themselves when their members finish, so older beads that happen to carry
 // "tracks" edges keep their current behavior.
 const groupLabel = "finish-line-group"
@@ -213,7 +213,7 @@ var groupCreateCmd = &cobra.Command{
 		}
 		commandDidWrite.Store(true)
 		if err := store.AddLabel(ctx, group.ID, groupLabel, actor); err != nil {
-			return HandleErrorRespectJSON("labelling group %s: %v", group.ID, err)
+			return HandleErrorRespectJSON("labeling group %s: %v", group.ID, err)
 		}
 		for _, id := range memberIDs {
 			if err := trackMember(ctx, group.ID, id); err != nil {
