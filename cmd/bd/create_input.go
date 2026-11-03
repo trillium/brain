@@ -268,6 +268,7 @@ func gatherCreateInput(cmd *cobra.Command, args []string) (createInput, error) {
 	}
 
 	in.createdBy = getFilingActor()
+	in.metadata = withAuthorKind(in.metadata)
 	in.owner = getOwner()
 
 	in.jsonOutput = jsonOutput

@@ -138,7 +138,7 @@ func syncMemoryBead(ctx context.Context, key, insight string) (string, error) {
 		IssueType:   types.TypeKnowledge,
 		CreatedBy:   getFilingActor(),
 		Owner:       getOwner(),
-		Metadata:    metadata,
+		Metadata:    withAuthorKind(metadata),
 	})
 	if err := store.CreateIssue(ctx, issue, actor); err != nil {
 		return "", fmt.Errorf("creating memory bead: %w", err)

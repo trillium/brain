@@ -301,6 +301,7 @@ Examples:
 			AwaitID:     awaitID,
 			Timeout:     timeout,
 			CreatedBy:   getFilingActor(),
+			Metadata:    withAuthorKind(nil),
 			Owner:       getOwner(),
 		}
 

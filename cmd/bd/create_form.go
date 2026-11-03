@@ -138,6 +138,7 @@ func CreateIssueFromFormValues(ctx context.Context, s storage.DoltStorage, fv *c
 		Assignee:           fv.Assignee,
 		ExternalRef:        externalRefPtr,
 		CreatedBy:          getFilingActor(), // GH#748: track who created the issue
+		Metadata:           withAuthorKind(nil),
 		Labels:             labels,
 	}
 

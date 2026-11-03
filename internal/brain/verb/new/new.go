@@ -44,6 +44,7 @@ package newverb
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -116,6 +117,10 @@ type Args struct {
 	// Title is the brain doc's headline. Required. An empty string
 	// causes Run to return an error before any storage write.
 	Title string
+
+	// Metadata is the optional metadata object stamped on the new doc
+	// (cmd/bd/ passes the author-kind stamp). Nil leaves it unset.
+	Metadata json.RawMessage
 
 	// Body is the optional description / markdown body. Maps to bd's
 	// existing `issues.description` column. Empty is allowed and
@@ -288,6 +293,7 @@ func (v Verb) Run(ctx context.Context, args Args) (Result, error) {
 		Priority:    2, // bd create's default — matches cmd/bd/create.go registerPriorityFlag("2")
 		IssueType:   types.IssueType(args.Kind),
 		CreatedBy:   v.createdBy,
+		Metadata:    args.Metadata,
 	}
 	if args.Kind == string(types.TypeISA) {
 		// Drives issueops.CreateIssueInTxWithResult to allocate

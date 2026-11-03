@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -182,5 +183,75 @@ func TestAgentBrainNewStampsFilingAgent(t *testing.T) {
 	}
 	if created.Actor != "Human Owner" {
 		t.Errorf("created event actor = %q, want human %q", created.Actor, "Human Owner")
+	}
+}
+
+// TestCreatedBeadsRecordAuthorKind files beads through real create paths and
+// reads the author-kind stamp back from the stored metadata: an agent-run
+// `bd todo add` records agent + name, a script declaring itself procedural
+// records procedural, a plain human run records human, and a bead created
+// without the stamp (as every bead was before it) still reads back cleanly.
+func TestCreatedBeadsRecordAuthorKind(t *testing.T) {
+	ensureCleanGlobalState(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	humanGitIdentity(t, home, "Human Owner")
+	t.Setenv("BEADS_ACTOR", "")
+	t.Setenv("BD_ACTOR", "")
+
+	s := newTestStore(t, filepath.Join(t.TempDir(), ".beads", "beads.db"))
+	ctx := context.Background()
+
+	origStore, origActor, origCtx, origJSON := store, actor, rootCtx, jsonOutput
+	t.Cleanup(func() {
+		store, actor, rootCtx, jsonOutput = origStore, origActor, origCtx, origJSON
+	})
+	setStore(s)
+	rootCtx = ctx
+	jsonOutput = false
+	actor = getActorWithGit()
+
+	file := func(title string) map[string]any {
+		t.Helper()
+		captureStdout(t, func() error { return addTodoCmd.RunE(addTodoCmd, []string{title}) })
+		issues, err := s.SearchIssues(ctx, title, types.IssueFilter{})
+		if err != nil || len(issues) != 1 {
+			t.Fatalf("SearchIssues(%q) = %d issues, err %v; want 1", title, len(issues), err)
+		}
+		return decodeStamp(t, issues[0].Metadata)
+	}
+
+	t.Setenv(agentNameEnvVar, "")
+	t.Setenv(agentIDEnvVar, "")
+	t.Setenv(authorKindEnvVar, "")
+	if m := file("human todo"); m["author_kind"] != "human" {
+		t.Errorf("human run stamp = %v, want author_kind human", m)
+	}
+
+	t.Setenv(agentNameEnvVar, "Volt")
+	t.Setenv(agentIDEnvVar, "volt")
+	if m := file("agent todo"); m["author_kind"] != "agent" || m["author_agent"] != "Volt" {
+		t.Errorf("agent run stamp = %v, want agent/Volt", m)
+	}
+
+	t.Setenv(authorKindEnvVar, "procedural")
+	if m := file("procedural todo"); m["author_kind"] != "procedural" {
+		t.Errorf("procedural run stamp = %v, want author_kind procedural", m)
+	}
+
+	legacy := &types.Issue{Title: "legacy bead", Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+	if err := s.CreateIssue(ctx, legacy, "Human Owner"); err != nil {
+		t.Fatalf("create legacy: %v", err)
+	}
+	got, err := s.GetIssue(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("get legacy: %v", err)
+	}
+	if len(got.Metadata) > 0 && string(got.Metadata) != "{}" {
+		var m map[string]any
+		_ = json.Unmarshal(got.Metadata, &m)
+		if _, ok := m["author_kind"]; ok {
+			t.Errorf("unstamped bead gained an author_kind: %s", got.Metadata)
+		}
 	}
 }

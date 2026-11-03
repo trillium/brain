@@ -419,7 +419,7 @@ Examples:
 				WispType:           wispType,
 				DueAt:              dueAt,
 				DeferUntil:         deferUntil,
-				Metadata:           metadata,
+				Metadata:           withAuthorKind(metadata),
 				EventKind:          eventCategory,
 				Actor:              eventActor,
 				Target:             eventTarget,
@@ -585,7 +585,7 @@ Examples:
 			Payload:            eventPayload,
 			DueAt:              dueAt,
 			DeferUntil:         deferUntil,
-			Metadata:           metadata,
+			Metadata:           withAuthorKind(metadata),
 			PrefixOverride:     mintPrefix,
 		})
 

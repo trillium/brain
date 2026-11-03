@@ -75,10 +75,11 @@ Examples:
 		verb := newverb.New(creator, actor, getFilingActor())
 
 		result, err := verb.Run(rootCtx, newverb.Args{
-			Kind:  kind,
-			Title: title,
-			Body:  body,
-			Slug:  slugFlag,
+			Kind:     kind,
+			Title:    title,
+			Body:     body,
+			Slug:     slugFlag,
+			Metadata: withAuthorKind(nil),
 		})
 		if err != nil {
 			// Validation and conflict failures exit 2 — mirror the contract
