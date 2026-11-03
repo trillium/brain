@@ -869,7 +869,6 @@ var rootCmd = &cobra.Command{
 			"help",
 			"hook", // manages its own store lifecycle (#1719)
 			"hooks",
-			"human",
 			"init",
 			"merge",
 			"metrics", // config-only: status/on/off/example never touch the DB
