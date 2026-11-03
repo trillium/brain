@@ -320,6 +320,7 @@ func runCreateProxiedMarkdown(_ *cobra.Command, ctx context.Context, in createIn
 				MolType:            in.molType,
 				CreatedBy:          in.createdBy,
 				Owner:              in.owner,
+				Metadata:           withAuthorKind(nil),
 			},
 			Labels:       t.Labels,
 			Dependencies: b.deps,
