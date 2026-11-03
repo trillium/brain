@@ -521,7 +521,7 @@ func executeGraphApply(ctx context.Context, plan *GraphApplyPlan, opts GraphAppl
 				Status:    types.StatusOpen,
 				Priority:  priority,
 				Labels:    node.Labels,
-				Metadata:  metadataJSON,
+				Metadata:  withAuthorKind(metadataJSON),
 				Ephemeral: opts.Ephemeral,
 				NoHistory: opts.NoHistory,
 			}

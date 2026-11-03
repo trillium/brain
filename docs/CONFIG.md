@@ -218,6 +218,18 @@ else the `name:` field of `~/.parlay/agents/$PARLAY_AGENT_ID/identity.md`, else
 `PARLAY_AGENT_ID`. Only the filing attribution changes; the actor used for
 claims, assignees, comments and events still resolves as listed above.
 
+A new issue's metadata also records what kind of author filed it, so the share
+of human-written issues can be counted exactly rather than bounded:
+
+- `author_kind` is `human`, `agent` or `procedural`.
+- `author_agent` names the agent, and is present only when `author_kind` is `agent`.
+
+The kind is `BEADS_AUTHOR_KIND` when that is set to one of the three values (a
+script or scheduled job declares itself `procedural` this way; any other value
+is ignored), else `agent` when the process runs as a fleet agent as described
+above, else `human`. A key already present in `--metadata` is kept as given.
+Issues created before this stamp have neither key.
+
 To override, set `BEADS_ACTOR` in your shell profile:
 ```bash
 export BEADS_ACTOR="my-github-handle"

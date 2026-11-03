@@ -2,6 +2,7 @@ package newverb_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -657,5 +658,29 @@ func TestValidKindsReturnsCopy(t *testing.T) {
 	b := newverb.ValidKinds()
 	if b[0] == "MUTATED" {
 		t.Fatal("ValidKinds() returns the package slice itself; callers can corrupt internal state")
+	}
+}
+
+// TestRun_StampsCallerMetadata pins that the metadata the caller passes (the
+// author-kind stamp, in cmd/bd/) lands on the created doc, and that a caller
+// passing none leaves it unset.
+func TestRun_StampsCallerMetadata(t *testing.T) {
+	t.Parallel()
+
+	rec := &recorderStore{}
+	v := newverb.New(rec, "human", "agent")
+	stamp := json.RawMessage(`{"author_kind":"agent","author_agent":"Volt"}`)
+
+	if _, err := v.Run(context.Background(), newverb.Args{Kind: string(types.TypeTask), Title: "stamped", Metadata: stamp}); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if _, err := v.Run(context.Background(), newverb.Args{Kind: string(types.TypeTask), Title: "unstamped"}); err != nil {
+		t.Fatalf("Run() error = %v, want nil", err)
+	}
+	if got := string(rec.created[0].Metadata); got != string(stamp) {
+		t.Errorf("stamped doc metadata = %q, want %q", got, stamp)
+	}
+	if len(rec.created[1].Metadata) != 0 {
+		t.Errorf("unstamped doc metadata = %q, want empty", rec.created[1].Metadata)
 	}
 }

@@ -338,6 +338,7 @@ func createIssuesFromMarkdown(_ *cobra.Command, filepath string) error {
 			IssueType:          template.IssueType,
 			Assignee:           template.Assignee,
 			Labels:             template.Labels,
+			Metadata:           withAuthorKind(nil),
 		}
 
 		for _, depSpec := range template.Dependencies {

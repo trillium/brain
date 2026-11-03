@@ -76,6 +76,7 @@ var addTodoCmd = &cobra.Command{
 			Assignee:    getActorWithGit(),
 			Owner:       getOwner(),
 			CreatedBy:   getFilingActor(),
+			Metadata:    withAuthorKind(nil),
 		}
 
 		if err := getStore().CreateIssue(ctx, issue, getActorWithGit()); err != nil {

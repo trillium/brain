@@ -952,6 +952,7 @@ Examples:
 				Priority:    issue.Priority,
 				IssueType:   types.TypeEpic,
 				CreatedBy:   getFilingActor(),
+				Metadata:    withAuthorKind(nil),
 			}
 
 			if err := store.CreateIssue(ctx, wrapperEpic, actor); err != nil {
@@ -1032,6 +1033,7 @@ Examples:
 			MolType:     types.MolTypeSwarm,
 			Assignee:    coordinator,
 			CreatedBy:   getFilingActor(),
+			Metadata:    withAuthorKind(nil),
 		}
 
 		if err := store.CreateIssue(ctx, swarmMol, actor); err != nil {

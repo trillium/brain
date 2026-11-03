@@ -202,6 +202,7 @@ The --reason flag provides context for the event bead (recommended).`,
 			Priority:    4,
 			IssueType:   types.TypeEvent,
 			CreatedBy:   getFilingActor(),
+			Metadata:    withAuthorKind(nil),
 		}
 		if err := store.CreateIssue(ctx, event, actor); err != nil {
 			return HandleErrorRespectJSON("creating event: %v", err)
