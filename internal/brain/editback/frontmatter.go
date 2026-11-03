@@ -219,9 +219,9 @@ func parseList(v string) ([]string, error) {
 // fileTitle is the frontmatter title being imported; beadTitle is the
 // bead's current (pre-import) title.
 func SplitBody(body []byte, fileTitle, beadTitle string) (string, error) {
-	// The render's generated links block (wikilinks + store tag) is not
-	// description text.
-	text := strings.TrimRight(exfiltrator.StripLinksBlock(string(body)), "\n")
+	// The render's generated links block (wikilinks + store tag) and
+	// comments block are not description text.
+	text := strings.TrimRight(exfiltrator.StripCommentsBlock(exfiltrator.StripLinksBlock(string(body))), "\n")
 	if strings.TrimSpace(text) == "" {
 		return "", nil
 	}

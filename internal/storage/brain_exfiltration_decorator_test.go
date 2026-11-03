@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 	"github.com/steveyegge/beads/internal/types"
@@ -834,4 +836,81 @@ func osStatNotExist(t *testing.T, root, rel string) error {
 		return err
 	}
 	return nil
+}
+
+// commentingStore is a fakeBrainStore that keeps comments and satisfies
+// exfiltrator.EdgeSource + CommentSource, so the real markdown exfiltrator
+// can read a bead's comments back after the decorator re-renders it.
+type commentingStore struct {
+	*fakeBrainStore
+	comments map[string][]*types.Comment
+}
+
+func (s *commentingStore) AddIssueComment(_ context.Context, id, author, text string) (*types.Comment, error) {
+	c := &types.Comment{ID: "c", IssueID: id, Author: author, Text: text, CreatedAt: time.Date(2026, 6, 1, len(s.comments[id])+9, 0, 0, 0, time.UTC)}
+	s.comments[id] = append(s.comments[id], c)
+	return c, nil
+}
+
+func (s *commentingStore) GetIssueComments(_ context.Context, id string) ([]*types.Comment, error) {
+	return s.comments[id], nil
+}
+
+func (s *commentingStore) GetDependencyRecords(context.Context, string) ([]*types.Dependency, error) {
+	return nil, nil
+}
+
+func TestBrainExfDecorator_AddIssueComment_RendersCommentTrail(t *testing.T) {
+	inner := &commentingStore{fakeBrainStore: newFakeBrainStore(), comments: map[string][]*types.Comment{}}
+	issue := brainIssue("c-1", "Commented", types.TypeTask)
+	issue.UpdatedAt = time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+	if err := inner.CreateIssue(context.Background(), issue, "t"); err != nil {
+		t.Fatal(err)
+	}
+	mx := exfiltrator.NewMarkdownExfiltrator(t.TempDir(), nil).WithLinks("", inner)
+	d := NewBrainExfiltrationDecorator(inner, mx)
+	ctx := context.Background()
+	render := func() string {
+		slug, _, _ := mx.SlugFor(issue)
+		b, err := os.ReadFile(mx.PathFor(issue.IssueType, slug))
+		if err != nil {
+			t.Fatalf("read render: %v", err)
+		}
+		return string(b)
+	}
+
+	if err := mx.Render(ctx, issue); err != nil {
+		t.Fatal(err)
+	}
+	before := render()
+
+	if _, err := d.AddIssueComment(ctx, "c-1", "al", "first thought"); err != nil {
+		t.Fatal(err)
+	}
+	after := render()
+	if after == before || !strings.Contains(after, "first thought") || !strings.Contains(after, "### al") {
+		t.Errorf("comment-add must re-render with the comment\nbefore=%q\nafter=%q", before, after)
+	}
+
+	if _, err := d.AddIssueComment(ctx, "c-1", "bo", "second thought"); err != nil {
+		t.Fatal(err)
+	}
+	got := render()
+	if strings.Index(got, "first thought") > strings.Index(got, "second thought") || !strings.Contains(got, "second thought") {
+		t.Errorf("trail should list both comments oldest first:\n%s", got)
+	}
+
+	// Reconciliation (render-all) re-renders from a freshly read issue
+	// that carries no hydrated comments; the file must converge to the
+	// same bytes.
+	if err := os.Remove(mx.PathFor(issue.IssueType, func() string { s, _, _ := mx.SlugFor(issue); return s }())); err != nil {
+		t.Fatal(err)
+	}
+	fresh, _ := inner.GetIssue(ctx, "c-1")
+	if err := mx.Render(ctx, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if render() != got {
+		t.Errorf("render-all reconciliation must reproduce the comment trail")
+	}
 }

@@ -641,3 +641,14 @@ func TestSplitBody_IgnoresGeneratedLinksBlock(t *testing.T) {
 		t.Errorf("empty description with a links block: desc=%q err=%v", desc, err)
 	}
 }
+
+func TestSplitBody_IgnoresGeneratedCommentsAndLinksBlocks(t *testing.T) {
+	body := "# T\n\nBody\n\n<!-- brain:comments -->\n## Comments\n\n### al\n\nnote\n<!-- /brain:comments -->\n\n<!-- brain:links -->\n#store/x\n<!-- /brain:links -->\n"
+	desc, err := SplitBody([]byte(body), "T", "T")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if desc != "Body" {
+		t.Errorf("description = %q, want %q", desc, "Body")
+	}
+}
