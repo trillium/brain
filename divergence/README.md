@@ -133,3 +133,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0037](0037-store-host-single-source.md) | one shared store-host config — the Dolt server is one fact per machine, read at run time | landed |
 | [0040](0040-store-writes-stamp-filing-agent.md) | store writes stamp the filing agent, not the human's git identity | proposed |
 | [0041](0041-author-kind-stamp.md) | new issues record whether a human, an agent or a procedure wrote them | proposed |
+| [0042](0042-bookkeeping-expiry.md) | bookkeeping issues expire after a retention period once closed | proposed |

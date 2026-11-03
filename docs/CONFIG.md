@@ -341,6 +341,22 @@ Project configuration is:
 - **Machine-readable**: JSON output for automation
 - **Namespace-based**: Organized by integration or purpose
 
+### Bookkeeping retention
+
+Issues labeled `bookkeeping` are procedural records (session trails, guard
+decisions, state-change records) kept apart from deliberately written issues.
+`bd admin cleanup --bookkeeping` deletes the ones that are closed and older
+than the retention period; open ones and unlabeled ones are never touched.
+
+```bash
+bd config set bookkeeping.retention_days 14   # default: 30
+bd admin cleanup --bookkeeping --dry-run      # list what would be removed
+bd admin cleanup --bookkeeping --force        # remove it
+```
+
+`--older-than N` overrides the configured value for one run. A configured value
+that is not a positive whole number is an error.
+
 ## Commands
 
 ### Set Configuration

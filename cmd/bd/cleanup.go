@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -36,6 +37,14 @@ EXAMPLES:
   bd admin cleanup --older-than 30 --force          # Only issues closed 30+ days ago
   bd admin cleanup --ephemeral --force              # Only closed wisps (transient molecules)
   bd admin cleanup --dry-run                        # Preview what would be deleted
+  bd admin cleanup --bookkeeping --dry-run          # Preview expired bookkeeping issues
+  bd admin cleanup --bookkeeping --force            # Delete closed bookkeeping issues past retention
+
+BOOKKEEPING:
+With --bookkeeping, only closed issues labeled "bookkeeping" are considered, and
+only those closed more than N days ago. N is --older-than, else the
+bookkeeping.retention_days config key, else 30. Open bookkeeping issues and
+issues without the label are never touched.
 
 SAFETY:
 - Requires --force flag to actually delete (unless --dry-run)
@@ -64,6 +73,7 @@ SEE ALSO:
 		cascade, _ := cmd.Flags().GetBool("cascade")
 		olderThanDays, _ := cmd.Flags().GetInt("older-than")
 		wispOnly, _ := cmd.Flags().GetBool("ephemeral")
+		bookkeeping, _ := cmd.Flags().GetBool("bookkeeping")
 
 		if store == nil {
 			if err := ensureStoreActive(); err != nil {
@@ -72,6 +82,13 @@ SEE ALSO:
 		}
 
 		ctx := rootCtx
+
+		if bookkeeping {
+			if wispOnly {
+				return HandleError("--bookkeeping cannot be combined with --ephemeral")
+			}
+			return runBookkeepingCleanup(cmd, ctx, olderThanDays, force, dryRun, cascade)
+		}
 
 		statusClosed := types.StatusClosed
 		filter := types.IssueFilter{
@@ -180,6 +197,52 @@ func init() {
 	cleanupCmd.Flags().Bool("dry-run", false, "Preview what would be deleted without making changes")
 	cleanupCmd.Flags().Bool("cascade", false, "Recursively delete all dependent issues")
 	cleanupCmd.Flags().Int("older-than", 0, "Only delete issues closed more than N days ago (0 = all closed issues)")
+	cleanupCmd.Flags().Bool("bookkeeping", false, "Only delete closed issues labeled \"bookkeeping\" past the retention period (bookkeeping.retention_days, default 30)")
 	cleanupCmd.Flags().Bool("ephemeral", false, "Only delete closed wisps (transient molecules)")
 	// Note: cleanupCmd is added to adminCmd in admin.go
+}
+
+// runBookkeepingCleanup expires closed bookkeeping issues older than the
+// retention period. Without --force or --dry-run it refuses, like the plain
+// cleanup, so nothing is deleted by accident.
+func runBookkeepingCleanup(cmd *cobra.Command, ctx context.Context, olderThanDays int, force, dryRun, cascade bool) error {
+	days, err := resolveBookkeepingRetentionDays(ctx, store, olderThanDays)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	ids, pinned, err := selectExpiredBookkeeping(ctx, store, days, time.Now())
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if pinned > 0 && !jsonOutput {
+		fmt.Printf("Skipping %d pinned bookkeeping issue(s) (protected from cleanup)\n", pinned)
+	}
+	if len(ids) == 0 {
+		msg := fmt.Sprintf("No closed bookkeeping issues older than %d days to delete", days)
+		if jsonOutput {
+			return outputJSON(CleanupEmptyResponse{
+				DeletedCount: 0,
+				Message:      msg,
+				Filter:       fmt.Sprintf("bookkeeping older than %d days", days),
+			})
+		}
+		fmt.Println(msg)
+		return nil
+	}
+	if !force && !dryRun {
+		return HandleErrorWithHint(
+			fmt.Sprintf("would delete %d closed bookkeeping issue(s)", len(ids)),
+			"Use --force to confirm or --dry-run to preview.")
+	}
+	if !jsonOutput {
+		fmt.Printf("Found %d closed bookkeeping issue(s) older than %d days\n", len(ids), days)
+		if dryRun {
+			fmt.Println(ui.RenderWarn("DRY RUN - no changes will be made"))
+		}
+		fmt.Println()
+	}
+	if err := deleteBatch(cmd, ids, force, dryRun, cascade, jsonOutput, false, "cleanup"); err != nil {
+		return HandleError("%v", err)
+	}
+	return nil
 }
