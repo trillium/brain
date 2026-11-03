@@ -40,12 +40,12 @@ import (
 )
 
 var (
-	changeDir    string
-	dbPath       string
-	actor        string
-	store        storage.DoltStorage
-	uowProvider  uow.UnitOfWorkProvider
-	jsonOutput   bool
+	changeDir   string
+	dbPath      string
+	actor       string
+	store       storage.DoltStorage
+	uowProvider uow.UnitOfWorkProvider
+	jsonOutput  bool
 
 	// namespaceWide is the --wide persistent flag: the explicit operator
 	// switch for the unified database's read mode. Default narrow (only the
