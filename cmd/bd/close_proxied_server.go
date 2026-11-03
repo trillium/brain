@@ -235,6 +235,7 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 	audit.LogFieldChange(id, "status", oldStatus, "closed", actor, reason)
 
 	autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, in.jsonOut)
+	autoCloseProxiedCompletedGroups(ctx, uw, id, actor, in.session, in.jsonOut)
 
 	return closeProxiedOutcome{id: id, before: current, after: res.Issue, closed: res.Closed}, true
 }
@@ -361,6 +362,7 @@ func autoCloseProxiedCompletedMolecule(ctx context.Context, uw uow.UnitOfWork, c
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
 		return
 	}
+	autoCloseProxiedCompletedGroups(ctx, uw, moleculeID, actorName, session, jsonOut)
 	if !jsonOut {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))
 	}

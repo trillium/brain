@@ -445,6 +445,9 @@ create, update, show, or close operation).`,
 				// Audit log key field changes (survives Dolt GC flatten)
 				if s, ok := regularUpdates["status"].(string); ok {
 					audit.LogFieldChange(result.ResolvedID, "status", string(issue.Status), s, actor, "")
+					if s == string(types.StatusClosed) {
+						autoCloseCompletedGroups(ctx, issueStore, result.ResolvedID, actor, "")
+					}
 				}
 				if a, ok := regularUpdates["assignee"].(string); ok {
 					audit.LogFieldChange(result.ResolvedID, "assignee", issue.Assignee, a, actor, "")

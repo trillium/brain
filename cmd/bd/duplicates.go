@@ -405,6 +405,7 @@ func performMerge(targetID string, sourceIDs []string) map[string]interface{} {
 			continue
 		}
 		closedIDs = append(closedIDs, sourceID)
+		autoCloseCompletedGroups(ctx, store, sourceID, actor, "")
 
 		// Add dependency linking source to target
 		dep := &types.Dependency{

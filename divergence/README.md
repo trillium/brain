@@ -134,3 +134,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0040](0040-store-writes-stamp-filing-agent.md) | store writes stamp the filing agent, not the human's git identity | proposed |
 | [0041](0041-author-kind-stamp.md) | new issues record whether a human, an agent or a procedure wrote them | proposed |
 | [0042](0042-bookkeeping-expiry.md) | bookkeeping issues expire after a retention period once closed | proposed |
+| [0043](0043-finish-line-groups.md) | finish-line groups track a push with non-blocking edges and close themselves | proposed |

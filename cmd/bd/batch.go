@@ -178,6 +178,12 @@ normal 'bd' subcommands for interactive/read operations.`,
 
 		commandDidWrite.Store(true)
 
+		for _, r := range results {
+			if r.closed {
+				autoCloseCompletedGroups(ctx, store, r.Target, getActor(), "")
+			}
+		}
+
 		if jsonOutput {
 			if err := outputJSON(map[string]interface{}{
 				"operations": len(results),
@@ -216,6 +222,7 @@ type batchOpResult struct {
 	Line   int    `json:"line"`
 	Op     string `json:"op"`
 	Target string `json:"target,omitempty"`
+	closed bool
 }
 
 // parseBatchScript reads the whole input and tokenizes each non-empty,
@@ -350,6 +357,7 @@ func runBatchOp(ctx context.Context, tx storage.Transaction, op batchOp) (batchO
 			return result, err
 		}
 		result.Target = id
+		result.closed = true
 		return result, nil
 
 	case "update":
@@ -365,6 +373,7 @@ func runBatchOp(ctx context.Context, tx storage.Transaction, op batchOp) (batchO
 			return result, err
 		}
 		result.Target = id
+		result.closed = updates["status"] == string(types.StatusClosed)
 		return result, nil
 
 	case "create":

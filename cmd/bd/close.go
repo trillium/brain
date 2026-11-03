@@ -174,6 +174,7 @@ the flags appear in the command line.`,
 			// Auto-close parent molecule if all steps are now complete.
 			// Runs against the same store the step was closed in.
 			autoCloseCompletedMolecule(ctx, activeStore, id, actor, session)
+			autoCloseCompletedGroups(ctx, activeStore, id, actor, session)
 
 			// Re-fetch for display
 			closedIssue, _ := activeStore.GetIssue(ctx, id)
@@ -522,6 +523,7 @@ func autoCloseCompletedMolecule(ctx context.Context, s storage.DoltStorage, clos
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
 		return
 	}
+	autoCloseCompletedGroups(ctx, s, moleculeID, actorName, session)
 
 	if !jsonOutput {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))

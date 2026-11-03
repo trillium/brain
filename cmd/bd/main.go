@@ -40,12 +40,12 @@ import (
 )
 
 var (
-	changeDir    string
-	dbPath       string
-	actor        string
-	store        storage.DoltStorage
-	uowProvider  uow.UnitOfWorkProvider
-	jsonOutput   bool
+	changeDir   string
+	dbPath      string
+	actor       string
+	store       storage.DoltStorage
+	uowProvider uow.UnitOfWorkProvider
+	jsonOutput  bool
 
 	// namespaceWide is the --wide persistent flag: the explicit operator
 	// switch for the unified database's read mode. Default narrow (only the
@@ -869,7 +869,6 @@ var rootCmd = &cobra.Command{
 			"help",
 			"hook", // manages its own store lifecycle (#1719)
 			"hooks",
-			"human",
 			"init",
 			"merge",
 			"metrics", // config-only: status/on/off/example never touch the DB

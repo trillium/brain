@@ -98,6 +98,10 @@ func applyUpdateProxiedOne(ctx context.Context, id string, in *updateInput) (*ty
 		return nil, false
 	}
 
+	if current.Status != types.StatusClosed && updated != nil && updated.Status == types.StatusClosed {
+		autoCloseProxiedCompletedGroups(ctx, uw, id, actor, "", false)
+	}
+
 	if err := uw.Commit(ctx, fmt.Sprintf("bd: update %s", id)); err != nil && !isDoltNothingToCommit(err) {
 		fmt.Fprintf(os.Stderr, "Error committing %s: %v\n", id, err)
 		return nil, false
