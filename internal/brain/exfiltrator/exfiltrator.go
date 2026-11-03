@@ -210,7 +210,7 @@ func (m *MarkdownExfiltrator) Render(ctx context.Context, issue *types.Issue) er
 		return fmt.Errorf("exfiltrator: write checkpoint for %s: %w", issue.ID, err)
 	}
 
-	body := renderMarkdownWith(issue, m.linksFor(ctx, issue))
+	body := renderMarkdownWith(issue, m.linksFor(ctx, issue), m.commentsFor(ctx, issue))
 	if err := atomicWrite(path, []byte(body)); err != nil {
 		return fmt.Errorf("exfiltrator: write %s: %w", path, err)
 	}
@@ -496,13 +496,13 @@ func (m *MarkdownExfiltrator) pathFor(kind types.IssueType, slug string) string 
 // so future edits must keep the byte-for-byte rendering stable for a
 // given (issue snapshot) input.
 func renderMarkdown(issue *types.Issue) string {
-	return renderMarkdownWith(issue, noteLinks{})
+	return renderMarkdownWith(issue, noteLinks{}, issue.Comments)
 }
 
 // renderMarkdownWith is renderMarkdown plus the graph-edge additions: a
 // `store` frontmatter key and the generated links block (see links.go). A
 // zero noteLinks renders exactly what renderMarkdown always did.
-func renderMarkdownWith(issue *types.Issue, links noteLinks) string {
+func renderMarkdownWith(issue *types.Issue, links noteLinks, comments []*types.Comment) string {
 	var b strings.Builder
 	b.Grow(len(issue.Description) + 256)
 
@@ -604,6 +604,7 @@ func renderMarkdownWith(issue *types.Issue, links noteLinks) string {
 			b.WriteByte('\n')
 		}
 	}
+	writeCommentsBlock(&b, comments)
 	writeLinksBlock(&b, links)
 	return b.String()
 }
