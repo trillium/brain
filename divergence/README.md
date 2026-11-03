@@ -135,3 +135,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0041](0041-author-kind-stamp.md) | new issues record whether a human, an agent or a procedure wrote them | proposed |
 | [0042](0042-bookkeeping-expiry.md) | bookkeeping issues expire after a retention period once closed | proposed |
 | [0043](0043-finish-line-groups.md) | finish-line groups track a push with non-blocking edges and close themselves | proposed |
+| [0044](0044-exfil-render-comments.md) | the markdown mirror includes each bead's comment trail | proposed |

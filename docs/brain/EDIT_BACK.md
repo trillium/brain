@@ -36,7 +36,7 @@ For a store that accepts edit-back, a changed file updates **the bead its `id:` 
 | `labels:` / `tags:` | labels (added and removed to match) |
 | the body after the `# {title}` heading | description |
 
-Everything else in the file (`id`, `kind`, `slug`, `store`, `created`, `updated`, metadata, and any key you add) is substrate-owned. That includes the generated block at the end of a rendered note, between `<!-- brain:links -->` and `<!-- /brain:links -->`: the `#store/<name>` tag plus `[[wikilinks]]` for the bead's parent (`- parent:`) and dependencies (`- depends on:`) that connect Obsidian and Quartz graphs. It is not description text and is rewritten on every render. A difference there is never a change. After an applied edit the normal render runs and the file converges with the row.
+Everything else in the file (`id`, `kind`, `slug`, `store`, `created`, `updated`, metadata, and any key you add) is substrate-owned. That includes the generated `## Comments` section between `<!-- brain:comments -->` and `<!-- /brain:comments -->` (the bead's comment trail, oldest first); it is a read-only mirror, and edits to it are never synced back. It also includes the generated block at the end of a rendered note, between `<!-- brain:links -->` and `<!-- /brain:links -->`: the `#store/<name>` tag plus `[[wikilinks]]` for the bead's parent (`- parent:`) and dependencies (`- depends on:`) that connect Obsidian and Quartz graphs. It is not description text and is rewritten on every render. A difference there is never a change. After an applied edit the normal render runs and the file converges with the row.
 
 Every applied edit prints old → new:
 

@@ -1,5 +1,5 @@
 ---
-id: 0042
+id: 0044
 title: mirror each bead's comment trail into the rendered markdown
 isc: []
 status: proposed
@@ -13,7 +13,7 @@ touches:
   - internal/brain/editback/frontmatter.go
   - internal/brain/editback/engine_test.go
   - internal/storage/brain_exfiltration_decorator_test.go
-  - divergence/0042-exfil-render-comments.md
+  - divergence/0044-exfil-render-comments.md
 upstream_rebase_notes: |
   All touched paths are brain-only; resolve `ours`. No schema change and no
   new wiring: the comment source is found by type assertion on the
