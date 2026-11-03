@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -17,6 +18,8 @@ type CleanupEmptyResponse struct {
 	Message      string `json:"message"`
 	Filter       string `json:"filter,omitempty"`
 	Ephemeral    bool   `json:"ephemeral,omitempty"`
+
+	Skipped []bookkeepingSkip `json:"skipped,omitempty"`
 }
 
 var cleanupCmd = &cobra.Command{
@@ -44,11 +47,12 @@ BOOKKEEPING:
 With --bookkeeping, only closed issues labeled "bookkeeping" are considered, and
 only those closed more than N days ago. N is --older-than, else the
 bookkeeping.retention_days config key, else 30. Open bookkeeping issues and
-issues without the label are never touched.
+issues without the label are never touched. A bookkeeping issue that other
+issues depend on is skipped and reported; the rest still expire.
 
 SAFETY:
 - Requires --force flag to actually delete (unless --dry-run)
-- Supports --cascade to delete dependents
+- Supports --cascade to delete dependents (not with --bookkeeping)
 - Shows preview of what will be deleted
 - Use --json for programmatic output
 
@@ -87,7 +91,10 @@ SEE ALSO:
 			if wispOnly {
 				return HandleError("--bookkeeping cannot be combined with --ephemeral")
 			}
-			return runBookkeepingCleanup(cmd, ctx, olderThanDays, force, dryRun, cascade)
+			if cascade {
+				return HandleError("--bookkeeping cannot be combined with --cascade")
+			}
+			return runBookkeepingCleanup(cmd, ctx, olderThanDays, force, dryRun)
 		}
 
 		statusClosed := types.StatusClosed
@@ -205,14 +212,21 @@ func init() {
 // runBookkeepingCleanup expires closed bookkeeping issues older than the
 // retention period. Without --force or --dry-run it refuses, like the plain
 // cleanup, so nothing is deleted by accident.
-func runBookkeepingCleanup(cmd *cobra.Command, ctx context.Context, olderThanDays int, force, dryRun, cascade bool) error {
+func runBookkeepingCleanup(cmd *cobra.Command, ctx context.Context, olderThanDays int, force, dryRun bool) error {
 	days, err := resolveBookkeepingRetentionDays(ctx, store, olderThanDays)
 	if err != nil {
 		return HandleError("%v", err)
 	}
-	ids, pinned, err := selectExpiredBookkeeping(ctx, store, days, time.Now())
+	ids, pinned, skipped, err := selectExpiredBookkeeping(ctx, store, days, time.Now())
 	if err != nil {
 		return HandleError("%v", err)
+	}
+	for _, sk := range skipped {
+		out := os.Stdout
+		if jsonOutput {
+			out = os.Stderr
+		}
+		fmt.Fprintf(out, "Skipping bookkeeping issue %s: %s\n", sk.ID, sk.Reason)
 	}
 	if pinned > 0 && !jsonOutput {
 		fmt.Printf("Skipping %d pinned bookkeeping issue(s) (protected from cleanup)\n", pinned)
@@ -224,6 +238,7 @@ func runBookkeepingCleanup(cmd *cobra.Command, ctx context.Context, olderThanDay
 				DeletedCount: 0,
 				Message:      msg,
 				Filter:       fmt.Sprintf("bookkeeping older than %d days", days),
+				Skipped:      skipped,
 			})
 		}
 		fmt.Println(msg)
@@ -241,7 +256,7 @@ func runBookkeepingCleanup(cmd *cobra.Command, ctx context.Context, olderThanDay
 		}
 		fmt.Println()
 	}
-	if err := deleteBatch(cmd, ids, force, dryRun, cascade, jsonOutput, false, "cleanup"); err != nil {
+	if err := deleteBatch(cmd, ids, force, dryRun, false, jsonOutput, false, "cleanup"); err != nil {
 		return HandleError("%v", err)
 	}
 	return nil

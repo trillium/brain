@@ -27,6 +27,10 @@ func (f fakeBookkeepingStore) SearchIssues(context.Context, string, types.IssueF
 	return f.issues, f.err
 }
 
+func (f fakeBookkeepingStore) GetDependents(context.Context, string) ([]*types.Issue, error) {
+	return nil, nil
+}
+
 func TestResolveBookkeepingRetentionDays(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -83,7 +87,7 @@ func TestSelectExpiredBookkeeping(t *testing.T) {
 		mk("pinned", types.StatusClosed, ago(90), true, "bookkeeping"),
 	}}
 
-	ids, pinned, err := selectExpiredBookkeeping(context.Background(), store, 30, now)
+	ids, pinned, _, err := selectExpiredBookkeeping(context.Background(), store, 30, now)
 	if err != nil {
 		t.Fatalf("selectExpiredBookkeeping: %v", err)
 	}
@@ -104,7 +108,7 @@ func TestSelectExpiredBookkeepingRetentionWindow(t *testing.T) {
 		{ID: "ten-days", Status: types.StatusClosed, ClosedAt: &closedAt, Labels: []string{"bookkeeping"}},
 	}}
 	for days, wantCount := range map[int]int{7: 1, 10: 0, 11: 0, 30: 0} {
-		ids, _, err := selectExpiredBookkeeping(context.Background(), store, days, now)
+		ids, _, _, err := selectExpiredBookkeeping(context.Background(), store, days, now)
 		if err != nil {
 			t.Fatalf("retention %d: %v", days, err)
 		}
@@ -117,7 +121,7 @@ func TestSelectExpiredBookkeepingRetentionWindow(t *testing.T) {
 func TestSelectExpiredBookkeepingSearchError(t *testing.T) {
 	t.Parallel()
 	boom := errors.New("boom")
-	_, _, err := selectExpiredBookkeeping(context.Background(), fakeBookkeepingStore{err: boom}, 30, time.Now())
+	_, _, _, err := selectExpiredBookkeeping(context.Background(), fakeBookkeepingStore{err: boom}, 30, time.Now())
 	if !errors.Is(err, boom) {
 		t.Errorf("err = %v, want wrapping %v", err, boom)
 	}

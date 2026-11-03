@@ -33,6 +33,13 @@ type bookkeepingConfigReader interface {
 // bookkeepingSearcher is the slice of the store needed to find expired issues.
 type bookkeepingSearcher interface {
 	SearchIssues(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error)
+	GetDependents(ctx context.Context, issueID string) ([]*types.Issue, error)
+}
+
+// bookkeepingSkip is an expired bookkeeping issue that was left in place.
+type bookkeepingSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
 }
 
 // resolveBookkeepingRetentionDays returns the retention in days. An explicit
@@ -62,7 +69,10 @@ func resolveBookkeepingRetentionDays(ctx context.Context, cfg bookkeepingConfigR
 // close time is more than retentionDays before now. Open issues, issues
 // without the bookkeeping label, and pinned issues are never returned.
 // pinned reports how many otherwise-expired issues were skipped for being pinned.
-func selectExpiredBookkeeping(ctx context.Context, s bookkeepingSearcher, retentionDays int, now time.Time) (ids []string, pinned int, err error) {
+// An expired issue that something outside the expiring set depends on is
+// returned in skipped instead of ids, so deleting the rest cannot orphan or
+// cascade into other issues.
+func selectExpiredBookkeeping(ctx context.Context, s bookkeepingSearcher, retentionDays int, now time.Time) (ids []string, pinned int, skipped []bookkeepingSkip, err error) {
 	closed := types.StatusClosed
 	cutoff := now.AddDate(0, 0, -retentionDays)
 	found, err := s.SearchIssues(ctx, "", types.IssueFilter{
@@ -71,8 +81,9 @@ func selectExpiredBookkeeping(ctx context.Context, s bookkeepingSearcher, retent
 		ClosedBefore: &cutoff,
 	})
 	if err != nil {
-		return nil, 0, fmt.Errorf("listing bookkeeping issues: %w", err)
+		return nil, 0, nil, fmt.Errorf("listing bookkeeping issues: %w", err)
 	}
+	var candidates []string
 	for _, issue := range found {
 		// Re-check every guard here so the safety property does not depend
 		// on the storage filter alone.
@@ -86,7 +97,43 @@ func selectExpiredBookkeeping(ctx context.Context, s bookkeepingSearcher, retent
 			pinned++
 			continue
 		}
-		ids = append(ids, issue.ID)
+		candidates = append(candidates, issue.ID)
 	}
-	return ids, pinned, nil
+
+	dependents := make(map[string][]string, len(candidates))
+	for _, id := range candidates {
+		deps, derr := s.GetDependents(ctx, id)
+		if derr != nil {
+			return nil, 0, nil, fmt.Errorf("checking dependents of %s: %w", id, derr)
+		}
+		for _, d := range deps {
+			dependents[id] = append(dependents[id], d.ID)
+		}
+	}
+	// Dropping a candidate can strand the candidates it depends on, so repeat
+	// until no more are dropped.
+	dropped := map[string]string{}
+	for changed := true; changed; {
+		changed = false
+		for _, id := range candidates {
+			if _, gone := dropped[id]; gone {
+				continue
+			}
+			for _, dep := range dependents[id] {
+				if _, isCand := dropped[dep]; isCand || !slices.Contains(candidates, dep) {
+					dropped[id] = fmt.Sprintf("has dependent %s that is not expiring", dep)
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	for _, id := range candidates {
+		if reason, gone := dropped[id]; gone {
+			skipped = append(skipped, bookkeepingSkip{ID: id, Reason: reason})
+		} else {
+			ids = append(ids, id)
+		}
+	}
+	return ids, pinned, skipped, nil
 }
