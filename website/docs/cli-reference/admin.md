@@ -41,10 +41,19 @@ EXAMPLES:
   bd admin cleanup --older-than 30 --force          # Only issues closed 30+ days ago
   bd admin cleanup --ephemeral --force              # Only closed wisps (transient molecules)
   bd admin cleanup --dry-run                        # Preview what would be deleted
+  bd admin cleanup --bookkeeping --dry-run          # Preview expired bookkeeping issues
+  bd admin cleanup --bookkeeping --force            # Delete closed bookkeeping issues past retention
+
+BOOKKEEPING:
+With --bookkeeping, only closed issues labeled "bookkeeping" are considered, and
+only those closed more than N days ago. N is --older-than, else the
+bookkeeping.retention_days config key, else 30. Open bookkeeping issues and
+issues without the label are never touched. A bookkeeping issue that other
+issues depend on is skipped and reported; the rest still expire.
 
 SAFETY:
 - Requires --force flag to actually delete (unless --dry-run)
-- Supports --cascade to delete dependents
+- Supports --cascade to delete dependents (not with --bookkeeping)
 - Shows preview of what will be deleted
 - Use --json for programmatic output
 
@@ -59,6 +68,7 @@ bd admin cleanup [flags]
 **Flags:**
 
 ```
+      --bookkeeping      Only delete closed issues labeled "bookkeeping" past the retention period (bookkeeping.retention_days, default 30)
       --cascade          Recursively delete all dependent issues
       --dry-run          Preview what would be deleted without making changes
       --ephemeral        Only delete closed wisps (transient molecules)
