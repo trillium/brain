@@ -14,7 +14,11 @@ touches:
   - cmd/bd/create.go
   - cmd/bd/create_form.go
   - cmd/bd/create_input.go
+  - cmd/bd/create_proxied_server.go
+  - cmd/bd/create_proxied_server_test.go
   - cmd/bd/gate.go
+  - cmd/bd/graph_apply.go
+  - cmd/bd/markdown.go
   - cmd/bd/memory.go
   - cmd/bd/state.go
   - cmd/bd/swarm.go
