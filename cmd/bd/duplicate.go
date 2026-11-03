@@ -112,6 +112,7 @@ func runDuplicate(cmd *cobra.Command, args []string) error {
 	if err := store.UpdateIssue(ctx, duplicateID, updates, actor); err != nil {
 		return fmt.Errorf("failed to close duplicate: %w", err)
 	}
+	autoCloseCompletedGroups(ctx, store, duplicateID, actor, "")
 
 	commandDidWrite.Store(true)
 
@@ -182,6 +183,7 @@ func runSupersede(cmd *cobra.Command, args []string) error {
 	if err := store.UpdateIssue(ctx, oldID, updates, actor); err != nil {
 		return fmt.Errorf("failed to close superseded issue: %w", err)
 	}
+	autoCloseCompletedGroups(ctx, store, oldID, actor, "")
 
 	commandDidWrite.Store(true)
 

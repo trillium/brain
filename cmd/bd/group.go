@@ -219,6 +219,9 @@ var groupCreateCmd = &cobra.Command{
 				return HandleErrorRespectJSON("%v", err)
 			}
 		}
+		if err := closeGroupIfComplete(ctx, group.ID); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
 		SetLastTouchedID(group.ID)
 		if jsonOutput {
 			return printGroupJSON(ctx, group.ID)
@@ -252,6 +255,9 @@ var groupAddCmd = &cobra.Command{
 			if err := trackMember(ctx, groupID, id); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
+		}
+		if err := closeGroupIfComplete(ctx, groupID); err != nil {
+			return HandleErrorRespectJSON("%v", err)
 		}
 		if jsonOutput {
 			return printGroupJSON(ctx, groupID)

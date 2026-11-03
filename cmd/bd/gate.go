@@ -444,6 +444,7 @@ Use --reason to provide context for why the gate was resolved.`,
 		if err := store.CloseIssue(ctx, gateID, reason, actor, ""); err != nil {
 			return HandleError("closing gate: %v", err)
 		}
+		autoCloseCompletedGroups(ctx, store, gateID, actor, "")
 
 		commandDidWrite.Store(true)
 
@@ -885,6 +886,7 @@ func closeGate(_ interface{}, gateID, reason string) error {
 	if err := store.CloseIssue(rootCtx, gateID, reason, actor, ""); err != nil {
 		return err
 	}
+	autoCloseCompletedGroups(rootCtx, store, gateID, actor, "")
 	commandDidWrite.Store(true)
 	return nil
 }

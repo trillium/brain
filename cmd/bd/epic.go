@@ -132,6 +132,7 @@ var closeEligibleEpicsCmd = &cobra.Command{
 				continue
 			}
 			closedIDs = append(closedIDs, epicStatus.Epic.ID)
+			autoCloseCompletedGroups(ctx, store, epicStatus.Epic.ID, "system", "")
 		}
 		if len(closedIDs) > 0 {
 			commandDidWrite.Store(true)

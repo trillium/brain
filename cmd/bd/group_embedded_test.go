@@ -177,4 +177,45 @@ func TestEmbeddedGroup(t *testing.T) {
 			t.Fatalf("unexpected error: %s", out)
 		}
 	})
+
+	t.Run("update_status_closed_finishes_group", func(t *testing.T) {
+		m := bdCreate(t, bd, dir, "Update-closed member", "--type", "task")
+		g4 := bdGroupJSON(t, bd, dir, "create", "Update push", m.ID)
+		bdUpdate(t, bd, dir, m.ID, "--status", "closed")
+		if got := statusOf(t, bd, dir, g4.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("marking_duplicate_finishes_group", func(t *testing.T) {
+		m := bdCreate(t, bd, dir, "Dup member", "--type", "task")
+		canon := bdCreate(t, bd, dir, "Canonical", "--type", "task")
+		g5 := bdGroupJSON(t, bd, dir, "create", "Dup push", m.ID)
+		if out, err := bdRunWithFlockRetry(t, bd, dir, "duplicate", m.ID, "--of", canon.ID); err != nil {
+			t.Fatalf("bd duplicate: %v\n%s", err, out)
+		}
+		if got := statusOf(t, bd, dir, g5.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("create_over_closed_members_closes_group", func(t *testing.T) {
+		m := bdCreate(t, bd, dir, "Already done", "--type", "task")
+		bdClose(t, bd, dir, m.ID)
+		g6 := bdGroupJSON(t, bd, dir, "create", "Retroactive push", m.ID)
+		if got := statusOf(t, bd, dir, g6.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("add_closed_member_closes_group", func(t *testing.T) {
+		done := bdCreate(t, bd, dir, "Done one", "--type", "task")
+		bdClose(t, bd, dir, done.ID)
+		g7 := bdGroupJSON(t, bd, dir, "create", "Seed push")
+		bdGroupJSON(t, bd, dir, "add", g7.Group.ID, done.ID)
+		if got := statusOf(t, bd, dir, g7.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
 }

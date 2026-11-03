@@ -362,6 +362,7 @@ func autoCloseProxiedCompletedMolecule(ctx context.Context, uw uow.UnitOfWork, c
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
 		return
 	}
+	autoCloseProxiedCompletedGroups(ctx, uw, moleculeID, actorName, session, jsonOut)
 	if !jsonOut {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))
 	}

@@ -523,6 +523,7 @@ func autoCloseCompletedMolecule(ctx context.Context, s storage.DoltStorage, clos
 		fmt.Fprintf(os.Stderr, "Warning: could not auto-close completed molecule %s: %v\n", moleculeID, err)
 		return
 	}
+	autoCloseCompletedGroups(ctx, s, moleculeID, actorName, session)
 
 	if !jsonOutput {
 		fmt.Printf("%s Auto-closed completed molecule %s\n", ui.RenderPass("✓"), formatFeedbackID(moleculeID, root.Title))
