@@ -100,6 +100,12 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd epic status](#bd-epic-status) — Show epic completion status
 - [bd graph](#bd-graph) — Display issue dependency graph
   - [bd graph check](#bd-graph-check) — Check dependency graph integrity
+- [bd group](#bd-group) — Finish-line groups: one bead that tracks a push and closes itself when it is done
+  - [bd group add](#bd-group-add) — Track more beads in a group
+  - [bd group create](#bd-group-create) — Create a finish-line group, optionally tracking members
+  - [bd group remove](#bd-group-remove) — Stop tracking beads in a group
+  - [bd group show](#bd-group-show) — Show a group's members and progress
+  - [bd group sync](#bd-group-sync) — Close every open group whose members are all closed
 - [bd supersede](#bd-supersede) — Mark an issue as superseded by a newer one
 - [bd swarm](#bd-swarm) — Swarm management for structured epics
   - [bd swarm create](#bd-swarm-create) — Create a swarm molecule from an epic
@@ -1223,6 +1229,7 @@ bd list [flags]
       --format string                Output format: 'digraph' (for golang.org/x/tools/cmd/digraph), 'dot' (Graphviz), or Go template
       --has-metadata-key string      Filter issues that have this metadata key set
       --id string                    Filter by specific issue IDs (comma-separated, e.g., bd-1,bd-5,bd-10)
+      --include-deps                 With --json, add a dependencies array ({id, type} per outgoing edge) to each row from one batched query; ignored for text output
       --include-gates                Include gate issues in output (normally hidden)
       --include-infra                Include infrastructure beads (agent/role/message) in output
       --include-templates            Include template molecules in output
@@ -2621,6 +2628,69 @@ Returns exit code 0 if the graph is clean, 1 if issues are found.
 
 ```
 bd graph check
+```
+
+### bd group
+
+A group is a bead that tracks other beads with non-blocking "tracks"
+edges. Members are never blocked by the group and tracking does not change
+ready-work calculation. When every tracked member is closed, the group
+closes itself.
+
+Use a group for a push with a finish line. Keep long-lived project beads
+for durable knowledge rather than as a to-do list.
+
+Members must live in the same store as the group.
+
+```
+bd group
+```
+
+#### bd group add
+
+Track more beads in a group
+
+```
+bd group add <group-id> <member-id>...
+```
+
+#### bd group create
+
+Create a finish-line group, optionally tracking members
+
+```
+bd group create <title> [member-id...] [flags]
+```
+
+**Flags:**
+
+```
+  -d, --description string   Group description
+  -p, --priority int         Group priority (0-4) (default 2)
+```
+
+#### bd group remove
+
+Stop tracking beads in a group
+
+```
+bd group remove <group-id> <member-id>...
+```
+
+#### bd group show
+
+Show a group's members and progress
+
+```
+bd group show <group-id>
+```
+
+#### bd group sync
+
+Close every open group whose members are all closed
+
+```
+bd group sync
 ```
 
 ### bd supersede

@@ -174,6 +174,7 @@ the flags appear in the command line.`,
 			// Auto-close parent molecule if all steps are now complete.
 			// Runs against the same store the step was closed in.
 			autoCloseCompletedMolecule(ctx, activeStore, id, actor, session)
+			autoCloseCompletedGroups(ctx, activeStore, id, actor, session)
 
 			// Re-fetch for display
 			closedIssue, _ := activeStore.GetIssue(ctx, id)

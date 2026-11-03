@@ -1,0 +1,19 @@
+$ bd create "Ship the docs"; bd create "Ship the installer"
+demo-06s demo-yue
+$ bd group create "Launch push" <docs> <installer>
+✓ Created group demo-zxu — Launch push tracking 2 member(s)
+$ bd close <docs>
+✓ Closed demo-06s — Ship the docs: Closed
+$ bd group show <group>
+demo-zxu — Launch push [open]
+   Progress: 1/2 members closed
+   ✓ demo-06s — Ship the docs (closed)
+   ○ demo-yue — Ship the installer (open)
+$ bd close <installer>
+✓ Auto-closed finished group demo-zxu — Launch push
+✓ Closed demo-yue — Ship the installer: Closed
+$ bd group show <group>
+demo-zxu — Launch push [closed]
+   Progress: 2/2 members closed
+   ✓ demo-06s — Ship the docs (closed)
+   ✓ demo-yue — Ship the installer (closed)

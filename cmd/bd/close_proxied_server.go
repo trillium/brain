@@ -235,6 +235,7 @@ func closeProxiedOne(ctx context.Context, uw uow.UnitOfWork, id, reason string, 
 	audit.LogFieldChange(id, "status", oldStatus, "closed", actor, reason)
 
 	autoCloseProxiedCompletedMolecule(ctx, uw, id, actor, in.session, in.jsonOut)
+	autoCloseProxiedCompletedGroups(ctx, uw, id, actor, in.session, in.jsonOut)
 
 	return closeProxiedOutcome{id: id, before: current, after: res.Issue, closed: res.Closed}, true
 }
