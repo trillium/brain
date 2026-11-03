@@ -522,7 +522,7 @@ func materializeGraphNodeIssue(n GraphApplyNode, in createInput) *types.Issue {
 		Status:      types.StatusOpen,
 		Priority:    priority,
 		Labels:      n.Labels,
-		Metadata:    metadataJSON,
+		Metadata:    withAuthorKind(metadataJSON),
 		Ephemeral:   in.ephemeral,
 		NoHistory:   in.noHistory,
 		CreatedBy:   in.createdBy,

@@ -325,3 +325,21 @@ func withTestYAMLCustomTypes(t *testing.T, customCSV string) func() {
 	}
 	return func() { config.ResetForTesting() }
 }
+
+func TestMaterializeGraphNodeIssue_StampsAuthorKind(t *testing.T) {
+	clearAuthorEnv(t)
+	t.Setenv(authorKindEnvVar, authorKindProcedural)
+
+	issue := materializeGraphNodeIssue(GraphApplyNode{
+		Key: "n", Title: "N", Metadata: map[string]string{"k": "v"},
+	}, createInput{})
+	got := decodeStamp(t, issue.Metadata)
+	if got[authorKindKey] != authorKindProcedural || got["k"] != "v" {
+		t.Errorf("metadata = %v, want author_kind procedural with k preserved", got)
+	}
+
+	bare := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{})
+	if decodeStamp(t, bare.Metadata)[authorKindKey] != authorKindProcedural {
+		t.Errorf("node without metadata not stamped: %s", bare.Metadata)
+	}
+}
