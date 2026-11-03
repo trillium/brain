@@ -218,4 +218,63 @@ func TestEmbeddedGroup(t *testing.T) {
 		}
 	})
 
+	t.Run("batch_close_and_update_finish_groups", func(t *testing.T) {
+		m1 := bdCreate(t, bd, dir, "Batch close member", "--type", "task")
+		m2 := bdCreate(t, bd, dir, "Batch update member", "--type", "task")
+		g := bdGroupJSON(t, bd, dir, "create", "Batch push", m1.ID, m2.ID)
+		cmd := exec.Command(bd, "batch")
+		cmd.Dir = dir
+		cmd.Env = bdEnv(dir)
+		cmd.Stdin = strings.NewReader("close " + m1.ID + " done\nupdate " + m2.ID + " status=closed\n")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("bd batch: %v\n%s", err, out)
+		}
+		if got := statusOf(t, bd, dir, g.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("todo_done_finishes_group", func(t *testing.T) {
+		m := bdCreate(t, bd, dir, "Todo member", "--type", "task")
+		g := bdGroupJSON(t, bd, dir, "create", "Todo push", m.ID)
+		if out, err := bdRunWithFlockRetry(t, bd, dir, "todo", "done", m.ID); err != nil {
+			t.Fatalf("bd todo done: %v\n%s", err, out)
+		}
+		if got := statusOf(t, bd, dir, g.Group.ID); got != "closed" {
+			t.Fatalf("group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("human_respond_and_dismiss_finish_groups", func(t *testing.T) {
+		r := bdCreate(t, bd, dir, "Needs answer", "--type", "task")
+		d := bdCreate(t, bd, dir, "Needs dismissal", "--type", "task")
+		gr := bdGroupJSON(t, bd, dir, "create", "Respond push", r.ID)
+		gd := bdGroupJSON(t, bd, dir, "create", "Dismiss push", d.ID)
+		if out, err := bdRunWithFlockRetry(t, bd, dir, "human", "respond", r.ID, "--response", "ok"); err != nil {
+			t.Fatalf("bd human respond: %v\n%s", err, out)
+		}
+		if out, err := bdRunWithFlockRetry(t, bd, dir, "human", "dismiss", d.ID); err != nil {
+			t.Fatalf("bd human dismiss: %v\n%s", err, out)
+		}
+		if got := statusOf(t, bd, dir, gr.Group.ID); got != "closed" {
+			t.Fatalf("respond group status = %s, want closed", got)
+		}
+		if got := statusOf(t, bd, dir, gd.Group.ID); got != "closed" {
+			t.Fatalf("dismiss group status = %s, want closed", got)
+		}
+	})
+
+	t.Run("nested_groups_close_outward", func(t *testing.T) {
+		m := bdCreate(t, bd, dir, "Nested leaf", "--type", "task")
+		inner := bdGroupJSON(t, bd, dir, "create", "Inner push", m.ID)
+		outer := bdGroupJSON(t, bd, dir, "create", "Outer push", inner.Group.ID)
+		bdClose(t, bd, dir, m.ID)
+		if got := statusOf(t, bd, dir, inner.Group.ID); got != "closed" {
+			t.Fatalf("inner status = %s, want closed", got)
+		}
+		if got := statusOf(t, bd, dir, outer.Group.ID); got != "closed" {
+			t.Fatalf("outer status = %s, want closed", got)
+		}
+	})
+
 }

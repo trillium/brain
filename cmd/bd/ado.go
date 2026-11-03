@@ -639,6 +639,7 @@ func runADOSync(cmd *cobra.Command, _ []string) error {
 									_, _ = fmt.Fprintf(os.Stderr, "Warning: %s\n", msg)
 								}
 							} else {
+								autoCloseCompletedGroups(ctx, store, localID, actor, "")
 								msg := fmt.Sprintf("Closed %s: ADO work item %s deleted", localID, idStr)
 								warnings = append(warnings, msg)
 								if !jsonOutput {

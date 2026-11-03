@@ -299,6 +299,10 @@ func squashMolecule(ctx context.Context, s storage.DoltStorage, root *types.Issu
 		return nil, err
 	}
 
+	if result.WispSquash {
+		autoCloseCompletedGroups(ctx, s, root.ID, actorName, "")
+	}
+
 	return result, nil
 }
 

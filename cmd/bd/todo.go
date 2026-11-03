@@ -206,6 +206,7 @@ var doneTodoCmd = &cobra.Command{
 				continue
 			}
 			closedIDs = append(closedIDs, issueID)
+			autoCloseCompletedGroups(ctx, getStore(), issueID, getActorWithGit(), "")
 		}
 
 		if len(closedIDs) > 0 {

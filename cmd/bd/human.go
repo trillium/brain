@@ -259,6 +259,8 @@ Examples:
 			return HandleErrorRespectJSON("closing bead: %v", err)
 		}
 
+		autoCloseCompletedGroups(ctx, targetStore, resolvedID, actor, "")
+
 		fmt.Printf("%s Bead %s closed with response.\n", ui.RenderPass("✔"), resolvedID)
 		return nil
 	},
@@ -335,6 +337,8 @@ Examples:
 		if err := targetStore.CloseIssue(ctx, resolvedID, closeReason, actor, ""); err != nil {
 			return HandleErrorRespectJSON("closing bead: %v", err)
 		}
+
+		autoCloseCompletedGroups(ctx, targetStore, resolvedID, actor, "")
 
 		fmt.Printf("%s Bead %s dismissed.\n", ui.RenderPass("✔"), resolvedID)
 		return nil

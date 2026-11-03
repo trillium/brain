@@ -72,5 +72,6 @@ func autoCloseProxiedCompletedGroups(ctx context.Context, uw uow.UnitOfWork, clo
 		if !jsonOut {
 			fmt.Printf("%s Auto-closed finished group %s\n", ui.RenderPass("✓"), formatFeedbackID(p.Group.ID, p.Group.Title))
 		}
+		autoCloseProxiedCompletedGroups(ctx, uw, p.Group.ID, actorName, session, jsonOut)
 	}
 }

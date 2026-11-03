@@ -150,6 +150,7 @@ func autoCloseCompletedGroups(ctx context.Context, s storage.DoltStorage, closed
 		if !jsonOutput {
 			fmt.Printf("%s Auto-closed finished group %s\n", ui.RenderPass("✓"), formatFeedbackID(p.Group.ID, p.Group.Title))
 		}
+		autoCloseCompletedGroups(ctx, s, p.Group.ID, actorName, session)
 	}
 }
 
@@ -471,6 +472,7 @@ func closeGroupIfComplete(ctx context.Context, groupID string) error {
 	if !jsonOutput {
 		fmt.Printf("%s Closed finished group %s\n", ui.RenderPass("✓"), formatFeedbackID(group.ID, group.Title))
 	}
+	autoCloseCompletedGroups(ctx, store, groupID, actor, "")
 	return nil
 }
 
