@@ -347,6 +347,8 @@ Issues labeled `bookkeeping` are procedural records (session trails, guard
 decisions, state-change records) kept apart from deliberately written issues.
 `bd admin cleanup --bookkeeping` deletes the ones that are closed and older
 than the retention period; open ones and unlabeled ones are never touched.
+A closed one that other issues depend on is skipped and reported, and
+`--cascade` is rejected with `--bookkeeping`.
 
 ```bash
 bd config set bookkeeping.retention_days 14   # default: 30

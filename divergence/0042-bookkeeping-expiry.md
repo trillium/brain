@@ -47,6 +47,9 @@ second deletion path.
 - Open issues, unlabeled issues and pinned issues are never selected. The
   selector re-checks status, label and close time itself rather than trusting
   the storage filter alone.
+- A bookkeeping issue with dependents is skipped and reported (dry-run too)
+  while the rest expire; `--cascade` and `--ephemeral` are rejected with
+  `--bookkeeping`.
 - Behavioral tests cover retention resolution, the selection boundaries and a
   store-backed run (skipped when no test server is available).
 

@@ -48,11 +48,12 @@ BOOKKEEPING:
 With --bookkeeping, only closed issues labeled "bookkeeping" are considered, and
 only those closed more than N days ago. N is --older-than, else the
 bookkeeping.retention_days config key, else 30. Open bookkeeping issues and
-issues without the label are never touched.
+issues without the label are never touched. A bookkeeping issue that other
+issues depend on is skipped and reported; the rest still expire.
 
 SAFETY:
 - Requires --force flag to actually delete (unless --dry-run)
-- Supports --cascade to delete dependents
+- Supports --cascade to delete dependents (not with --bookkeeping)
 - Shows preview of what will be deleted
 - Use --json for programmatic output
 
