@@ -440,3 +440,18 @@ func (c *Client) GetAuthenticatedUser(ctx context.Context) (*User, error) {
 
 	return &user, nil
 }
+
+// GetRepository fetches the configured repository, which proves the token can
+// see it. Pairing uses it to catch a mistyped owner/repo before it is saved.
+func (c *Client) GetRepository(ctx context.Context) (*Repository, error) {
+	urlStr := fmt.Sprintf("%s%s", c.BaseURL, c.repoPath())
+	respBody, _, err := c.doRequest(ctx, http.MethodGet, urlStr, nil)
+	if err != nil {
+		return nil, err
+	}
+	var repo Repository
+	if err := json.Unmarshal(respBody, &repo); err != nil {
+		return nil, fmt.Errorf("failed to parse repository response: %w", err)
+	}
+	return &repo, nil
+}

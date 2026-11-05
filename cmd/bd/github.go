@@ -5,8 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/config"
@@ -29,27 +33,53 @@ type GitHubConfig struct {
 var githubCmd = &cobra.Command{
 	Use:   "github",
 	Short: "GitHub integration commands",
-	Long: `Commands for syncing issues between beads and GitHub.
+	Long: `Commands for syncing a brain store with the issues of a GitHub repository.
+
+A store is paired with one repository, and the pairing names the direction
+changes travel (see 'github pair'):
+
+  two-way          items and issues are kept in step both ways (default)
+  brain-to-github  brain is the source; GitHub issues mirror it
+  github-to-brain  GitHub is the source; brain items mirror it
 
 Configuration can be set via 'bd config' or environment variables:
   github.token / GITHUB_TOKEN           - Personal access token
   github.owner / GITHUB_OWNER           - Repository owner
   github.repo / GITHUB_REPO             - Repository name
   github.repository / GITHUB_REPOSITORY - Combined "owner/repo" format
-  github.url / GITHUB_API_URL           - Custom API URL (GitHub Enterprise)`,
+  github.url / GITHUB_API_URL           - Custom API URL (GitHub Enterprise)
+
+With no token configured, 'gh auth token' (the GitHub CLI's login) is used.`,
 }
 
 // githubSyncCmd synchronizes issues between beads and GitHub.
 var githubSyncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync issues with GitHub",
-	Long: `Synchronize issues between beads and GitHub.
+	Short: "Sync this store's items with GitHub issues",
+	Long: `Synchronize this store's items with the issues of its paired repository.
 
-By default, performs bidirectional sync:
-- Pulls new/updated issues from GitHub to beads
-- Pushes local beads issues to GitHub
+The direction comes from the store's pairing ('github pair'). A store with no
+recorded direction syncs two-way:
+- Pulls new/updated issues from GitHub into brain
+- Pushes brain items to GitHub
 
-Use --pull-only or --push-only to limit direction.`,
+An item and its issue stay linked: the item remembers the issue's URL, and the
+issue carries a hidden marker naming the item, so running sync again never
+creates a second copy of either. Closing or reopening on one side is carried
+to the other. Comments are not synced.
+
+On a two-way pairing, --pull-only or --push-only narrows a single run to one
+half. On a one-way pairing the flag for the opposite half is refused.
+
+If an item and its issue were both changed since the last sync, the conflict
+policy decides: --prefer-newer (default) keeps whichever side was edited last,
+--prefer-local keeps brain's version, --prefer-github keeps GitHub's. The
+policy can be recorded on the pairing with 'github pair --conflict'.
+
+Use --dry-run first: it prints what each side would create, update or link,
+with counts, and changes nothing.
+
+With --watch the command stays running and syncs every --interval.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE:          runGitHubSync,
@@ -82,6 +112,16 @@ var (
 	githubPreferLocal  bool
 	githubPreferGitHub bool
 	githubPreferNewer  bool
+
+	githubSyncWatch    bool
+	githubSyncInterval time.Duration
+	githubSyncRepo     string
+	githubSyncDir      string
+
+	githubPairDirection string
+	githubPairConflict  string
+	githubPairForce     bool
+	githubPairNoVerify  bool
 )
 
 // GitHubConflictStrategy defines how to resolve conflicts between local and GitHub versions.
@@ -149,11 +189,21 @@ func init() {
 	githubCmd.AddCommand(githubSyncCmd)
 	githubCmd.AddCommand(githubStatusCmd)
 	githubCmd.AddCommand(githubReposCmd)
+	githubCmd.AddCommand(githubPairCmd)
+	githubCmd.AddCommand(githubUnpairCmd)
+	githubPairCmd.Flags().StringVar(&githubPairDirection, "direction", "", "Direction: two-way (default), brain-to-github or github-to-brain")
+	githubPairCmd.Flags().StringVar(&githubPairConflict, "conflict", "", "Two-way conflict policy: prefer-newer (default), prefer-local or prefer-github")
+	githubPairCmd.Flags().BoolVar(&githubPairForce, "force", false, "Repoint a store that is already paired with a different repository")
+	githubPairCmd.Flags().BoolVar(&githubPairNoVerify, "no-verify", false, "Do not check that the repository exists and is reachable")
 
 	// Add flags to sync command
 	githubSyncCmd.Flags().BoolVar(&githubSyncDryRun, "dry-run", false, "Show what would be synced without making changes")
-	githubSyncCmd.Flags().BoolVar(&githubSyncPullOnly, "pull-only", false, "Only pull issues from GitHub")
-	githubSyncCmd.Flags().BoolVar(&githubSyncPushOnly, "push-only", false, "Only push issues to GitHub")
+	githubSyncCmd.Flags().BoolVar(&githubSyncPullOnly, "pull-only", false, "Only pull GitHub issues into brain")
+	githubSyncCmd.Flags().BoolVar(&githubSyncPushOnly, "push-only", false, "Only push brain items to GitHub")
+	githubSyncCmd.Flags().BoolVar(&githubSyncWatch, "watch", false, "Keep running and sync every --interval (off by default; see 'github schedule' for a background job)")
+	githubSyncCmd.Flags().DurationVar(&githubSyncInterval, "interval", 5*time.Minute, "Time between syncs with --watch (minimum 30s)")
+	githubSyncCmd.Flags().StringVar(&githubSyncRepo, "repo", "", "Run against this owner/repo for this run only, without saving a pairing")
+	githubSyncCmd.Flags().StringVar(&githubSyncDir, "direction", "", "Direction for this run only when the store has no recorded pairing (two-way, brain-to-github, github-to-brain)")
 
 	// Conflict resolution flags (mutually exclusive)
 	githubSyncCmd.Flags().BoolVar(&githubPreferLocal, "prefer-local", false, "On conflict, keep local beads version")
@@ -302,15 +352,40 @@ func runGitHubStatus(cmd *cobra.Command, args []string) error {
 	}()
 
 	config := getGitHubConfig()
+	ctx := context.Background()
+	pairing, pairErr := loadGitHubPairing(func(key string) string { return getGitHubConfigValue(ctx, key) }, currentStoreName())
 
 	out := cmd.OutOrStdout()
-	_, _ = fmt.Fprintln(out, "GitHub Configuration")
-	_, _ = fmt.Fprintln(out, "====================")
-	_, _ = fmt.Fprintf(out, "Token:      %s\n", maskGitHubToken(config.Token))
+	_, _ = fmt.Fprintln(out, "GitHub Pairing")
+	_, _ = fmt.Fprintln(out, "==============")
+	_, _ = fmt.Fprintf(out, "Store:      %s\n", orNoneLabel(pairing.Store))
+	token := maskGitHubToken(config.Token)
+	if config.Token == "" && ghTokenFromCLI() != "" {
+		token = "(from the gh CLI login)"
+		config.Token = "gh"
+	}
+	_, _ = fmt.Fprintf(out, "Token:      %s\n", token)
 	_, _ = fmt.Fprintf(out, "Owner:      %s\n", config.Owner)
 	_, _ = fmt.Fprintf(out, "Repository: %s\n", config.Repo)
 	if config.URL != "" {
 		_, _ = fmt.Fprintf(out, "API URL:    %s\n", config.URL)
+	}
+	if pairErr != nil {
+		_, _ = fmt.Fprintf(out, "\nStatus: ❌ Pairing is not valid\nError: %v\n", pairErr)
+		return nil
+	}
+	if pairing.Recorded {
+		_, _ = fmt.Fprintf(out, "Direction:  %s\n", pairing.Direction)
+		if pairing.Direction == GitHubTwoWay {
+			_, _ = fmt.Fprintf(out, "Conflicts:  %s\n", pairing.Conflict)
+		}
+	} else {
+		_, _ = fmt.Fprintf(out, "Direction:  %s (no pairing recorded; 'brain github pair' saves one)\n", pairing.Direction)
+	}
+	if store != nil {
+		if last, err := store.GetLocalMetadata(ctx, "github.last_sync"); err == nil && last != "" {
+			_, _ = fmt.Fprintf(out, "Last sync:  %s\n", last)
+		}
 	}
 
 	// Validate configuration
@@ -322,6 +397,30 @@ func runGitHubStatus(cmd *cobra.Command, args []string) error {
 
 	_, _ = fmt.Fprintf(out, "\nStatus: ✓ Configured\n")
 	return nil
+}
+
+func orNoneLabel(s string) string {
+	if s == "" {
+		return "(none)"
+	}
+	return s
+}
+
+// currentStoreName is the store this run addresses: the wrapper's name, or the
+// store's issue prefix when run without a wrapper.
+func currentStoreName() string {
+	if name := strings.TrimSpace(os.Getenv("BD_NAME")); name != "" {
+		return name
+	}
+	if p := config.GetString("issue-prefix"); p != "" {
+		return p
+	}
+	if store != nil {
+		if p, err := store.GetConfig(context.Background(), "issue_prefix"); err == nil {
+			return strings.TrimSpace(p)
+		}
+	}
+	return ""
 }
 
 // runGitHubRepos implements the github repos command.
@@ -365,6 +464,82 @@ func runGitHubRepos(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// ghTokenFromCLI asks the GitHub CLI for the token it is logged in with. The
+// token goes straight into this process's environment for the tracker to read;
+// it is never printed or stored.
+func ghTokenFromCLI() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// githubSetup is everything one sync run needs: where to sync, in which
+// direction, and with what conflict policy.
+type githubSetup struct {
+	Config  GitHubConfig
+	Pairing GitHubPairing
+	Plan    githubRunPlan
+	AdHoc   bool
+}
+
+// resolveGitHubSetup merges the store's pairing with this run's flags.
+func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
+	ctx := context.Background()
+	config := getGitHubConfig()
+
+	pairing, err := loadGitHubPairing(func(key string) string { return getGitHubConfigValue(ctx, key) }, currentStoreName())
+	if err != nil {
+		return nil, err
+	}
+
+	adHoc := false
+	if githubSyncRepo != "" {
+		owner, repo, err := parseGitHubRepository(githubSyncRepo)
+		if err != nil {
+			return nil, err
+		}
+		if pairing.Recorded && !strings.EqualFold(pairing.Repository(), owner+"/"+repo) && !githubSyncDryRun {
+			return nil, fmt.Errorf("this store is paired with %s; --repo %s/%s may only be used with --dry-run (repoint with 'github pair --force')", pairing.Repository(), owner, repo)
+		}
+		config.Owner, config.Repo = owner, repo
+		pairing.Owner, pairing.Repo = owner, repo
+		adHoc = true
+	}
+	if githubSyncDir != "" {
+		direction, err := parseGitHubDirection(githubSyncDir)
+		if err != nil {
+			return nil, err
+		}
+		if pairing.Recorded && direction != pairing.Direction {
+			return nil, fmt.Errorf("this store is paired %s; --direction %s would override its pairing (change it with 'github pair --force --direction')", pairing.Direction, direction)
+		}
+		pairing.Direction = direction
+		adHoc = true
+	}
+
+	flagStrategy, err := getGitHubConflictStrategy(githubPreferLocal, githubPreferGitHub, githubPreferNewer)
+	if err != nil {
+		return nil, fmt.Errorf("%v (--prefer-local, --prefer-github, --prefer-newer)", err)
+	}
+	conflictFlagGiven := githubPreferLocal || githubPreferGitHub || githubPreferNewer
+	if conflictFlagGiven {
+		if pairing.Direction != GitHubTwoWay {
+			return nil, fmt.Errorf("conflict flags only apply to a two-way pairing; %s always takes the source side", pairing.Direction)
+		}
+		pairing.Conflict = flagStrategy
+	}
+
+	plan, err := planGitHubRun(pairing, githubSyncPullOnly, githubSyncPushOnly)
+	if err != nil {
+		return nil, err
+	}
+	return &githubSetup{Config: config, Pairing: pairing, Plan: plan, AdHoc: adHoc}, nil
+}
+
 // runGitHubSync implements the github sync command.
 // Uses the tracker.Engine for all sync operations.
 func runGitHubSync(cmd *cobra.Command, args []string) error {
@@ -375,59 +550,180 @@ func runGitHubSync(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	config := getGitHubConfig()
-	if err := validateGitHubConfig(config); err != nil {
-		return HandleError("%v", err)
-	}
-
 	if !githubSyncDryRun {
 		CheckReadonly("github sync")
 	}
-
-	if githubSyncPullOnly && githubSyncPushOnly {
-		return HandleError("cannot use both --pull-only and --push-only")
-	}
-
-	conflictStrategy, err := getGitHubConflictStrategy(githubPreferLocal, githubPreferGitHub, githubPreferNewer)
-	if err != nil {
-		return HandleError("%v (--prefer-local, --prefer-github, --prefer-newer)", err)
-	}
-
 	if err := ensureStoreActive(); err != nil {
 		return HandleError("database not available: %v", err)
 	}
 
+	setup, err := resolveGitHubSetup(cmd)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if setup.Config.Token == "" {
+		if token := ghTokenFromCLI(); token != "" {
+			setup.Config.Token = token
+			_ = os.Setenv("GITHUB_TOKEN", token)
+		}
+	}
+	if err := validateGitHubConfig(setup.Config); err != nil {
+		return HandleError("%v", err)
+	}
+
+	if !githubSyncWatch {
+		_, err := runGitHubSyncOnce(cmd, setup)
+		return err
+	}
+
+	if githubSyncInterval < 30*time.Second {
+		return HandleError("--interval must be at least 30s")
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "Watching %s: syncing every %s (Ctrl-C to stop)\n", setup.Pairing.Repository(), githubSyncInterval)
+	for {
+		_, _ = fmt.Fprintf(out, "[%s] sync\n", time.Now().Format(time.RFC3339))
+		if _, err := runGitHubSyncOnce(cmd, setup); err != nil {
+			// A failed run (network, rate limit) must not end the watch.
+			_, _ = fmt.Fprintf(os.Stderr, "sync failed, will retry: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(githubSyncInterval):
+		}
+	}
+}
+
+// githubPlanSummary is the per-side tally of one run. In a dry run it is the
+// plan; after a real run it is what happened.
+type githubPlanSummary struct {
+	Store     string          `json:"store"`
+	Repo      string          `json:"repo"`
+	Direction GitHubDirection `json:"direction"`
+	DryRun    bool            `json:"dry_run"`
+	GitHub    githubSideTally `json:"github"`
+	Brain     githubSideTally `json:"brain"`
+	Conflicts int             `json:"conflicts"`
+	Skipped   int             `json:"skipped"`
+	Errors    int             `json:"errors"`
+}
+
+type githubSideTally struct {
+	Create int `json:"create"`
+	Update int `json:"update"`
+	Link   int `json:"link,omitempty"`
+}
+
+func summarizeGitHubRun(setup *githubSetup, result *tracker.SyncResult, dryRun bool) githubPlanSummary {
+	return githubPlanSummary{
+		Store:     setup.Pairing.Store,
+		Repo:      setup.Pairing.Repository(),
+		Direction: setup.Pairing.Direction,
+		DryRun:    dryRun,
+		GitHub:    githubSideTally{Create: result.PushStats.Created, Update: result.PushStats.Updated, Link: result.PushStats.Linked},
+		Brain:     githubSideTally{Create: result.PullStats.Created, Update: result.PullStats.Updated},
+		Conflicts: result.Stats.Conflicts,
+		Skipped:   result.Stats.Skipped,
+		Errors:    result.Stats.Errors,
+	}
+}
+
+func printGitHubSummary(out interface{ Write([]byte) (int, error) }, sum githubPlanSummary) {
+	verb := map[bool]string{true: "would", false: "did"}[sum.DryRun]
+	title := "Result"
+	if sum.DryRun {
+		title = "Plan (dry run, nothing changed)"
+	}
+	_, _ = fmt.Fprintf(out, "\n%s: %s <-> %s (%s)\n", title, orNoneLabel(sum.Store), sum.Repo, sum.Direction)
+	_, _ = fmt.Fprintf(out, "  GitHub %s: create %d, update %d, link %d existing\n", verb, sum.GitHub.Create, sum.GitHub.Update, sum.GitHub.Link)
+	_, _ = fmt.Fprintf(out, "  brain  %s: create %d, update %d\n", verb, sum.Brain.Create, sum.Brain.Update)
+	_, _ = fmt.Fprintf(out, "  unchanged/skipped %d, conflicts %d, errors %d\n", sum.Skipped, sum.Conflicts, sum.Errors)
+}
+
+// githubExcludedTypes are the system-internal item types that never go to
+// GitHub: they are brain's own plumbing, not work a person would triage.
+var githubExcludedTypes = []types.IssueType{types.TypeMessage, types.TypeMolecule, types.TypeGate, types.TypeEvent}
+
+// newGitHubTargetedTracker prepares the tracker for 'github push' and 'github
+// pull', which name the items to move. They obey the store's pairing: a
+// brain-to-github pairing never pulls, a github-to-brain pairing never pushes.
+func newGitHubTargetedTracker(ctx context.Context, push bool) (*github.Tracker, error) {
+	config := getGitHubConfig()
+	pairing, err := loadGitHubPairing(func(key string) string { return getGitHubConfigValue(ctx, key) }, currentStoreName())
+	if err != nil {
+		return nil, err
+	}
+	if push && pairing.Direction == GitHubGitHubToBrain {
+		return nil, fmt.Errorf("this store is paired %s: nothing is pushed to GitHub", pairing.Direction)
+	}
+	if !push && pairing.Direction == GitHubBrainToGitHub {
+		return nil, fmt.Errorf("this store is paired %s: nothing is pulled from GitHub", pairing.Direction)
+	}
+	if config.Token == "" {
+		if token := ghTokenFromCLI(); token != "" {
+			config.Token = token
+			_ = os.Setenv("GITHUB_TOKEN", token)
+		}
+	}
+	if err := validateGitHubConfig(config); err != nil {
+		return nil, err
+	}
+	gt := &github.Tracker{Namespace: getGitHubConfigValue(ctx, githubKeyNamespace)}
+	if err := gt.Init(ctx, store); err != nil {
+		return nil, fmt.Errorf("initializing GitHub tracker: %w", err)
+	}
+	return gt, nil
+}
+
+// runGitHubSyncOnce performs one sync pass.
+func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncResult, error) {
 	out := cmd.OutOrStdout()
 	ctx := context.Background()
 
-	gt := &github.Tracker{}
+	gt := &github.Tracker{
+		Namespace:  getGitHubConfigValue(ctx, githubKeyNamespace),
+		Owner:      setup.Config.Owner,
+		Repo:       setup.Config.Repo,
+		BulkLookup: true,
+	}
 	if err := gt.Init(ctx, store); err != nil {
-		return HandleError("initializing GitHub tracker: %v", err)
+		return nil, HandleError("initializing GitHub tracker: %v", err)
 	}
 
 	// Create the sync engine
 	engine := tracker.NewEngine(gt, store, actor)
 	engine.OnMessage = func(msg string) { _, _ = fmt.Fprintln(out, "  "+msg) }
+	if jsonOutput {
+		// Keep stdout a single JSON document.
+		engine.OnMessage = func(msg string) { _, _ = fmt.Fprintln(os.Stderr, "  "+msg) }
+	}
 	engine.OnWarning = func(msg string) { _, _ = fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 
-	// Set up GitHub-specific pull hooks
-	engine.PullHooks = buildGitHubPullHooks(ctx)
-
-	// Build sync options from CLI flags
-	pull := !githubSyncPushOnly
-	push := !githubSyncPullOnly
+	// GitHub-specific hooks: pulled issues keep what GitHub cannot say and
+	// never copy another store's mirrors; pushes skip issues that already say
+	// the same thing.
+	engine.PullHooks = &tracker.PullHooks{
+		ShouldImport: gt.ShouldImport,
+		AfterConvert: gt.AfterConvert,
+	}
+	engine.PushHooks = &tracker.PushHooks{ContentEqual: gt.ContentEqual}
 
 	opts := tracker.SyncOptions{
-		Pull:   pull,
-		Push:   push,
-		DryRun: githubSyncDryRun,
+		Pull:               setup.Plan.Pull,
+		Push:               setup.Plan.Push,
+		DryRun:             githubSyncDryRun,
+		ExcludeEphemeral:   true,
+		ExcludeTypes:       githubExcludedTypes,
+		PullOverwriteLocal: setup.Plan.PullOverwrite,
+	}
+	if err := applySelectiveSyncFlags(cmd, &opts, setup.Plan.Push); err != nil {
+		return nil, HandleError("%v", err)
 	}
 
-	if err := applySelectiveSyncFlags(cmd, &opts, push); err != nil {
-		return HandleError("%v", err)
-	}
-
-	switch conflictStrategy {
+	switch setup.Plan.Conflict {
 	case GitHubConflictPreferLocal:
 		opts.ConflictResolution = tracker.ConflictLocal
 	case GitHubConflictPreferGitHub:
@@ -436,57 +732,169 @@ func runGitHubSync(cmd *cobra.Command, args []string) error {
 		opts.ConflictResolution = tracker.ConflictTimestamp
 	}
 
-	if githubSyncDryRun {
-		_, _ = fmt.Fprintln(out, "Dry run mode - no changes will be made")
-		_, _ = fmt.Fprintln(out)
+	if !jsonOutput {
+		if githubSyncDryRun {
+			_, _ = fmt.Fprintln(out, "Dry run mode - no changes will be made")
+			_, _ = fmt.Fprintln(out)
+		}
+		if setup.AdHoc {
+			_, _ = fmt.Fprintf(out, "Ad hoc run against %s (%s); no pairing is saved\n", setup.Pairing.Repository(), setup.Pairing.Direction)
+		}
 	}
 
 	result, err := engine.Sync(ctx, opts)
 	if err != nil {
-		return HandleError("%v", err)
+		return result, HandleError("%v", err)
 	}
 
-	// Output results
-	if !githubSyncDryRun {
-		if result.Stats.Pulled > 0 {
-			_, _ = fmt.Fprintf(out, "✓ Pulled %d issues (%d created, %d updated)\n",
-				result.Stats.Pulled, result.Stats.Created, result.Stats.Updated)
-		}
-		if result.Stats.Pushed > 0 {
-			_, _ = fmt.Fprintf(out, "✓ Pushed %d issues\n", result.Stats.Pushed)
-		}
-		if result.Stats.Conflicts > 0 {
-			_, _ = fmt.Fprintf(out, "→ Resolved %d conflicts\n", result.Stats.Conflicts)
-		}
+	sum := summarizeGitHubRun(setup, result, githubSyncDryRun)
+	if jsonOutput {
+		_ = outputJSON(sum)
+		return result, nil
 	}
-
+	printGitHubSummary(out, sum)
 	if githubSyncDryRun {
 		_, _ = fmt.Fprintln(out)
 		_, _ = fmt.Fprintln(out, "Run without --dry-run to apply changes")
 	}
-
-	return nil
+	return result, nil
 }
 
-// buildGitHubPullHooks creates PullHooks for GitHub-specific pull behavior.
-func buildGitHubPullHooks(ctx context.Context) *tracker.PullHooks {
-	prefix := "bd"
-	// YAML config takes precedence — in shared-server mode the DB
-	// may belong to a different project (GH#2469).
-	if p := config.GetString("issue-prefix"); p != "" {
-		prefix = p
-	} else if store != nil {
-		if p, err := store.GetConfig(ctx, "issue_prefix"); err == nil && p != "" {
-			prefix = p
+// githubPairCmd records the pairing between this store and a repository.
+var githubPairCmd = &cobra.Command{
+	Use:   "pair <owner/repo>",
+	Short: "Pair this store with a GitHub repository and pick the sync direction",
+	Long: `Record which GitHub repository this store syncs with, and which way changes travel.
+
+  brain github pair trillium/brain                                  two-way (default)
+  brain github pair trillium/brain --direction brain-to-github      brain is the source
+  brain github pair trillium/brain --direction github-to-brain      GitHub is the source
+  brain github pair trillium/brain --conflict prefer-local          brain wins two-way conflicts
+
+The pairing is saved in this store's own config and touches no other store.
+Nothing is synced by pairing; run 'brain github sync --dry-run' to see what the
+first sync would do.
+
+Pair one repository with one store. Two stores two-way paired with the same
+repository would each import the other's native issues.`,
+	Args:          cobra.ExactArgs(1),
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitHubPair,
+}
+
+// githubUnpairCmd removes the pairing.
+var githubUnpairCmd = &cobra.Command{
+	Use:   "unpair",
+	Short: "Remove this store's GitHub pairing",
+	Long: `Forget the repository, direction and conflict policy for this store.
+
+Items keep the link they remember to their issues and the issues keep their
+markers, so pairing the same repository again picks up where it left off. No
+item and no issue is deleted.`,
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runGitHubUnpair,
+}
+
+func runGitHubPair(cmd *cobra.Command, args []string) error {
+	CheckReadonly("github pair")
+	if err := ensureStoreActive(); err != nil {
+		return HandleError("database not available: %v", err)
+	}
+	ctx := context.Background()
+
+	owner, repo, err := parseGitHubRepository(args[0])
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	direction, err := parseGitHubDirection(githubPairDirection)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	conflict, err := parseGitHubConflict(githubPairConflict)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if githubPairConflict != "" && direction != GitHubTwoWay {
+		return HandleError("--conflict only applies to a two-way pairing; %s always takes the source side", direction)
+	}
+
+	existing, err := loadGitHubPairing(func(key string) string { return getGitHubConfigValue(ctx, key) }, currentStoreName())
+	if err != nil {
+		return HandleError("existing pairing is not valid: %v", err)
+	}
+	repointing := existing.Repository() != "" && !strings.EqualFold(existing.Repository(), owner+"/"+repo)
+	if repointing && !githubPairForce {
+		return HandleError("this store is already paired with %s; pass --force to repoint it to %s/%s", existing.Repository(), owner, repo)
+	}
+
+	if !githubPairNoVerify {
+		config := getGitHubConfig()
+		if config.Token == "" {
+			config.Token = ghTokenFromCLI()
+		}
+		if config.Token != "" {
+			config.Owner, config.Repo = owner, repo
+			if _, err := getGitHubClient(config).GetRepository(ctx); err != nil {
+				return HandleError("cannot reach %s/%s with the available GitHub login: %v (use --no-verify to pair anyway)", owner, repo, err)
+			}
 		}
 	}
 
-	return &tracker.PullHooks{
-		GenerateID: func(_ context.Context, issue *types.Issue) error {
-			if issue.ID == "" {
-				issue.ID = generateIssueID(prefix)
-			}
-			return nil
-		},
+	namespace := existing.Store
+	if namespace == "" {
+		namespace = currentStoreName()
 	}
+	if namespace == "" {
+		return HandleError("cannot tell which store this is: run through the store's command (for example 'brain github pair ...') so BD_NAME is set")
+	}
+
+	values := map[string]string{
+		githubKeyRepository: owner + "/" + repo,
+		"github.owner":      owner,
+		"github.repo":       repo,
+		githubKeyDirection:  string(direction),
+		githubKeyConflict:   string(conflict),
+		githubKeyNamespace:  namespace,
+	}
+	for _, key := range []string{githubKeyRepository, "github.owner", "github.repo", githubKeyDirection, githubKeyConflict, githubKeyNamespace} {
+		if err := store.SetConfig(ctx, key, values[key]); err != nil {
+			return HandleError("saving %s: %v", key, err)
+		}
+	}
+	if repointing {
+		// Links and the sync position belong to the old repository.
+		if err := store.SetLocalMetadata(ctx, "github.last_sync", ""); err != nil {
+			return HandleError("resetting sync position: %v", err)
+		}
+	}
+
+	out := cmd.OutOrStdout()
+	_, _ = fmt.Fprintf(out, "Paired %s with %s/%s (%s", namespace, owner, repo, direction)
+	if direction == GitHubTwoWay {
+		_, _ = fmt.Fprintf(out, ", conflicts: %s", conflict)
+	}
+	_, _ = fmt.Fprintln(out, ")")
+	_, _ = fmt.Fprintln(out, "Nothing was synced. Preview the first sync with: brain github sync --dry-run")
+	return nil
+}
+
+func runGitHubUnpair(cmd *cobra.Command, args []string) error {
+	CheckReadonly("github unpair")
+	if err := ensureStoreActive(); err != nil {
+		return HandleError("database not available: %v", err)
+	}
+	ctx := context.Background()
+	for _, key := range []string{githubKeyRepository, "github.owner", "github.repo", githubKeyDirection, githubKeyConflict, githubKeyNamespace} {
+		if err := store.DeleteConfig(ctx, key); err != nil {
+			return HandleError("clearing %s: %v", key, err)
+		}
+	}
+	if err := store.SetLocalMetadata(ctx, "github.last_sync", ""); err != nil {
+		return HandleError("resetting sync position: %v", err)
+	}
+	_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Pairing removed. No item or issue was changed.")
+	return nil
 }

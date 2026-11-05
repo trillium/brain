@@ -94,6 +94,13 @@ type SyncOptions struct {
 	// DependencyTypes limits which dependency types pull creates from tracker
 	// mapper output. Empty means all dependency types are created.
 	DependencyTypes []types.DependencyType
+	// PullOverwriteLocal makes the external tracker the source of truth for a
+	// pull-only sync: the pull reads every external issue (not just those
+	// changed since the last sync) and replaces any local issue that differs,
+	// including one edited locally since the last sync. Without it, pull is
+	// incremental and leaves locally edited issues alone so a bidirectional
+	// run can resolve the conflict.
+	PullOverwriteLocal bool
 	// DependencySources limits which dependency sources pull creates from tracker
 	// mapper output. Empty means all dependency sources are created.
 	DependencySources []DependencySource
@@ -119,6 +126,7 @@ type SyncStats struct {
 	Skipped   int `json:"skipped"`
 	Errors    int `json:"errors"`
 	Conflicts int `json:"conflicts"`
+	Linked    int `json:"linked"`
 }
 
 // PullStats tracks pull operation results.
@@ -137,6 +145,7 @@ type PullStats struct {
 type PushStats struct {
 	Created  int
 	Updated  int
+	Linked   int // existing external issues adopted for items whose link was missing
 	Skipped  int
 	Errors   int
 	Warnings []string

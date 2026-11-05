@@ -70,6 +70,16 @@ type BatchPushDryRunner interface {
 	BatchPushDryRun(ctx context.Context, issues []*types.Issue, forceIDs map[string]bool) (*BatchPushResult, error)
 }
 
+// LinkFinder is an optional capability for trackers that can recognise the
+// external issue that already mirrors a local issue whose external_ref is
+// missing. Push asks it before creating, so a lost link is repaired in place
+// instead of producing a second external issue.
+type LinkFinder interface {
+	// FindLinked returns the external issue that mirrors issue, or nil, nil
+	// when none does.
+	FindLinked(ctx context.Context, issue *types.Issue) (*TrackerIssue, error)
+}
+
 // PullStatsProvider is an optional capability for trackers that can report
 // raw fetch counts separately from incremental pull candidates.
 type PullStatsProvider interface {

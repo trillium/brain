@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/ado"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/github"
 	"github.com/steveyegge/beads/internal/gitlab"
 	"github.com/steveyegge/beads/internal/jira"
 	"github.com/steveyegge/beads/internal/linear"
@@ -588,21 +587,18 @@ func runGitHubPush(cmd *cobra.Command, args []string) error {
 		CheckReadonly("github push")
 	}
 
-	config := getGitHubConfig()
-	if err := validateGitHubConfig(config); err != nil {
-		return err
-	}
 	if err := ensureStoreActive(); err != nil {
 		return fmt.Errorf("database not available: %w", err)
 	}
 
 	ctx := cmd.Context()
-	gt := &github.Tracker{}
-	if err := gt.Init(ctx, store); err != nil {
-		return fmt.Errorf("initializing GitHub tracker: %w", err)
+	gt, err := newGitHubTargetedTracker(ctx, true)
+	if err != nil {
+		return err
 	}
 
 	engine := tracker.NewEngine(gt, store, actor)
+	engine.PushHooks = &tracker.PushHooks{ContentEqual: gt.ContentEqual}
 	engine.OnMessage = func(msg string) { fmt.Println("  " + msg) }
 	engine.OnWarning = func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 
@@ -635,22 +631,18 @@ func runGitHubPull(cmd *cobra.Command, args []string) error {
 		CheckReadonly("github pull")
 	}
 
-	config := getGitHubConfig()
-	if err := validateGitHubConfig(config); err != nil {
-		return err
-	}
 	if err := ensureStoreActive(); err != nil {
 		return fmt.Errorf("database not available: %w", err)
 	}
 
 	ctx := cmd.Context()
-	gt := &github.Tracker{}
-	if err := gt.Init(ctx, store); err != nil {
-		return fmt.Errorf("initializing GitHub tracker: %w", err)
+	gt, err := newGitHubTargetedTracker(ctx, false)
+	if err != nil {
+		return err
 	}
 
 	engine := tracker.NewEngine(gt, store, actor)
-	engine.PullHooks = buildGitHubPullHooks(ctx)
+	engine.PullHooks = &tracker.PullHooks{ShouldImport: gt.ShouldImport, AfterConvert: gt.AfterConvert}
 	engine.OnMessage = func(msg string) { fmt.Println("  " + msg) }
 	engine.OnWarning = func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 
