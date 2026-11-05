@@ -199,7 +199,7 @@ func BeadsIssueToGitHubFields(issue *types.Issue, config *MappingConfig) map[str
 	// Add any existing non-scoped labels
 	labels = append(labels, issue.Labels...)
 
-	fields["labels"] = labels
+	fields["labels"] = clampLabels(labels)
 
 	// Set state for closed issues
 	if issue.Status == types.StatusClosed {
@@ -209,6 +209,28 @@ func BeadsIssueToGitHubFields(issue *types.Issue, config *MappingConfig) map[str
 	}
 
 	return fields
+}
+
+// maxLabelLen is the longest label name GitHub accepts. A longer one fails the
+// whole issue with a 422, so it is cut here, the same way on every push.
+const maxLabelLen = 50
+
+// clampLabels cuts each label to GitHub's length limit, dropping any label
+// that becomes a duplicate of an earlier one.
+func clampLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	seen := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		if r := []rune(l); len(r) > maxLabelLen {
+			l = strings.TrimSpace(string(r[:maxLabelLen]))
+		}
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		out = append(out, l)
+	}
+	return out
 }
 
 // priorityToLabel converts beads priority (0-4) to GitHub priority label value.
