@@ -147,6 +147,30 @@ func TestGitHubSyncProjectIsAlwaysOneWay(t *testing.T) {
 	}
 }
 
+// A project run never records a sync position, so the first two-way run after
+// it has no baseline. It must not replace a brain edit with GitHub's older copy.
+func TestGitHubSyncTwoWayAfterProjectRunKeepsBrainEdit(t *testing.T) {
+	gh := newFakeGitHub(t)
+	s, project, members, _ := projectStore(t, gh, `{"repo":"acme/widgets"}`)
+	s.sync("--project", project)
+	settle()
+
+	s.must("update", members[1], "--title", "Edited in brain")
+	got := s.sync("--repo", "acme/widgets", "--direction", "two-way")
+	if got.Brain.Update != 0 {
+		t.Fatalf("the pull rewrote an item that was only edited in brain: %+v", got)
+	}
+	if title := s.show(members[1]).Title; title != "Edited in brain" {
+		t.Fatalf("title = %q; the brain edit was lost", title)
+	}
+	for i := 1; i <= 2; i++ {
+		if gh.get(i).Title == "Edited in brain" {
+			return
+		}
+	}
+	t.Fatalf("the brain edit never reached GitHub")
+}
+
 func TestGitHubSyncProjectLabelsAreOptIn(t *testing.T) {
 	gh := newFakeGitHub(t)
 	s, project, _, _ := projectStore(t, gh, `{"repo":"acme/widgets","project_labels":"project:widgets-slug"}`)
