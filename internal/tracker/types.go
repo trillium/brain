@@ -104,6 +104,11 @@ type SyncOptions struct {
 	// DependencySources limits which dependency sources pull creates from tracker
 	// mapper output. Empty means all dependency sources are created.
 	DependencySources []DependencySource
+	// KeepSyncPosition leaves the recorded last-sync time alone after a real
+	// run. A run limited to part of a store (one project's items) has not
+	// brought the rest in step, so it must not move the position a later
+	// whole-store run starts from.
+	KeepSyncPosition bool
 }
 
 // SyncResult is the complete result of a sync operation.
