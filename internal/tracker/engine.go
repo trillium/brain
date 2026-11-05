@@ -466,6 +466,15 @@ func (e *Engine) doPull(ctx context.Context, opts SyncOptions, allowOverwriteIDs
 				stats.Skipped++
 				continue
 			}
+			// With no sync recorded there is no baseline, so the guard above
+			// and conflict detection both stand down. A two-way pull would
+			// then overwrite a brain edit the tracker has not seen yet (a
+			// project-scoped run never records a sync position). Keep the
+			// copy that was edited last; the push phase sends the brain one.
+			if lastSync == nil && opts.Push && opts.ConflictResolution != ConflictExternal && existing.UpdatedAt.After(extIssue.UpdatedAt) && !allowOverwriteIDs[existing.ID] && !prelinkedHydrateIDs[existing.ID] && !opts.PullOverwriteLocal {
+				stats.Skipped++
+				continue
+			}
 		}
 
 		if e.PullHooks != nil && e.PullHooks.AfterConvert != nil {
