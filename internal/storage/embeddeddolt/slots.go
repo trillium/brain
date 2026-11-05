@@ -21,6 +21,10 @@ func (s *EmbeddedDoltStore) SlotSet(ctx context.Context, issueID, key, value, ac
 			return fmt.Errorf("parsing metadata for %s: %w", issueID, err)
 		}
 	}
+	if metadata == nil {
+		// Metadata stored as the JSON literal null unmarshals to a nil map.
+		metadata = make(map[string]interface{})
+	}
 	metadata[key] = value
 
 	raw, err := json.Marshal(metadata)

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/storage"
@@ -20,6 +21,9 @@ func init() {
 	})
 }
 
+// incrementalOverlap is how far before the last sync an incremental pull starts reading.
+const incrementalOverlap = 5 * time.Minute
+
 // issueNumberPattern matches GitHub issue URLs: .../issues/42
 var issueNumberPattern = regexp.MustCompile(`/issues/(\d+)`)
 
@@ -32,6 +36,34 @@ type Tracker struct {
 	client *Client
 	config *MappingConfig
 	store  storage.Storage
+
+	// Namespace names the brain store this tracker serves. Init fills it from
+	// github.namespace, then BD_NAME, then the store's issue prefix, unless the
+	// caller set it first.
+	Namespace string
+
+	// Owner and Repo, when both set before Init, name the repository directly
+	// and take precedence over the configured github.* values.
+	Owner string
+	Repo  string
+
+	owner string
+	repo  string
+
+	// BulkLookup makes FetchIssue answer from one listing of the whole
+	// repository instead of one request per issue. A sync that checks every
+	// linked item (a dry run, a push) sets it: a listing is a hundred issues
+	// per request, a lookup is one.
+	BulkLookup bool
+
+	// index is the repository's issues, listed once per run: by issue number,
+	// and by the brain item id named in their marker.
+	index *issueIndex
+}
+
+type issueIndex struct {
+	byNumber map[string]*tracker.TrackerIssue
+	linked   map[string]*tracker.TrackerIssue
 }
 
 func (t *Tracker) Name() string         { return "github" }
@@ -48,6 +80,9 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 
 	owner := t.getConfig(ctx, "github.owner", "GITHUB_OWNER")
 	repo := t.getConfig(ctx, "github.repo", "GITHUB_REPO")
+	if t.Owner != "" && t.Repo != "" {
+		owner, repo = t.Owner, t.Repo
+	}
 
 	// Try combined owner/repo format: "owner/repo"
 	if owner == "" || repo == "" {
@@ -69,6 +104,7 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 	}
 
 	t.client = NewClient(token, owner, repo)
+	t.owner, t.repo = owner, repo
 
 	// Allow custom base URL for GitHub Enterprise
 	baseURL := t.getConfig(ctx, "github.url", "GITHUB_API_URL")
@@ -76,8 +112,26 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 		t.client = t.client.WithBaseURL(baseURL)
 	}
 
+	if t.Namespace == "" {
+		t.Namespace = firstNonEmpty(
+			t.getConfig(ctx, "github.namespace", ""),
+			os.Getenv("BD_NAME"),
+			t.getConfig(ctx, "issue_prefix", ""),
+		)
+	}
 	t.config = DefaultMappingConfig()
+	t.config.Namespace = t.Namespace
+	t.index = nil
 	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }
 
 func (t *Tracker) Validate() error {
@@ -99,7 +153,14 @@ func (t *Tracker) FetchIssues(ctx context.Context, opts tracker.FetchOptions) ([
 	}
 
 	if opts.Since != nil {
-		issues, err = t.client.FetchIssuesSince(ctx, state, *opts.Since)
+		// Look back past the last sync. GitHub's clock is not ours, and its
+		// listing can lag a write by a moment, so an issue changed just
+		// before the last sync could otherwise never be seen. Re-reading an
+		// unchanged issue costs nothing: pull skips it.
+		issues, err = t.client.FetchIssuesSince(ctx, state, opts.Since.Add(-incrementalOverlap))
+		if err == nil {
+			issues = t.dropSeen(ctx, issues, *opts.Since)
+		}
 	} else {
 		issues, err = t.client.FetchIssues(ctx, state)
 	}
@@ -114,10 +175,61 @@ func (t *Tracker) FetchIssues(ctx context.Context, opts tracker.FetchOptions) ([
 	return result, nil
 }
 
+// dropSeen removes, from the look-back window, the issues that this store
+// already tracks and that have not changed since the last sync. The look-back
+// exists to find issues the last sync could not see; re-applying an old copy
+// of an issue the store already has would overwrite a brain edit made while
+// the last sync was running.
+func (t *Tracker) dropSeen(ctx context.Context, issues []Issue, since time.Time) []Issue {
+	if t.store == nil {
+		return issues
+	}
+	kept := issues[:0]
+	for i := range issues {
+		gh := &issues[i]
+		if gh.UpdatedAt != nil && gh.UpdatedAt.After(since) {
+			kept = append(kept, *gh)
+			continue
+		}
+		if t.trackedLocally(ctx, gh) {
+			continue
+		}
+		kept = append(kept, *gh)
+	}
+	return kept
+}
+
+// trackedLocally reports whether the store already has an item for this issue,
+// by the issue's URL or by the item id in its marker.
+func (t *Tracker) trackedLocally(ctx context.Context, gh *Issue) bool {
+	if gh.HTMLURL != "" {
+		if item, err := t.store.GetIssueByExternalRef(ctx, gh.HTMLURL); err == nil && item != nil {
+			return true
+		}
+	}
+	if marker, ok := ParseMarker(gh.Body); ok && t.config != nil && marker.Store == t.config.Namespace {
+		if item, err := t.store.GetIssue(ctx, marker.ID); err == nil && item != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (t *Tracker) FetchIssue(ctx context.Context, identifier string) (*tracker.TrackerIssue, error) {
 	number, err := strconv.Atoi(identifier)
 	if err != nil {
 		return nil, fmt.Errorf("invalid GitHub issue number %q: %w", identifier, err)
+	}
+
+	if t.BulkLookup {
+		idx, err := t.loadIndex(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if ti, ok := idx.byNumber[identifier]; ok {
+			cp := *ti
+			return &cp, nil
+		}
 	}
 
 	gh, err := t.client.FetchIssueByNumber(ctx, number)
@@ -136,12 +248,14 @@ func (t *Tracker) CreateIssue(ctx context.Context, issue *types.Issue) (*tracker
 	fields := BeadsIssueToGitHubFields(issue, t.config)
 	labels, _ := fields["labels"].([]string)
 
-	created, err := t.client.CreateIssue(ctx, issue.Title, issue.Description, labels)
+	body, _ := fields["body"].(string)
+	created, err := t.client.CreateIssue(ctx, issue.Title, body, labels)
 	if err != nil {
 		return nil, err
 	}
 
 	ti := githubToTrackerIssue(created)
+	t.remember(created)
 	return &ti, nil
 }
 
@@ -158,6 +272,7 @@ func (t *Tracker) UpdateIssue(ctx context.Context, externalID string, issue *typ
 	}
 
 	ti := githubToTrackerIssue(updated)
+	t.remember(updated)
 	return &ti, nil
 }
 
@@ -165,14 +280,32 @@ func (t *Tracker) FieldMapper() tracker.FieldMapper {
 	return &githubFieldMapper{config: t.config}
 }
 
-// IsExternalRef checks if a ref belongs to this GitHub tracker.
-// It recognizes both full GitHub URLs and the "github:{id}" shorthand format
+// issueURLPattern captures owner, repo and number from an issue URL on any
+// host (github.com or an Enterprise server).
+var issueURLPattern = regexp.MustCompile(`^https?://[^/]+/([^/]+)/([^/]+)/issues/(\d+)(?:[/?#].*)?$`)
+
+// IsExternalRef checks if a ref is a link to an issue in THIS tracker's
+// repository. It recognizes full GitHub URLs and the "github:{id}" shorthand
 // produced by BuildExternalRef when a URL is unavailable.
+//
+// A URL for a different repository is not this tracker's ref: issue numbers
+// only mean something inside one repository, so a link left over from a
+// previous pairing must not be read as a number in the current one.
 func (t *Tracker) IsExternalRef(ref string) bool {
 	if ghShorthandPattern.MatchString(ref) {
 		return true
 	}
-	return strings.Contains(ref, "github.com") && issueNumberPattern.MatchString(ref)
+	if !strings.Contains(ref, "github") || !issueNumberPattern.MatchString(ref) {
+		return false
+	}
+	if t.owner == "" || t.repo == "" {
+		return true
+	}
+	m := issueURLPattern.FindStringSubmatch(ref)
+	if m == nil {
+		return false
+	}
+	return strings.EqualFold(m[1], t.owner) && strings.EqualFold(m[2], t.repo)
 }
 
 // ExtractIdentifier extracts the issue number from a GitHub URL or shorthand ref.
@@ -231,7 +364,7 @@ func githubToTrackerIssue(gh *Issue) tracker.TrackerIssue {
 		Identifier:  strconv.Itoa(gh.Number),
 		URL:         gh.HTMLURL,
 		Title:       gh.Title,
-		Description: gh.Body,
+		Description: StripMarker(gh.Body),
 		Labels:      gh.LabelNames(),
 		Raw:         gh,
 	}

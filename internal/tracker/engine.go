@@ -193,6 +193,7 @@ func (e *Engine) Sync(ctx context.Context, opts SyncOptions) (*SyncResult, error
 		result.Stats.Updated += pushStats.Updated
 		result.Stats.Skipped += pushStats.Skipped
 		result.Stats.Errors += pushStats.Errors
+		result.Stats.Linked += pushStats.Linked
 		result.Warnings = append(result.Warnings, pushStats.Warnings...)
 	}
 
@@ -312,7 +313,9 @@ func (e *Engine) doPull(ctx context.Context, opts SyncOptions, allowOverwriteIDs
 	fetchOpts := FetchOptions{State: opts.State}
 	var lastSync *time.Time
 	key := e.Tracker.ConfigPrefix() + ".last_sync"
-	if lastSyncStr, err := e.Store.GetLocalMetadata(ctx, key); err == nil && lastSyncStr != "" {
+	// A mirror pull re-reads everything: it must restore an item edited
+	// locally even though its external issue has not changed since the last sync.
+	if lastSyncStr, err := e.Store.GetLocalMetadata(ctx, key); err == nil && lastSyncStr != "" && !opts.PullOverwriteLocal {
 		if t, err := parseSyncTime(lastSyncStr); err == nil {
 			fetchOpts.Since = &t
 			lastSync = &t
@@ -459,7 +462,7 @@ func (e *Engine) doPull(ctx context.Context, opts SyncOptions, allowOverwriteIDs
 			// handle these per the configured resolution strategy.
 			// Without this guard, pull silently overwrites local changes
 			// before conflict detection can compare timestamps.
-			if lastSync != nil && existing.UpdatedAt.After(*lastSync) && !allowOverwriteIDs[existing.ID] && !prelinkedHydrateIDs[existing.ID] {
+			if lastSync != nil && existing.UpdatedAt.After(*lastSync) && !allowOverwriteIDs[existing.ID] && !prelinkedHydrateIDs[existing.ID] && !opts.PullOverwriteLocal {
 				stats.Skipped++
 				continue
 			}
@@ -595,7 +598,9 @@ func marshalTrackerMetadata(metadata interface{}) (json.RawMessage, bool) {
 		return nil, false
 	}
 	raw, err := json.Marshal(metadata)
-	if err != nil {
+	if err != nil || string(raw) == "null" {
+		// A typed nil map is a non-nil interface but marshals to null; storing
+		// that literal would make every later metadata merge write into a nil map.
 		return nil, false
 	}
 	return json.RawMessage(raw), true
@@ -703,7 +708,11 @@ func (e *Engine) externalRefChangedAfter(ctx context.Context, local *types.Issue
 	}
 	provider, ok := e.Store.(dbProvider)
 	if !ok || provider.DB() == nil {
-		return local.CreatedAt.After(lastSync) || local.UpdatedAt.After(lastSync), nil
+		// Without the commit history there is no way to tell a re-linked
+		// issue from an edited one. Treating every local edit as a re-link
+		// (as this once did) lets the pull overwrite the edit with the
+		// external copy, so only an issue created after the last sync counts.
+		return local.CreatedAt.After(lastSync), nil
 	}
 
 	var previousRef sql.NullString
@@ -925,10 +934,47 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 		extRef := derefStr(issue.ExternalRef)
 		willCreate := extRef == "" || !e.Tracker.IsExternalRef(extRef)
 
+		// An unlinked issue may already have an external twin (the link was
+		// lost after the twin was created). Adopt the twin instead of making
+		// a second one.
+		if willCreate {
+			if finder, ok := e.Tracker.(LinkFinder); ok {
+				twin, err := finder.FindLinked(ctx, issue)
+				if err != nil {
+					if isRateLimitExhausted(err) {
+						return stats, fmt.Errorf("sync aborted: %w", err)
+					}
+					e.warn("Failed to look for an existing %s issue for %s: %v", e.Tracker.DisplayName(), issue.ID, err)
+					stats.Errors++
+					continue
+				}
+				if twin != nil {
+					twinRef := e.Tracker.BuildExternalRef(twin)
+					stats.Linked++
+					if opts.DryRun {
+						e.msg("[dry-run] Would link %s to existing %s issue %s: %s", issue.ID, e.Tracker.DisplayName(), twin.Identifier, ui.SanitizeForTerminal(issue.Title))
+						continue
+					}
+					if err := e.Store.UpdateIssue(ctx, issue.ID, map[string]interface{}{"external_ref": twinRef}, e.Actor); err != nil {
+						e.warn("Failed to link %s to %s: %v", issue.ID, twinRef, err)
+						stats.Errors++
+						continue
+					}
+					extRef = twinRef
+					willCreate = false
+				}
+			}
+		}
+
 		if opts.DryRun {
 			if willCreate {
 				e.msg("[dry-run] Would create in %s: %s", e.Tracker.DisplayName(), ui.SanitizeForTerminal(issue.Title))
 				stats.Created++
+			} else if opts.CreateOnly && !forceIDs[issue.ID] {
+				stats.Skipped++
+			} else if e.pushUpToDate(ctx, issue, extRef, forceIDs) {
+				// Same test a real push applies, so the plan matches the run.
+				stats.Skipped++
 			} else {
 				e.msg("[dry-run] Would update in %s: %s", e.Tracker.DisplayName(), ui.SanitizeForTerminal(issue.Title))
 				stats.Updated++
@@ -984,17 +1030,9 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 				if isRateLimitExhausted(err) {
 					return stats, fmt.Errorf("sync aborted: %w", err)
 				}
-				if err == nil && extIssue != nil {
-					// ContentEqual hook: content-hash dedup to skip unnecessary API calls
-					if e.PushHooks != nil && e.PushHooks.ContentEqual != nil {
-						if e.PushHooks.ContentEqual(issue, extIssue) {
-							stats.Skipped++
-							continue
-						}
-					} else if !extIssue.UpdatedAt.Before(issue.UpdatedAt) {
-						stats.Skipped++ // Default: external is same or newer
-						continue
-					}
+				if err == nil && extIssue != nil && e.externalUpToDate(issue, extIssue) {
+					stats.Skipped++
+					continue
 				}
 			}
 
@@ -1023,6 +1061,35 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 		attribute.Int("sync.errors", stats.Errors),
 	)
 	return stats, nil
+}
+
+// externalUpToDate reports whether the external issue already reflects the
+// local one, so a push has nothing to send.
+func (e *Engine) externalUpToDate(local *types.Issue, ext *TrackerIssue) bool {
+	// ContentEqual hook: content comparison skips unnecessary API calls.
+	if e.PushHooks != nil && e.PushHooks.ContentEqual != nil {
+		return e.PushHooks.ContentEqual(local, ext)
+	}
+	return !ext.UpdatedAt.Before(local.UpdatedAt) // Default: external is same or newer
+}
+
+// pushUpToDate is the dry-run form of the push loop's up-to-date check: it
+// fetches the linked external issue and reports whether a real push would
+// skip it. A lookup that fails counts as not up to date, as it does in a real
+// push.
+func (e *Engine) pushUpToDate(ctx context.Context, local *types.Issue, extRef string, forceIDs map[string]bool) bool {
+	if forceIDs[local.ID] {
+		return false
+	}
+	extID := e.Tracker.ExtractIdentifier(extRef)
+	if extID == "" {
+		return false
+	}
+	ext, err := e.Tracker.FetchIssue(ctx, extID)
+	if err != nil || ext == nil {
+		return false
+	}
+	return e.externalUpToDate(local, ext)
 }
 
 func (e *Engine) collectBatchPushIssues(issues []*types.Issue, opts SyncOptions, descendantSet, skipIDs, forceIDs map[string]bool) ([]*types.Issue, int) {
