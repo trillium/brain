@@ -474,3 +474,29 @@ func TestMappingConfigUsesTypesConstants(t *testing.T) {
 		}
 	}
 }
+
+func TestBeadsIssueToGitHubFieldsClampsLongLabels(t *testing.T) {
+	long := "hold:merge-phone-apps-scout-20261020-decision-parrot-model-provenance-and-shipping"
+	issue := &types.Issue{ID: "task-1", Title: "t", IssueType: "task", Priority: 2, Status: types.StatusOpen,
+		Labels: []string{long, long, "short"}}
+
+	labels, _ := BeadsIssueToGitHubFields(issue, nil)["labels"].([]string)
+	for _, l := range labels {
+		if n := len([]rune(l)); n > 50 {
+			t.Errorf("label %q is %d characters, GitHub accepts at most 50", l, n)
+		}
+	}
+	again, _ := BeadsIssueToGitHubFields(issue, nil)["labels"].([]string)
+	if !sameStringSet(labels, again) {
+		t.Errorf("clamping is not stable: %v vs %v", labels, again)
+	}
+	count := 0
+	for _, l := range labels {
+		if l == long[:50] {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("clamped label appears %d times, want 1 in %v", count, labels)
+	}
+}

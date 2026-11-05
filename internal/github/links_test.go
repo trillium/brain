@@ -328,3 +328,29 @@ func TestIncrementalFetchLooksBackButSkipsTrackedIssues(t *testing.T) {
 		t.Fatalf("issues = %v; want 2 (unseen, found by the look-back) and 3 (changed), not 1 (tracked, unchanged)", numbers)
 	}
 }
+
+func TestCreateIssueClosesAnItemThatIsAlreadyClosed(t *testing.T) {
+	var calls []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method)
+		state := "open"
+		if r.Method == http.MethodPatch {
+			state = "closed"
+		}
+		_ = json.NewEncoder(w).Encode(&Issue{Number: 7, Title: "done", State: state, HTMLURL: "https://github.com/acme/widgets/issues/7"})
+	}))
+	defer srv.Close()
+	tr := newPairedTracker("brain")
+	tr.client = NewClient("token", "acme", "widgets").WithBaseURL(srv.URL)
+
+	got, err := tr.CreateIssue(context.Background(), &types.Issue{ID: "brain-1", Title: "done", Status: types.StatusClosed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(calls, ",") != "POST,PATCH" {
+		t.Errorf("calls = %v, want a create then a close", calls)
+	}
+	if state, _ := got.State.(string); state != "closed" {
+		t.Errorf("state = %v, want closed", got.State)
+	}
+}

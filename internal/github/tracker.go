@@ -253,6 +253,13 @@ func (t *Tracker) CreateIssue(ctx context.Context, issue *types.Issue) (*tracker
 	if err != nil {
 		return nil, err
 	}
+	// GitHub opens every new issue, so an item that is already closed gets
+	// its issue closed now rather than on the next sync.
+	if fields["state"] == "closed" {
+		if closed, err := t.client.UpdateIssue(ctx, created.Number, map[string]interface{}{"state": "closed"}); err == nil {
+			created = closed
+		}
+	}
 
 	ti := githubToTrackerIssue(created)
 	t.remember(created)
