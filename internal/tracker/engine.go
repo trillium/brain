@@ -213,7 +213,7 @@ func (e *Engine) Sync(ctx context.Context, opts SyncOptions) (*SyncResult, error
 	// to half a second in the future of wall clock. Record last_sync at
 	// the next whole second so the engine's own writes are never misread
 	// as local edits by the next pull's conflict guard.
-	if !opts.DryRun {
+	if !opts.DryRun && !opts.KeepSyncPosition {
 		lastSync := time.Now().UTC().Truncate(time.Second).Add(time.Second).Format(time.RFC3339Nano)
 		key := e.Tracker.ConfigPrefix() + ".last_sync"
 		if err := e.Store.SetLocalMetadata(ctx, key, lastSync); err != nil {

@@ -79,6 +79,13 @@ policy can be recorded on the pairing with 'github pair --conflict'.
 Use --dry-run first: it prints what each side would create, update or link,
 with counts, and changes nothing.
 
+With --project <project-id> the run is limited to the items that belong to one
+project record (kept in the projects store) and goes one way, brain to GitHub,
+into the repository that record names. An item belongs when it is under the
+record or carries the label project:<id>; nothing else is sent. The plan lists
+every item with the reason it is included. A real run into a public repository
+needs --allow-public.
+
 With --watch the command stays running and syncs every --interval.`,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -117,6 +124,10 @@ var (
 	githubSyncInterval time.Duration
 	githubSyncRepo     string
 	githubSyncDir      string
+
+	githubSyncProject      string
+	githubSyncProjectLabel []string
+	githubSyncAllowPublic  bool
 
 	githubPairDirection string
 	githubPairConflict  string
@@ -204,6 +215,10 @@ func init() {
 	githubSyncCmd.Flags().DurationVar(&githubSyncInterval, "interval", 5*time.Minute, "Time between syncs with --watch (minimum 30s)")
 	githubSyncCmd.Flags().StringVar(&githubSyncRepo, "repo", "", "Run against this owner/repo for this run only, without saving a pairing")
 	githubSyncCmd.Flags().StringVar(&githubSyncDir, "direction", "", "Direction for this run only when the store has no recorded pairing (two-way, brain-to-github, github-to-brain)")
+
+	githubSyncCmd.Flags().StringVar(&githubSyncProject, "project", "", "Sync only the items that belong to this project record (for example project-73bi.1), one way, brain to GitHub, into the repository the record names")
+	githubSyncCmd.Flags().StringSliceVar(&githubSyncProjectLabel, "project-label", nil, "With --project: also count items carrying this label (for example project:brain) as the project's; repeatable")
+	githubSyncCmd.Flags().BoolVar(&githubSyncAllowPublic, "allow-public", false, "With --project: allow a real run to publish into a public repository (a dry run never needs it)")
 
 	// Conflict resolution flags (mutually exclusive)
 	githubSyncCmd.Flags().BoolVar(&githubPreferLocal, "prefer-local", false, "On conflict, keep local beads version")
@@ -484,6 +499,8 @@ type githubSetup struct {
 	Pairing GitHubPairing
 	Plan    githubRunPlan
 	AdHoc   bool
+	// Project is set when the run is limited to one project's items.
+	Project *projectScope
 }
 
 // resolveGitHubSetup merges the store's pairing with this run's flags.
@@ -497,7 +514,17 @@ func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
 	}
 
 	adHoc := false
-	if githubSyncRepo != "" {
+	var project *projectScope
+	if githubSyncProject != "" {
+		project, err = resolveGitHubProject(ctx, &config, &pairing)
+		if err != nil {
+			return nil, err
+		}
+		adHoc = true
+	} else if len(githubSyncProjectLabel) > 0 || githubSyncAllowPublic {
+		return nil, fmt.Errorf("--project-label and --allow-public only apply together with --project")
+	}
+	if githubSyncRepo != "" && project == nil {
 		owner, repo, err := parseGitHubRepository(githubSyncRepo)
 		if err != nil {
 			return nil, err
@@ -509,7 +536,15 @@ func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
 		pairing.Owner, pairing.Repo = owner, repo
 		adHoc = true
 	}
-	if githubSyncDir != "" {
+	if githubSyncDir != "" && project != nil {
+		direction, err := parseGitHubDirection(githubSyncDir)
+		if err != nil {
+			return nil, err
+		}
+		if direction != GitHubBrainToGitHub {
+			return nil, fmt.Errorf("--project syncs one way, brain to GitHub; --direction %s contradicts it", direction)
+		}
+	} else if githubSyncDir != "" {
 		direction, err := parseGitHubDirection(githubSyncDir)
 		if err != nil {
 			return nil, err
@@ -537,7 +572,7 @@ func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &githubSetup{Config: config, Pairing: pairing, Plan: plan, AdHoc: adHoc}, nil
+	return &githubSetup{Config: config, Pairing: pairing, Plan: plan, AdHoc: adHoc, Project: project}, nil
 }
 
 // runGitHubSync implements the github sync command.
@@ -609,6 +644,8 @@ type githubPlanSummary struct {
 	Conflicts int             `json:"conflicts"`
 	Skipped   int             `json:"skipped"`
 	Errors    int             `json:"errors"`
+	// Project is set when the run was limited to one project's items.
+	Project *githubProjectSummary `json:"project,omitempty"`
 }
 
 type githubSideTally struct {
@@ -640,6 +677,11 @@ func printGitHubSummary(out interface{ Write([]byte) (int, error) }, sum githubP
 	_, _ = fmt.Fprintf(out, "\n%s: %s <-> %s (%s)\n", title, orNoneLabel(sum.Store), sum.Repo, sum.Direction)
 	_, _ = fmt.Fprintf(out, "  GitHub %s: create %d, update %d, link %d existing\n", verb, sum.GitHub.Create, sum.GitHub.Update, sum.GitHub.Link)
 	_, _ = fmt.Fprintf(out, "  brain  %s: create %d, update %d\n", verb, sum.Brain.Create, sum.Brain.Update)
+	if sum.Project != nil {
+		_, _ = fmt.Fprintf(out, "  project %s: %d in scope, the rest of the store (%d) is left alone\n", sum.Project.ID, sum.Project.InScope, sum.Project.StoreItems-sum.Project.InScope)
+		_, _ = fmt.Fprintf(out, "  unchanged %d, errors %d\n", sum.Skipped, sum.Errors)
+		return
+	}
 	_, _ = fmt.Fprintf(out, "  unchanged/skipped %d, conflicts %d, errors %d\n", sum.Skipped, sum.Conflicts, sum.Errors)
 }
 
@@ -718,6 +760,7 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		ExcludeEphemeral:   true,
 		ExcludeTypes:       githubExcludedTypes,
 		PullOverwriteLocal: setup.Plan.PullOverwrite,
+		KeepSyncPosition:   setup.Project != nil,
 	}
 	if err := applySelectiveSyncFlags(cmd, &opts, setup.Plan.Push); err != nil {
 		return nil, HandleError("%v", err)
@@ -737,9 +780,19 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 			_, _ = fmt.Fprintln(out, "Dry run mode - no changes will be made")
 			_, _ = fmt.Fprintln(out)
 		}
-		if setup.AdHoc {
+		if setup.AdHoc && setup.Project == nil {
 			_, _ = fmt.Fprintf(out, "Ad hoc run against %s (%s); no pairing is saved\n", setup.Pairing.Repository(), setup.Pairing.Direction)
 		}
+	}
+
+	var scoped *githubProjectPlan
+	if setup.Project != nil {
+		var err error
+		scoped, err = planGitHubProject(ctx, setup, out)
+		if err != nil {
+			return nil, HandleError("%v", err)
+		}
+		engine.PushHooks.ShouldPush = scoped.ShouldPush
 	}
 
 	result, err := engine.Sync(ctx, opts)
@@ -748,6 +801,9 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 	}
 
 	sum := summarizeGitHubRun(setup, result, githubSyncDryRun)
+	if scoped != nil {
+		scoped.Annotate(&sum, result)
+	}
 	if jsonOutput {
 		_ = outputJSON(sum)
 		return result, nil

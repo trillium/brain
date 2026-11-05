@@ -33,7 +33,9 @@ type fakeGitHub struct {
 	next    int
 	posts   int
 	patches int
-	server  *httptest.Server
+	// public makes the repository report itself public; the default is private.
+	public bool
+	server *httptest.Server
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -50,7 +52,7 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets")
 	switch {
 	case path == "" && r.Method == http.MethodGet:
-		_ = json.NewEncoder(w).Encode(map[string]any{"full_name": "acme/widgets", "name": "widgets"})
+		_ = json.NewEncoder(w).Encode(map[string]any{"full_name": "acme/widgets", "name": "widgets", "private": !f.public})
 	case path == "/issues" && r.Method == http.MethodGet:
 		state := r.URL.Query().Get("state")
 		var since time.Time

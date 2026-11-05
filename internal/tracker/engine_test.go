@@ -1230,6 +1230,36 @@ func TestEnginePushWithShouldPush(t *testing.T) {
 	}
 }
 
+func TestEngineKeepSyncPositionLeavesLastSyncAlone(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	defer store.Close()
+
+	issue := &types.Issue{ID: "bd-part1", Title: "Part of a store", Status: types.StatusOpen, IssueType: types.TypeTask, Priority: 2}
+	if err := store.CreateIssue(ctx, issue, "test-actor"); err != nil {
+		t.Fatalf("CreateIssue error: %v", err)
+	}
+
+	engine := NewEngine(newMockTracker("test"), store, "test-actor")
+
+	// A run limited to part of a store must not move the position a later
+	// whole-store run starts from.
+	if _, err := engine.Sync(ctx, SyncOptions{Push: true, KeepSyncPosition: true}); err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if got, _ := store.GetLocalMetadata(ctx, "test.last_sync"); got != "" {
+		t.Fatalf("last_sync = %q after a KeepSyncPosition run, want it untouched", got)
+	}
+
+	// An ordinary run records it.
+	if _, err := engine.Sync(ctx, SyncOptions{Push: true}); err != nil {
+		t.Fatalf("Sync() error: %v", err)
+	}
+	if got, _ := store.GetLocalMetadata(ctx, "test.last_sync"); got == "" {
+		t.Fatal("an ordinary run should record last_sync")
+	}
+}
+
 func TestEnginePushWithShouldPushCanInspectLabels(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

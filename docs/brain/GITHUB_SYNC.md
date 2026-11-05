@@ -76,6 +76,123 @@ Set it on the pairing (`pair --conflict prefer-local`) or for one run with
 `--prefer-newer`, `--prefer-local` or `--prefer-github`. One-way pairings have no
 conflicts: the source always wins.
 
+## Syncing one project's items
+
+A store holds far more than one project's work, and much of it must never leave
+the machine (clients, money, machines, accounts). A repository, on the other
+hand, belongs to one project. `--project` joins the two: it sends **only the
+items that belong to one project record**, to **the repository that record
+names**, **one way, brain to GitHub**.
+
+```text
+brain github sync --project project-73bi.1 --dry-run     # the full list, changes nothing
+brain github sync --project project-73bi.1               # publish it
+```
+
+Project records live in the `projects` store. Give the id of the record
+(`projects list` shows the tree). The records are read from the shared
+database, so a record in `projects` scopes a sync of any other store; run the
+command through the store whose items you want sent (`brain`, `task`, `fleet`, ...).
+
+### Which items belong to a project
+
+An item belongs to the project when **either** of these is true, and nothing
+else counts:
+
+1. **It sits under the record** in the parent-child hierarchy, at any depth
+   (a child task, a grandchild), in any store.
+2. **It carries a label that names the project:** `project:<record id>` (for
+   example `project:project-7u7w`), the same label for any record beneath the
+   project, or a label the record opts in with its metadata key
+   `project_labels` (for example `"project:brain"`).
+
+The record itself is the scope, not an item, and is never sent. A title that
+mentions the project, a similar-looking label (`project:project-12` is not
+`project:project-1`) or a store that merely shares a name with the project do
+not count. Ephemeral items and system-internal types (`message`, `molecule`,
+`gate`, `event`) never go to GitHub, scope or no scope.
+
+Labels in the form `project:<slug>` (`project:brain`, `project:firstmate`) are
+already used across the stores, but a slug does not say which project record it
+means, so brain does not guess. Opt in on the record:
+
+```text
+projects update project-73bi.1 --set-metadata project_labels=project:brain
+```
+
+or for one run: `brain github sync --project project-73bi.1 --project-label project:brain --dry-run`
+(repeatable; `brain` is read as `project:brain`).
+
+### Which repository
+
+The repository comes from the **project record**, never from the store's
+pairing and never from a guess. brain looks in this order and takes the first
+place that names a GitHub repository:
+
+1. metadata `repo` (or `github_repo`), as `owner/name` or a `github.com` URL
+2. a label `repo:owner/name`
+3. the record's `external_ref`, when it is a `github.com` URL
+4. an `origin github.com/owner/name` line in the description (the form the
+   repository scan writes)
+
+A value that is not a GitHub repository (a local path such as
+`/Users/me/code/brain`, a bare name, an ssh remote) is skipped and reported,
+not guessed at. Two different repositories in the same place is an error. A
+record that names none is an error that says how to add one:
+
+```text
+projects update project-73bi.1 --set-metadata repo=trillium/brain
+```
+
+`--repo owner/name` may stand in for a missing or different repository on a
+`--dry-run` only, so a preview can name a repository the record does not name
+yet. A real run goes only where the record says.
+
+### What a project run does and does not do
+
+- **Always one way.** It pushes; it never pulls. `--pull-only`,
+  `--direction two-way` and the conflict flags are refused.
+- **Leaves the rest of the store alone.** Nothing outside the project is read
+  into the plan, linked or published, and the store's recorded sync position
+  is not moved, so a later whole-store sync starts where it would have.
+- **Refuses a public repository until you say so.** The plan prints whether
+  the repository is public or private. A real run into a public repository
+  stops with the item count unless `--allow-public` is given (a dry run never
+  needs it); if brain cannot tell, it stops too. The dry run is the place to
+  read the list before anything is published.
+- **Will not publish into a repository other than the store's pairing.** If
+  the store is paired with a different repository, the project run is a
+  `--dry-run` only (`github unpair` first), so one store's items do not end up
+  linked into two repositories.
+- Everything else is as for any push: items and issues are linked by URL and
+  by a hidden marker, so running it again creates no second copy.
+
+### Reading the project plan
+
+```text
+$ brain github sync --project project-w1d --dry-run
+Project scope: project-w1d  Widgets
+  repository: acme/widgets (from metadata repo), private
+  one way, brain to GitHub; an item belongs when it is under the record or carries one of: project:project-w1d
+  2 of 3250 in this store belong to the project:
+    task-a1b  [open]  Add the flange  (under project-w1d)
+    task-c2d  [open]  Document the flange  (label project:project-w1d)
+
+Dry run mode - no changes will be made
+
+  [dry-run] Would create in GitHub: Add the flange
+  [dry-run] Would create in GitHub: Document the flange
+
+Plan (dry run, nothing changed): brain <-> acme/widgets (brain-to-github)
+  GitHub would: create 2, update 0, link 0 existing
+  brain  would: create 0, update 0
+  project project-w1d: 2 in scope, the rest of the store (3248) is left alone
+  unchanged 0, errors 0
+```
+
+`--json` carries the same list under `project.items`, with the reason for each,
+plus `project.repo`, `project.repo_source` and `project.visibility`.
+
 ## What is carried, and what is not
 
 Carried both ways: **title, description, open/closed state, priority, type,

@@ -137,3 +137,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0043](0043-finish-line-groups.md) | finish-line groups track a push with non-blocking edges and close themselves | proposed |
 | [0044](0044-exfil-render-comments.md) | the markdown mirror includes each bead's comment trail | proposed |
 | [0045](0045-github-sync-pairings.md) | pair a store with a github repository and choose the sync direction | proposed |
+| [0046](0046-github-sync-project-scope.md) | scope a github sync to one project's items and send them to that project's repository | proposed |

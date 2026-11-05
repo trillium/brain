@@ -8057,6 +8057,13 @@ policy can be recorded on the pairing with 'github pair --conflict'.
 Use --dry-run first: it prints what each side would create, update or link,
 with counts, and changes nothing.
 
+With --project &lt;project-id&gt; the run is limited to the items that belong to one
+project record (kept in the projects store) and goes one way, brain to GitHub,
+into the repository that record names. An item belongs when it is under the
+record or carries the label project:&lt;id&gt;; nothing else is sent. The plan lists
+every item with the reason it is included. A real run into a public repository
+needs --allow-public.
+
 With --watch the command stays running and syncs every --interval.
 
 ```
@@ -8066,18 +8073,21 @@ bd github sync [flags]
 **Flags:**
 
 ```
-      --direction string    Direction for this run only when the store has no recorded pairing (two-way, brain-to-github, github-to-brain)
-      --dry-run             Show what would be synced without making changes
-      --interval duration   Time between syncs with --watch (minimum 30s) (default 5m0s)
-      --issues string       Comma-separated bead IDs to sync selectively (e.g., bd-abc,bd-def). Mutually exclusive with --parent.
-      --parent string       Limit push to this bead and its descendants (push only). Mutually exclusive with --issues.
-      --prefer-github       On conflict, use GitHub version
-      --prefer-local        On conflict, keep local beads version
-      --prefer-newer        On conflict, use most recent version (default)
-      --pull-only           Only pull GitHub issues into brain
-      --push-only           Only push brain items to GitHub
-      --repo string         Run against this owner/repo for this run only, without saving a pairing
-      --watch               Keep running and sync every --interval (off by default; see 'github schedule' for a background job)
+      --allow-public            With --project: allow a real run to publish into a public repository (a dry run never needs it)
+      --direction string        Direction for this run only when the store has no recorded pairing (two-way, brain-to-github, github-to-brain)
+      --dry-run                 Show what would be synced without making changes
+      --interval duration       Time between syncs with --watch (minimum 30s) (default 5m0s)
+      --issues string           Comma-separated bead IDs to sync selectively (e.g., bd-abc,bd-def). Mutually exclusive with --parent.
+      --parent string           Limit push to this bead and its descendants (push only). Mutually exclusive with --issues.
+      --prefer-github           On conflict, use GitHub version
+      --prefer-local            On conflict, keep local beads version
+      --prefer-newer            On conflict, use most recent version (default)
+      --project string          Sync only the items that belong to this project record (for example project-73bi.1), one way, brain to GitHub, into the repository the record names
+      --project-label strings   With --project: also count items carrying this label (for example project:brain) as the project's; repeatable
+      --pull-only               Only pull GitHub issues into brain
+      --push-only               Only push brain items to GitHub
+      --repo string             Run against this owner/repo for this run only, without saving a pairing
+      --watch                   Keep running and sync every --interval (off by default; see 'github schedule' for a background job)
 ```
 
 #### bd github unpair
