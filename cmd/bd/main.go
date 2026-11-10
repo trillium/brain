@@ -706,6 +706,9 @@ var rootCmd = &cobra.Command{
 		// Reset the change-event changed-id accumulator so ids never leak across
 		// commands sharing a process (robots-bnn).
 		resetChangedIDs()
+		// Only write verbs may wait out a transient store-connection failure.
+		writeRetryActive.Store(isWriteVerb(cmd, args))
+		dolt.SetBreakerRejectRetry(breakerRejectRetryPolicy)
 		commandMayEmptyJSONLExport.Store(false)
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false
