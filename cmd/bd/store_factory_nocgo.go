@@ -37,7 +37,7 @@ func newDoltStore(ctx context.Context, cfg *dolt.Config) (storage.DoltStorage, e
 	if !cfg.ServerMode {
 		return nil, fmt.Errorf("%s", nocgoEmbeddedErrMsg)
 	}
-	st, err := dolt.New(ctx, cfg)
+	st, err := retryWriteOpenUnlessReadOnly(ctx, cfg.ReadOnly, func() (*dolt.DoltStore, error) { return dolt.New(ctx, cfg) })
 	if err != nil {
 		return nil, annotateStoreConnectError(err, cfg.BeadsDir)
 	}
@@ -62,7 +62,7 @@ func newDoltStoreFromConfig(ctx context.Context, beadsDir string) (storage.DoltS
 		// 	})
 	}
 	if err == nil && cfg != nil && cfg.IsDoltServerMode() {
-		st, err := dolt.NewFromConfig(ctx, beadsDir)
+		st, err := retryWriteOpen(ctx, func() (*dolt.DoltStore, error) { return dolt.NewFromConfig(ctx, beadsDir) })
 		if err != nil {
 			return nil, annotateStoreConnectError(err, beadsDir)
 		}
