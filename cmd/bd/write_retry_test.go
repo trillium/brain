@@ -188,10 +188,31 @@ func TestIsWriteVerb(t *testing.T) {
 	comments := add(root, "comments")
 	commentsAdd := add(comments, "add")
 
-	for cmd, want := range map[*cobra.Command]bool{
+	cases := map[*cobra.Command]bool{
 		root: false, comment: true, closeCmd: true, list: false, show: false,
 		label: false, labelAdd: true, labelList: false, comments: false, commentsAdd: true,
+	}
+	for _, use := range []string{"edit", "rename", "rename-prefix", "batch", "restore", "reopen", "defer", "undefer", "set-state"} {
+		cases[add(root, use)] = true
+	}
+	for _, use := range []string{"ready", "state", "search", "count"} {
+		cases[add(root, use)] = false
+	}
+	for group, subs := range map[string]map[string]bool{
+		"epic":  {"close-eligible": true, "status": false},
+		"gate":  {"create": true, "resolve": true, "check": true, "list": false, "show": false},
+		"mol":   {"bond": true, "burn": true, "squash": true, "pour": true, "show": false, "stale": false},
+		"swarm": {"create": true, "status": false, "validate": false},
+		"todo":  {"add": true, "done": true, "list": false},
 	} {
+		g := add(root, group)
+		cases[g] = false
+		for use, want := range subs {
+			cases[add(g, use)] = want
+		}
+	}
+
+	for cmd, want := range cases {
 		if got := isWriteVerb(cmd); got != want {
 			t.Errorf("isWriteVerb(%q) = %v, want %v", cmd.CommandPath(), got, want)
 		}

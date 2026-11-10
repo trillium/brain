@@ -83,15 +83,24 @@ var writeVerbTop = map[string]bool{
 	"comment": true, "note": true, "patch": true, "link": true, "delete": true,
 	"tag": true, "priority": true, "assign": true, "defer": true, "undefer": true,
 	"supersede": true, "duplicate": true, "set-state": true, "promote": true,
+	"edit": true, "rename": true, "rename-prefix": true, "batch": true,
+	"restore": true, "create-form": true, "remember": true, "forget": true,
+	"ship": true, "purge": true, "prune": true, "recompute-blocked": true,
 }
 
 // writeVerbSub lists the mutating subcommands of command groups whose other
 // subcommands (list, show, ...) only read.
 var writeVerbSub = map[string]map[string]bool{
-	"label":    {"add": true, "remove": true, "propagate": true},
-	"dep":      {"add": true, "remove": true},
-	"comments": {"add": true},
-	"kv":       {"set": true, "clear": true},
+	"label":      {"add": true, "remove": true, "propagate": true},
+	"dep":        {"add": true, "remove": true},
+	"comments":   {"add": true},
+	"kv":         {"set": true, "clear": true},
+	"todo":       {"add": true, "done": true},
+	"epic":       {"close-eligible": true},
+	"gate":       {"add-waiter": true, "create": true, "resolve": true, "check": true},
+	"swarm":      {"create": true},
+	"merge-slot": {"create": true, "acquire": true, "release": true},
+	"mol":        {"bond": true, "burn": true, "squash": true, "pour": true},
 }
 
 // isWriteVerb reports whether cmd is a command whose store open may be retried.
