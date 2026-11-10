@@ -707,7 +707,7 @@ var rootCmd = &cobra.Command{
 		// commands sharing a process (robots-bnn).
 		resetChangedIDs()
 		// Only write verbs may wait out a transient store-connection failure.
-		writeRetryActive.Store(isWriteVerb(cmd))
+		writeRetryActive.Store(isWriteVerb(cmd, args))
 		dolt.SetBreakerRejectRetry(breakerRejectRetryPolicy)
 		commandMayEmptyJSONLExport.Store(false)
 		commandDidExplicitDoltCommit = false

@@ -223,7 +223,14 @@ func TestIsWriteVerb(t *testing.T) {
 	cases[wisp] = false
 	cases[add(wisp, "create")] = true
 	cases[add(wisp, "gc")] = true
-	cases[add(wisp, "list")] = false
+	wispList := add(wisp, "list")
+	cases[wispList] = false
+	if !isWriteVerb(wisp, []string{"beads-release"}) {
+		t.Error("bare mol wisp with a proto-id must be a write verb")
+	}
+	if isWriteVerb(wispList, []string{"extra"}) {
+		t.Error("mol wisp list must stay read-only even with args")
+	}
 
 	restoreRead := add(root, "restore")
 	restoreRead.Flags().Bool("apply", false, "")
@@ -237,11 +244,11 @@ func TestIsWriteVerb(t *testing.T) {
 	cases[restoreApply] = true
 
 	for cmd, want := range cases {
-		if got := isWriteVerb(cmd); got != want {
+		if got := isWriteVerb(cmd, nil); got != want {
 			t.Errorf("isWriteVerb(%q) = %v, want %v", cmd.CommandPath(), got, want)
 		}
 	}
-	if isWriteVerb(nil) {
+	if isWriteVerb(nil, nil) {
 		t.Error("nil command must not be a write verb")
 	}
 }

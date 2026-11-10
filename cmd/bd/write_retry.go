@@ -103,9 +103,10 @@ var writeVerbPaths = map[string]bool{
 	"mol wisp create": true, "mol wisp gc": true,
 }
 
-// isWriteVerb reports whether cmd is a command whose store open may be retried.
-// The root command name is skipped, so BD_NAME renames do not matter.
-func isWriteVerb(cmd *cobra.Command) bool {
+// isWriteVerb reports whether cmd, run with the positional args, is a command
+// whose store open may be retried. The root command name is skipped, so
+// BD_NAME renames do not matter.
+func isWriteVerb(cmd *cobra.Command, args []string) bool {
 	if cmd == nil {
 		return false
 	}
@@ -117,6 +118,9 @@ func isWriteVerb(cmd *cobra.Command) bool {
 	if len(words) == 1 && words[0] == "restore" {
 		apply, _ := cmd.Flags().GetBool("apply")
 		return apply
+	}
+	if len(words) == 2 && words[0] == "mol" && words[1] == "wisp" {
+		return len(args) > 0
 	}
 	for i := 1; i <= len(words); i++ {
 		if writeVerbPaths[strings.Join(words[:i], " ")] {
