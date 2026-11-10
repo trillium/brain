@@ -477,6 +477,16 @@ func DefaultConfig(beadsDir string) *Config {
 			return cfg
 		}
 	}
+	if p := os.Getenv("BEADS_DOLT_PORT"); p != "" {
+		if port, err := strconv.Atoi(p); err == nil && port > 0 {
+			cfg.Port = port
+			return cfg
+		}
+	}
+	if _, port, ok := configfile.StoreHostFromFile(); ok {
+		cfg.Port = port
+		return cfg
+	}
 
 	// Check the port file (gitignored, local-only) — this is the primary
 	// persistent source. Start() writes the actual listening port here.

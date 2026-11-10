@@ -269,3 +269,12 @@ func TestCredentialSectionsListsNamesOnly(t *testing.T) {
 		t.Fatalf("CredentialsFilePath ignores BEADS_CREDENTIALS_FILE")
 	}
 }
+
+func TestCredentialsFilePathUsesStoreHostRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "credentials")
+	writeStoreHost(t, StoreHostKeyHost+"=10.1.2.3\n"+StoreHostKeyPort+"=3307\n"+StoreHostKeyCredentialsFile+"="+path+"\n")
+	t.Setenv("BEADS_CREDENTIALS_FILE", "")
+	if got := CredentialsFilePath(); got != path {
+		t.Fatalf("CredentialsFilePath = %q, want record path %q", got, path)
+	}
+}

@@ -664,6 +664,7 @@ func TestLoadStoresRegistry_CorruptIsFatal(t *testing.T) {
 
 func TestSharedServerDSN(t *testing.T) {
 	t.Setenv("BEADS_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv(configfile.StoreHostFileEnvVar, filepath.Join(t.TempDir(), "no-store-host"))
 
 	t.Run("no login configured keeps passwordless root", func(t *testing.T) {
 		t.Setenv("BEADS_DOLT_SERVER_USER", "")
@@ -687,6 +688,23 @@ func TestSharedServerDSN(t *testing.T) {
 		}
 		if cfg.User != "brain_app" || cfg.Passwd != envPW || cfg.DBName != "" {
 			t.Fatalf("got user=%q pass=%q db=%q", cfg.User, cfg.Passwd, cfg.DBName)
+		}
+	})
+
+	t.Run("record user", func(t *testing.T) {
+		record := filepath.Join(t.TempDir(), "store-host.env")
+		if err := os.WriteFile(record, []byte("BEADS_DOLT_SERVER_HOST=100.84.99.99\nBEADS_DOLT_SERVER_PORT=3307\nBEADS_DOLT_SERVER_USER=brain\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(configfile.StoreHostFileEnvVar, record)
+		t.Setenv("BEADS_DOLT_SERVER_USER", "")
+		t.Setenv("BEADS_DOLT_PASSWORD", "")
+		cfg, err := mysql.ParseDSN(sharedServerDSN("100.84.99.99", 3307, ""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cfg.User != "brain" {
+			t.Fatalf("user = %q, want record user brain", cfg.User)
 		}
 	})
 

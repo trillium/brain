@@ -949,7 +949,7 @@ func provisionServerStore(ctx context.Context, name, beadsDir, host string, port
 // section of the beads credentials file. database may be empty.
 func sharedServerDSN(host string, port int, database string) string {
 	cfg := mysql.NewConfig()
-	cfg.User = os.Getenv("BEADS_DOLT_SERVER_USER")
+	cfg.User = configfile.ResolveCredentialsRef().User
 	if cfg.User == "" {
 		cfg.User = configfile.DefaultDoltServerUser
 	}

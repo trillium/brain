@@ -1,0 +1,26 @@
+$ brain stores host set --host 10.1.2.3 --port 3307 --user brain --credentials ~/.config/brain/dolt.pw
+wrote /var/folders/8k/0ll7yqm179v19qqg3qmgcq3m0000gn/T/tmp.ZNACv51wLP/store-host.env
+  BEADS_DOLT_SERVER_HOST=10.1.2.3
+  BEADS_DOLT_SERVER_PORT=3307
+  BEADS_DOLT_SERVER_USER=brain
+  BEADS_CREDENTIALS_FILE=/var/folders/8k/0ll7yqm179v19qqg3qmgcq3m0000gn/T/tmp.ZNACv51wLP/dolt.pw
+Converge this machine's wrappers: brain stores rewrite-wrappers
+
+$ brain stores host
+store host record: /var/folders/8k/0ll7yqm179v19qqg3qmgcq3m0000gn/T/tmp.ZNACv51wLP/store-host.env
+  host: 10.1.2.3
+  port: 3307
+  source: file
+  server: timeout
+  user: brain (record)
+  credentials: /var/folders/8k/0ll7yqm179v19qqg3qmgcq3m0000gn/T/tmp.ZNACv51wLP/dolt.pw (MISSING)
+  fix: brain stores host set --host <live host> --port <live port>  # record says 10.1.2.3:3307 and it timeout
+
+$ cat store-host.env  # a reference, never a secret
+# brain federation store host — one record per machine, read at run time.
+# Managed by 'brain stores host set'. No secrets: the password lives in the
+# file BEADS_CREDENTIALS_FILE names, or in the environment.
+BEADS_DOLT_SERVER_HOST=10.1.2.3
+BEADS_DOLT_SERVER_PORT=3307
+BEADS_DOLT_SERVER_USER=brain
+BEADS_CREDENTIALS_FILE=~/dolt.pw

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -207,11 +208,26 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	hostFindings := localHostFindings(home, shView, hostFacts, results)
 	tally.warn += len(hostFindings)
 
+	// The registry-vs-wrapper census: two lists that must describe the same
+	// federation. A read probe cannot see either half of it — a registered
+	// store whose wrapper is missing, and a generated wrapper whose store is
+	// not registered — so the counts are checked explicitly.
+	census := censusWrappersAgainstRegistry(stores)
+	censusWarns, orphanWrappers := censusTally(census)
+	tally.warn += censusWarns
+	if len(orphanWrappers) > 0 {
+		tally.fail += len(orphanWrappers)
+		tally.failed = append(tally.failed, orphanWrappers...)
+		sort.Strings(tally.failed)
+	}
+
 	if storesDoctorJSON {
 		summary := map[string]interface{}{
 			"stores":        results,
 			"binary":        binCheck,
 			"host_findings": hostFindings,
+			"wrappers":      census,
+			"client_of":     remoteClientHost(),
 			"ok":            tally.ok + tally.info,
 			"answered":      tally.answered,
 			"warnings":      tally.warn,
@@ -245,6 +261,15 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 			}
 		}
 		printHostFindings(os.Stderr, hostFindings)
+		if note := localInspectionNote(); note != "" {
+			fmt.Fprintln(os.Stderr, note)
+		}
+		fmt.Fprintln(os.Stderr, census.summary())
+		// An orphan wrapper is never deleted by any verb, so its fix line is an
+		// instruction for the operator.
+		for _, f := range census.fixes() {
+			fmt.Fprintf(os.Stderr, "  fix: %s\n", f)
+		}
 		fmt.Fprintf(os.Stderr, "\nFederation: %d/%d stores answered a read (%d failed, %d warnings, %d informational) in %.1fs\n",
 			tally.answered, len(results), tally.fail, tally.warn, tally.info, elapsed.Seconds())
 		if tally.fail > 0 {
@@ -505,4 +530,24 @@ func init() {
 		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
 
 	brainStoresCmd.AddCommand(brainStoresDoctorCmd)
+
+	// 'brain doctor' is the store-connection probe under the name the captain's
+	// ask (task-lt59w) uses: the same run function and the same per-store
+	// flags; the fleet audit stays on 'brain stores doctor --fleet'.
+	brainDoctorCmd := &cobra.Command{
+		Use:   "doctor",
+		Short: "Check every store answers a read and every wrapper reads the one store-host record (alias of 'brain stores doctor')",
+		Long:  brainStoresDoctorCmd.Long,
+		Args:  cobra.NoArgs,
+		Run:   runBrainStoresDoctor,
+	}
+	brainDoctorCmd.Flags().BoolVar(&storesDoctorJSON, "json", false,
+		"Emit a structured JSON object instead of per-store text lines")
+	brainDoctorCmd.Flags().IntVar(&storesDoctorJobs, "jobs", 8,
+		"Probe this many stores concurrently")
+	brainDoctorCmd.Flags().DurationVar(&storesDoctorTimeout, "timeout", defaultStoreProbeTimeout,
+		"Per-store read timeout")
+	brainDoctorCmd.Flags().BoolVar(&storesDoctorStrict, "strict", false,
+		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
+	brainCmd.AddCommand(brainDoctorCmd)
 }

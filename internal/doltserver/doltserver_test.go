@@ -999,6 +999,28 @@ func TestDefaultConfigEnvVarOverridesEphemeral(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigUsesStoreHostBeforePortFile(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(t.TempDir(), "store-host.env")
+	if err := os.WriteFile(record, []byte("BEADS_DOLT_SERVER_HOST=remote\nBEADS_DOLT_SERVER_PORT=3311\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePortFile(dir, 3307); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(configfile.StoreHostFileEnvVar, record)
+	t.Setenv("BEADS_DOLT_SERVER_PORT", "")
+	t.Setenv("BEADS_DOLT_PORT", "")
+	t.Setenv("BEADS_DOLT_SHARED_SERVER", "")
+	if got := DefaultConfig(dir).Port; got != 3311 {
+		t.Fatalf("DefaultConfig port = %d, want record port 3311", got)
+	}
+	t.Setenv("BEADS_DOLT_PORT", "4406")
+	if got := DefaultConfig(dir).Port; got != 4406 {
+		t.Fatalf("DefaultConfig port = %d, want legacy environment port 4406", got)
+	}
+}
+
 func TestDefaultConfigPortFileTakesPrecedence(t *testing.T) {
 	// Port file (written by Start) should take precedence over ephemeral.
 	t.Setenv("GT_ROOT", "")

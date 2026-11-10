@@ -18,6 +18,35 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
+func TestRuntimeDoltServerPortUsesStoreHostRecord(t *testing.T) {
+	beadsDir := t.TempDir()
+	record := filepath.Join(t.TempDir(), "store-host.env")
+	if err := os.WriteFile(record, []byte("BEADS_DOLT_SERVER_HOST=remote\nBEADS_DOLT_SERVER_PORT=3311\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(configfile.StoreHostFileEnvVar, record)
+	t.Setenv(configfile.StoreHostKeyPort, "")
+	if got := runtimeDoltServerPort(beadsDir); got != 3311 {
+		t.Fatalf("runtimeDoltServerPort = %d, want record port 3311", got)
+	}
+	t.Setenv(configfile.StoreHostKeyPort, "3399")
+	if got := runtimeDoltServerPort(beadsDir); got != 3399 {
+		t.Fatalf("runtimeDoltServerPort = %d, want explicit environment port 3399", got)
+	}
+	t.Setenv(configfile.StoreHostKeyPort, "")
+	t.Setenv("BEADS_DOLT_PORT", "4406")
+	if got := runtimeDoltServerPort(beadsDir); got != 4406 {
+		t.Fatalf("runtimeDoltServerPort = %d, want legacy environment port 4406", got)
+	}
+	t.Setenv("BEADS_DOLT_PORT", "")
+	if got := serverClonePort(beadsDir); got != 3311 {
+		t.Fatalf("serverClonePort = %d, want record port 3311", got)
+	}
+	if got := bootstrapServerPort(beadsDir, configfile.DefaultConfig(), false); got != 3311 {
+		t.Fatalf("bootstrapServerPort = %d, want record port 3311", got)
+	}
+}
+
 // bd-206: Test updating open issue to closed preserves closed_at
 func TestImportOpenToClosedTransition(t *testing.T) {
 	tmpDir := t.TempDir()
