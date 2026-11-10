@@ -226,3 +226,46 @@ func TestRetryWriteOpenFollowsActiveFlag(t *testing.T) {
 		t.Errorf("read-only config retried: calls=%d err=%v", calls, err)
 	}
 }
+
+func TestBreakerRejectRetryPolicy(t *testing.T) {
+	waits, notices := stubRetryEnv(t)
+	defer writeRetryActive.Store(false)
+
+	// Read verb: never waits.
+	writeRetryActive.Store(false)
+	if breakerRejectRetryPolicy(context.Background(), 1, dolt.ErrCircuitOpen) {
+		t.Fatal("a read command retried a breaker rejection")
+	}
+
+	// Write verb: waits 1s, 3s, 9s for attempts 1..3, then gives up.
+	writeRetryActive.Store(true)
+	t.Setenv(envWriteRetrySchedule, "")
+	for attempt := 1; attempt <= 3; attempt++ {
+		if !breakerRejectRetryPolicy(context.Background(), attempt, dolt.ErrCircuitOpen) {
+			t.Fatalf("attempt %d: want retry", attempt)
+		}
+	}
+	if breakerRejectRetryPolicy(context.Background(), 4, dolt.ErrCircuitOpen) {
+		t.Fatal("attempt 4: retried past the schedule")
+	}
+	if want := []time.Duration{time.Second, 3 * time.Second, 9 * time.Second}; fmt.Sprint(*waits) != fmt.Sprint(want) {
+		t.Fatalf("waits = %v, want %v", *waits, want)
+	}
+	if len(*notices) != 3 || !strings.Contains((*notices)[2], "retry 3/3 in 9s") {
+		t.Fatalf("notices = %q", *notices)
+	}
+
+	// The override applies here too, and "off" disables it.
+	t.Setenv(envWriteRetrySchedule, "off")
+	if breakerRejectRetryPolicy(context.Background(), 1, dolt.ErrCircuitOpen) {
+		t.Fatal("schedule off still retried")
+	}
+
+	// A cancelled context stops the wait.
+	t.Setenv(envWriteRetrySchedule, "1s")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if breakerRejectRetryPolicy(ctx, 1, dolt.ErrCircuitOpen) {
+		t.Fatal("retried on a cancelled context")
+	}
+}

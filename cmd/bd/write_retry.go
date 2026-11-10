@@ -1,6 +1,7 @@
 package main
 
-// Retry for the store connection of write commands.
+// Retry for the store connection of write commands, and for write statements
+// the circuit breaker rejects.
 //
 // Background (robots-8e8dk): during a long run of sequential write calls
 // (comment, label, close) the Dolt sql-server stopped answering for about 40s.
@@ -18,10 +19,13 @@ package main
 //     server, or the circuit breaker being open. Login refusals, unknown hosts,
 //     schema errors and every other open error are logical or configuration
 //     failures and fail on the first attempt, as before.
-//   - Nothing after the store is open is retried here. A write that already
-//     reached the server and then lost the connection may have committed, so
-//     replaying it could apply it twice; the store's own retry layer already
-//     decides that case (it refuses to replay an ambiguous commit).
+//   - After the store is open, the one thing retried is a write statement the
+//     circuit breaker rejected before running it (dolt.SetBreakerRejectRetry,
+//     breakerRejectRetryPolicy): nothing was sent, so a replay cannot
+//     double-apply. A write that already reached the server and then lost the
+//     connection may have committed, so it is never replayed here; the
+//     store's own retry layer decides that case (it refuses to replay an
+//     ambiguous commit).
 //   - The circuit breaker is left alone. Each attempt asks it again, so a wait
 //     only ever lets its own cooldown (5s) elapse and its active probe run.
 //
@@ -184,17 +188,38 @@ func retryTransient[T any](ctx context.Context, enabled bool, schedule []time.Du
 		return val, err
 	}
 	for i := 0; err != nil && transient(err) && i < len(schedule); i++ {
-		if ctx.Err() != nil {
-			break
-		}
-		writeRetryLog(fmt.Sprintf("bd: store unavailable (%s); retry %d/%d in %s",
-			retryFirstLine(err.Error()), i+1, len(schedule), schedule[i]))
-		if sleepErr := writeRetrySleep(ctx, schedule[i]); sleepErr != nil {
+		if !waitBeforeWriteRetry(ctx, i, schedule, err) {
 			break
 		}
 		val, err = open()
 	}
 	return val, err
+}
+
+// waitBeforeWriteRetry prints the stderr notice for retry i+1 and waits its
+// scheduled time. It returns false when the wait was cut short by cancellation.
+func waitBeforeWriteRetry(ctx context.Context, i int, schedule []time.Duration, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	writeRetryLog(fmt.Sprintf("bd: store unavailable (%s); retry %d/%d in %s",
+		retryFirstLine(err.Error()), i+1, len(schedule), schedule[i]))
+	return writeRetrySleep(ctx, schedule[i]) == nil
+}
+
+// breakerRejectRetryPolicy is installed into the store: when the circuit
+// breaker rejects a write statement before anything was sent, a write verb
+// waits out the same schedule and replays it. attempt counts the rejections
+// of that one statement.
+func breakerRejectRetryPolicy(ctx context.Context, attempt int, err error) bool {
+	if !writeRetryActive.Load() {
+		return false
+	}
+	schedule := writeRetrySchedule()
+	if attempt < 1 || attempt > len(schedule) {
+		return false
+	}
+	return waitBeforeWriteRetry(ctx, attempt-1, schedule, err)
 }
 
 func retryFirstLine(s string) string {

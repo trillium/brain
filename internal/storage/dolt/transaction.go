@@ -53,7 +53,7 @@ func (t *doltTransaction) CreateIssueImport(ctx context.Context, issue *types.Is
 // making the write atomically visible in Dolt's version history.
 // Wisp routing is handled within individual transaction methods based on ID/Ephemeral flag.
 func (s *DoltStore) RunInTransaction(ctx context.Context, commitMsg string, fn func(tx storage.Transaction) error) error {
-	return s.withRetry(ctx, func() error {
+	return s.withWriteRetry(ctx, func() error {
 		return s.runDoltTransaction(ctx, commitMsg, fn)
 	})
 }

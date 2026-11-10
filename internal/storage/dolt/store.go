@@ -454,15 +454,62 @@ func lockProcessHint() string {
 // If a circuit breaker is configured, it checks the breaker before each attempt
 // and records connection failures/successes to coordinate fail-fast across processes.
 func (s *DoltStore) withRetry(ctx context.Context, op func() error) error {
+	_, err := s.withRetryChecked(ctx, op)
+	return err
+}
+
+// BreakerRejectRetryFunc decides whether a write that the circuit breaker
+// rejected should be tried again. attempt counts rejections of this one
+// statement, starting at 1. It waits as it sees fit and returns true to retry,
+// or false to give up and return err unchanged.
+type BreakerRejectRetryFunc func(ctx context.Context, attempt int, err error) bool
+
+var breakerRejectRetry atomic.Pointer[BreakerRejectRetryFunc]
+
+// SetBreakerRejectRetry installs the policy withWriteRetry consults when the
+// breaker rejects a write statement. Pass nil to remove it (the default:
+// a rejection fails immediately).
+func SetBreakerRejectRetry(fn BreakerRejectRetryFunc) {
+	if fn == nil {
+		breakerRejectRetry.Store(nil)
+		return
+	}
+	breakerRejectRetry.Store(&fn)
+}
+
+// withWriteRetry is withRetry for write statements. When the circuit breaker
+// rejects the statement before op ever runs, nothing was sent to the server,
+// so the statement can be offered to the installed BreakerRejectRetryFunc and
+// replayed without any risk of applying it twice. Every failure that happens
+// once op has started (including the one that trips the breaker) is returned
+// as before: a write that may have reached the server is never replayed here.
+// The breaker is not bypassed: each replay goes through its Allow check again.
+func (s *DoltStore) withWriteRetry(ctx context.Context, op func() error) error {
+	for attempt := 1; ; attempt++ {
+		rejected, err := s.withRetryChecked(ctx, op)
+		if !rejected {
+			return err
+		}
+		fn := breakerRejectRetry.Load()
+		if fn == nil || !(*fn)(ctx, attempt, err) {
+			return err
+		}
+	}
+}
+
+// withRetryChecked is withRetry that also reports whether the circuit breaker
+// rejected the call before op was run (rejected is then true, err is
+// ErrCircuitOpen, and no statement was sent).
+func (s *DoltStore) withRetryChecked(ctx context.Context, op func() error) (rejected bool, err error) {
 	// Circuit breaker: fail-fast if the server is known to be down.
 	if s.breaker != nil && !s.breaker.Allow() {
 		doltMetrics.circuitRejected.Add(ctx, 1)
-		return ErrCircuitOpen
+		return true, ErrCircuitOpen
 	}
 
 	attempts := 0
 	bo := newServerRetryBackoff()
-	err := backoff.Retry(func() error {
+	err = backoff.Retry(func() error {
 		attempts++
 		err := op()
 		if err != nil && isRetryableError(err) {
@@ -489,7 +536,7 @@ func (s *DoltStore) withRetry(ctx context.Context, op func() error) error {
 	if attempts > 1 {
 		doltMetrics.retryCount.Add(ctx, int64(attempts-1))
 	}
-	return err
+	return false, err
 }
 
 // doltTracer is the OTel tracer for SQL-level spans.
@@ -720,7 +767,7 @@ func (s *DoltStore) execContext(ctx context.Context, query string, args ...any) 
 		)...),
 	)
 	var result sql.Result
-	err := s.withRetry(ctx, func() error {
+	err := s.withWriteRetry(ctx, func() error {
 		tx, txErr := s.db.BeginTx(ctx, nil)
 		if txErr != nil {
 			return txErr

@@ -708,6 +708,7 @@ var rootCmd = &cobra.Command{
 		resetChangedIDs()
 		// Only write verbs may wait out a transient store-connection failure.
 		writeRetryActive.Store(isWriteVerb(cmd))
+		dolt.SetBreakerRejectRetry(breakerRejectRetryPolicy)
 		commandMayEmptyJSONLExport.Store(false)
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false
