@@ -192,7 +192,7 @@ func TestIsWriteVerb(t *testing.T) {
 		root: false, comment: true, closeCmd: true, list: false, show: false,
 		label: false, labelAdd: true, labelList: false, comments: false, commentsAdd: true,
 	}
-	for _, use := range []string{"edit", "rename", "rename-prefix", "batch", "restore", "reopen", "defer", "undefer", "set-state"} {
+	for _, use := range []string{"edit", "rename", "rename-prefix", "batch", "import", "reopen", "defer", "undefer", "set-state"} {
 		cases[add(root, use)] = true
 	}
 	for _, use := range []string{"ready", "state", "search", "count"} {
@@ -204,6 +204,7 @@ func TestIsWriteVerb(t *testing.T) {
 		"mol":   {"bond": true, "burn": true, "squash": true, "pour": true, "show": false, "stale": false},
 		"swarm": {"create": true, "status": false, "validate": false},
 		"todo":  {"add": true, "done": true, "list": false},
+		"group": {"create": true, "add": true, "remove": true, "sync": true, "show": false},
 	} {
 		g := add(root, group)
 		cases[g] = false
@@ -211,6 +212,29 @@ func TestIsWriteVerb(t *testing.T) {
 			cases[add(g, use)] = want
 		}
 	}
+
+	var mol *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "mol" {
+			mol = c
+		}
+	}
+	wisp := add(mol, "wisp")
+	cases[wisp] = false
+	cases[add(wisp, "create")] = true
+	cases[add(wisp, "gc")] = true
+	cases[add(wisp, "list")] = false
+
+	restoreRead := add(root, "restore")
+	restoreRead.Flags().Bool("apply", false, "")
+	cases[restoreRead] = false
+	restoreRoot := &cobra.Command{Use: "bd"}
+	restoreApply := add(restoreRoot, "restore")
+	restoreApply.Flags().Bool("apply", false, "")
+	if err := restoreApply.Flags().Set("apply", "true"); err != nil {
+		t.Fatal(err)
+	}
+	cases[restoreApply] = true
 
 	for cmd, want := range cases {
 		if got := isWriteVerb(cmd); got != want {

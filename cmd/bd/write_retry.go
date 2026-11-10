@@ -77,30 +77,30 @@ var writeRetrySleep = func(ctx context.Context, d time.Duration) error {
 // writeRetryLog receives the one-line notice printed before each retry.
 var writeRetryLog = func(msg string) { fmt.Fprintln(os.Stderr, msg) }
 
-// writeVerbTop lists top-level commands that mutate the store.
-var writeVerbTop = map[string]bool{
+// writeVerbPaths lists the command paths (below the root) that mutate the
+// store. A path also covers every subcommand beneath it.
+var writeVerbPaths = map[string]bool{
 	"create": true, "q": true, "update": true, "close": true, "reopen": true,
 	"comment": true, "note": true, "patch": true, "link": true, "delete": true,
 	"tag": true, "priority": true, "assign": true, "defer": true, "undefer": true,
 	"supersede": true, "duplicate": true, "set-state": true, "promote": true,
 	"edit": true, "rename": true, "rename-prefix": true, "batch": true,
-	"restore": true, "create-form": true, "remember": true, "forget": true,
-	"ship": true, "purge": true, "prune": true, "recompute-blocked": true,
-}
+	"create-form": true, "remember": true, "forget": true, "ship": true,
+	"purge": true, "prune": true, "recompute-blocked": true, "import": true,
 
-// writeVerbSub lists the mutating subcommands of command groups whose other
-// subcommands (list, show, ...) only read.
-var writeVerbSub = map[string]map[string]bool{
-	"label":      {"add": true, "remove": true, "propagate": true},
-	"dep":        {"add": true, "remove": true},
-	"comments":   {"add": true},
-	"kv":         {"set": true, "clear": true},
-	"todo":       {"add": true, "done": true},
-	"epic":       {"close-eligible": true},
-	"gate":       {"add-waiter": true, "create": true, "resolve": true, "check": true},
-	"swarm":      {"create": true},
-	"merge-slot": {"create": true, "acquire": true, "release": true},
-	"mol":        {"bond": true, "burn": true, "squash": true, "pour": true},
+	"label add": true, "label remove": true, "label propagate": true,
+	"dep add": true, "dep remove": true,
+	"comments add": true,
+	"kv set":       true, "kv clear": true,
+	"config set": true, "config set-many": true, "config unset": true,
+	"todo add": true, "todo done": true,
+	"epic close-eligible": true,
+	"gate add-waiter":     true, "gate create": true, "gate resolve": true, "gate check": true,
+	"swarm create":      true,
+	"merge-slot create": true, "merge-slot acquire": true, "merge-slot release": true,
+	"group create": true, "group add": true, "group remove": true, "group sync": true,
+	"mol bond": true, "mol burn": true, "mol squash": true, "mol pour": true,
+	"mol wisp create": true, "mol wisp gc": true,
 }
 
 // isWriteVerb reports whether cmd is a command whose store open may be retried.
@@ -114,11 +114,14 @@ func isWriteVerb(cmd *cobra.Command) bool {
 		return false
 	}
 	words = words[1:]
-	if writeVerbTop[words[0]] {
-		return true
+	if len(words) == 1 && words[0] == "restore" {
+		apply, _ := cmd.Flags().GetBool("apply")
+		return apply
 	}
-	if subs, ok := writeVerbSub[words[0]]; ok && len(words) > 1 {
-		return subs[words[1]]
+	for i := 1; i <= len(words); i++ {
+		if writeVerbPaths[strings.Join(words[:i], " ")] {
+			return true
+		}
 	}
 	return false
 }
