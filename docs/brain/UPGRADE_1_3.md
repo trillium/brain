@@ -179,8 +179,9 @@ a client missed in step 12 fails loudly instead of writing.
      --host 127.0.0.1 --port 3307 --user root \
      --backup-dir /Users/mini0/data/brain-upgrade-0.6.0
    ```
-   Both databases must print `VERIFIED` (about 15 minutes: the sync, then a
-   comparison of each database with its backup). If a writer was still
+   Both databases must print `VERIFIED` (rehearsed: 9 min 19 s for both, with
+   a test suite running alongside; for `brain_unified` the state capture and
+   sync took 5 min and the verification 4 min). If a writer was still
    running, the backup refuses ("moved … while the backup ran"): find it, stop
    it, run again.
 9. **Rehearse (optional):** the same flags with `rehearse` migrates a copy of
@@ -277,8 +278,9 @@ dependencies.
 Where `brain_unified`'s 48 minutes go: `0062_events_dolt_ignore` (moving
 511k events off the versioned plane) 12.8 min, reading `events` for the
 aux-row-id re-key about 25 min, the re-key itself 8.6 min, everything else
-about 2 min. The rest of the window is the backup (the sync took about 8 min)
-and the comparisons (each about 2 min per database on the live data's storage).
+about 2 min. The rest of the window is the backup with its verification
+(9 min 19 s for both databases) and the post-migration verification (about
+2 minutes per database).
 
 Two things the rehearsal found and fixed before this PR:
 
