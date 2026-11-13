@@ -761,6 +761,14 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		AfterConvert: gt.AfterConvert,
 	}
 	engine.PushHooks = buildGitHubPushHooks(gt)
+	if setup.Plan.SourceWins && setup.Plan.Push {
+		// A brain-to-github mirror must notice an edit made on GitHub. The
+		// push cache only knows the local copy is unchanged since the last
+		// push, so it would skip the issue; without it every linked issue is
+		// compared with the bulk listing (BulkLookup), one request per
+		// hundred issues.
+		engine.PushHooks.ContentHash = nil
+	}
 
 	opts := tracker.SyncOptions{
 		Pull:               setup.Plan.Pull,
@@ -808,6 +816,9 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 	if err != nil {
 		return result, HandleError("%v", err)
 	}
+	if err := commitSyncBeforeLastSync(ctx, gt, result); err != nil {
+		return result, HandleError("%v", err)
+	}
 
 	sum := summarizeGitHubRun(setup, result, githubSyncDryRun)
 	if scoped != nil {
@@ -823,6 +834,31 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		_, _ = fmt.Fprintln(out, "Run without --dry-run to apply changes")
 	}
 	return result, nil
+}
+
+// commitSyncBeforeLastSync makes the links this run wrote part of the history
+// the next run reads. The next pull decides whether an item was linked since
+// the last sync from external_ref as of last_sync in Dolt history (upstream's
+// pre-linked hydrate), and an item it thinks was linked since may be
+// overwritten from GitHub. In embedded mode the run's writes are committed
+// only when the command ends, after the render and the outbox, which can be
+// later than the last_sync the engine recorded; the link then looks new and
+// the next pull overwrites a brain edit. So the run is committed here and
+// last_sync recorded again after the commit. In server mode every write is
+// already committed, and this records the same position again.
+func commitSyncBeforeLastSync(ctx context.Context, gt *github.Tracker, result *tracker.SyncResult) error {
+	if result == nil || result.LastSync == "" {
+		return nil
+	}
+	if err := commitPendingIfEmbedded(ctx, store, actor, doltAutoCommitParams{Command: "github sync"}); err != nil {
+		return fmt.Errorf("committing the sync: %w", err)
+	}
+	lastSync := time.Now().UTC().Truncate(time.Second).Add(time.Second).Format(time.RFC3339Nano)
+	if err := store.SetLocalMetadata(ctx, gt.ConfigPrefix()+".last_sync", lastSync); err != nil {
+		return fmt.Errorf("recording last_sync: %w", err)
+	}
+	result.LastSync = lastSync
+	return nil
 }
 
 // githubPairCmd records the pairing between this store and a repository.

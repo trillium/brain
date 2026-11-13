@@ -32,11 +32,13 @@ func TestEmbeddedCreateIDPattern(t *testing.T) {
 		wantExpl   string // id that date maps to
 		nonMatchID string
 	}{
-		{"day", "2026-03-04", "day-2026-03-04", "day-2026-03"},
-		{"week", "2026-03-04", "week-2026-03-01", "week-2026-03"}, // Wed -> Sunday
-		{"month", "2026-03-04", "month-2026-03", "month-2026-03-04"},
-		{"quarter", "2026-08-04", "quarter-2026-q3", "quarter-2026-Q3"},
-		{"year", "2026-03-04", "year-2026", "year-2026-03"},
+		// The explicit dates are in a past year so that none of them can fall
+		// in the same period as today's bead.
+		{"day", "2025-03-04", "day-2025-03-04", "day-2026-03"},
+		{"week", "2025-03-04", "week-2025-03-02", "week-2026-03"}, // Tue -> Sunday
+		{"month", "2025-03-04", "month-2025-03", "month-2026-03-04"},
+		{"quarter", "2025-08-04", "quarter-2025-q3", "quarter-2026-Q3"},
+		{"year", "2025-03-04", "year-2025", "year-2026-03"},
 	}
 	for _, k := range kinds {
 		t.Run(k.kind, func(t *testing.T) {

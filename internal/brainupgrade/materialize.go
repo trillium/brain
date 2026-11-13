@@ -20,7 +20,7 @@ import (
 // minute and then checks every chunk's references across the whole history,
 // which on a 13 GB database runs for hours (Dolt 2.2.3). Materializing takes
 // as long as cloning the files; the comparison that follows (dolt_hashof_db,
-// HEAD, the commit count and every table digest) is what proves the result.
+// HEAD and every table digest) is what proves the result.
 
 // backupDir resolves a file:// backup URL to its directory.
 func backupDir(backupURL string) (string, error) {

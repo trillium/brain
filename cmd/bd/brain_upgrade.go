@@ -35,8 +35,8 @@ Steps, in order:
             run: nothing is written)
   backup    take a Dolt-native backup of each database into --backup-dir,
             open it as a database on a Dolt server of its own and compare it
-            with the database by dolt_hashof_db, HEAD, the length of its
-            history, and every table's row count and whole-row digest; only a
+            with the database by dolt_hashof_db, HEAD, and every table's row
+            count and whole-row digest; only a
             backup that reproduces the database is marked verified
   rehearse  lay each backup out as a copy on a Dolt server of its own,
             migrate the copy, verify it, and roll it back the offline way;

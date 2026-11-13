@@ -84,12 +84,10 @@ type DatabaseState struct {
 	Name string `json:"name"`
 	// DBHash is dolt_hashof_db(): the whole database, working set included.
 	DBHash string `json:"db_hash"`
-	Head   string `json:"head"`
-	// Commits is the length of HEAD's history (dolt_log): reading it walks
-	// every commit, so equal counts on two copies mean neither lost history.
-	Commits int64              `json:"commits"`
-	Schema  schema.UpgradePlan `json:"schema"`
-	Tables  []TableState       `json:"tables"`
+	// Head is HEAD's commit hash, which covers its whole ancestry.
+	Head   string             `json:"head"`
+	Schema schema.UpgradePlan `json:"schema"`
+	Tables []TableState       `json:"tables"`
 	// Remotes and Backups are the repository's registrations (name=url).
 	// They are repository config, not data: a backup does not carry them,
 	// so a rollback puts them back from here.
@@ -134,9 +132,6 @@ func Capture(ctx context.Context, conn *sql.Conn) (DatabaseState, error) {
 	st.TakenAt = time.Now().UTC()
 	if err := conn.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&st.Head); err != nil {
 		return st, fmt.Errorf("reading HEAD of %s: %w", st.Name, err)
-	}
-	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_log").Scan(&st.Commits); err != nil {
-		return st, fmt.Errorf("reading the history of %s: %w", st.Name, err)
 	}
 	if st.Remotes, err = registrations(ctx, conn, "dolt_remotes"); err != nil {
 		return st, err
@@ -295,9 +290,6 @@ func CompareIdentical(want, got DatabaseState) []string {
 	}
 	if want.Head != got.Head {
 		diffs = append(diffs, fmt.Sprintf("HEAD %s, want %s", got.Head, want.Head))
-	}
-	if want.Commits != got.Commits {
-		diffs = append(diffs, fmt.Sprintf("%d commits in HEAD's history, want %d", got.Commits, want.Commits))
 	}
 	gotTables := map[string]TableState{}
 	for _, t := range got.Tables {

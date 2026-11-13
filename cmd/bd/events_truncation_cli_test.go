@@ -42,6 +42,9 @@ func TestEventsTailReportsTruncationToTheCLI(t *testing.T) {
 		"BD_EVENTS_JOURNAL=1",
 		"BD_EVENTS_JOURNAL_RETAIN_DAYS=0",
 		"BD_EVENTS_JOURNAL_RETAIN_ROWS=0",
+		// Brain: the markdown render stamps brain_slug with a write of its
+		// own, which the journal records too; these tests count bd's records.
+		"BRAIN_NO_EXFIL=1",
 	)
 	run := func(args ...string) (string, error) {
 		t.Helper()
@@ -132,6 +135,9 @@ func TestEventsTailFollowReportsTruncationOnTheStream(t *testing.T) {
 		"BD_EVENTS_JOURNAL=1",
 		"BD_EVENTS_JOURNAL_RETAIN_DAYS=0",
 		"BD_EVENTS_JOURNAL_RETAIN_ROWS=0",
+		// Brain: the markdown render stamps brain_slug with a write of its
+		// own, which the journal records too; these tests count bd's records.
+		"BRAIN_NO_EXFIL=1",
 	)
 	run := func(args ...string) (string, error) {
 		t.Helper()
@@ -242,7 +248,9 @@ func TestEventsPruneHonorsRetainRowsFloorFromConfig(t *testing.T) {
 	// Enable the journal through `bd config set` rather than the environment:
 	// this is review blocker 6, where the key was accepted and silently ignored
 	// because it is read from yaml at startup, not from the database.
-	env := bdEnv(dir)
+	// Brain: the markdown render's brain_slug stamp is a journaled write of
+	// its own; this test counts bd's records.
+	env := append(bdEnv(dir), "BRAIN_NO_EXFIL=1")
 	run := func(args ...string) (string, error) {
 		t.Helper()
 		cmd := exec.Command(bd, args...)

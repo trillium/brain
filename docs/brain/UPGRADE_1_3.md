@@ -98,7 +98,7 @@ run `backup`, `rehearse` and `rollback` on the server's own machine.
 | Step | Writes to the live server? | What it does |
 |---|---|---|
 | `plan` | no | Per database: the cursors, brain's rows in `schema_migrations`, every migration left to run, the Dolt remotes, and whether a verified backup still matches. The dry run. |
-| `backup --backup-dir D` | no (reads; the backup goes to `D`) | `DOLT_BACKUP('sync-url', file://D/<db>)` (no backup remote is registered), then opens the backup as a database on a Dolt server of its own and compares it with the database: `dolt_hashof_db()` (which covers the working set and the dolt-ignored tables), HEAD, the length of HEAD's history, and every table's row count, B-13 whole-row digest and `dolt_hashof_table`. Only an identical copy is marked verified. Records everything, including the database's remotes and backup registrations, in `D/brain-upgrade-manifest.json`. |
+| `backup --backup-dir D` | no (reads; the backup goes to `D`) | `DOLT_BACKUP('sync-url', file://D/<db>)` (no backup remote is registered), then opens the backup as a database on a Dolt server of its own and compares it with the database: `dolt_hashof_db()` (which covers the working set and the dolt-ignored tables), HEAD, and every table's row count, B-13 whole-row digest and `dolt_hashof_table`. Only an identical copy is marked verified. Records everything, including the database's remotes and backup registrations, in `D/brain-upgrade-manifest.json`. |
 | `rehearse --backup-dir D` | no | Lays each backup out as a copy on a Dolt server of its own, migrates the copy, verifies it, rolls the copy back the offline way and proves the rollback. |
 | `apply --backup-dir D` | **yes** | Refuses unless every selected database has a verified backup and is still exactly its state (`dolt_hashof_db()` equal). Refuses a database with Dolt remotes unless `--allow-remote-backed`. Then migrates (`schema.MigrateUpWithLock`) and verifies. |
 | `verify --backup-dir D` | no | Every series at latest; every table and column the backup had is still there; per table, the row count and the whole-row digest over the columns the migration does not rewrite on purpose are unchanged. |
@@ -113,7 +113,7 @@ seconds), it opens as that database with its branches and working set.
 `DOLT_BACKUP('restore')` would do the same and then check every chunk's
 references across the whole history; on the 13 GB `brain_unified` that check
 runs for hours with Dolt 2.2.3. The comparison after opening (database hash,
-HEAD, history length, every table) is what proves the backup, and it is the
+HEAD, every table) is what proves the backup, and it is the
 same comparison B-13 used.
 
 The whole-row digest is the one B-13 used: per table, `COUNT(*)` and

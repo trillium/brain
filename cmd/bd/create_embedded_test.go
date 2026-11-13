@@ -42,16 +42,24 @@ func parseIssueJSON(t *testing.T, out []byte) *types.Issue {
 		t.Fatalf("no JSON object found in output:\n%s", s)
 	}
 
-	var issue types.Issue
-	if err := json.Unmarshal([]byte(s[start:]), &issue); err != nil {
+	// show's dependencies and dependents are issues (each with its own
+	// metadata object, which brain stamps on every issue), not the
+	// types.Dependency rows types.Issue declares, so they are left raw.
+	var shown struct {
+		types.Issue
+		Dependencies json.RawMessage `json:"dependencies"`
+		Dependents   json.RawMessage `json:"dependents"`
+	}
+	if err := json.Unmarshal([]byte(s[start:]), &shown); err != nil {
 		// Try to find the matching closing brace for multi-line JSON
 		// by attempting progressively larger substrings.
 		// Fall back to decoder which handles trailing content.
 		dec := json.NewDecoder(strings.NewReader(s[start:]))
-		if decErr := dec.Decode(&issue); decErr != nil {
+		if decErr := dec.Decode(&shown); decErr != nil {
 			t.Fatalf("failed to parse JSON output: %v\nraw: %s", decErr, s[start:])
 		}
 	}
+	issue := shown.Issue
 	return &issue
 }
 
