@@ -29,6 +29,7 @@ func TestIsYamlOnlyKey(t *testing.T) {
 		{"directory.labels", true},
 		{"repos.primary", true},
 		{"external_projects.beads", true},
+		{"list.limit", true},
 
 		// Hierarchy settings (GH#995)
 		{"hierarchy.max-depth", true},
@@ -41,9 +42,11 @@ func TestIsYamlOnlyKey(t *testing.T) {
 		{"backup.git-repo", true},
 		{"backup.future-key", true}, // prefix match
 
-		// Import settings
+		// Import settings. import.* is exact-match, not a prefix namespace:
+		// an unlisted import.* key must not be treated as yaml-only.
+		{"import.auto", true},
 		{"import.path", true},
-		{"import.orphan_handling", false},
+		{"import.unlisted-key", false},
 
 		// Secret keys (stored in yaml to avoid leaking via Dolt push)
 		{"github.token", true},
@@ -65,6 +68,12 @@ func TestIsYamlOnlyKey(t *testing.T) {
 				t.Errorf("IsYamlOnlyKey(%q) = %v, want %v", tt.key, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestMailDelegateUsesUserConfig(t *testing.T) {
+	if !IsYamlOnlyKey("mail.delegate") || !IsUserGlobalKey("mail.delegate") {
+		t.Fatal("mail.delegate must be routed to user YAML, not the database or project YAML")
 	}
 }
 
@@ -270,26 +279,6 @@ func TestFormatYamlValue(t *testing.T) {
 	}
 }
 
-func TestNormalizeYamlKey(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"no-db", "no-db"},               // no alias, unchanged
-		{"json", "json"},                 // no alias, unchanged
-		{"routing.mode", "routing.mode"}, // no alias for this one
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := normalizeYamlKey(tt.input)
-			if got != tt.expected {
-				t.Errorf("normalizeYamlKey(%q) = %q, want %q", tt.input, got, tt.expected)
-			}
-		})
-	}
-}
-
 func TestSetYamlConfig(t *testing.T) {
 	oldBeadsDir := os.Getenv("BEADS_DIR")
 	if err := os.Unsetenv("BEADS_DIR"); err != nil {
@@ -403,6 +392,53 @@ func TestSetYamlConfigInDir_WritesTargetConfigDespiteLocalStub(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(worktreeDir, ".beads", "config.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("expected worktree stub to remain untouched, got err=%v", err)
+	}
+}
+
+func TestWorkspaceYamlValueStrictDistinguishesMissingAndMalformed(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if value, present, err := WorkspaceYamlValueStrict(beadsDir, "dolt.shared-server"); err != nil || present || value != "" {
+		t.Fatalf("missing config = (%q, %v, %v), want empty/false/nil", value, present, err)
+	}
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt: ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := WorkspaceYamlValueStrict(beadsDir, "dolt.shared-server"); err == nil {
+		t.Fatal("malformed config should return an error")
+	}
+}
+
+func TestWorkspaceYamlValueStrictReadsNestedScalar(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte("dolt:\n  shared-server: false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	value, present, err := WorkspaceYamlValueStrict(beadsDir, "dolt.shared-server")
+	if err != nil || !present || value != "false" {
+		t.Fatalf("nested scalar = (%q, %v, %v), want false/true/nil", value, present, err)
+	}
+}
+
+func TestWorkspaceYamlValueStrictRejectsNullAndWrongParent(t *testing.T) {
+	for _, body := range []string{"dolt:\n  shared-server: null\n", "dolt: false\n", "dolt: []\n"} {
+		t.Run(strings.ReplaceAll(body, "\n", "_"), func(t *testing.T) {
+			beadsDir := filepath.Join(t.TempDir(), ".beads")
+			if err := os.MkdirAll(beadsDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := WorkspaceYamlValueStrict(beadsDir, "dolt.shared-server"); err == nil {
+				t.Fatalf("config %q should be rejected", body)
+			}
+		})
 	}
 }
 
@@ -697,6 +733,76 @@ func TestValidateYamlConfigValue_DoltMode(t *testing.T) {
 	}
 }
 
+// TestValidateYamlConfigValue_PrimeMaxMemories tests validation of prime.max-memories
+func TestValidateYamlConfigValue_PrimeMaxMemories(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		expectErr bool
+		errMsg    string
+	}{
+		{"valid zero (unlimited)", "0", false, ""},
+		{"valid positive", "10", false, ""},
+		{"valid large value", "1000", false, ""},
+		{"invalid negative", "-1", true, "prime.max-memories must be a non-negative integer (0 = unlimited), got \"-1\""},
+		{"invalid non-integer", "abc", true, "prime.max-memories must be a non-negative integer (0 = unlimited), got \"abc\""},
+		{"invalid float", "3.5", true, "prime.max-memories must be a non-negative integer (0 = unlimited), got \"3.5\""},
+		{"invalid empty", "", true, "prime.max-memories must be a non-negative integer (0 = unlimited), got \"\""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateYamlConfigValue("prime.max-memories", tt.value)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected error for value %q, got nil", tt.value)
+				} else if err.Error() != tt.errMsg {
+					t.Errorf("expected error %q, got %q", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error for value %q: %v", tt.value, err)
+				}
+			}
+		})
+	}
+}
+
+// TestValidateYamlConfigValue_PrimeMaxMemoryChars tests validation of prime.max-memory-chars
+func TestValidateYamlConfigValue_PrimeMaxMemoryChars(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		expectErr bool
+		errMsg    string
+	}{
+		{"valid zero (unlimited)", "0", false, ""},
+		{"valid positive", "25000", false, ""},
+		{"valid large value", "1000000", false, ""},
+		{"invalid negative", "-1", true, "prime.max-memory-chars must be a non-negative integer (0 = unlimited), got \"-1\""},
+		{"invalid non-integer", "abc", true, "prime.max-memory-chars must be a non-negative integer (0 = unlimited), got \"abc\""},
+		{"invalid float", "3.5", true, "prime.max-memory-chars must be a non-negative integer (0 = unlimited), got \"3.5\""},
+		{"invalid empty", "", true, "prime.max-memory-chars must be a non-negative integer (0 = unlimited), got \"\""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateYamlConfigValue("prime.max-memory-chars", tt.value)
+			if tt.expectErr {
+				if err == nil {
+					t.Errorf("expected error for value %q, got nil", tt.value)
+				} else if err.Error() != tt.errMsg {
+					t.Errorf("expected error %q, got %q", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error for value %q: %v", tt.value, err)
+				}
+			}
+		})
+	}
+}
+
 func TestIsSecretKey(t *testing.T) {
 	tests := []struct {
 		key      string
@@ -708,11 +814,38 @@ func TestIsSecretKey(t *testing.T) {
 		{"some.secret", true},
 		{"some.api-key", true},
 
+		// Spellings the wire redaction has to cover. GET /v0/beads/config
+		// publishes a value for any key this returns false for, and bd serve's
+		// bearer — optional, and shared and surface-wide where it is
+		// configured — cannot withhold one value from one caller, so each of
+		// these is a credential in cleartext if it regresses. "apikey" in
+		// particular is the spelling the published schema promises is covered.
+		{"integrations.apikey", true},
+		{"github.pat", true},
+		{"github.auth", true},
+		{"db.pwd", true},
+		{"db.passwd", true},
+		{"ssh.key", true},
+		{"registry.bearer", true},
+		{"aws.credentials", true},
+		{"tls.cert", true},
+		{"signing.private_key", true},
+
 		{"no-db", false},
 		{"json", false},
 		{"routing.mode", false},
 		{"sync.remote", false},
 		{"linear.team_id", false},
+
+		// The near misses that make the short spellings SEGMENT matches rather
+		// than substring matches. Redacting these would be a bug in the other
+		// direction: every one is an ordinary key that merely starts with a
+		// sensitive word.
+		{"issue.path", false},
+		{"export.pattern", false},
+		{"commit.author", false},
+		{"sort.keyword", false},
+		{"build.compat", false},
 	}
 
 	for _, tt := range tests {

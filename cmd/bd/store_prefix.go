@@ -15,7 +15,7 @@ import (
 )
 
 // `bd store-prefix` — the runtime edge of the unified database's namespace
-// record (brain_store_prefixes, docs/design/brain-single-database.md §The
+// record (brain_store_prefixes, engdocs/design/brain-single-database.md §The
 // mechanism).
 //
 // Prefix ownership on the unified database was build-time only: the unify run
@@ -63,7 +63,7 @@ ids carry it, and every read (narrow or wide) resolves ownership from this
 same record.
 
 Release and history are the deliberate ownership-change edge
-(docs/design/brain-prefix-release.md): release deletes the row only through
+(engdocs/design/brain-prefix-release.md): release deletes the row only through
 an explicit, confirmed act by the owner's own namespace, and every ownership
 change — a claim and a release alike — appends a row to the append-only
 brain_store_prefix_events audit table in the same transaction, so ownership

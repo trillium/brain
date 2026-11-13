@@ -8,10 +8,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // This file implements the unified database's namespace rules for minting
-// beads (docs/design/brain-single-database.md, §"The mechanism: prefixes"). On
+// beads (engdocs/design/brain-single-database.md, §"The mechanism: prefixes"). On
 // the unified database the bedrock invariant the cutover relies on is that a
 // bead cannot exist outside a store namespace:
 //
@@ -43,7 +45,7 @@ const ReasonOperatorAdded = "operator-added"
 
 // Prefix ownership event types (brain_store_prefix_events.event_type). The
 // vocabulary is fixed now so the future transfer verb (
-// docs/design/brain-prefix-release.md §Question c, the named fast-follow)
+// engdocs/design/brain-prefix-release.md §Question c, the named fast-follow)
 // reuses it without a schema change.
 const (
 	// PrefixEventClaim is appended inside the transaction that inserts a new
@@ -67,7 +69,7 @@ const ReasonReleasedReserved = "released"
 // buildDecidedOwnerReasons is the reason vocabulary the unify build writes.
 // A row carrying one of these is the build's mapping decision, and releasing
 // it through the runtime verb is a re-unification act (refused —
-// docs/design/brain-prefix-release.md §Question e, refusal 3). The list is
+// engdocs/design/brain-prefix-release.md §Question e, refusal 3). The list is
 // enumerated, not compared by prefix, because a future build-side reason must
 // be added here consciously rather than silently becoming releasable.
 var buildDecidedOwnerReasons = []string{
@@ -129,12 +131,12 @@ func EnsureStorePrefixEventsTable(ctx context.Context, q DBTX) error {
 // appendStorePrefixEvent writes one audit row into brain_store_prefix_events.
 // The caller owns the transaction: this MUST run inside the same transaction
 // that changes brain_store_prefixes, never after it and never instead of it —
-// the two land together or not at all (docs/design/brain-prefix-release.md
+// the two land together or not at all (engdocs/design/brain-prefix-release.md
 // §Question d). The table is appended to only: no UPDATE, no DELETE, no
 // compaction; brain_store_prefixes stays current state and the events table
 // is its complete history from adoption onward.
 func appendStorePrefixEvent(ctx context.Context, q DBTX, eventType, prefix, actor, oldStore, newStore, reason string, beadCount int64) (string, error) {
-	id := NewEventID()
+	id := newStorePrefixEventID()
 	if len(reason) > 64 {
 		return "", fmt.Errorf("event reason %q exceeds brain_store_prefix_events.reason's 64 characters", reason)
 	}
@@ -146,6 +148,14 @@ func appendStorePrefixEvent(ctx context.Context, q DBTX, eventType, prefix, acto
 		return "", fmt.Errorf("appending %s event for prefix %q: %w", eventType, prefix, err)
 	}
 	return id, nil
+}
+
+// newStorePrefixEventID mints the primary key of a brain_store_prefix_events
+// row. The trail is append-only and an event has no natural identity (the
+// same claim can be released and re-claimed), so the id is random, minted
+// once app-side; UUIDv7 keeps the trail time-sortable.
+func newStorePrefixEventID() string {
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // liveStorePrefixBeadCount counts the beads that carry prefix right now, from
@@ -304,7 +314,7 @@ func PrefixAlreadyRecorded(ctx context.Context, q DBTX, prefix string) (owner, r
 // usable in the same command that recorded it.
 //
 // Every NEW claim appends a 'claim' event row in the SAME transaction that
-// inserts the ownership row (docs/design/brain-prefix-release.md §Question d):
+// inserts the ownership row (engdocs/design/brain-prefix-release.md §Question d):
 // the two land together or not at all. An already-owned no-op appends no
 // event — nothing changed, and the events table is append-only, never
 // rewritten. Pre-adoption runtime rows have no claim event and are not
@@ -478,7 +488,7 @@ type ReleaseStorePrefixOpts struct {
 }
 
 // ReleaseStorePrefix frees a claimed prefix, as a deliberate namespace-
-// maintenance act (docs/design/brain-prefix-release.md):
+// maintenance act (engdocs/design/brain-prefix-release.md):
 //
 //   - delete removes the brain_store_prefixes row. b-row-1 was the decided
 //     shape: the prefix returns to exactly its pre-claim state — no row,

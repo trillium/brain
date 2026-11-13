@@ -3,7 +3,7 @@
 // The unified database holds every store's beads in one `issues` table; a
 // wrapper's read paths (list, search, counts, ready, blocked, render-all,
 // statistics) address namespaces in one of two deliberate modes
-// (docs/design/brain-single-database.md, pre-cutover checklist item 5, plus
+// (engdocs/design/brain-single-database.md, pre-cutover checklist item 5, plus
 // the cutover probe's Question (c) reproductions):
 //
 //   - NARROW (default): the wrapper's own namespace only. The namespace a
@@ -159,6 +159,13 @@ func (s *DoltStore) scopeNamespaces(ctx context.Context, f types.IssueFilter) ty
 }
 
 func (s *DoltStore) scopeWorkNamespaces(ctx context.Context, f types.WorkFilter) types.WorkFilter {
+	// The ready-active custom statuses are the wrapper's own on the unified
+	// database in both read modes: the statuses are settings, not beads.
+	if f.CustomStatusStore == "" && s.db != nil {
+		if sc := issueops.UnifiedScopeForTx(ctx, s.db); sc.Enabled() {
+			f.CustomStatusStore = sc.Store
+		}
+	}
 	if f.Namespaces != nil || readScopeWide() {
 		return f
 	}

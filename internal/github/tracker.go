@@ -3,14 +3,15 @@ package github
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/tracker"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -35,7 +36,13 @@ var ghShorthandPattern = regexp.MustCompile(`^github:([1-9]\d*)$`)
 type Tracker struct {
 	client *Client
 	config *MappingConfig
-	store  storage.Storage
+	store  tracker.Store
+	// currentName is the repository's owner/repo as GitHub reported it at
+	// Init, and formerNames are the other names local refs use that GitHub
+	// resolved to the same repository (see resolveRepositoryNames). Both are
+	// empty when unknown.
+	currentName string
+	formerNames []string
 
 	// Namespace names the brain store this tracker serves. Init fills it from
 	// github.namespace, then BD_NAME, then the store's issue prefix, unless the
@@ -46,9 +53,6 @@ type Tracker struct {
 	// and take precedence over the configured github.* values.
 	Owner string
 	Repo  string
-
-	owner string
-	repo  string
 
 	// BulkLookup makes FetchIssue answer from one listing of the whole
 	// repository instead of one request per issue. A sync that checks every
@@ -61,6 +65,12 @@ type Tracker struct {
 	index *issueIndex
 }
 
+// DryRunLooksUp lets a dry run test each linked issue against the repository
+// listing, which BulkLookup makes one request per hundred issues.
+func (t *Tracker) DryRunLooksUp() bool { return t.BulkLookup }
+
+var _ tracker.DryRunLookup = (*Tracker)(nil)
+
 type issueIndex struct {
 	byNumber map[string]*tracker.TrackerIssue
 	linked   map[string]*tracker.TrackerIssue
@@ -70,7 +80,7 @@ func (t *Tracker) Name() string         { return "github" }
 func (t *Tracker) DisplayName() string  { return "GitHub" }
 func (t *Tracker) ConfigPrefix() string { return "github" }
 
-func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
+func (t *Tracker) Init(ctx context.Context, store tracker.Store) error {
 	t.store = store
 
 	token := t.getConfig(ctx, "github.token", "GITHUB_TOKEN")
@@ -104,7 +114,6 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 	}
 
 	t.client = NewClient(token, owner, repo)
-	t.owner, t.repo = owner, repo
 
 	// Allow custom base URL for GitHub Enterprise
 	baseURL := t.getConfig(ctx, "github.url", "GITHUB_API_URL")
@@ -122,6 +131,7 @@ func (t *Tracker) Init(ctx context.Context, store storage.Storage) error {
 	t.config = DefaultMappingConfig()
 	t.config.Namespace = t.Namespace
 	t.index = nil
+	t.resolveRepositoryNames(ctx)
 	return nil
 }
 
@@ -132,6 +142,77 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// resolveRepositoryNames records the names other than the configured one
+// under which the repository's issues may be linked, as GitHub resolves them.
+// GitHub serves a renamed or transferred repository under each former name by
+// redirect, but every issue it returns names the repository as it is called
+// now, and so does every ref BuildExternalRef stores; refs stored before the
+// rename keep the name it had then. So a config naming the old name meets
+// refs under the current one, and a config moved to the new name (or a
+// GITHUB_REPOSITORY that follows the repository) meets refs under the old
+// one. Without those names in RefScope the tracker would refuse those refs:
+// push and conflict detection would skip their beads without a warning, and a
+// pull would import their issues again as new beads.
+//
+// The current name is the configured repository's full_name. A former name
+// can only be recognized by asking GitHub, so each other repository that a
+// local ref names on the configured host is read once, and its name counts
+// when GitHub answers with the configured repository's ID; another
+// repository answers with its own ID, and a deleted or inaccessible one not
+// at all. A failed lookup adds no name, and a failed lookup of the configured
+// repository leaves the configured name as the only one.
+func (t *Tracker) resolveRepositoryNames(ctx context.Context) {
+	repo, err := t.client.FetchRepository(ctx)
+	if err != nil {
+		return
+	}
+	t.currentName = repo.FullName
+	if repo.ID == 0 || t.store == nil {
+		return
+	}
+	for _, name := range t.otherRepositoryNames(ctx) {
+		owner, repoName, _ := strings.Cut(name, "/")
+		other, err := t.client.fetchRepositoryNamed(ctx, owner, repoName)
+		if err == nil && other != nil && other.ID == repo.ID {
+			t.formerNames = append(t.formerNames, name)
+		}
+	}
+}
+
+// repositoryNamePattern matches a lowercase "owner/repo" made of the
+// characters GitHub allows in owner and repository names.
+var repositoryNamePattern = regexp.MustCompile(`^[a-z0-9_.-]+/[a-z0-9_.-]+$`)
+
+// otherRepositoryNames returns, sorted, the lowercase "owner/repo" of each
+// repository other than this one that a local issue's external_ref names on
+// the configured host.
+func (t *Tracker) otherRepositoryNames(ctx context.Context) []string {
+	issues, err := t.store.SearchIssues(ctx, "", types.IssueFilter{})
+	if err != nil {
+		return nil
+	}
+	scope := t.RefScope()
+	seen := make(map[string]bool)
+	var names []string
+	for _, issue := range issues {
+		if issue == nil || issue.ExternalRef == nil {
+			continue
+		}
+		name, ok := scope.otherRepository(*issue.ExternalRef)
+		if !ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		owner, repo, _ := strings.Cut(name, "/")
+		if !repositoryNamePattern.MatchString(name) || owner == "." || owner == ".." || repo == "." || repo == ".." {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 func (t *Tracker) Validate() error {
@@ -208,7 +289,7 @@ func (t *Tracker) trackedLocally(ctx context.Context, gh *Issue) bool {
 		}
 	}
 	if marker, ok := ParseMarker(gh.Body); ok && t.config != nil && marker.Store == t.config.Namespace {
-		if item, err := t.store.GetIssue(ctx, marker.ID); err == nil && item != nil {
+		if items, err := t.store.SearchIssues(ctx, "", types.IssueFilter{IDs: []string{marker.ID}}); err == nil && len(items) > 0 {
 			return true
 		}
 	}
@@ -287,44 +368,102 @@ func (t *Tracker) FieldMapper() tracker.FieldMapper {
 	return &githubFieldMapper{config: t.config}
 }
 
-// issueURLPattern captures owner, repo and number from an issue URL on any
-// host (github.com or an Enterprise server).
-var issueURLPattern = regexp.MustCompile(`^https?://[^/]+/([^/]+)/([^/]+)/issues/(\d+)(?:[/?#].*)?$`)
+// MappingConfig exposes the tracker's field-mapping configuration so callers
+// (e.g. push-hook content comparison) can mirror push field semantics.
+func (t *Tracker) MappingConfig() *MappingConfig {
+	return t.config
+}
 
-// IsExternalRef checks if a ref is a link to an issue in THIS tracker's
-// repository. It recognizes full GitHub URLs and the "github:{id}" shorthand
+// PushTargetScope returns the canonical repository endpoint under which issue
+// identifiers are resolved. It lets the sync engine distinguish repo-less refs
+// such as github:42 when the configured host, owner, or repository changes.
+func (t *Tracker) PushTargetScope() string {
+	if t.client == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s/repos/%s/%s",
+		canonicalGitHubBaseURL(t.client.BaseURL),
+		strings.ToLower(strings.TrimSpace(t.client.Owner)),
+		strings.ToLower(strings.TrimSpace(t.client.Repo)),
+	)
+}
+
+// canonicalGitHubBaseURL normalizes the URL components that are
+// case-insensitive while preserving case-sensitive path semantics. Malformed
+// and relative custom values fall back to deterministic whitespace/slash
+// trimming instead of being rejected here (Tracker.Init/client validation owns
+// their usability).
+func canonicalGitHubBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	u, err := url.Parse(trimmed)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return trimmed
+	}
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	if u.RawPath != "" {
+		u.RawPath = strings.TrimRight(u.RawPath, "/")
+	}
+	return u.String()
+}
+
+// IsExternalRef checks if a ref belongs to this GitHub tracker.
+// It recognizes both full GitHub URLs and the "github:{id}" shorthand format
 // produced by BuildExternalRef when a URL is unavailable.
 //
-// A URL for a different repository is not this tracker's ref: issue numbers
-// only mean something inside one repository, so a link left over from a
-// previous pairing must not be read as a number in the current one.
+// A URL for another repository is still a GitHub ref: ExtractIdentifier gives
+// it no number, so the sync skips the item and leaves its link alone rather
+// than reading the number in the configured repository. Brain: once the
+// tracker is initialized, a ref into the configured repository counts on any
+// host the repository is served from (GitHub Enterprise), not only github.com.
 func (t *Tracker) IsExternalRef(ref string) bool {
 	if ghShorthandPattern.MatchString(ref) {
 		return true
 	}
-	if !strings.Contains(ref, "github") || !issueNumberPattern.MatchString(ref) {
-		return false
+	if t.client != nil {
+		if _, ok := t.RefScope().IssueNumberFromRef(ref); ok {
+			return true
+		}
 	}
-	if t.owner == "" || t.repo == "" {
-		return true
-	}
-	m := issueURLPattern.FindStringSubmatch(ref)
-	if m == nil {
-		return false
-	}
-	return strings.EqualFold(m[1], t.owner) && strings.EqualFold(m[2], t.repo)
+	return strings.Contains(ref, "github.com") && issueNumberPattern.MatchString(ref)
 }
 
 // ExtractIdentifier extracts the issue number from a GitHub URL or shorthand ref.
+// Once the tracker is initialized, a URL yields a number only when it points
+// at the configured repository, by its configured name or another name GitHub
+// resolves to it (see RefScope): issue numbers are repository-scoped,
+// so another repository's URL must not address, match or overwrite the
+// configured repository's issue with the same number
+// (gastownhall/beads#7781). The repo-less shorthand is read as the configured
+// repository, as before.
 func (t *Tracker) ExtractIdentifier(ref string) string {
 	if m := ghShorthandPattern.FindStringSubmatch(ref); len(m) >= 2 {
 		return m[1]
+	}
+	if t.client != nil {
+		number, ok := t.RefScope().IssueNumberFromRef(ref)
+		if !ok {
+			return ""
+		}
+		return strconv.Itoa(number)
 	}
 	matches := issueNumberPattern.FindStringSubmatch(ref)
 	if len(matches) < 2 {
 		return ""
 	}
 	return matches[1]
+}
+
+// RefScope returns the repository scope used to resolve external refs to issue
+// numbers for ExtractIdentifier. Refs are deliberately not resolved by issue
+// number alone: see RefScope.
+func (t *Tracker) RefScope() RefScope {
+	if t.client == nil {
+		return RefScope{}
+	}
+	return NewRefScope(t.client.BaseURL, t.client.Owner, t.client.Repo).
+		withNames(append([]string{t.currentName}, t.formerNames...)...)
 }
 
 func (t *Tracker) BuildExternalRef(issue *tracker.TrackerIssue) string {

@@ -759,7 +759,7 @@ func (e *peerEnv) serve(ctx context.Context, req peerServeReq) (*peerServeResp, 
 		Databases: sortedKeysStr(req.Databases), Service: svc,
 	}}
 	for _, db := range sortedKeysStr(req.Databases) {
-		if !containsStr(have, db) {
+		if !hostListContains(have, db) {
 			return nil, fmt.Errorf("the server on port %d does not list database %s", req.Port, db)
 		}
 		h, herr := databaseHash(ctx, req.Port, db)
@@ -774,7 +774,7 @@ func (e *peerEnv) serve(ctx context.Context, req peerServeReq) (*peerServeResp, 
 	return resp, nil
 }
 
-func containsStr(list []string, s string) bool {
+func hostListContains(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {
 			return true
@@ -1063,7 +1063,7 @@ func (e *peerEnv) activate(ctx context.Context, req peerActivateReq) (*peerActiv
 
 	// The host owns the markdown: it renders every store periodically.
 	declared := req.DeclaredServices
-	if !containsStr(declared, renderJobLabel) {
+	if !hostListContains(declared, renderJobLabel) {
 		body, rerr := renderJobPlist(e.home, "", renderJobDefaultSecs)
 		if rerr != nil {
 			return nil, rerr

@@ -30,6 +30,39 @@ func TestRegistered(t *testing.T) {
 	}
 }
 
+func TestPushTargetScope(t *testing.T) {
+	tr := &Tracker{client: &Client{
+		BaseURL: "HTTPS://GHE.Example.Test/Api/v3///",
+		Owner:   "Acme",
+		Repo:    "Widgets",
+	}}
+	if got, want := tr.PushTargetScope(), "https://ghe.example.test/Api/v3/repos/acme/widgets"; got != want {
+		t.Fatalf("PushTargetScope() = %q, want %q", got, want)
+	}
+
+	equivalent := &Tracker{client: &Client{
+		BaseURL: "https://ghe.example.test/Api/v3",
+		Owner:   "acme",
+		Repo:    "widgets",
+	}}
+	if got, want := equivalent.PushTargetScope(), tr.PushTargetScope(); got != want {
+		t.Fatalf("equivalent PushTargetScope() = %q, want %q", got, want)
+	}
+
+	malformed := &Tracker{client: &Client{
+		BaseURL: "://GHE.Example.Test/Api/ ",
+		Owner:   "ACME",
+		Repo:    "WIDGETS",
+	}}
+	if got, want := malformed.PushTargetScope(), "://GHE.Example.Test/Api/repos/acme/widgets"; got != want {
+		t.Fatalf("malformed PushTargetScope() = %q, want deterministic fallback %q", got, want)
+	}
+
+	if got := (&Tracker{}).PushTargetScope(); got != "" {
+		t.Fatalf("uninitialized PushTargetScope() = %q, want empty", got)
+	}
+}
+
 func TestIsExternalRef(t *testing.T) {
 	tr := &Tracker{}
 	tests := []struct {
@@ -74,6 +107,69 @@ func TestExtractIdentifier(t *testing.T) {
 			t.Errorf("ExtractIdentifier(%q) = %q, want %q", tt.ref, got, tt.want)
 		}
 	}
+}
+
+// A pull whose exact external_ref lookup misses falls back to
+// ExtractIdentifier; an initialized tracker must not hand back the number of
+// an issue in another repository, or it matches (and overwrites) a bead
+// linked to that other repository's issue with the same number (GH#7781).
+func TestExtractIdentifierScopedToRepository(t *testing.T) {
+	tr := &Tracker{client: NewClient("token", "acme", "repo-b")}
+	tests := []struct {
+		ref  string
+		want string
+	}{
+		{"https://github.com/acme/repo-b/issues/42", "42"},
+		{"https://github.com/ACME/Repo-B/issues/42", "42"},
+		{"github:42", "42"},
+		{"https://github.com/acme/repo-a/issues/42", ""},
+		{"https://github.com/other/repo-b/issues/42", ""},
+		// Other spellings RefScope accepts for the configured repository.
+		{"https://api.github.com/repos/acme/repo-b/issues/42", "42"},
+		{"https://GitHub.com/acme/repo-b/issues/42", "42"},
+		// Foreign hosts and malformed paths.
+		{"https://ghe.example.com/acme/repo-b/issues/42", ""},
+		{"https://gitlab.com/acme/repo-b/-/issues/42", ""},
+		{"https://github.com/acme/repo-b/issues/42/comments", ""},
+		{"https://github.com/acme/repo-b/issues/abc", ""},
+		{"https://github.com/acme/repo-b/pull/42", ""},
+		{"https://github.com/acme/repo-b/issues/0", ""},
+		{"not-a-url", ""},
+		{"", ""},
+		// The shorthand arm is unchanged (leading zeros are rejected by the
+		// shorthand pattern itself, as before).
+		{"github:681509", "681509"},
+		{"github:0", ""},
+		{"github:01313", ""},
+	}
+	for _, tt := range tests {
+		if got := tr.ExtractIdentifier(tt.ref); got != tt.want {
+			t.Errorf("ExtractIdentifier(%q) = %q, want %q", tt.ref, got, tt.want)
+		}
+	}
+
+	// A GitHub Enterprise client's API and HTML URLs share one host;
+	// github.com is the host of another installation.
+	t.Run("enterprise", func(t *testing.T) {
+		ghes := &Tracker{client: &Client{BaseURL: "https://ghe.example.com/api/v3", Owner: "acme", Repo: "repo-b"}}
+		tests := []struct {
+			ref  string
+			want string
+		}{
+			{"https://ghe.example.com/acme/repo-b/issues/42", "42"},
+			{"https://ghe.example.com/api/v3/repos/acme/repo-b/issues/42", "42"},
+			{"https://GHE.example.com/ACME/repo-b/issues/42", "42"},
+			{"https://github.com/acme/repo-b/issues/42", ""},
+			{"https://ghe.example.com/acme/other/issues/42", ""},
+			{"https://ghe2.example.com/acme/repo-b/issues/42", ""},
+			{"github:42", "42"},
+		}
+		for _, tt := range tests {
+			if got := ghes.ExtractIdentifier(tt.ref); got != tt.want {
+				t.Errorf("ExtractIdentifier(%q) = %q, want %q", tt.ref, got, tt.want)
+			}
+		}
+	})
 }
 
 func TestBuildExternalRef(t *testing.T) {

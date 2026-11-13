@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/pprof"
 	"runtime/trace"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,29 +26,38 @@ import (
 	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/creds"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/hooks"
 	"github.com/steveyegge/beads/internal/hooksdef"
 	"github.com/steveyegge/beads/internal/metrics"
+	"github.com/steveyegge/beads/internal/migration"
 	"github.com/steveyegge/beads/internal/molecules"
+	"github.com/steveyegge/beads/internal/remotecache"
+	"github.com/steveyegge/beads/internal/routing"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/backends"
 	"github.com/steveyegge/beads/internal/storage/dolt"
+	dbidentifier "github.com/steveyegge/beads/internal/storage/domain/db"
+	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/storage/uow"
 	"github.com/steveyegge/beads/internal/telemetry"
+	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 var (
-	changeDir   string
-	dbPath      string
-	actor       string
-	store       storage.DoltStorage
-	uowProvider uow.UnitOfWorkProvider
-	jsonOutput  bool
+	changeDir    string
+	dbPath       string
+	databaseFlag string
+	actor        string
+	store        storage.DoltStorage
+	uowProvider  uow.UnitOfWorkProvider
+	jsonOutput   bool
 
 	// namespaceWide is the --wide persistent flag: the explicit operator
 	// switch for the unified database's read mode. Default narrow (only the
@@ -78,6 +90,7 @@ type envSnapshotValue struct {
 var changeDirEnvSnapshot map[string]envSnapshotValue
 
 var (
+	noColorFlag       bool
 	sandboxMode       bool
 	globalFlag        bool
 	serverMode        bool
@@ -86,9 +99,10 @@ var (
 	storeIsReadOnly   bool               // Track if store was opened read-only (for staleness checks)
 	ignoreSchemaSkew  bool               // Proceed despite forward schema drift
 	lockTimeout       = 30 * time.Second // Dolt open timeout (fixed default)
-	profileEnabled    bool
+	cpuProfileEnabled bool
 	profileFile       *os.File
 	traceFile         *os.File
+	memProfilePath    string
 	verboseFlag       bool // Enable verbose/debug output
 	quietFlag         bool // Suppress non-essential output
 
@@ -105,6 +119,13 @@ var (
 	// an intentional empty JSONL artifact instead of treating it as ambiguous.
 	commandMayEmptyJSONLExport atomic.Bool
 
+	// commandDeletedIssueIDs is the in-process handoff from the delete
+	// commands to post-run auto-export: ids this command hard-deleted are
+	// PROVEN gone, so the export's orphan guard skips them instead of
+	// mistaking a deliberate delete for a torn store and refusing forever
+	// (GH#5896). See deletedIssueIDSet for why it is not persisted.
+	commandDeletedIssueIDs deletedIssueIDSet
+
 	// commandDidExplicitDoltCommit is set when a command already created a Dolt commit
 	// explicitly (e.g., bd sync in dolt-native mode, hook flows, bd vc commit).
 	// This prevents a redundant auto-commit attempt in PersistentPostRun.
@@ -119,10 +140,41 @@ var (
 	// This is used for tip-commit message formatting.
 	commandTipIDsShown map[string]struct{}
 
+	// commandFreeze is the migration-freeze lookup for this invocation,
+	// resolved once in PersistentPreRunE (dc-6jaq). Both hooks read it: the
+	// pre-run gate refuses writes from it, and PersistentPostRunE skips its
+	// own maintenance writes — auto-commit, tip metadata, backup, export,
+	// push — so a read command run during a freeze does not leave a new Dolt
+	// commit in the store being migrated. Zero value means "not frozen",
+	// which is the right default for the paths that never resolve it.
+	commandFreeze migration.Result
+
 	// commandSpan is the root OTel span for the current command execution.
 	// All storage and AI spans are nested as children of this span.
 	commandSpan oteltrace.Span
 )
+
+// skipStoreAnnotation, when set to "1" on a command (or any of its ancestors),
+// makes bd skip database/store initialization for that command — the
+// annotation-based equivalent of listing the command name in noDbCommands. It
+// lets commands defined in other files or build-tagged variants opt out of the
+// store gate locally, without editing the central noDbCommands list.
+const skipStoreAnnotation = "bd:skip_store"
+
+// commandOptsOutOfStore reports whether cmd or any of its ancestors carries the
+// skipStoreAnnotation set to "1". The whole ancestor chain is walked, so
+// annotating a command exempts that command and every subcommand beneath it.
+// (This is broader than the noDbCommands list, which only matches a command
+// name or its direct parent — annotate deliberately, on the specific command
+// you want to skip the store.)
+func commandOptsOutOfStore(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		if c.Annotations[skipStoreAnnotation] == "1" {
+			return true
+		}
+	}
+	return false
+}
 
 // readOnlyCommands lists commands that only read from the database.
 // These commands open the store in read-only mode. See GH#804.
@@ -134,6 +186,7 @@ var readOnlyCommands = map[string]bool{
 	"blocked":    true,
 	"count":      true,
 	"search":     true,
+	"query":      true,
 	"graph":      true,
 	"duplicates": true,
 	"comments":   true, // list comments (not add)
@@ -141,6 +194,7 @@ var readOnlyCommands = map[string]bool{
 	"ping":       true,
 	"backup":     true, // reads from Dolt, writes only to .beads/backup/
 	"export":     true, // reads from Dolt, writes JSONL to file/stdout
+	"tail":       true, // bd events tail: reads bd_events_journal, writes nothing
 }
 
 // isReadOnlyCommand returns true if the command only reads from the database.
@@ -150,8 +204,271 @@ func isReadOnlyCommand(cmdName string) bool {
 	return readOnlyCommands[cmdName]
 }
 
+// isPreviewCommand reports whether cmd was explicitly invoked in a
+// non-mutating preview mode. Preview flags are command-local rather than
+// persistent, so checking them here after Cobra has parsed the selected
+// command is the earliest reliable point to keep the store open read-only.
+func isPreviewCommand(cmd *cobra.Command) bool {
+	for _, name := range []string{"dry-run", "inspect"} {
+		if flag := cmd.Flags().Lookup(name); flag != nil {
+			enabled, err := cmd.Flags().GetBool(name)
+			if err == nil && enabled {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+type rootStorePolicy struct {
+	readOnly         bool
+	disableAutoStart bool
+	runMaintenance   bool
+}
+
+// effectiveRootStorePolicy separates strict --readonly/config policy from
+// command classification. Classified reads retain their compatibility
+// maintenance and auto-start behavior; strict readonly is mutation-free.
+func effectiveRootStorePolicy(cmdName string, strictReadonly bool) rootStorePolicy {
+	return rootStorePolicy{
+		readOnly:         strictReadonly || isReadOnlyCommand(cmdName),
+		disableAutoStart: strictReadonly,
+		runMaintenance:   !strictReadonly,
+	}
+}
+
+// runsPostCommandMaintenance reports whether PersistentPostRunE should run the
+// post-command maintenance net — Dolt auto-commit, the tip-metadata commit,
+// auto-backup, auto-export and auto-push.
+//
+// `bd serve` is excluded, and not as an optimization. Those steps are per-
+// COMMAND bookkeeping, and a server is not a command: it is a process that ran
+// for hours and committed each mutation inside its own transaction as it
+// happened. Running them when the operator finally sends SIGTERM would push and
+// export on the way out of a signal handler — the worst possible moment — and
+// attribute a whole process lifetime of requests to the shutdown. Proxied-mode
+// serve never reached this branch at all (PersistentPostRunE only closes the
+// provider there); server and shared-server mode do, so the exclusion has to be
+// stated rather than inherited.
+func runsPostCommandMaintenance(cmdName string, strictReadonly bool) bool {
+	if cmdName == serveCmdName {
+		return false
+	}
+	return effectiveRootStorePolicy(cmdName, strictReadonly).runMaintenance
+}
+
+// resolveDoltServerConnection fills in how to reach the workspace's Dolt SQL
+// server — host, port, socket, user, password, TLS — on doltCfg.
+//
+// Both consumers of a SQL server in this process go through here: the CLI's own
+// store open, and the unit-of-work provider `bd serve` builds for a server-mode
+// workspace. That matters more than the deduplication: an HTTP request and a
+// CLI command in the same workspace must reach the same server as the same
+// identity, and the only way to guarantee that is to resolve it once.
+//
+// It mirrors dolt.applyResolvedConfig, which this hand-built doltCfg path
+// bypasses.
+func resolveDoltServerConnection(ctx context.Context, beadsDir string, fileCfg *configfile.Config, doltCfg *dolt.Config) error {
+	doltCfg.ServerHost = fileCfg.GetDoltServerHost()
+	// Port 0 is fine here — auto-start will resolve it. Use the shared helper
+	// rather than DefaultConfig(...).Port: this hand-built doltCfg is handed
+	// straight to dolt.New, and a port arriving there without its source is
+	// read as a caller assertion (see ApplyResolvedServerPort).
+	dolt.ApplyResolvedServerPort(beadsDir, doltCfg)
+	doltCfg.ServerSocket = fileCfg.GetDoltServerSocket()
+	// A configured credential command targets an authenticating gateway server:
+	// run it for a short-lived token used as the connection username. Fail closed
+	// — never fall back to the static/root user when a command was configured but
+	// failed. Server mode only: embedded stores never present a username, so the
+	// command must not run (or fail) embedded opens even when the env var is set.
+	// Dolt-only: the gateway credential command mints a Dolt server
+	// username. IsSharedServerMode() forces ServerMode true with no backend
+	// guard, so non-Dolt metadata must not try to resolve a server username.
+	if doltCfg.ServerMode && fileCfg.GetBackend() == configfile.BackendDolt {
+		if _, err := dolt.ApplyGatewayCredential(ctx, fileCfg, doltCfg); err != nil {
+			return fmt.Errorf("resolving dolt credential command: %w", err)
+		}
+	}
+	if doltCfg.ServerUser == "" {
+		doltCfg.ServerUser = fileCfg.GetDoltServerUser()
+	}
+	// Use the resolved port for credential lookup — metadata.json port
+	// and runtime port can diverge (e.g., tunnel on 3308 vs local on 3307).
+	doltCfg.ServerPassword = fileCfg.GetDoltServerPasswordForPort(doltCfg.ServerPort)
+	doltCfg.ServerTLS = fileCfg.GetDoltServerTLS()
+	return nil
+}
+
+var (
+	runPostRunAutoCommit = maybeAutoCommit
+	runPostRunAutoBackup = maybeAutoBackup
+	runPostRunAutoExport = maybeAutoExport
+	runPostRunAutoPush   = maybeAutoPush
+)
+
+// isWorkingSetReconcileCommand reports whether cmd's whole purpose is to
+// reconcile the Dolt working set: "bd dolt commit" or "bd vc commit". These
+// commands are the documented recovery from a pending-migration dirty-table
+// refusal, but they also open the store, and an open runs the migration -
+// hitting that same refusal before the commit that would clear the dirty
+// state ever runs. Opening leniently (embeddeddolt.OpenForWorkingSetReconcile)
+// breaks that deadlock by skipping the migration instead of failing the open
+// (gastownhall/beads#4566).
+func isWorkingSetReconcileCommand(cmd *cobra.Command) bool {
+	if cmd.Name() != "commit" {
+		return false
+	}
+	parent := cmd.Parent()
+	if parent == nil {
+		return false
+	}
+	return parent.Name() == "dolt" || parent.Name() == "vc"
+}
+
+// isRemoteSyncCommand reports whether cmd is `bd dolt pull`: the one command
+// the #6575 data-behind migrate-gate refusal tells the operator to run.
+//
+// It is the same deadlock isWorkingSetReconcileCommand breaks for #4566, one
+// refusal over. The gate stops a data-behind clone from migrating and names
+// `bd dolt pull` as the remedy — but the pull opens the store too, so it hit
+// that refusal before it could clear its cause. On an embedded clone there is
+// no external `dolt` binary to fall back to, which left the refused clone with
+// exactly one exit: BD_ALLOW_REMOTE_MIGRATE=1, i.e. performing the migration
+// the refusal exists to prevent. Opening via embeddeddolt.OpenForRemoteSync /
+// dolt.Config.RemoteSyncOpen tolerates that ONE gate reason and nothing else.
+//
+// Deliberately just the pull, not `bd sync`: sync also pushes and can write
+// issue rows, and a write against a stale schema is the hazard the gate is
+// about. The pull only moves the commit graph, which is precisely the
+// precondition the refusal is waiting on.
+func isRemoteSyncCommand(cmd *cobra.Command) bool {
+	if cmd.Name() != "pull" {
+		return false
+	}
+	parent := cmd.Parent()
+	return parent != nil && parent.Name() == "dolt"
+}
+
+// isForcedMigrate reports whether cmd is `bd migrate` or `bd migrate schema`
+// invoked with --force: the operator confirming they are the single designated
+// migrator, so the remote-migrate gate (#4259) must not block this run's store
+// opens. Consulted in the root PersistentPreRunE because the gate fires during
+// store open (and during autoMigrateOnVersionBump), long before the migrate
+// command's own RunE.
+func isForcedMigrate(cmd *cobra.Command) bool {
+	if cmd != migrateCmd && cmd != migrateSchemaCmd {
+		return false
+	}
+	force, _ := cmd.Flags().GetBool("force")
+	return force
+}
+
+// printGlobalDatabaseConsentHint adds the one thing the gate's own block
+// cannot know: which database this invocation was aimed at. Under --global the
+// open targets `beads_global`, so the block's `bd migrate schema` would
+// migrate the PROJECT database and leave the refusal in place — the working
+// remedy is the same verb with the same flag.
+//
+// It takes the refusal because "the same verb" is not the same verb on every
+// arm: the #6575 data-behind stop on a shared store is remote-backed by
+// construction, and there the bare verb's consent is never read (see
+// schema.SharedConsentCommandForced), so retargeting the bare form would hand
+// the operator a global-scoped command that still cannot succeed. This mirrors
+// the retarget in handleRemoteMigrateGateJSON. A nil error keeps the
+// pre-existing bare-verb wording.
+func printGlobalDatabaseConsentHint(w io.Writer, e *schema.RemoteMigrateGateError) {
+	if !globalFlag {
+		return
+	}
+	consent := schema.SharedConsentCommandGlobal
+	if e != nil && e.IsDataBehind() && e.Shared {
+		consent = schema.SharedConsentCommandForcedGlobal
+	}
+	fmt.Fprintf(w,
+		"\n  This command targeted the global database (--global), so run the\n"+
+			"  migrate step with the same flag:\n"+
+			"        %s\n",
+		consent)
+}
+
+// renderTypedOpenError prints the actionable block for the store-open failures
+// that carry one, honoring --json, and reports whether it handled err. A false
+// return means the caller should fall back to its own generic message.
+//
+// Every open path needs this — the Dolt store, the proxied unit-of-work
+// provider, and `bd serve`'s startup. The proxied one used to render every
+// failure as `%v` inside "failed to open uow provider", which turned a
+// multi-line rebuild or migrate-consent guide into one truncated line.
+func renderTypedOpenError(err error) bool {
+	// Schema skew gets dedicated UX with actionable rebuild instructions.
+	var skewErr *schema.SchemaSkewError
+	if errors.As(err, &skewErr) {
+		if jsonOutput {
+			handleSchemaSkewJSON(skewErr)
+		} else {
+			fmt.Fprint(os.Stderr, skewErr.UserMessage())
+		}
+		return true
+	}
+	// #4259 / #5920: the migrate gate blocks a silent in-place migration and
+	// tells the operator to migrate, adopt, or consent.
+	var gateErr *schema.RemoteMigrateGateError
+	if errors.As(err, &gateErr) {
+		if jsonOutput {
+			handleRemoteMigrateGateJSON(gateErr)
+		} else {
+			fmt.Fprint(os.Stderr, gateErr.UserMessage())
+			printGlobalDatabaseConsentHint(os.Stderr, gateErr)
+		}
+		return true
+	}
+	return false
+}
+
+// isSchemaMigrateVerb reports whether cmd is `bd migrate schema` — the one
+// invocation in which the operator asked for a schema migration by name. That
+// request is the consent the shared-store gate wants for a database with no
+// remote (#5920); see schema.SetSharedMigrateConsent.
+//
+// Deliberately just this one command, not the `bd migrate` tree. Bare
+// `bd migrate` reconciles version/repo-id/clone-id metadata and never applies
+// a migration itself, and its flag modes are further from schema work still:
+// `bd migrate --update-repo-id` is repo-fingerprint surgery after a git remote
+// change, and treating it as consent would let a repo-ID update promote the
+// schema for every co-resident client as a side effect. `bd migrate sync`,
+// `bd migrate hooks`, and the mode-switch verbs consent to nothing either.
+// The operator who does want to migrate has the verb this names, and
+// `--force` still unlocks from either migrate command.
+func isSchemaMigrateVerb(cmd *cobra.Command) bool {
+	return cmd == migrateSchemaCmd
+}
+
+// forcedMigratePreviewFlag returns the name of a preview flag (--dry-run,
+// --inspect) that conflicts with --force on a forced migrate invocation, or ""
+// when there is no conflict. The combination must be rejected BEFORE the store
+// opens: with the gate override set, the open itself applies pending schema
+// migrations, so the preview flag would be honored only after the destructive
+// work it exists to prevent had already happened.
+func forcedMigratePreviewFlag(cmd *cobra.Command) string {
+	for _, name := range []string{"dry-run", "inspect"} {
+		if v, err := cmd.Flags().GetBool(name); err == nil && v {
+			return name
+		}
+	}
+	return ""
+}
+
+// applyNoColorFlag disables colorized output when --no-color is set.
+// Complements the NO_COLOR / CLICOLOR=0 env detection in package ui,
+// giving callers a per-invocation override.
+func applyNoColorFlag() {
+	if noColorFlag {
+		ui.DisableColors()
+	}
+}
+
 // loadBeadsEnvFile loads .beads/.env into process environment for per-project
-// Dolt credentials (GH#2520). Uses gotenv.Load which is non-overriding —
+// Dolt credentials (GH#2520). Imports are non-overriding —
 // existing shell env vars always take precedence.
 // Safe to call with an empty beadsDir (no-op).
 func loadBeadsEnvFile(beadsDir string) {
@@ -162,7 +479,28 @@ func loadBeadsEnvFile(beadsDir string) {
 	if _, err := os.Stat(envFile); err != nil {
 		return
 	}
-	_ = gotenv.Load(envFile)
+	env, err := gotenv.Read(envFile)
+	if err != nil {
+		return
+	}
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		value := env[key]
+		if ok, reason := creds.AllowedProjectEnvKey(key); !ok {
+			fmt.Fprintf(os.Stderr, "beads: ignoring %s from .beads/.env (%s)\n", key, reason)
+			continue
+		}
+		upper := strings.ToUpper(strings.TrimSpace(key))
+		if _, exists := os.LookupEnv(key); !exists {
+			if _, upperExists := os.LookupEnv(upper); !upperExists {
+				_ = os.Setenv(upper, value)
+			}
+		}
+	}
 }
 
 func logConfigDiscovery(beadsDir, reason string) {
@@ -259,14 +597,24 @@ func warnSharedServerEmbeddedMismatch(cfg *configfile.Config) {
 // loadServerModeFromBeadsDir loads the storage mode (embedded vs server vs
 // proxied-server) from the given beads directory's metadata.json so that
 // usesSQLServer() and usesProxiedServer() return the correct values.
-func loadServerModeFromBeadsDir(beadsDir string) {
+//
+// A metadata.json that exists but cannot be loaded is a hard error: treating
+// it like an absent file silently flips server-mode deployments onto the
+// embedded store, where every query answers from an empty relic with exit 0
+// (false-empty). Absent metadata.json (cfg == nil) keeps the fresh-repo
+// embedded default.
+func loadServerModeFromBeadsDir(beadsDir string) error {
 	if beadsDir == "" {
-		return
+		return nil
 	}
-	cfg, err := configfile.Load(beadsDir)
-	if err != nil || cfg == nil {
-		return
+	cfg, err := configfile.LoadForDiscovery(beadsDir)
+	if err != nil {
+		return fmt.Errorf("load %s: %w; no storage database was opened or modified (storage mode unknown; data commands refuse to fall back to the embedded store)", configfile.ConfigPath(beadsDir), err)
 	}
+	// Absent metadata.json keeps the fresh-repo embedded default unless
+	// env/config.yaml supply a remote host (GH#3545) — inference must not
+	// depend on metadata existing.
+	cfg = normalizeLoadedConfig(cfg)
 	warnSharedServerEmbeddedMismatch(cfg)
 	psm := cfg.IsDoltProxiedServerMode()
 	sm := cfg.IsDoltServerMode()
@@ -280,14 +628,15 @@ func loadServerModeFromBeadsDir(beadsDir string) {
 		cmdCtx.ServerMode = sm
 		cmdCtx.ProxiedServerMode = psm
 	}
+	return nil
 }
 
 // loadServerModeFromConfig loads the storage mode (embedded vs server vs
 // proxied-server) from metadata.json so that usesSQLServer() and
 // usesProxiedServer() return the correct values. Called for commands that
 // skip full DB init but still need to know the mode.
-func loadServerModeFromConfig() {
-	loadServerModeFromBeadsDir(beads.FindBeadsDir())
+func loadServerModeFromConfig() error {
+	return loadServerModeFromBeadsDir(beads.FindBeadsDir())
 }
 
 func preserveRedirectSourceDatabase(beadsDir string) {
@@ -361,7 +710,7 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 	// and never touches the caller's own store, so requiring a local store
 	// here would only stop the one command whose whole job is to run when
 	// there is no local store at all.
-	if unifyCommandCanRunWithoutStore(cmd) {
+	if unifyCommandCanRunWithoutStore(cmd) || upgradeCommandCanRunWithoutStore(cmd) {
 		return true
 	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "config" {
@@ -464,7 +813,13 @@ func prepareSelectedCommandContext(beadsDir string, loadEnv bool) {
 		fmt.Fprintf(os.Stderr, "Warning: failed to reinitialize config for selected beads dir: %v\n", err)
 	}
 	config.CheckBeadsDirPermissions(beadsDir)
-	loadServerModeFromBeadsDir(beadsDir)
+	if err := loadServerModeFromBeadsDir(beadsDir); err != nil {
+		// Warn, don't fatal: this context also serves no-DB commands —
+		// doctor, init, bootstrap, config — which are exactly the repair
+		// paths for a corrupt metadata.json. Data commands stay protected
+		// by the hard error at store init and in the store factories.
+		fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+	}
 }
 
 func prepareSelectedNoDBContext(beadsDir string) {
@@ -490,7 +845,7 @@ func refreshBoundCommandConfig(cmd *cobra.Command) {
 		readonlyMode = config.GetBool("readonly")
 	}
 	if !root.PersistentFlags().Changed("actor") {
-		actor = config.GetString("actor")
+		actor = resolveConfiguredActor()
 	}
 	if !root.PersistentFlags().Changed("dolt-auto-commit") {
 		doltAutoCommit = config.GetString("dolt.auto-commit")
@@ -524,6 +879,22 @@ func resolveCommandBeadsDir(dbPath string) string {
 	// No candidate matched — fall back to parent directory of the db path.
 	// This handles bootstrap/init where no metadata.json exists yet.
 	return filepath.Dir(dbPath)
+}
+
+// resolveConfiguredActor returns the actor implied by env/config when no
+// explicit --actor flag was passed, honoring the documented priority
+// BEADS_ACTOR > BD_ACTOR (deprecated) > config.yaml `actor`.
+//
+// viper's AutomaticEnv binds the deprecated BD_ACTOR to the "actor" key (env
+// prefix "BD"), and it is consulted ahead of any explicit binding — so
+// config.GetString("actor") alone returns BD_ACTOR's value even when
+// BEADS_ACTOR is also set, silently letting the deprecated alias win (GH#4645).
+// Check BEADS_ACTOR explicitly first so the primary override outranks it.
+func resolveConfiguredActor() string {
+	if beadsActor := os.Getenv("BEADS_ACTOR"); beadsActor != "" {
+		return beadsActor
+	}
+	return config.GetString("actor")
 }
 
 // getActorWithGit returns the actor for audit trails with git config fallback.
@@ -590,7 +961,8 @@ func init() {
 
 	// Register persistent flags
 	rootCmd.PersistentFlags().StringVarP(&changeDir, "directory", "C", "", "Change to this directory before running the command (like git -C)")
-	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db)")
+	rootCmd.PersistentFlags().StringVar(&dbPath, "db", "", "Database path (default: auto-discover .beads/*.db). In proxied-server mode, a value that isn't an existing path is treated as a database name override (see --database)")
+	rootCmd.PersistentFlags().StringVar(&databaseFlag, "database", "", "Run against a different server database for this invocation, without changing the project's configured database (proxied-server mode only)")
 	rootCmd.PersistentFlags().StringVar(&actor, "actor", "", "Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "Output in JSON format")
 	rootCmd.PersistentFlags().String("format", "", "Output format (json). Alias for --json")
@@ -598,12 +970,14 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&sandboxMode, "sandbox", false, "Sandbox mode: disables Dolt auto-push")
 	rootCmd.PersistentFlags().BoolVar(&readonlyMode, "readonly", false, "Read-only mode: block write operations (for worker sandboxes)")
 	rootCmd.PersistentFlags().BoolVar(&globalFlag, "global", false, "Use the global shared-server database (beads_global)")
-	rootCmd.PersistentFlags().StringVar(&doltAutoCommit, "dolt-auto-commit", "", "Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then. SIGTERM/SIGHUP flush pending batch commits. Default: off. Override via config key dolt.auto-commit")
-	rootCmd.PersistentFlags().BoolVar(&profileEnabled, "profile", false, "Generate CPU profile for performance analysis")
+	rootCmd.PersistentFlags().StringVar(&doltAutoCommit, "dolt-auto-commit", "", "Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then (a live batch-mode bd process also flushes on SIGTERM/SIGHUP, except in proxied-server mode, where bd dolt commit is the only flush point). In proxied-server mode the deferral covers the writes the CLI makes on that route, including config and version metadata; explicit commit points (bd batch, bd mol bond/pour/squash, bd mol wisp create, and the wisp half of bd mol burn) still commit, and a bd serve process on the same database is unaffected. Default: on. Override via config key dolt.auto-commit")
+	rootCmd.PersistentFlags().BoolVar(&cpuProfileEnabled, "cpu-profile", false, "Generate CPU profile for performance analysis")
+	rootCmd.PersistentFlags().StringVar(&memProfilePath, "mem-profile", "", "Write heap profile to FILE on exit (also respects BEADS_MEM_PROFILE)")
 	rootCmd.PersistentFlags().BoolVarP(&verboseFlag, "verbose", "v", false, "Enable verbose/debug output")
 	rootCmd.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, "Suppress non-essential output (errors only)")
 	rootCmd.PersistentFlags().BoolVar(&ignoreSchemaSkew, "ignore-schema-skew", false, "Proceed despite forward schema drift (some queries may fail)")
 	rootCmd.PersistentFlags().BoolVar(&namespaceWide, "wide", false, "Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.")
+	rootCmd.PersistentFlags().BoolVar(&noColorFlag, "no-color", false, "Disable color output (also: NO_COLOR=1 or CLICOLOR=0)")
 
 	// Add --version flag to root command (same behavior as version subcommand)
 	rootCmd.Flags().BoolP("version", "V", false, "Print version information")
@@ -678,6 +1052,30 @@ func restoreChangeDirSelection() {
 	changeDirEnvSnapshot = nil
 }
 
+func guardLegacyNoStoreCommand(cmd *cobra.Command, beadsDir string) error {
+	if cmd == nil || !cmd.Runnable() || cmd.Parent() == nil || cmd == versionCmd ||
+		cmd == doctorCmd || cmd == initCmd || cmd == bootstrapCmd ||
+		cmd == legacySQLiteCmd {
+		return nil
+	}
+	if cmd == schemaCmd && cmd.Parent() != nil && cmd.Parent().Parent() == nil {
+		return nil
+	}
+	for current := cmd; current != nil; current = current.Parent() {
+		if current == metricsCmd {
+			return nil
+		}
+	}
+	switch cmd.Name() {
+	case "__complete", "__completeNoDesc", "bash", "completion", "fish", "help", "powershell", "zsh":
+		return nil
+	}
+	if beadsDir == "" {
+		return guardUndiscoveredLegacyWorkspace()
+	}
+	return guardLegacyUpgradeWorkspace(beadsDir)
+}
+
 var rootCmd = &cobra.Command{
 	Use:   "bd",
 	Short: "bd - Dependency-aware issue tracker",
@@ -691,12 +1089,14 @@ var rootCmd = &cobra.Command{
 		// No subcommand - show help
 		_ = cmd.Help() // Help() always returns nil for cobra commands
 	},
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) (retErr error) {
 		// A frozen or moved brain host refuses the commands it must not run
 		// (brain host promote); first, before any state is touched.
 		if err := hostRoleGate(cmd); err != nil {
 			return err
 		}
+
+		applyNoColorFlag()
 
 		// Initialize CommandContext to hold runtime state (replaces scattered globals)
 		initCommandContext()
@@ -710,20 +1110,30 @@ var rootCmd = &cobra.Command{
 		writeRetryActive.Store(isWriteVerb(cmd, args))
 		dolt.SetBreakerRejectRetry(breakerRejectRetryPolicy)
 		commandMayEmptyJSONLExport.Store(false)
+		commandDeletedIssueIDs.reset()
 		commandDidExplicitDoltCommit = false
 		commandDidWriteTipMetadata = false
 		commandTipIDsShown = make(map[string]struct{})
+		commandFreeze = migration.Result{}
 
 		// Set up signal-aware context with batch commit flush on shutdown.
 		// Unlike signal.NotifyContext, this also handles SIGHUP and flushes
 		// pending batch commits before canceling the context.
-		rootCtx, rootCancel = setupGracefulShutdown()
+		//
+		// Publish through setRootContext, not a bare assignment to the
+		// globals: cmdCtx exists by now (initCommandContext above), so
+		// getRootContext() reads cmdCtx.RootCtx, and the commands that
+		// return early from this hook -- every skipsStoreInit command,
+		// migrate among them -- never reach syncCommandContext to have it
+		// backfilled. A bare assignment leaves those commands reading a nil
+		// per-command context and losing Ctrl-C entirely.
+		setRootContext(setupGracefulShutdown())
 
-		// Initialize OTel (no-op unless BD_OTEL_METRICS_URL or BD_OTEL_STDOUT=true).
-		// Must run before any DB access so SQL spans nest under command spans.
-		if err := telemetry.Init(rootCtx, "bd", Version); err != nil {
-			debug.Logf("warning: telemetry init failed: %v", err)
-		}
+		// Initialize OTel. Telemetry is opt-in — initTelemetry is a noop
+		// unless BD_OTEL_ENABLED=true or a legacy BD_OTEL_* selector is set.
+		// Must run before any DB access so SQL spans nest under the command
+		// span.
+		initTelemetry(rootCtx, Version)
 
 		// Materialize the user-level metrics config only when metrics are
 		// actually enabled. When metrics are disabled (BD_DISABLE_METRICS or a
@@ -749,13 +1159,7 @@ var rootCmd = &cobra.Command{
 
 		// Start root span for this command. rootCtx now carries the span, so
 		// all downstream DB and AI calls become child spans automatically.
-		rootCtx, commandSpan = telemetry.Tracer("bd").Start(rootCtx, "bd.command."+cmd.Name(),
-			oteltrace.WithAttributes(
-				attribute.String("bd.command", cmd.Name()),
-				attribute.String("bd.version", Version),
-				attribute.String("bd.args", strings.Join(os.Args[1:], " ")),
-			),
-		)
+		rootCtx, commandSpan = startCommandSpan(rootCtx, cmd.Name(), Version, os.Args[1:], secretFlagTokens(cmd))
 
 		// Apply verbosity flags early (before any output)
 		debug.SetVerbose(verboseFlag)
@@ -814,6 +1218,18 @@ var rootCmd = &cobra.Command{
 				WasSet bool
 			}{readonlyMode, true}
 		}
+		var dbNameFromDBFlag string
+		if cmd.Name() != "init" && cmd.Root().PersistentFlags().Changed("db") && dbPath != "" &&
+			dbidentifier.ValidateIdentifier(dbPath) == nil {
+			if _, statErr := os.Stat(dbPath); statErr != nil {
+				if !os.IsNotExist(statErr) {
+					return HandleError("--db %q: %v", dbPath, statErr)
+				}
+				dbNameFromDBFlag = dbPath
+				dbPath = ""
+			}
+		}
+
 		if !cmd.Root().PersistentFlags().Changed("db") && dbPath == "" &&
 			os.Getenv("BEADS_DB") == "" && os.Getenv("BD_DB") == "" && os.Getenv("BEADS_DIR") == "" {
 			dbPath = config.GetString("db")
@@ -824,7 +1240,7 @@ var rootCmd = &cobra.Command{
 			}{dbPath, true}
 		}
 		if !cmd.Root().PersistentFlags().Changed("actor") && actor == "" {
-			actor = config.GetString("actor")
+			actor = resolveConfiguredActor()
 		} else if cmd.Root().PersistentFlags().Changed("actor") {
 			flagOverrides["actor"] = struct {
 				Value  interface{}
@@ -857,6 +1273,12 @@ var rootCmd = &cobra.Command{
 		// GH#1093: Check noDbCommands BEFORE expensive operations
 		// to avoid spawning git subprocesses for simple commands
 		// like "bd version" that don't need database access.
+		//
+		// A command can also opt out of store init by setting the
+		// skipStoreAnnotation on its Command literal instead of being listed
+		// here (see commandOptsOutOfStore) — useful for commands defined in
+		// other files or build-tagged variants that can't edit this list. The
+		// "doctor" command uses that seam and so is intentionally absent below.
 		noDbCommands := []string{
 			"__complete",       // Cobra's internal completion command (shell completions work without db)
 			"__completeNoDesc", // Cobra's completion without descriptions (used by fish)
@@ -865,7 +1287,8 @@ var rootCmd = &cobra.Command{
 			"completion",
 			"context", // reads config files directly, does not need DB open
 			"codex-hook",
-			"doctor",
+			"cursor-hook", // shells out to `bd prime`; never opens the store itself
+			// "doctor" opts out via skipStoreAnnotation on its Command literal.
 			"dolt", // bare "bd dolt" shows help only; subcommands handled below
 			"fish",
 			"formula", // parser-only subcommands; add a store-needed guard before adding DB-backed formula subcommands
@@ -896,6 +1319,15 @@ var rootCmd = &cobra.Command{
 		// silently skipped if "remote" were ever added to noDbCommands.
 		needsStoreDoltGrandchildren := []string{"remote"}
 
+		// bd-m7zzd: "human" is listed in noDbCommands for its bare help
+		// screen, but list/respond/dismiss/stats are DB-backed. Without this
+		// they skip store init entirely, which direct mode papered over by
+		// lazily opening a store via ensureStoreActive() — and which in
+		// proxied mode left no UOW provider for the proxied duals.
+		needsStoreHumanSubcommands := []string{"list", "respond", "dismiss", "stats"}
+
+		skipStoreMigrateSubcommands := []string{"from-server-to-proxied-server", "from-proxied-server-to-server", "from-shared-server-to-proxied-server", "from-proxied-server-to-shared-server"}
+
 		// Check both the command name and parent command name for subcommands
 		cmdName := cmd.Name()
 		isSubcommand := cmd.Parent() != nil && cmd.Parent().Name() != "bd"
@@ -906,6 +1338,10 @@ var rootCmd = &cobra.Command{
 				// GH#2042: dolt push/pull/commit need the store — fall through to init
 			} else if slices.Contains(needsStoreDoltGrandchildren, parentName) {
 				// GH#2224: dolt remote add/list/remove need the store — fall through to init
+			} else if parentName == "human" && slices.Contains(needsStoreHumanSubcommands, cmdName) {
+				// bd-m7zzd: human list/respond/dismiss/stats need the store — fall through to init
+			} else if parentName == "migrate" && slices.Contains(skipStoreMigrateSubcommands, cmdName) {
+				skipsStoreInit = true
 			} else if slices.Contains(noDbCommands, parentName) {
 				skipsStoreInit = true
 			}
@@ -950,6 +1386,12 @@ var rootCmd = &cobra.Command{
 			skipsStoreInit = true
 		}
 
+		// 'brain upgrade' migrates the server's databases itself; opening the
+		// caller's store with this binary would be a migration attempt of its own.
+		if upgradeCommandCanRunWithoutStore(cmd) {
+			skipsStoreInit = true
+		}
+
 		// Skip for root command with no subcommand (just shows help)
 		if cmd.Parent() == nil && cmdName == cmd.Use {
 			skipsStoreInit = true
@@ -957,6 +1399,15 @@ var rootCmd = &cobra.Command{
 
 		// Also skip for --version flag on root command (cmdName would be "bd")
 		if v, _ := cmd.Flags().GetBool("version"); v {
+			skipsStoreInit = true
+		}
+
+		// A command may also opt out of store init by declaring the
+		// bd:skip_store annotation (see commandOptsOutOfStore), instead of being
+		// added to the noDbCommands list above. Commands defined in other files
+		// or build-tagged variants use this to exempt themselves without editing
+		// the central list.
+		if commandOptsOutOfStore(cmd) {
 			skipsStoreInit = true
 		}
 
@@ -972,11 +1423,43 @@ var rootCmd = &cobra.Command{
 		// Rebind them to the selected workspace so explicit --db / BEADS_DB
 		// targets behave consistently across doctor/bootstrap/context/dolt.
 		if skipsStoreInit {
-			prepareSelectedNoDBContext(selectedNoDBBeadsDir(cmd))
+			beadsDir := selectedNoDBBeadsDir(cmd)
+			prepareSelectedNoDBContext(beadsDir)
 			refreshBoundCommandConfig(cmd)
-			if beadsDir := os.Getenv("BEADS_DIR"); beadsDir == "" {
+			if os.Getenv("BEADS_DIR") == "" {
 				loadEnvironment()
-				loadServerModeFromConfig()
+				if err := loadServerModeFromConfig(); err != nil {
+					// Warn, don't fatal: skipsStoreInit commands (doctor,
+					// init, bootstrap, version, ...) never select a store,
+					// and several of them are the repair path for the very
+					// corruption being reported.
+					fmt.Fprintf(os.Stderr, "warning: %v\n", err)
+				}
+			}
+			if beadsDir == "" {
+				beadsDir = beads.FindBeadsDir()
+			}
+			if cmdName == "doctor" && usesProxiedServer() {
+				// Refuse only on a real refusal. The registry validator
+				// returns nil for doctor subcommands, and returning early on
+				// that would skip the legacy-store guard and autocommit-mode
+				// resolution every other skipsStoreInit command still runs.
+				if err := validateProxyRegistryBeforeProvider(cmd, resolveProxiedTopology(beadsDir)); err != nil {
+					return err
+				}
+			}
+			if err := guardLegacyNoStoreCommand(cmd, beadsDir); err != nil {
+				isMigrationCommand := false
+				for current := cmd; current != nil; current = current.Parent() {
+					if current.Name() == "migrate" {
+						isMigrationCommand = true
+						break
+					}
+				}
+				if isMigrationCommand {
+					return HandleProxyCapabilityError(&ProxyCapabilityError{Code: "proxy.migrate.invalid_state", Message: err.Error(), ExitCode: 1, Mutates: false})
+				}
+				return HandleError("%v", err)
 			}
 			if _, err := getDoltAutoCommitMode(); err != nil {
 				return HandleError("%v", err)
@@ -988,7 +1471,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Performance profiling setup
-		if profileEnabled {
+		if cpuProfileEnabled {
 			timestamp := time.Now().Format("20060102-150405")
 			if f, _ := os.Create(fmt.Sprintf("bd-profile-%s-%s.prof", cmd.Name(), timestamp)); f != nil {
 				profileFile = f
@@ -1018,9 +1501,35 @@ var rootCmd = &cobra.Command{
 
 		if dbPath == "" {
 			if bd := beads.FindBeadsDir(); bd != "" {
-				if cfg, _ := configfile.Load(bd); cfg != nil && cfg.IsDoltProxiedServerMode() {
+				// Bind the discovered target before admission so the legacy guard
+				// honors its config.yaml (including dolt.shared-server), not the
+				// caller's. This setup is read-only: metadata discovery below still
+				// uses LoadForDiscovery and cannot migrate config.json.
+				prepareSelectedCommandContext(bd, true)
+				refreshBoundCommandConfig(cmd)
+				if guardErr := guardLegacyUpgradeWorkspace(bd); guardErr != nil {
+					return HandleError("%v", guardErr)
+				}
+				cfg, cfgErr := configfile.LoadForDiscovery(bd)
+				if cfgErr != nil || cfg != nil && (cfg.IsDoltProxiedServerMode() ||
+					registeredBackendWorkspaceIsBeadsDir(cfg) ||
+					!configfile.IsSupportedBackend(cfg.Backend)) {
+					// Proxied-server, registered remote, and removed-backend
+					// workspaces may have no local Dolt database file. Invalid
+					// or unknown metadata likewise must reach config validation
+					// instead of becoming a generic "no database" result.
+					dbPath = bd
+				} else if cfg == nil && cfgErr == nil &&
+					configfile.DefaultConfig().HostImpliesServerMode() {
+					// Metadata-less workspace whose server lives at a
+					// remote host named by BEADS_DOLT_SERVER_HOST or
+					// config.yaml (GH#3545): there is no local database
+					// directory to discover, so route the .beads dir as
+					// a server workspace instead of "no database found".
 					dbPath = bd
 				}
+			} else if guardErr := guardUndiscoveredLegacyWorkspace(); guardErr != nil {
+				return HandleError("%v", guardErr)
 			}
 		}
 
@@ -1046,35 +1555,120 @@ var rootCmd = &cobra.Command{
 					return nil
 				}
 
-				if cmd.Name() != "import" && cmd.Name() != "setup" {
+				// GH#3686: `bd create --repo=<path-or-URL>` targets a different
+				// repo's workspace. Without this, PreRun exits with "no beads
+				// database found" before create.go's --repo handling runs, even
+				// when the target has a valid workspace of its own. Resolve
+				// local targets here so store initialization points at them.
+				// Remote --repo URLs need no local database at all: create.go
+				// opens the remote store itself via the remote cache and never
+				// touches the local `store` global on that path (a gap left by
+				// #4615, which only handled local paths), so skip local
+				// discovery entirely instead of falling through to the "no
+				// beads database found" exit below.
+				if cmd.Name() == "create" && cmd.Flags().Changed("repo") {
+					if repoVal, _ := cmd.Flags().GetString("repo"); repoVal != "" {
+						if remotecache.IsRemoteURL(repoVal) {
+							return nil
+						}
+						targetBeadsDir := filepath.Join(routing.ExpandPath(repoVal), ".beads")
+						dbPath = utils.CanonicalizePath(filepath.Join(targetBeadsDir, beads.CanonicalDatabaseName))
+					}
+				}
+
+				if dbPath == "" && cmd.Name() != "import" && cmd.Name() != "setup" {
 					// No database found - provide context-aware error message
 					fmt.Fprintf(os.Stderr, "Error: no beads database found\n")
 					fmt.Fprintf(os.Stderr, "Hint: %s\n", diagHint())
 					fmt.Fprintf(os.Stderr, "      or set BEADS_DIR to point to your .beads directory\n")
-					metrics.CloseAndFlush()
-					os.Exit(1)
+					return SilentExit()
 				}
-				// For import/setup commands, set default database path
-				// Invariant: dbPath must always be absolute. Use CanonicalizePath for OS-agnostic
-				// handling (symlinks, case normalization on macOS).
-				//
-				// IMPORTANT: Use FindBeadsDir() to get the correct .beads directory,
-				// which follows redirect files. Without this, a redirected .beads
-				// would create a local database instead of using the redirect target.
-				// (GH#bd-0qel)
-				targetBeadsDir := beads.FindBeadsDir()
-				if targetBeadsDir == "" {
-					targetBeadsDir = ".beads"
+
+				if dbPath == "" {
+					// For import/setup commands, set default database path
+					// Invariant: dbPath must always be absolute. Use CanonicalizePath for OS-agnostic
+					// handling (symlinks, case normalization on macOS).
+					//
+					// IMPORTANT: Use FindBeadsDir() to get the correct .beads directory,
+					// which follows redirect files. Without this, a redirected .beads
+					// would create a local database instead of using the redirect target.
+					// (GH#bd-0qel)
+					targetBeadsDir := beads.FindBeadsDir()
+					if targetBeadsDir == "" {
+						// An explicit BEADS_DIR is authoritative even
+						// before it holds project files.
+						targetBeadsDir = beads.ExplicitBeadsDir()
+					}
+					if targetBeadsDir == "" {
+						targetBeadsDir = ".beads"
+					}
+					dbPath = utils.CanonicalizePath(filepath.Join(targetBeadsDir, beads.CanonicalDatabaseName))
 				}
-				dbPath = utils.CanonicalizePath(filepath.Join(targetBeadsDir, beads.CanonicalDatabaseName))
 			}
 		}
 
 		beadsDir := resolveCommandBeadsDir(dbPath)
 		prepareSelectedCommandContext(beadsDir, true)
 		refreshBoundCommandConfig(cmd)
+		if guardErr := guardLegacyUpgradeWorkspace(beadsDir); guardErr != nil {
+			return HandleError("%v", guardErr)
+		}
+
+		// Workspace operation gate: every command that reaches this point
+		// will open the store (the skipsStoreInit early return is above),
+		// so take the workspace + physical-root gates now, in the final
+		// mode (SHARED for normal commands, EXCLUSIVE for bd backup
+		// restore — there is no upgrade path). See workspace_gate.go for
+		// the fail-open/fail-closed posture. The handle is released in
+		// PersistentPostRunE after store close; if this PreRunE fails
+		// later, cobra never runs PostRunE, so the deferred release below
+		// covers the PreRunE error paths after acquisition.
+		if err := acquireCommandWorkspaceGates(rootCtx, cmd, beadsDir); err != nil {
+			return err
+		}
+		defer func() {
+			if retErr != nil {
+				// Gate-outlives-store: a PreRunE failure AFTER the store
+				// opened (cobra will skip PostRunE) must close the
+				// store/provider before the gates drop, or maintenance
+				// could start against un-quiesced storage.
+				closeStoreBeforeGateRelease()
+				releaseWorkspaceGates()
+			}
+		}()
 		if _, err := getDoltAutoCommitMode(); err != nil {
 			return HandleError("%v", err)
+		}
+
+		// Resolve the backend before version tracking, migration, server startup, or
+		// any store construction. PostgreSQL/MySQL values are retained as metadata
+		// tombstones so an existing workspace fails closed instead of falling through
+		// to a new, empty Dolt database.
+		cfg, cfgErr := configfile.Load(beadsDir)
+		if cfgErr != nil {
+			return HandleError("failed to load beads config from %s: %v (refusing to fall back to the embedded store; fix or restore metadata.json and retry)", beadsDir, cfgErr)
+		}
+		if backendErr := validateConfiguredBackend(cfg, beadsDir); backendErr != nil {
+			return HandleError("%v", backendErr)
+		}
+		// Reject proxy capability combinations before any workspace side effect
+		// (version tracking, migration, auto-start, or provider construction).
+		// Two validators, one for each half of the policy: flag-keyed rules and
+		// the path-keyed capability registry.
+		if cfg != nil && cfg.IsDoltProxiedServerMode() {
+			if err := validateProxyCapabilitiesBeforeProvider(cmd); err != nil {
+				return err
+			}
+			if err := validateProxyRegistryBeforeProvider(cmd, resolveProxiedTopology(beadsDir)); err != nil {
+				return err
+			}
+		}
+		// The proxied provider cannot guarantee strict read-only semantics. Refuse
+		// before provider construction so no connection, migration, or mutation
+		// is attempted; expose the same stable capability code as other proxy
+		// front-door refusals.
+		if readonlyMode && cfg != nil && cfg.IsDoltProxiedServerMode() {
+			return HandleProxyCapabilityError(AssertProxyCapability(ProxyModeProxied, ProxyCapReadonly))
 		}
 
 		// Set actor for audit trail
@@ -1084,15 +1678,105 @@ var rootCmd = &cobra.Command{
 			commandSpan.SetAttributes(attribute.String("bd.actor", actor))
 		}
 
-		// Track bd version changes
-		// Best-effort tracking - failures are silent
-		trackBdVersion()
-
-		// Check if this is a read-only command (GH#804)
-		// Read-only commands open the store in read-only mode to avoid modifying
-		// the database (which breaks file watchers).
+		// Check if this is a read-only command (GH#804) or an explicitly
+		// non-mutating preview. Both must open the store read-only: otherwise
+		// schema initialization runs before the command's RunE can honor
+		// --dry-run/--inspect or reject invalid arguments. Resolved here,
+		// ahead of version tracking, because that is the first step a preview
+		// has to change.
+		previewMode := isPreviewCommand(cmd)
+		policy := effectiveRootStorePolicy(cmd.Name(), readonlyMode)
+		// A process started by a hook (brain hooks.d) is always read-only:
+		// hooks observe and may refuse but never write.
 		hookAncestry = hooksdef.AncestorRunningHook(beadsDir)
-		useReadOnly := isReadOnlyCommand(cmd.Name()) || insideHook()
+		useReadOnly := policy.readOnly || previewMode || insideHook()
+
+		// dc-6jaq: consult the migration freeze marker here, before any of
+		// this hook's own store-touching side effects — trackBdVersion below
+		// (writes .local_version), autoMigrateOnVersionBump (opens its own
+		// store connection and can apply a schema migration), and
+		// maybeAutoImportJSONL (imports into the store when empty) all run
+		// before the command's RunE, where CheckReadonly would otherwise
+		// catch a frozen write first. By then the most dangerous writes this
+		// gate exists to prevent would already be done. useReadOnly already
+		// carries the exact classification this early gate must skip (strict
+		// --readonly, or a command on the read-only allowlist) — reusing it
+		// here means there is no second, independently-maintained list of
+		// "write" commands to drift out of sync with the one useReadOnly is
+		// built from. An explicit --dry-run/--inspect preview also sets
+		// useReadOnly and so skips this early gate the same way, but is NOT
+		// exempt overall: the per-command chokepoint checks again once RunE
+		// is reached, with no preview awareness — CheckReadonly for the ~120
+		// commands that call it, and runImport's own call for `bd import
+		// --dry-run`, which is not one of them. So a preview on a frozen
+		// workspace still exits ExitMigrationFrozen there, fail-closed, same
+		// as strict --readonly already blocks `create --dry-run` today.
+		// Returning the refusal rather than exiting is load-bearing: the
+		// gates acquired above are released by this hook's deferred cleanup,
+		// which os.Exit would skip.
+		//
+		// One lookup answers the whole invocation: the walk is a stat per
+		// ancestor of both the cwd and the resolved workspace, and resolving
+		// it twice a statement apart would not only pay for it twice but let
+		// the two readings disagree about a marker that appeared or vanished
+		// in between (write allowed but maintenance skipped, or the reverse).
+		// PostRunE reads the same answer via commandFreeze.
+		commandFreeze = migration.Find(beadsDir)
+		if !useReadOnly {
+			if err := migrationFreezeGate(cmd, strings.TrimPrefix(cmd.CommandPath(), cmd.Root().Name()+" "), commandFreeze); err != nil {
+				return err
+			}
+		}
+
+		// dc-6jaq (review round 2, ask #1): a command classified read-only —
+		// or an explicit preview — is deliberately allowed past the gate
+		// above; diagnosis must keep working during a freeze. But
+		// trackBdVersion/autoMigrateOnVersionBump below are this hook's OWN
+		// writes against the (possibly frozen) store, run regardless of the
+		// command's own classification — so "the command is a read" must not
+		// imply "these side effects may still run". Reproduced pre-fix:
+		// freeze the workspace, seed .local_version with a stale version, run
+		// `bd list` — exit 0 (correct, it's a read), but .local_version was
+		// silently rewritten mid-freeze anyway. Skip both calls under an
+		// active freeze without blocking the read itself. Reuses the single
+		// lookup resolved above rather than repeating the walk.
+		frozenForMaintenance := policy.runMaintenance && commandFreeze.Frozen()
+
+		// Track bd version changes unless strict readonly forbids repository mutation.
+		// Best-effort tracking - failures are silent.
+		//
+		// A preview detects the change but must not consume it: .local_version
+		// is the one-shot signal autoMigrateOnVersionBump reads, and a preview
+		// skips that reconciliation (see below). See trackBdVersionPreview.
+		if policy.runMaintenance && !frozenForMaintenance {
+			if previewMode {
+				trackBdVersionPreview()
+			} else {
+				trackBdVersion()
+			}
+		}
+
+		// If the operator passed --force on `bd migrate` or `bd migrate schema`,
+		// set the programmatic gate override before both autoMigrateOnVersionBump
+		// and the main store open — both open their own store connections and the
+		// gate fires on each.
+		forcedMigrate := isForcedMigrate(cmd)
+		if forcedMigrate {
+			if name := forcedMigratePreviewFlag(cmd); name != "" {
+				return HandleError("--force cannot be combined with --%s: opening the store with the gate overridden applies pending migrations before the preview runs", name)
+			}
+		}
+		// Unconditional set-or-clear keeps the override self-clearing should the
+		// root command ever be re-run in-process (tests, a future server mode).
+		schema.SetForceAllowRemoteMigrate(forcedMigrate)
+
+		// Typing `bd migrate schema` is consent to migrate a shared database
+		// that has no remote (#5920): there is no cross-clone fork to risk,
+		// only the co-resident lockout the operator is asking to accept. A
+		// preview withholds it — `bd migrate schema --dry-run` must not
+		// migrate on the way to printing what it would do. Same set-or-clear
+		// discipline as the --force override above.
+		schema.SetSharedMigrateConsent(isSchemaMigrateVerb(cmd) && !previewMode)
 
 		// Declared hooks (hooks.d/*.toml). Unusable definitions refuse the
 		// command here, before anything can be written.
@@ -1106,12 +1790,20 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Auto-migrate database on version bump (bd-jgxi).
-		// Runs for ALL commands (including read-only ones) because the migration
-		// opens its own store connection, writes the version metadata, commits it,
-		// and closes BEFORE the main store is opened. This ensures bd doctor and
-		// read-only commands see the correct version after a CLI upgrade.
-
-		autoMigrateOnVersionBump(beadsDir)
+		// Runs for ALL non-preview commands (including read-only ones) because
+		// the migration opens its own store connection, writes the version
+		// metadata, commits it, and closes BEFORE the main store is opened.
+		// This ensures bd doctor and read-only commands see the correct version
+		// after a CLI upgrade.
+		//
+		// Preview paths must never call this helper: it opens a separate
+		// writable store before the main read-only store and can therefore
+		// apply schema migrations before RunE validates arguments or renders a
+		// dry-run plan. frozenForMaintenance excludes it for the same reason
+		// as the trackBdVersion call above — see that comment.
+		if policy.runMaintenance && !previewMode && !frozenForMaintenance {
+			autoMigrateOnVersionBump(beadsDir)
+		}
 
 		// Initialize direct storage access
 		var err error
@@ -1120,14 +1812,43 @@ var rootCmd = &cobra.Command{
 		// on a different filesystem (e.g., ext4 for performance on WSL).
 		doltPath := doltserver.ResolveDoltDir(beadsDir)
 		doltCfg := &dolt.Config{
-			ReadOnly: useReadOnly,
-			BeadsDir: beadsDir,
+			ReadOnly:         useReadOnly,
+			Preview:          previewMode,
+			DisableAutoStart: policy.disableAutoStart,
+			BeadsDir:         beadsDir,
+			LenientOpen:      isWorkingSetReconcileCommand(cmd),
+			RemoteSyncOpen:   isRemoteSyncCommand(cmd),
 		}
 
-		// Load config to get database name and server connection settings
-		cfg, cfgErr := configfile.Load(beadsDir)
-		if cfgErr != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to load beads config from %s: %v\n", beadsDir, cfgErr)
+		// Load config to get database name and server connection settings.
+		// A present-but-unloadable metadata.json must stop the command here:
+		// continuing with the zero-value config silently selects the embedded
+		// store with the default database name, and on server-mode
+		// deployments that empty relic answers every query with an empty
+		// result set and exit 0 (false-empty), which readers misinterpret as
+		// "no work". Absent metadata.json (cfg == nil, cfgErr == nil) keeps
+		// the fresh-repo embedded default below — unless the env/config.yaml
+		// layers already select server mode: that decision must not depend on
+		// metadata existing, so substitute the default config and let the
+		// normal mode/connection resolution run.
+		//
+		// The gate asks IsDoltServerMode — the same resolver the branch below
+		// uses to set doltCfg.ServerMode — rather than HostImpliesServerMode.
+		// Host inference (GH#3545) answers only one layer of that question and
+		// deliberately returns false as soon as config.yaml names a
+		// `dolt.mode`: correct for inferring FROM a host, wrong as the whole
+		// gate. A workspace declaring `dolt.mode: server` in .beads/config.yaml
+		// with no metadata.json therefore kept cfg nil, fell through to the
+		// embedded branch, and answered every query out of a phantom
+		// .beads/embeddeddolt database that same run had just created —
+		// exit 0, no rows, nothing to distinguish it from real emptiness.
+		// BEADS_DOLT_SERVER_MODE=1 did not rescue it either; the old gate
+		// never consulted it. IsDoltServerMode is a superset of
+		// HostImpliesServerMode, so nothing that reached server mode before
+		// stops reaching it now.
+		if cfg == nil && configfile.DefaultConfig().IsDoltServerMode() {
+			logConfigDiscovery(beadsDir, "no metadata.json; env/config.yaml select server mode")
+			cfg = configfile.DefaultConfig()
 		}
 		if cfg != nil {
 			warnSharedServerEmbeddedMismatch(cfg)
@@ -1157,16 +1878,9 @@ var rootCmd = &cobra.Command{
 				logConfigDiscovery(beadsDir, fmt.Sprintf("metadata loaded without dolt_database; using default database name %q", configfile.DefaultDoltDatabase))
 			}
 
-			doltCfg.ServerHost = cfg.GetDoltServerHost()
-			// Use doltserver.DefaultConfig for port resolution (env > port file >
-			// config.yaml). Port 0 is fine here — auto-start will resolve it.
-			doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
-			doltCfg.ServerSocket = cfg.GetDoltServerSocket()
-			doltCfg.ServerUser = cfg.GetDoltServerUser()
-			// Use the resolved port for credential lookup — metadata.json port
-			// and runtime port can diverge (e.g., tunnel on 3308 vs local on 3307).
-			doltCfg.ServerPassword = cfg.GetDoltServerPasswordForPort(doltCfg.ServerPort)
-			doltCfg.ServerTLS = cfg.GetDoltServerTLS()
+			if err := resolveDoltServerConnection(rootCtx, beadsDir, cfg, doltCfg); err != nil {
+				return HandleError("%v", err)
+			}
 		} else if cfgErr == nil {
 			logConfigDiscovery(beadsDir, "config discovery")
 			// Load returned (nil, nil) — no config file found.
@@ -1192,10 +1906,8 @@ var rootCmd = &cobra.Command{
 				cmdCtx.ServerMode = doltCfg.ServerMode
 			}
 		}
-		// If config parse failed (cfgErr != nil), still default the database
-		// name so the store-open error is about the real problem (the parse
-		// failure warning already printed) rather than a confusing "database
-		// name must not be empty" downstream.
+		// Defensive: embeddeddolt.New rejects an empty database name, so
+		// default it even on paths that never set one.
 		if doltCfg.Database == "" {
 			doltCfg.Database = configfile.DefaultDoltDatabase
 		}
@@ -1214,29 +1926,86 @@ var rootCmd = &cobra.Command{
 		// other helper paths stay in lockstep with the main command path.
 		dolt.ApplyCLIAutoStart(beadsDir, doltCfg)
 
+		databaseOverride := databaseFlag
+		if dbNameFromDBFlag != "" {
+			if databaseOverride != "" && databaseOverride != dbNameFromDBFlag {
+				return HandleError("conflicting database selection: --db=%q vs --database=%q", dbNameFromDBFlag, databaseOverride)
+			}
+			databaseOverride = dbNameFromDBFlag
+		}
+		if databaseOverride != "" {
+			if !proxiedServerMode {
+				return HandleErrorRespectJSON("--database (or a --db value naming a database) is only supported in proxied-server mode")
+			}
+			if err := dbidentifier.ValidateIdentifier(databaseOverride); err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
+		}
+
+		// In proxied mode the CLI short-circuits to the uowProvider path and
+		// dispatches through the *_proxied_server.go duals.
+		//
+		// Preview commands take the same policy here as they do on the
+		// embedded and server paths, and for the same reason: the provider
+		// open runs CREATE DATABASE and schema.MigrateUpWithLock, and
+		// reconcileVersionProxiedServer writes version metadata — all during
+		// root pre-run, before --dry-run/--inspect has had any effect. Proxied
+		// mode is where that is least visible, not where it is acceptable.
 		if proxiedServerMode {
-			p, err := newProxiedServerUOWProvider(rootCtx, beadsDir)
+			p, err := newProxiedServerUOWProvider(rootCtx, beadsDir, databaseOverride,
+				rootProviderOptions(previewMode, useReadOnly)...)
 			if err != nil {
+				// Same typed rendering the store path gets below: a schema
+				// skew or a migration-gate refusal here carries a whole
+				// actionable block, and `%v` inside "failed to open uow
+				// provider" throws all of it away.
+				if rendered := renderTypedOpenError(err); rendered {
+					return SilentExit()
+				}
 				return HandleError("failed to open uow provider: %v", err)
 			}
-			uowProvider = p
+			// Fire the workspace's script hooks after commits on the
+			// unit-of-work plumbing, which notified no one: hooks now fire on
+			// both write plumbings, from the plumbing rather than from each
+			// command. This is the proxied twin of the wireStorageDecorators
+			// call below. With hooks disabled the sinks are empty and the
+			// provider comes back unwrapped.
+			var uowSinks uow.Sinks
+			if beadsDir != "" && !config.GetBool("no-hooks") {
+				hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
+				uowSinks.Hook = hookRunner
+			}
+			uowProvider = uow.NewNotifyingProvider(p, uowSinks)
+
+			// Honor dolt.auto-commit for proxied writes the same way
+			// issueOpsContext already does for the direct/SQL-server routes
+			// (bd-4wamg): batch/off defer the Dolt version commit rather than
+			// minting one per write (GH#4995). uow.issueOperations reads this
+			// off the context for every Create/Update/Close/Reopen it runs.
+			rootCtx, err = issueOpsContext(rootCtx)
+			if err != nil {
+				return HandleError("failed to resolve dolt auto-commit policy: %v", err)
+			}
+
+			if !previewMode {
+				reconcileVersionProxiedServer(rootCtx)
+			}
 
 			syncCommandContext()
 			return nil
 		}
 
-		// Default auto-commit based on mode when the user hasn't set a value:
-		// - Server mode: OFF — the server handles commits via its own transaction
-		//   lifecycle; firing DOLT_COMMIT after every write under concurrent load
-		//   causes 'database is read only' errors.
-		// - Embedded mode: ON — each command writes to the working set and needs
-		//   a Dolt commit in PersistentPostRun to persist changes to history.
+		// Default auto-commit to ON when the user hasn't set a value, in both
+		// modes — "on" names what each mode already does per write:
+		// - Embedded mode: each command writes to the working set and commits
+		//   it in PersistentPostRun.
+		// - Server mode: the storage layer creates one Dolt commit inside each
+		//   write transaction (the post-run flush stays embedded-only). The
+		//   default here used to be OFF, but the mode was inert in server mode
+		//   — every value behaved like ON — so ON is the compatible default
+		//   now that batch/off actually defer version commits (bd-4wamg).
 		if strings.TrimSpace(doltAutoCommit) == "" {
-			if !usesSQLServer() {
-				doltAutoCommit = string(doltAutoCommitOn)
-			} else {
-				doltAutoCommit = string(doltAutoCommitOff)
-			}
+			doltAutoCommit = string(doltAutoCommitOn)
 		}
 
 		doltCfg.Path = doltPath
@@ -1246,39 +2015,27 @@ var rootCmd = &cobra.Command{
 		// Removing them WILL cause unrecoverable data corruption and data loss.
 		// Dolt manages these files itself; external interference is never safe.
 
-		store, err = newDoltStore(rootCtx, doltCfg)
+		if _, ok := backends.Lookup(cfg.GetBackend()); ok {
+			store, err = newRegisteredBackendStore(rootCtx, cfg.GetBackend(), beadsDir, useReadOnly)
+		} else {
+			store, err = newDoltStore(rootCtx, doltCfg)
+		}
 
 		// Track final read-only state for staleness checks (GH#1089)
 		storeIsReadOnly = doltCfg.ReadOnly
 
 		if err != nil {
+			// A failed factory can return a typed-nil concrete pointer,
+			// which the interface assignment above makes non-nil; the
+			// gate-release cleanup would then call Close on a nil
+			// receiver and panic. No store was opened, so drop it.
+			store = nil
 			// Check for fresh clone scenario
 			if handleFreshCloneError(err) {
-				metrics.CloseAndFlush()
-				os.Exit(1)
+				return SilentExit()
 			}
-			// Schema skew gets dedicated UX with actionable rebuild instructions.
-			var skewErr *schema.SchemaSkewError
-			if errors.As(err, &skewErr) {
-				if jsonOutput {
-					handleSchemaSkewJSON(skewErr)
-				} else {
-					fmt.Fprint(os.Stderr, skewErr.UserMessage())
-				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
-			}
-			// #4259: the remote-migrate gate blocks silent in-place migration of a
-			// remote-backed database and tells the operator to migrate-or-adopt.
-			var gateErr *schema.RemoteMigrateGateError
-			if errors.As(err, &gateErr) {
-				if jsonOutput {
-					handleRemoteMigrateGateJSON(gateErr)
-				} else {
-					fmt.Fprint(os.Stderr, gateErr.UserMessage())
-				}
-				metrics.CloseAndFlush()
-				os.Exit(1)
+			if renderTypedOpenError(err) {
+				return SilentExit()
 			}
 			return HandleError("failed to open database: %v", err)
 		}
@@ -1295,7 +2052,8 @@ var rootCmd = &cobra.Command{
 		// Skip auto-import when the user is explicitly running "bd import" —
 		// the import command handles JSONL files itself and auto-importing
 		// first would interfere (double-import / upsert confusion).
-		if shouldRunAutoImportJSONL(cmd, store, useReadOnly, globalFlag, doltCfg.ServerMode) {
+		if shouldRunAutoImportJSONL(cmd, store, useReadOnly, globalFlag, doltCfg.ServerMode) &&
+			!isDisablingImportAutoViaConfigCommand(cmd, args) {
 			maybeAutoImportJSONL(rootCtx, store, beadsDir)
 		}
 
@@ -1304,13 +2062,18 @@ var rootCmd = &cobra.Command{
 		// Skip for --global: the global database uses a sentinel project ID
 		// that won't match any project's metadata.json.
 		if !useReadOnly && !globalFlag && os.Getenv("BEADS_SKIP_IDENTITY_CHECK") != "1" {
-			validateWorkspaceIdentity(rootCtx, beadsDir)
+			if err := validateWorkspaceIdentity(rootCtx, beadsDir); err != nil {
+				return err
+			}
 		}
 
-		// Initialize hook runner
-		// dbPath is .beads/something.db, so workspace root is parent of .beads
-		if dbPath != "" {
-			beadsDir := filepath.Dir(dbPath)
+		// Initialize hook runner using the .beads directory resolved above via
+		// resolveCommandBeadsDir. Do not use filepath.Dir(dbPath): for a
+		// registered WorkspaceIsBeadsDir backend dbPath is the .beads directory
+		// itself, so filepath.Dir(dbPath) would load hooks from the repo root
+		// (<repo>/hooks) instead of .beads/hooks; custom dolt_data_dir layouts
+		// can likewise place the Dolt data outside .beads.
+		if beadsDir != "" {
 			hookRunner = hooks.NewRunner(filepath.Join(beadsDir, "hooks"))
 		}
 
@@ -1323,14 +2086,12 @@ var rootCmd = &cobra.Command{
 			})
 		}
 
-		// Wrap store with hook-firing decorator so ALL mutations
-		// automatically fire on_create/on_update/on_close hooks.
-		// Set BD_NO_HOOKS=1 to disable all hook firing (useful for
-		// bulk imports, migrations, or environments where hooks
-		// should not run).
-		if hookRunner != nil && store != nil && !config.GetBool("no-hooks") {
-			store = storage.NewHookFiringStore(store, hookRunner)
-		}
+		// Compose the storage decorator chain: OTel instrumentation (no-op
+		// when telemetry is off) wrapped by hook firing (skipped when
+		// BD_NO_HOOKS=1, which is useful for bulk imports, migrations, or
+		// environments where on_create/on_update/on_close hooks should not
+		// run). Order matters — see wireStorageDecorators in storage_chain.go.
+		store = wireStorageDecorators(store, hookRunner, config.GetBool("no-hooks"))
 
 		// Wrap store with brain markdown exfiltration decorator so
 		// brain-kind mutations (kind ∈ {task, knowledge, both}) write
@@ -1351,7 +2112,9 @@ var rootCmd = &cobra.Command{
 		// Templates are loaded after auto-import to ensure the database is up-to-date.
 		// Skip for import command to avoid conflicts during import operations.
 		if cmd.Name() != "import" && store != nil {
-			beadsDir := filepath.Dir(dbPath)
+			// Reuse the resolved .beads directory (see the hook runner note
+			// above) so a registered WorkspaceIsBeadsDir workspace loads
+			// .beads/molecules.jsonl rather than <repo>/molecules.jsonl.
 			loader := molecules.NewLoader(store)
 			if result, err := loader.LoadAll(rootCtx, beadsDir); err != nil {
 				debug.Logf("warning: failed to load molecules: %v", err)
@@ -1384,97 +2147,219 @@ var rootCmd = &cobra.Command{
 		return nil
 	},
 	PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
+		// Registered FIRST so it runs LAST: the signal context must outlive
+		// the store/gate cleanup below, which passes rootCtx to
+		// uowProvider.Close. Canceling in the function body (as this used
+		// to) handed those closers a dead context on the way out.
+		//
+		// Clearing matters as much as canceling. Leaving rootCtx pointing at
+		// the context we just canceled is harmless when a real bd process
+		// exits here, but every in-process caller that runs Execute() more
+		// than once -- the cmd/bd test binary, library embedders -- would
+		// hand that dead context to the next command, and anything reading
+		// it refuses work nobody canceled. nil is the documented "no process
+		// signal context yet" state and normalizes back to Background().
+		//
+		// Deferred rather than inline so the early error returns below clear
+		// the globals too.
+		defer func() {
+			if rootCancel != nil {
+				rootCancel()
+			}
+			setRootContext(nil, nil)
+		}()
 		defer restoreChangeDirSelection()
+		// Give the hooks this command fired their moment before the process
+		// exits. Both plumbings run them fire-and-forget on their own
+		// goroutines, and a bd command is short enough that returning from main
+		// can kill one that has not reached exec yet — a hook that silently did
+		// not fire, which is the failure this whole seam exists to stop.
+		// Bounded by the runner's own per-hook budget: a script that outlives it
+		// is being killed anyway, so waiting longer buys nothing.
+		//
+		// Deferred order is load-bearing on both sides. It runs AFTER the
+		// close-and-release below, because a hook script commonly shells out to
+		// bd and an EMBEDDED workspace's Dolt lock is held until this process
+		// closes its store — the child would fail to open it. (The workspace
+		// gates are not the reason: a normal command holds them SHARED, and the
+		// child takes them shared too, so those never contend.) It runs BEFORE
+		// restoreChangeDirSelection above, because under `-C` the child inherits
+		// this process's environment and must see the workspace the command
+		// actually ran against.
+		defer waitForCommandHooks()
+		// Release the workspace/physical-root gates on EVERY exit from
+		// PostRunE — deferred so the early error returns below cannot leak
+		// the handle past the function. Ordering is enforced, not assumed:
+		// the success path closes uowProvider/store itself (and nils them),
+		// making the close call here a no-op; on the early error returns
+		// the store is still open, so it is closed HERE, before the gates
+		// drop — gates must always outlive the store.
+		defer func() {
+			closeStoreBeforeGateRelease()
+			releaseWorkspaceGates()
+		}()
 
 		if proxiedServerMode {
+			// Retention maintenance before the provider closes: the journal
+			// this workspace just wrote to is reached through it. In the body
+			// rather than beside the deferred hook wait, for the reason spelled
+			// out at the other trigger site below.
+			if shouldAutoPruneEventsJournal(cmd) {
+				maybeAutoPruneEventsJournal(rootCtx, beads.FindBeadsDir())
+			}
+			// Auto-backup, through the provider this command opened. Same
+			// gate as the direct arm's maintenance net below (strict
+			// --readonly, `bd serve` and a migration freeze all skip it),
+			// plus previews: a --dry-run must not register a backup remote
+			// or write backup state. proxiedAutoBackupBackend decides the
+			// topology, so this stays inert off managed-local.
+			if runsPostCommandMaintenance(cmd.Name(), readonlyMode) && !isPreviewCommand(cmd) && !commandFreeze.Frozen() {
+				runPostRunAutoBackup(rootCtx)
+			}
 			if uowProvider != nil {
 				_ = uowProvider.Close(rootCtx)
 				uowProvider = nil
 			}
 		} else {
-			// Durable event outbox (brain): record this command's mutated issues
-			// as outbox events right after the mutation. Failure is loud: an
-			// eventless mutation is exactly the silent failure the outbox exists
-			// to prevent. (The commit that makes the rows part of Dolt history
-			// happens once, after the opportunistic delivery pass below.)
-			if commandDidWrite.Load() {
-				if _, err := maybeRecordOutboxEvents(rootCtx, cmd.Name()); err != nil {
-					return HandleError("%v — the mutation itself may already be committed but its event was NOT recorded; once the cause is fixed, record it with: bd outbox record <issue-id> --command %s", err, cmd.Name())
+			// dc-6jaq: the freeze covers this hook's own writes too. A read is
+			// allowed through a freeze, but the maintenance that trails it is
+			// not the user's command — auto-commit, the tip_*_last_shown
+			// metadata write and its separate Dolt commit, auto-backup,
+			// auto-export and auto-push all mutate the very store being
+			// migrated, and `bd list` on a frozen workspace reaches every one
+			// of them. Guarding the outer block keeps that promise in one
+			// place instead of six. Writes never get here at all: they were
+			// refused in PersistentPreRunE.
+			if runsPostCommandMaintenance(cmd.Name(), readonlyMode) && !commandFreeze.Frozen() {
+				// Durable event outbox (brain): record this command's mutated issues
+				// as outbox events right after the mutation. Failure is loud: an
+				// eventless mutation is exactly the silent failure the outbox exists
+				// to prevent. (The commit that makes the rows part of Dolt history
+				// happens once, after the opportunistic delivery pass below.)
+				if commandDidWrite.Load() {
+					if _, err := maybeRecordOutboxEvents(rootCtx, cmd.Name()); err != nil {
+						return HandleError("%v — the mutation itself may already be committed but its event was NOT recorded; once the cause is fixed, record it with: bd outbox record <issue-id> --command %s", err, cmd.Name())
+					}
 				}
-			}
 
-			// Dolt auto-commit: after a successful write command (and after final flush),
-			// create a Dolt commit so changes don't remain only in the working set.
-			if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
-				if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
-					return HandleError("dolt auto-commit failed: %v", err)
+				// Dolt auto-commit: after a successful write command (and after final flush),
+				// create a Dolt commit so changes don't remain only in the working set.
+				if commandDidWrite.Load() && !commandDidExplicitDoltCommit {
+					if err := runPostRunAutoCommit(rootCtx, doltAutoCommitParams{Command: cmd.Name()}); err != nil {
+						return HandleError("dolt auto-commit failed: %v", err)
+					}
 				}
-			}
 
-			// Tip metadata auto-commit: if a tip was shown, create a separate Dolt commit for the
-			// tip_*_last_shown metadata updates. This may happen even for otherwise read-only commands.
-			if commandDidWriteTipMetadata && len(commandTipIDsShown) > 0 {
-				// Only applies when dolt auto-commit is enabled and backend is versioned (Dolt).
-				if mode, err := getDoltAutoCommitMode(); err != nil {
-					return HandleError("dolt tip auto-commit failed: %v", err)
-				} else if mode == doltAutoCommitOn {
-					// Apply tip metadata writes now (deferred in recordTipShown for Dolt).
-					for tipID := range commandTipIDsShown {
-						key := fmt.Sprintf("tip_%s_last_shown", tipID)
-						value := time.Now().Format(time.RFC3339)
-						if err := store.SetLocalMetadata(rootCtx, key, value); err != nil {
-							return HandleError("dolt tip auto-commit failed: %v", err)
+				// Tip metadata auto-commit: if a tip was shown, create a separate Dolt commit for the
+				// tip_*_last_shown metadata updates. This may happen even for otherwise read-only commands.
+				if commandDidWriteTipMetadata && len(commandTipIDsShown) > 0 {
+					// Only applies when dolt auto-commit is enabled and backend is versioned (Dolt).
+					if mode, err := getDoltAutoCommitMode(); err != nil {
+						return HandleError("dolt tip auto-commit failed: %v", err)
+					} else if mode == doltAutoCommitOn {
+						// Apply tip metadata writes now (deferred in recordTipShown for Dolt).
+						//
+						// A store that refuses writes by construction — the
+						// preview open, and strict --readonly — must not turn
+						// an otherwise successful command into a non-zero exit
+						// here. This block is deliberately not gated by the
+						// read-only classification, and that has been fine
+						// because OpenForReadOnlyCommand is "otherwise a normal
+						// writable store"; the write-refusing opens break that
+						// assumption. Tip bookkeeping is incidental and
+						// recordTipShown's own contract is that it may fail
+						// silently, so skip it and carry on.
+						tipWritesRefused := false
+						for tipID := range commandTipIDsShown {
+							key := fmt.Sprintf("tip_%s_last_shown", tipID)
+							value := time.Now().Format(time.RFC3339)
+							if err := store.SetLocalMetadata(rootCtx, key, value); err != nil {
+								if errors.Is(err, embeddeddolt.ErrReadOnly) {
+									debug.Logf("tip auto-commit: store is read-only, skipping tip metadata: %v", err)
+									tipWritesRefused = true
+									break
+								}
+								return HandleError("dolt tip auto-commit failed: %v", err)
+							}
+						}
+
+						if !tipWritesRefused {
+							ids := make([]string, 0, len(commandTipIDsShown))
+							for tipID := range commandTipIDsShown {
+								ids = append(ids, tipID)
+							}
+							msg := formatDoltAutoCommitMessage("tip", getActor(), ids)
+							if err := runPostRunAutoCommit(rootCtx, doltAutoCommitParams{Command: "tip", MessageOverride: msg}); err != nil {
+								return HandleError("dolt tip auto-commit failed: %v", err)
+							}
 						}
 					}
+				}
 
-					ids := make([]string, 0, len(commandTipIDsShown))
-					for tipID := range commandTipIDsShown {
-						ids = append(ids, tipID)
+				// Auto-backup: sync a Dolt-native backup if enabled and due
+				runPostRunAutoBackup(rootCtx)
+
+				// Auto-export: write git-tracked JSONL for portability if enabled and due.
+				// Read-only commands must not perform post-run maintenance writes or emit
+				// sync guidance after machine-readable output.
+				if shouldRunPostCommandAutoExport(cmd) {
+					if err := runPostRunAutoExport(rootCtx, commandAllowsEmptyAutoExport(cmd)); err != nil {
+						return HandleError("%v", err)
 					}
-					msg := formatDoltAutoCommitMessage("tip", getActor(), ids)
-					if err := maybeAutoCommit(rootCtx, doltAutoCommitParams{Command: "tip", MessageOverride: msg}); err != nil {
-						return HandleError("dolt tip auto-commit failed: %v", err)
+				}
+
+				// Auto-push: push to Dolt remote if enabled and due.
+				// Skip for read-only commands to avoid unnecessary network operations
+				// and metadata writes on commands like bd list/show/ready (GH#2191).
+				if !isReadOnlyCommand(cmd.Name()) {
+					runPostRunAutoPush(rootCtx)
+				}
+
+				// Change-event emission: append a JSONL line describing this write
+				// if change-events.enabled. Best-effort; only fires after a real
+				// write so read-only commands produce no events. Convenience tail
+				// target only: the durable event_outbox table in the store's own
+				// database is the authoritative event log, recorded above.
+				if commandDidWrite.Load() {
+					maybeEmitChangeEvent(cmd.Name())
+				}
+
+				// Opportunistic outbox delivery: attempt due pending events right
+				// after the write's event commit. A down subscriber delays an event;
+				// it never loses one, and delivery failure is normal, not a defect
+				// in the command that triggered the pass (warnings only).
+				if commandDidWrite.Load() {
+					maybeDeliverOutboxDue(rootCtx)
+					if err := commitOutboxWork(rootCtx, fmt.Sprintf("event outbox: %s", cmd.Name())); err != nil {
+						return HandleError("event outbox commit failed: %v", err)
 					}
 				}
-			}
 
-			// Auto-backup: sync a Dolt-native backup if enabled and due
-			maybeAutoBackup(rootCtx)
-
-			// Auto-export: write git-tracked JSONL for portability if enabled and due.
-			// Read-only commands must not perform post-run maintenance writes or emit
-			// sync guidance after machine-readable output.
-			if shouldRunPostCommandAutoExport(cmd) {
-				if err := maybeAutoExport(rootCtx, serverMode, commandAllowsEmptyAutoExport(cmd)); err != nil {
-					return HandleError("%v", err)
+				// Events-journal retention, LAST in the maintenance net. It is
+				// the only step here that serves nobody but the database
+				// itself, so everything the user can observe — the commit, the
+				// backup, the export, the push — is already done and durable
+				// before a maintenance transaction opens. Its failures are
+				// logged, never returned.
+				//
+				// COMBINED ORDERING with the hook teardown above, since both
+				// land in this function and each has its own reason:
+				// maintenance runs in the BODY, so it is finished before the
+				// first defer; the defers then run close-and-release, then
+				// waitForCommandHooks, then restoreChangeDirSelection, then the
+				// context cancel. That is the only order in which both hold.
+				// Auto-prune needs an OPEN store, which the body still has and
+				// the hook wait deliberately does not (it is sequenced after
+				// the close so a hook that shells out to bd can take the
+				// embedded Dolt lock). And it must not be deferred alongside
+				// them: it would then either run after the store closed, or
+				// delay the close the hook children are waiting on. Its cost is
+				// bounded — one indexed query when nothing is due, a 30s pass
+				// budget at worst — so the hook wait it precedes starts
+				// essentially on time.
+				if shouldAutoPruneEventsJournal(cmd) {
+					maybeAutoPruneEventsJournal(rootCtx, beads.FindBeadsDir())
 				}
-			}
-
-			// Change-event emission: append a JSONL line describing this write
-			// if change-events.enabled. Best-effort; only fires after a real
-			// write so read-only commands produce no events. Convenience tail
-			// target only: the durable event_outbox table in the store's own
-			// database is the authoritative event log, recorded above.
-			if commandDidWrite.Load() {
-				maybeEmitChangeEvent(cmd.Name())
-			}
-
-			// Opportunistic outbox delivery: attempt due pending events right
-			// after the write's event commit. A down subscriber delays an event;
-			// it never loses one, and delivery failure is normal, not a defect
-			// in the command that triggered the pass (warnings only).
-			if commandDidWrite.Load() {
-				maybeDeliverOutboxDue(rootCtx)
-				if err := commitOutboxWork(rootCtx, fmt.Sprintf("event outbox: %s", cmd.Name())); err != nil {
-					return HandleError("event outbox commit failed: %v", err)
-				}
-			}
-
-			// Auto-push: push to Dolt remote if enabled and due.
-			// Skip for read-only commands to avoid unnecessary network operations
-			// and metadata writes on commands like bd list/show/ready (GH#2191).
-			if !isReadOnlyCommand(cmd.Name()) {
-				maybeAutoPush(rootCtx)
 			}
 
 			// Signal that store is closing (prevents background flush from accessing closed store)
@@ -1484,6 +2369,9 @@ var rootCmd = &cobra.Command{
 
 			if store != nil {
 				_ = store.Close() // Best effort cleanup
+				// Mark closed so the deferred gate-release cleanup above
+				// does not double-close it.
+				store = nil
 			}
 		}
 
@@ -1505,10 +2393,35 @@ var rootCmd = &cobra.Command{
 			_ = traceFile.Close() // Best effort cleanup
 		}
 
-		// Cancel the signal context to clean up resources
-		if rootCancel != nil {
-			rootCancel()
+		// Heap profiling: --mem-profile flag or BEADS_MEM_PROFILE env var.
+		// Runs a GC first by default; BEADS_MEM_PROFILE_NOGC=1 skips it to capture peak.
+		heapDest := memProfilePath
+		if heapDest == "" {
+			heapDest = os.Getenv("BEADS_MEM_PROFILE")
 		}
+		if heapDest != "" {
+			if os.Getenv("BEADS_MEM_PROFILE_NOGC") == "" {
+				runtime.GC()
+			}
+			if f, err := os.Create(heapDest); err == nil { // #nosec G304 -- user-supplied profiling path
+				_ = pprof.WriteHeapProfile(f)
+				_ = f.Close()
+			}
+		}
+		// Optional one-line MemStats summary: BEADS_MEM_STATS=/path/to/stats.txt
+		if statsDest := os.Getenv("BEADS_MEM_STATS"); statsDest != "" {
+			var ms runtime.MemStats
+			runtime.ReadMemStats(&ms)
+			if f, err := os.Create(statsDest); err == nil { // #nosec G304 -- user-supplied profiling path
+				fmt.Fprintf(f, "HeapAlloc=%d HeapSys=%d HeapInuse=%d HeapObjects=%d\n",
+					ms.HeapAlloc, ms.HeapSys, ms.HeapInuse, ms.HeapObjects)
+				_ = f.Close()
+			}
+		}
+
+		// The signal context is canceled and cleared by the deferred hook
+		// registered at the top of this function, so that it also covers the
+		// early error returns above.
 		return nil
 	},
 }
@@ -1524,7 +2437,47 @@ func shouldRunAutoImportJSONL(cmd *cobra.Command, s storage.DoltStorage, useRead
 	if cmd == nil || s == nil || useReadOnly || globalFlag || serverMode {
 		return false
 	}
+	// import.auto=false (or BD_IMPORT_AUTO=false) must disable ALL auto-import
+	// behavior, not just the git-hook sync path (importJSONLForSync). Without
+	// this check, a fresh/empty database would silently auto-import stale
+	// issues.jsonl on every write command regardless of the config setting
+	// (GH#4304).
+	if !config.GetBool("import.auto") {
+		return false
+	}
 	return cmd.Name() != "import"
+}
+
+// isDisablingImportAutoViaConfigCommand reports whether the command about to
+// run is "bd config set import.auto false" (or an equivalent
+// "bd config set-many ... import.auto=false" pair). shouldRunAutoImportJSONL
+// runs in PersistentPreRun before configSetCmd/configSetManyCmd write the new
+// value to config.yaml, so without this exemption the master switch would
+// trigger the very auto-import it is meant to disable on its own invocation
+// when a stale .beads/issues.jsonl sits next to an empty database (GH#4304).
+func isDisablingImportAutoViaConfigCommand(cmd *cobra.Command, args []string) bool {
+	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "config" {
+		return false
+	}
+	switch cmd.Name() {
+	case "set":
+		return len(args) >= 2 && args[0] == "import.auto" && isFalsyConfigValue(args[1])
+	case "set-many":
+		for _, arg := range args {
+			key, value, ok := strings.Cut(arg, "=")
+			if ok && key == "import.auto" && isFalsyConfigValue(value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isFalsyConfigValue reports whether a config value string parses as a
+// boolean false (e.g. "false", "0", "f").
+func isFalsyConfigValue(value string) bool {
+	parsed, err := strconv.ParseBool(value)
+	return err == nil && !parsed
 }
 
 func commandAllowsEmptyAutoExport(cmd *cobra.Command) bool {
@@ -1549,7 +2502,7 @@ func checkBlockedEnvVars() error {
 	for _, name := range blockedEnvVars {
 		if os.Getenv(name) != "" {
 			return fmt.Errorf("%s env var is not supported and has been removed to prevent data fragmentation.\n"+
-				"The storage backend is set in .beads/metadata.json. To change it, use: bd migrate dolt", name)
+				"Unset %s; storage selection comes from .beads/metadata.json. To choose a different supported backend, follow 'bd help init-safety'; do not edit metadata.json by hand", name, name)
 		}
 	}
 	return nil
@@ -1602,13 +2555,22 @@ func flushBatchCommitOnShutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := st.Commit(ctx, "bd: flush pending changes on shutdown"); err != nil {
+	// CommitPending reports atomically whether a commit actually landed, so a
+	// clean shutdown stays quiet without spending the 5s flush budget on
+	// HEAD-reporting probes before the commit itself (and without racing a
+	// concurrent writer's HEAD movement the way a before/after compare would).
+	committed, err := st.CommitPending(ctx, getActorWithGit())
+	if err != nil {
 		if !isDoltNothingToCommit(err) {
 			fmt.Fprintf(os.Stderr, "\nWarning: failed to flush batch commit on shutdown: %v\n", err)
 		}
-	} else {
-		fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
+		return
 	}
+	if !committed {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "\nFlushed pending batch commit on shutdown\n")
 }
 
 // validateWorkspaceIdentity checks that the project identity from metadata.json
@@ -1619,25 +2581,25 @@ func flushBatchCommitOnShutdown() {
 // 1. Read commands are safe even against wrong databases (no data mutation)
 // 2. The check requires an open store connection
 // 3. New databases won't have _project_id yet (bootstrap case)
-func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
+func validateWorkspaceIdentity(ctx context.Context, beadsDir string) error {
 	if store == nil {
-		return // No store connection, nothing to validate
+		return nil // No store connection, nothing to validate
 	}
 
 	// Load project_id from metadata.json
 	cfg, err := configfile.Load(beadsDir)
 	if err != nil || cfg == nil {
-		return // No config, skip validation (fresh init)
+		return nil // No config, skip validation (fresh init)
 	}
 	configProjectID := cfg.ProjectID
 	if configProjectID == "" {
-		return // No project_id in config (pre-identity era)
+		return nil // No project_id in config (pre-identity era)
 	}
 
 	// Get project_id from database
 	dbProjectID, err := store.GetMetadata(ctx, "_project_id")
 	if err != nil || dbProjectID == "" {
-		return // No project_id in DB (new or pre-identity database)
+		return nil // No project_id in DB (new or pre-identity database)
 	}
 
 	// Compare: mismatch means drift
@@ -1653,9 +2615,9 @@ func validateWorkspaceIdentity(ctx context.Context, beadsDir string) {
 		fmt.Fprintf(os.Stderr, "Recovery: run 'bd doctor --fix' or 'bd bootstrap' to reconcile workspace metadata with the authoritative database when shared-server metadata drifted.\n")
 		fmt.Fprintf(os.Stderr, "To diagnose: bd context --json\n")
 		fmt.Fprintf(os.Stderr, "To override: set BEADS_SKIP_IDENTITY_CHECK=1\n")
-		metrics.CloseAndFlush()
-		os.Exit(1)
+		return SilentExit()
 	}
+	return nil
 }
 
 func main() {
@@ -1693,6 +2655,14 @@ func main() {
 
 	executedCmd, err := rootCmd.ExecuteC()
 
+	// Let this command's fire-and-forget hooks finish, for the same
+	// every-exit-path reason the metrics flush below is here rather than in
+	// PersistentPostRunE: cobra SKIPS PostRunE when RunE returns an error, so a
+	// partial batch — `bd close A B` where A commits and B refuses — would exit
+	// with A's committed mutation never reaching its hook script. Idempotent, so
+	// the PostRunE call on the clean path makes this one free.
+	waitForCommandHooks()
+
 	// Finalize queued metrics and detach the uploader. Shared with the os.Exit
 	// guards (CheckReadonly and the pre-run gates) so every exit path flushes the
 	// same way instead of only the clean RunE/ExecuteC return.
@@ -1712,6 +2682,14 @@ func main() {
 func resolveMetricsEnabled() bool {
 	if v, ok := os.LookupEnv(metrics.EnvDisableMetrics); ok {
 		return !envTruthyValue(v)
+	}
+	// DO_NOT_TRACK is a disable-only alias: a truthy value opts out, but a
+	// falsey or empty value (DO_NOT_TRACK=0/false/"") must fall through to the
+	// user's saved preference instead of forcing metrics back on over a saved
+	// `bd metrics off`. Only BD_DISABLE_METRICS (checked first) is a
+	// bidirectional override.
+	if v, ok := os.LookupEnv(metrics.EnvDoNotTrack); ok && envTruthyValue(v) {
+		return false
 	}
 	// Consent is the user's own global choice: resolve it from the user-global
 	// config only, never merged project/BEADS_DIR config. Otherwise a
@@ -1741,4 +2719,163 @@ func envTruthyValue(v string) bool {
 		return false
 	}
 	return true
+}
+
+// secretFlagNames are long flag names whose entire value is an opaque credential
+// that must never reach the bd.args telemetry span. The flag's value is redacted
+// wholesale. Only federation add-peer's --password currently qualifies. Its shorthand (-p) is
+// resolved per command via secretFlagTokens so the same letter bound to
+// --priority/--prefix/--parallel on other commands is never redacted.
+var secretFlagNames = map[string]bool{"password": true}
+
+// secretFlagTokens returns the concrete --long and -short flag tokens that carry a
+// secret value for cmd. Resolving against the running command is what makes the
+// redaction "by flag identity": -p is treated as secret only on the command that
+// actually binds it to a secret flag (federation add-peer), not on the many
+// commands that bind -p to a non-secret option.
+func secretFlagTokens(cmd *cobra.Command) map[string]bool {
+	tokens := make(map[string]bool)
+	if cmd == nil {
+		return tokens
+	}
+	for name := range secretFlagNames {
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			continue
+		}
+		tokens["--"+f.Name] = true
+		if f.Shorthand != "" {
+			tokens["-"+f.Shorthand] = true
+		}
+	}
+	return tokens
+}
+
+// scrubArgsForTelemetry joins argv for the bd.args span attribute with any
+// credential-bearing values redacted. A secretFlags token's value is redacted
+// wholesale across the `--password <v>`,
+// `--password=<v>`, `-p <v>`, `-p=<v>`, and `-p<v>` spellings pflag accepts. Every
+// other arg gets a conservative DSN/userinfo scrub as defense in depth so a
+// positional connection string cannot leak a password.
+func scrubArgsForTelemetry(argv []string, secretFlags map[string]bool) string {
+	parts := make([]string, len(argv))
+	redactNext := false
+	for i, a := range argv {
+		if redactNext {
+			parts[i] = "xxxxx"
+			redactNext = false
+			continue
+		}
+		if name, value, ok := strings.Cut(a, "="); ok {
+			if secretFlags[name] {
+				// --password=<secret> / -p=<secret> — redact the whole value.
+				parts[i] = name + "=xxxxx"
+				continue
+			}
+			if strings.HasPrefix(name, "-") {
+				scrubbed := scrubUserinfoPassword(scrubPotentialDSNPasswords(value))
+				if scrubbed != value {
+					// Preserve an arbitrary flag name while parsing its equals-value as
+					// a possible DSN. Passing the whole token to url.Parse would treat
+					// the flag prefix as the URL scheme and miss query credentials.
+					parts[i] = name + "=" + scrubbed
+					continue
+				}
+			}
+		}
+		if i > 0 {
+			if secretFlags[argv[i-1]] {
+				// <secret> following a bare --password / -p token.
+				parts[i] = "xxxxx"
+				continue
+			}
+		}
+		if short, ok := secretShorthandPrefix(a, secretFlags); ok {
+			// -p<secret> — pflag's concatenated shorthand spelling.
+			parts[i] = short + "xxxxx"
+			continue
+		}
+		if secretShorthandTakesSeparateValue(a, secretFlags) {
+			// -qp <secret> — a boolean shorthand cluster ending in the
+			// value-taking secret shorthand, with its value in the next token.
+			parts[i] = a
+			redactNext = true
+			continue
+		}
+		parts[i] = scrubUserinfoPassword(scrubPotentialDSNPasswords(a))
+	}
+	return strings.Join(parts, " ")
+}
+
+// secretShorthandPrefix reports whether a is pflag's concatenated secret-shorthand
+// spelling, returning the "-x...-p" prefix to preserve. Long flags cannot concatenate
+// a value, so only -X<value> shorthands are matched.
+//
+// pflag also accepts a CLUSTER of boolean shorthands ending in a value-taking
+// shorthand: given boolean flags -q/-v and value flag -p, "-qpSECRET" parses as -q
+// followed by -p SECRET, and "-vpSECRET" parses as -v followed by -p SECRET — but the
+// raw token still reaches telemetry as one string. Walk the leading run of letters in
+// a; the first letter whose "-x" token is a registered secret shorthand ends the
+// cluster, and everything after it is that flag's value, regardless of how many
+// boolean shorthands preceded it. This mirrors pflag's own grammar (a cluster is zero
+// or more boolean shorthands followed by one value-taking shorthand) without needing
+// the running command's flag set here: it is conservative in the safe direction,
+// since treating a longer prefix as consumed by the secret shorthand only ever
+// over-redacts, never under-redacts.
+func secretShorthandPrefix(a string, secretFlags map[string]bool) (string, bool) {
+	if len(a) < 3 || a[0] != '-' || a[1] == '-' {
+		return "", false
+	}
+	for i := 1; i < len(a); i++ {
+		c := a[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return "", false
+		}
+		if secretFlags["-"+string(c)] {
+			if i+1 >= len(a) {
+				return "", false // no value follows; not the concatenated spelling
+			}
+			return a[:i+1], true
+		}
+	}
+	return "", false
+}
+
+// secretShorthandTakesSeparateValue recognizes a boolean-shorthand cluster that
+// ends in a registered secret shorthand with no attached value. For example,
+// pflag parses "-qp secret" as -q followed by -p=secret.
+func secretShorthandTakesSeparateValue(a string, secretFlags map[string]bool) bool {
+	if len(a) < 3 || a[0] != '-' || a[1] == '-' {
+		return false
+	}
+	for i := 1; i < len(a); i++ {
+		c := a[i]
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+		if secretFlags["-"+string(c)] {
+			return i == len(a)-1
+		}
+	}
+	return false
+}
+
+// scrubUserinfoPassword redacts the password in a URL/DSN userinfo section
+// (postgres://user:PASS@host or user:PASS@tcp(...)); args without a user:pass@
+// userinfo pass through unchanged, so ordinary text is never mangled.
+func scrubUserinfoPassword(a string) string {
+	at := strings.LastIndexByte(a, '@')
+	if at < 0 {
+		return a
+	}
+	head := a[:at]
+	start := 0
+	if s := strings.LastIndex(head, "//"); s >= 0 {
+		start = s + 2 // userinfo begins after the scheme's "//"
+	}
+	colon := strings.IndexByte(head[start:], ':')
+	if colon < 0 {
+		return a // no "user:pass" userinfo, nothing to redact
+	}
+	return head[:start+colon+1] + "xxxxx" + a[at:]
 }

@@ -22,7 +22,12 @@ import (
 // The embedded Dolt driver can be slow, especially for complex JOIN queries.
 // If tests are timing out, it may indicate an issue with the embedded Dolt
 // driver's async operations rather than with the DoltStore implementation.
-const testTimeout = 30 * time.Second
+// testTimeout bounds each test's context. It must cover a cold store setup —
+// container-assisted connect plus the FULL migration chain (every versioned +
+// ignored migration, each Dolt-committed), which grows as migrations
+// accumulate — with headroom for a loaded machine; some tests set up two
+// stores under one context.
+const testTimeout = 45 * time.Second
 
 // testSem limits concurrent database-touching tests to avoid overwhelming the
 // shared Dolt testcontainer. Without this, 200+ parallel tests cause a
@@ -81,12 +86,60 @@ func uniqueTestDBName(t *testing.T) string {
 	return "testdb_" + hex.EncodeToString(buf)
 }
 
+// doltCommitCount reports how many commits the test branch has. Tests that
+// care whether an operation recorded history take it before and after rather
+// than reading the top of dolt_log, because two commits made inside one second
+// tie on date and the ordering between them is not something to rely on.
+func doltCommitCount(ctx context.Context, t *testing.T, store *DoltStore) int {
+	t.Helper()
+	var n int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_log").Scan(&n); err != nil {
+		t.Fatalf("count dolt_log: %v", err)
+	}
+	return n
+}
+
+// doltHasCommitMessage reports whether the test branch has a commit with
+// exactly this message.
+func doltHasCommitMessage(ctx context.Context, t *testing.T, store *DoltStore, message string) bool {
+	t.Helper()
+	var n int
+	if err := store.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM dolt_log WHERE message = ?", message).Scan(&n); err != nil {
+		t.Fatalf("query dolt_log for %q: %v", message, err)
+	}
+	return n > 0
+}
+
+// requireCleanTables fails when any named table is still dirty in the working
+// set. It is how a test says "the operation staged and committed what it
+// wrote", which is the half of the staging contract a data read cannot see.
+func requireCleanTables(ctx context.Context, t *testing.T, store *DoltStore, tables ...string) {
+	t.Helper()
+	for _, table := range tables {
+		var dirty int
+		if err := store.db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM dolt_status WHERE table_name = ?", table).Scan(&dirty); err != nil {
+			t.Fatalf("query dolt_status for %s: %v", table, err)
+		}
+		if dirty != 0 {
+			t.Fatalf("%s is still dirty in the working set after the operation committed", table)
+		}
+	}
+}
+
 // setupTestStore creates a test store on the shared database with branch isolation.
 // Each test gets its own branch (COW snapshot), preventing cross-test data leakage
 // without the overhead of CREATE/DROP DATABASE per test.
 //
 // Automatically marks the test as safe for parallel execution since each test
 // gets its own Dolt connection checked out to a unique branch.
+//
+// This call blocks twice — once in t.Parallel() until the sequential phase
+// ends, then again on testSem, which admits two tests at a time. In a shard of
+// 60+ tests that wait is minutes, so build the test's context AFTER this
+// returns. A context created before it spends its whole budget in the queue
+// and is already expired by the time the test body runs.
 func setupTestStore(t *testing.T) (*DoltStore, func()) {
 	t.Helper()
 	skipIfNoDolt(t)
@@ -125,7 +178,22 @@ func setupTestStore(t *testing.T) (*DoltStore, func()) {
 
 	// Create an isolated branch for this test
 	_, branchCleanup := testutil.StartTestBranch(t, store.db, testSharedDB)
-	if _, err := initSchemaOnDB(ctx, store.db); err != nil {
+	// This second, branch-local schema init contends with every other
+	// parallel subtest's own branch-local init for the SAME GET_LOCK name:
+	// MigrateUpWithLock's named lock is scoped to the database
+	// (schema.MigrationLockName(databaseName)), not to the branch, and all of
+	// setupTestStore's callers share one database (testSharedDB). That
+	// collision is exactly what production handles by retrying a contended
+	// migration-lock wait instead of failing the one unlucky caller (see
+	// initSchemaOnDBWithRetry and isRetryableError's schema.IsMigrationLockError
+	// case) — New() above already goes through that retrying path for the
+	// store's initial schema init. Calling the bare, non-retrying
+	// initSchemaOnDB here for the branch-local pass skipped that resilience
+	// and let transient GET_LOCK timeouts (5s budget, see
+	// migrationLockAcquireTimeoutSeconds) fail the test outright under
+	// parallel load. Use the same retrying helper production uses so a
+	// contended lock wait is retried (30s budget) instead of failing fast.
+	if _, err := initSchemaOnDBWithRetry(ctx, store.db); err != nil {
 		branchCleanup()
 		store.Close()
 		os.RemoveAll(tmpDir)
@@ -139,6 +207,20 @@ func setupTestStore(t *testing.T) (*DoltStore, func()) {
 	}
 
 	return store, cleanup
+}
+
+// rerunSchemaInitOnTestStore re-runs schema initialization on a
+// setupTestStore store, for tests that set up a schema state and then assert
+// what one more migration pass does to it. Every setupTestStore caller shares
+// testSharedDB, so this pass's GET_LOCK contends with every parallel test's
+// own setup-time init for the same database-scoped lock name, exactly like the
+// branch-local init in setupTestStore. The bare initSchemaOnDB gives up after
+// one 5s wait (migrationLockAcquireTimeoutSeconds) and failed such tests with
+// "schema migration lock unavailable: timeout" on loaded CI runners; the
+// retrying helper retries only a contended lock or a transient connection
+// error, never a migration result, so the outcome under test is unchanged.
+func rerunSchemaInitOnTestStore(ctx context.Context, store *DoltStore) (int, error) {
+	return initSchemaOnDBWithRetry(ctx, store.db)
 }
 
 // setupConcurrentTestStore creates a test store with its own database for
@@ -627,6 +709,26 @@ func TestDoltStoreIssueClose(t *testing.T) {
 	}
 }
 
+// TestCloseIssueNotFound verifies that closing a non-existent issue returns an
+// error that wraps storage.ErrNotFound, for parity with GetIssue/UpdateIssue/
+// DeleteIssue. Guards against the regression where CloseIssue returned a bare
+// fmt.Errorf that errors.Is(err, storage.ErrNotFound) could not match (mybd-fv7r).
+func TestCloseIssueNotFound(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	err := store.CloseIssue(ctx, "does-not-exist", "completed", "tester", "session123")
+	if err == nil {
+		t.Fatal("expected error closing non-existent issue, got nil")
+	}
+	if !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected error to wrap storage.ErrNotFound, got: %v", err)
+	}
+}
+
 // TestClosePromotedWisp verifies that bd close works for wisps that were
 // promoted to the issues table via PromoteFromEphemeral (bd-ftc).
 // Promoted wisps have -wisp- in their ID but live in the issues table,
@@ -766,8 +868,8 @@ func TestDoltStoreDependencies(t *testing.T) {
 	ctx, cancel := testContext(t)
 	defer cancel()
 
-	// Create parent and child issues (both tasks — cross-type blocking
-	// is disallowed per GH#1495)
+	// Create parent and child issues (both tasks for a same-type blocks
+	// pair; cross-type blocks edges are now allowed for unrelated issues).
 	parent := &types.Issue{
 		ID:          "test-parent",
 		Title:       "Parent Issue",
@@ -2001,7 +2103,7 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 
 	// Create issues with distinct priorities and creation times.
 	// "old-p3" is 3 days old (outside the 48h hybrid window).
-	// "recent-p2" and "recent-p1" are recent (within 48h).
+	// The "recent-*" issues are recent (within 48h).
 	issues := []*types.Issue{
 		{
 			ID:        "test-old-p3",
@@ -2010,6 +2112,14 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 			Priority:  3,
 			IssueType: types.TypeTask,
 			CreatedAt: now.Add(-72 * time.Hour), // 3 days ago
+		},
+		{
+			ID:        "test-recent-p1-older",
+			Title:     "Recent P1 Older",
+			Status:    types.StatusOpen,
+			Priority:  1,
+			IssueType: types.TypeTask,
+			CreatedAt: now.Add(-90 * time.Minute), // 90 min ago
 		},
 		{
 			ID:        "test-recent-p2",
@@ -2044,8 +2154,8 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 		}
 
 		ids := issueIDs(result)
-		// Priority order: P1 < P2 < P3
-		assertOrder(t, ids, "test-recent-p1", "test-recent-p2", "test-old-p3")
+		// Priority order: P1 < P2 < P3, FIFO within the same priority.
+		assertOrder(t, ids, "test-recent-p1-older", "test-recent-p1", "test-recent-p2", "test-old-p3")
 	})
 
 	t.Run("SortPolicyOldest", func(t *testing.T) {
@@ -2057,8 +2167,8 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 		}
 
 		ids := issueIDs(result)
-		// Oldest first: old-p3, recent-p2, recent-p1
-		assertOrder(t, ids, "test-old-p3", "test-recent-p2", "test-recent-p1")
+		// Oldest first, regardless of priority.
+		assertOrder(t, ids, "test-old-p3", "test-recent-p1-older", "test-recent-p2", "test-recent-p1")
 	})
 
 	t.Run("SortPolicyHybrid", func(t *testing.T) {
@@ -2071,7 +2181,7 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 
 		ids := issueIDs(result)
 		// Hybrid: recent bucket (P1 before P2) first, then old bucket
-		assertOrder(t, ids, "test-recent-p1", "test-recent-p2", "test-old-p3")
+		assertOrder(t, ids, "test-recent-p1-older", "test-recent-p1", "test-recent-p2", "test-old-p3")
 	})
 
 	t.Run("DefaultSortIsHybrid", func(t *testing.T) {
@@ -2082,8 +2192,62 @@ func TestGetReadyWorkSortPolicy(t *testing.T) {
 
 		ids := issueIDs(result)
 		// Default (empty string) behaves like hybrid
-		assertOrder(t, ids, "test-recent-p1", "test-recent-p2", "test-old-p3")
+		assertOrder(t, ids, "test-recent-p1-older", "test-recent-p1", "test-recent-p2", "test-old-p3")
 	})
+}
+
+func TestDoltStoreClaimReadyIssuePriorityFIFO(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	issues := []*types.Issue{
+		{
+			ID:        "claim-ready-first",
+			Title:     "First task",
+			Status:    types.StatusOpen,
+			Priority:  1,
+			IssueType: types.TypeTask,
+			CreatedAt: now.Add(-2 * time.Hour),
+		},
+		{
+			ID:        "claim-ready-second",
+			Title:     "Second task",
+			Status:    types.StatusOpen,
+			Priority:  1,
+			IssueType: types.TypeTask,
+			CreatedAt: now.Add(-1 * time.Hour),
+		},
+		{
+			ID:        "claim-ready-third",
+			Title:     "Third task",
+			Status:    types.StatusOpen,
+			Priority:  1,
+			IssueType: types.TypeTask,
+			CreatedAt: now.Add(-30 * time.Minute),
+		},
+	}
+	for _, issue := range issues {
+		if err := store.CreateIssue(ctx, issue, "tester"); err != nil {
+			t.Fatalf("failed to create issue %s: %v", issue.ID, err)
+		}
+	}
+
+	claimed, err := store.ClaimReadyIssue(ctx, types.WorkFilter{
+		SortPolicy: types.SortPolicyPriority,
+	}, "agent")
+	if err != nil {
+		t.Fatalf("ClaimReadyIssue failed: %v", err)
+	}
+	if claimed == nil {
+		t.Fatal("ClaimReadyIssue returned nil")
+	}
+	if claimed.ID != "claim-ready-first" {
+		t.Fatalf("ClaimReadyIssue claimed %s, want claim-ready-first", claimed.ID)
+	}
 }
 
 // issueIDs extracts IDs from a slice of issues.

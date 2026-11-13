@@ -25,6 +25,45 @@ func skipIfNoDolt(t *testing.T) {
 	}
 }
 
+// TestEnsureRefusesOptionShapedSSHRemote pins that Ensure refuses an ssh://
+// URL whose user name ssh would read as an option before it creates the
+// cache entry or runs dolt: a committed config.yaml reaches Ensure through
+// routing.* (bd create) and repos.additional (bd repo sync), and Dolt's ssh
+// transport would run `ssh -oProxyCommand=<command>@host ...`.
+func TestEnsureRefusesOptionShapedSSHRemote(t *testing.T) {
+	pwned := filepath.Join(t.TempDir(), "pwned")
+	remote := "ssh://-oProxyCommand=touch%20" + strings.ReplaceAll(pwned, "/", "%2F") + "@host/path"
+	cache := &Cache{Dir: t.TempDir()}
+
+	_, err := cache.Ensure(context.Background(), remote)
+
+	if err == nil || !strings.Contains(err.Error(), "user name in a remote URL must not start with a dash") {
+		t.Fatalf("Ensure(%q) error = %v, want the option-shaped user name refused", remote, err)
+	}
+	if _, statErr := os.Stat(cache.entryDir(remote)); !os.IsNotExist(statErr) {
+		t.Errorf("Ensure created the cache entry for a refused remote (stat err = %v)", statErr)
+	}
+	if _, statErr := os.Stat(pwned); statErr == nil {
+		t.Fatal("the injected ssh ProxyCommand ran")
+	}
+}
+
+func TestDoltCloneArgs(t *testing.T) {
+	t.Setenv("DOLT_REMOTE_USER", "")
+	got := doltCloneArgs("https://example.com/repo", "/tmp/clone")
+	want := []string{"clone", "https://example.com/repo", "/tmp/clone"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("doltCloneArgs() = %q, want %q", got, want)
+	}
+
+	t.Setenv("DOLT_REMOTE_USER", "alice")
+	got = doltCloneArgs("https://example.com/repo", "/tmp/clone")
+	want = []string{"clone", "--user", "alice", "https://example.com/repo", "/tmp/clone"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("doltCloneArgs() = %q, want %q", got, want)
+	}
+}
+
 // initDoltRemote creates a file:// dolt remote by initializing a dolt repo,
 // adding a file:// remote, and pushing to it. Returns the file:// URL that
 // can be used with dolt clone.

@@ -362,7 +362,7 @@ func probeStore(self, name string, entry storeEntry, timeout time.Duration) stor
 		h.Reason = fmt.Sprintf("read timed out after %s", timeout)
 	case runErr != nil:
 		h.Status = "fail"
-		h.Reason = firstLine(out)
+		h.Reason = doctorFirstLine(out)
 		if h.Reason == "" {
 			h.Reason = runErr.Error()
 		}
@@ -370,7 +370,7 @@ func probeStore(self, name string, entry storeEntry, timeout time.Duration) stor
 	case storeUnreadableRe.Match(out):
 		// Exited 0 but said it could not read — treat the text as truth.
 		h.Status = "fail"
-		h.Reason = firstLine(out)
+		h.Reason = doctorFirstLine(out)
 		h.Detail = headLines(out, 3)
 	case pathMissing:
 		// The read worked, so the store is reachable, but the registry points
@@ -472,7 +472,7 @@ func expandWrapperHome(v string) string {
 	return filepath.Clean(v)
 }
 
-func firstLine(b []byte) string {
+func doctorFirstLine(b []byte) string {
 	for _, line := range strings.Split(string(b), "\n") {
 		if s := strings.TrimSpace(line); s != "" {
 			return s

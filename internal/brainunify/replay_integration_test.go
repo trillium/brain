@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // These tests run the whole cycle against real Dolt servers: sources on one
@@ -31,12 +32,7 @@ const fixtureMergedDB = "brain_unified"
 
 func newReplayFixture(t *testing.T) *replayFixture {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test starts dolt servers")
-	}
-	if _, err := exec.LookPath("dolt"); err != nil {
-		t.Skip("dolt binary not on PATH")
-	}
+	testutil.RequireDoltCLIOnly(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	t.Cleanup(cancel)
 

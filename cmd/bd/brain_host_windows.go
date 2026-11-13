@@ -11,7 +11,7 @@ var errHostUnsupported = errors.New("'brain host' is not supported on Windows")
 
 func detachedProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{} }
 
-func pidAlive(int) bool { return false }
+func hostPidAlive(int) bool { return false }
 
 func terminatePid(int, int) error { return errHostUnsupported }
 

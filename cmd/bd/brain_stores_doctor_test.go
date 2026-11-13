@@ -221,7 +221,7 @@ func TestProbeStore_FailsOnTimeout(t *testing.T) {
 
 func TestFirstLineAndHeadLines(t *testing.T) {
 	out := []byte("\n\nError: no beads database found\nHint: run 'bd where'\nor set BEADS_DIR\nextra\n")
-	if got, want := firstLine(out), "Error: no beads database found"; got != want {
+	if got, want := doctorFirstLine(out), "Error: no beads database found"; got != want {
 		t.Errorf("firstLine = %q, want %q", got, want)
 	}
 	got := headLines(out, 2)
@@ -229,7 +229,7 @@ func TestFirstLineAndHeadLines(t *testing.T) {
 	if got != want {
 		t.Errorf("headLines = %q, want %q", got, want)
 	}
-	if firstLine([]byte("   \n\t\n")) != "" {
+	if doctorFirstLine([]byte("   \n\t\n")) != "" {
 		t.Error("firstLine of blank output must be empty")
 	}
 	if headLines(nil, 3) != "" {

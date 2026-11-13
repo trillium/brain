@@ -139,6 +139,20 @@ func init() {
 		"Sync")
 	add("store configuration and bookkeeping; not bead content",
 		"ClearRepoMtime", "DeleteConfig", "SetConfig", "SetLocalMetadata", "SetMetadata", "SetRepoMtime")
+	add("read-only (beads 1.3)",
+		"CountDependentRecords", "EventsSince", "GetDependentRecords", "GetDependentRecordsForIssues",
+		"GetIssueCommentsPage", "GetProvenanceByRef", "GetProvenanceEvents", "GetStatisticsNoBlocked",
+		"IsBlockedBatch", "SearchIssueIDs")
+	add("read role (beads 1.3): the role answers queries only",
+		"BlockingAnnotator", "Counter", "CycleDetector", "EdgeReader", "GraphCounter", "InitVerifier",
+		"IssueReader", "IssueRelations", "Querier", "ReadyCounter", "StatsReporter", "TreeWalker")
+	add("store setup, settings and memories; not bead content (beads 1.3 roles)",
+		"Bootstrapper", "Memories", "VersionReconciler", "WorkspaceConfig")
+	add("version control; not a bead mutation", "CommitAll")
+	add("lease and provenance bookkeeping; not bead content",
+		"HeartbeatIssue", "RecordProvenanceEvent")
+	add("KNOWN GAP: mutates beads but is not guarded yet (see docs/brain/HOOKS.md 'not covered')",
+		"ReclaimExpiredLeases")
 	add("KNOWN GAP: mutates beads but is not guarded yet (see docs/brain/HOOKS.md 'not covered')",
 		"AddComment", "ApplyCompaction", "DeleteIssuesBySourceRepo", "ImportIssueComment", "MergeSlotAcquire",
 		"MergeSlotCreate", "MergeSlotRelease", "PromoteFromEphemeral", "RestoreFromSnapshot", "SlotClear", "SlotSet")

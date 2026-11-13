@@ -3,6 +3,7 @@ package issueops
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -13,7 +14,7 @@ import (
 // On the unified database with a wrapper-pinned namespace the value is
 // written to the re-keyed brain_unified_config under that namespace, so the
 // store addresses its own settings instead of the template store's shared
-// key space (docs/design/brain-single-database.md, "What changes shape").
+// key space (engdocs/design/brain-single-database.md, "What changes shape").
 func SetConfigInTx(ctx context.Context, tx DBTX, key, value string) error {
 	if key == "issue_prefix" {
 		value = strings.TrimSuffix(value, "-")
@@ -41,8 +42,8 @@ func getConfigValueInTx(ctx context.Context, tx DBTX, key string) (string, error
 	sc := UnifiedScopeForTx(ctx, tx)
 	var value string
 	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), key)...).Scan(&value)
-	if err == sql.ErrNoRows {
-		return "", err
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
 	}
 	if err != nil {
 		return "", fmt.Errorf("get config %s: %w", key, err)
@@ -54,7 +55,7 @@ func getConfigValueInTx(ctx context.Context, tx DBTX, key string) (string, error
 // Returns ("", nil) if the key does not exist.
 func GetConfigInTx(ctx context.Context, tx DBTX, key string) (string, error) {
 	value, err := getConfigValueInTx(ctx, tx, key)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return value, err
@@ -117,6 +118,9 @@ func getMetadataValueInTx(ctx context.Context, tx DBTX, key string) (string, err
 	}
 	var value string
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
 	if err != nil {
 		return "", fmt.Errorf("get metadata %s: %w", key, err)
 	}
@@ -127,7 +131,7 @@ func getMetadataValueInTx(ctx context.Context, tx DBTX, key string) (string, err
 // Returns ("", nil) if the key does not exist.
 func GetMetadataInTx(ctx context.Context, tx DBTX, key string) (string, error) {
 	value, err := getMetadataValueInTx(ctx, tx, key)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return value, err
@@ -164,6 +168,9 @@ func getLocalMetadataValueInTx(ctx context.Context, tx DBTX, key string) (string
 	}
 	var value string
 	err := tx.QueryRowContext(ctx, query, args...).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", sql.ErrNoRows
+	}
 	if err != nil {
 		return "", fmt.Errorf("get local metadata %s: %w", key, err)
 	}
@@ -174,7 +181,7 @@ func getLocalMetadataValueInTx(ctx context.Context, tx DBTX, key string) (string
 // table within an existing transaction. Returns ("", nil) if the key does not exist.
 func GetLocalMetadataInTx(ctx context.Context, tx DBTX, key string) (string, error) {
 	value, err := getLocalMetadataValueInTx(ctx, tx, key)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return value, err

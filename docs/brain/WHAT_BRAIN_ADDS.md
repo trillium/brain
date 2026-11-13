@@ -21,6 +21,24 @@ The verb-level difference was established mechanically: both binaries were built
 
 Everything past verbs (federation model, unified database, identifiers, exfiltration, memory extensions) was established by reading the trees (`git show fa4dce454:<path>`, the brain tree at head) and the evidence named per entry.
 
+## Rebased on beads 1.3.4 (brain 0.6.0)
+
+Brain 0.6.0 is brain's delta on top of upstream **`v1.3.4`** (commit `7ef2fd05e`), merged with real history (`v1.1.0-rc.1` recorded as an ancestor first, then `v1.3.4` merged). The "Upstream at `v1.1.0-rc.1`" column below stays as the record of what the fork added at that ref; every addition was re-checked against `v1.3.4`, and upstream still has none of brain's verbs (`brain`, `stores`, `store-prefix`, `isa-*`, `render*`, `patch`, `transfer`, `outbox`, `hook`, `group`, `host`, `remote`, `rollout`, `recast`, `related`), nor the `name` field, the namespace layer, the event outbox or the hooks.d guard. One overlap is now covered by upstream instead:
+
+- **GitHub sync repository scoping** ([`GITHUB_SYNC.md`](GITHUB_SYNC.md), `divergence/0045`): upstream 1.3 scopes issue numbers to the configured repository itself (gastownhall/beads#8068). Brain now uses upstream's behaviour: an item linked into another repository is skipped and keeps its link (brain used to treat it as unlinked and create an issue in the paired repository). A dry run still applies the real push's up-to-date test, through the bulk listing (`tracker.DryRunLookup`).
+
+What the 1.3 seams required, so each addition keeps working:
+
+| Upstream 1.3 change | What brain did |
+|---|---|
+| Writes go through role values taken off the store (`IssueLifecycle`, `IssueClaimer`, `Commenter`, `BatchApplier`, `MetadataCAS`, …) | The markdown render (E-1) and the hooks.d guard wrap every hook-firing role, not just the store methods (`internal/storage/brain_exfiltration_roles.go`, `hook_guard_decorator.go`); AST tests keep the lists in step with upstream's role set. A guard cannot see inside `batchApply` or `sweep`, so with guards configured those fail closed. |
+| Upstream migrations 0054-0066 reuse the numbers brain's own migrations had (0054-0056) | Brain's migrations are a series of their own (`brain_schema_migrations`, bodies byte-identical so hashes carry over). Opening a brain 1.1 database moves brain's rows out of `schema_migrations` before upstream's series runs, and refuses if an upstream row sits above them. `bd brain upgrade` migrates the live databases behind a verified backup ([`UPGRADE_1_3.md`](UPGRADE_1_3.md)). |
+| Shared servers are not migrated on open | `bd brain upgrade apply` is the designated migrator; the old binaries fail closed on the migrated schema until they are replaced. |
+| Proxied-server capability registry: every command needs a row | Every brain verb has a typed `proxy.brain.unsupported` refusal row (brain stores run in server mode, never proxied). |
+| `FatalError` helpers removed upstream | Kept for brain's verbs only (`cmd/bd/brain_fatal.go`, flushing metrics before exit); converting them to `HandleError` is a follow-up. |
+| `bd serve` answers from a unit-of-work provider beneath the store | Brain's namespace scoping, hooks.d guards and markdown render do not reach HTTP yet, so a store with hooks.d definitions refuses to serve and a unified-database store serves only with `--wide` (task-0ytyqc). |
+| Events journal (`bd events`, `events:watch`) | Available on brain stores alongside brain's own outbox, which it does not replace: the journal is a change feed for readers, the outbox a delivery queue with acknowledgements. See [`UPGRADE_1_3.md`](UPGRADE_1_3.md#beads-13-primitives-on-brain-stores). |
+
 **State legend:**
 
 - **shipped** — in the binary and in daily use in the operator's federation.
@@ -54,7 +72,7 @@ Newest tranche — merged at brain head `15351ba8258d25a1ab4763d1116df23296e7ed8
 - `/Users/mini0/fm_home/mini0-ops/data/brain-unify-store-create/report.md` — create-path equivalence for `stories`, `task`, `brain`, `robots` through unified wrappers; the pre-fix silent `lifespan-` mint reproduced, then removed.
 - `/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md` — wide/narrow modes, storeless-mint refusal, runtime prefix claims, fresh-store provisioning (46 raw transcripts).
 
-Design doc: `docs/design/brain-single-database.md`.
+Design doc: `engdocs/design/brain-single-database.md`.
 
 | # | Feature | What it does | Where | State | Evidence |
 |---|---------|--------------|-------|-------|----------|

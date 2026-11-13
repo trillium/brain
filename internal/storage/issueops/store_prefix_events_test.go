@@ -12,7 +12,7 @@ import (
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 )
 
-// The release and history edge (docs/design/brain-prefix-release.md): every
+// The release and history edge (engdocs/design/brain-prefix-release.md): every
 // refusal, the event row shape, the claim-event append, and the
 // no-silent-path guarantee. The claim-side conflict logic itself is tested
 // in unified_namespaces_test.go.

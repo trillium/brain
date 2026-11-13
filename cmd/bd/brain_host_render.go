@@ -335,7 +335,7 @@ var brainHostRenderJobInstallCmd = &cobra.Command{
 			return fmt.Errorf("writing %s: %w", plist, err)
 		}
 		if err := editHostConfig(func(cfg *hostConfig) error {
-			if !containsStr(cfg.Services, renderJobLabel) {
+			if !hostListContains(cfg.Services, renderJobLabel) {
 				cfg.Services = append(cfg.Services, renderJobLabel)
 				sort.Strings(cfg.Services)
 			}

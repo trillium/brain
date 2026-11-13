@@ -79,7 +79,20 @@ func saveBackupState(dir string, state *backupState) error {
 	return atomicWriteFile(filepath.Join(dir, "backup_state.json"), data)
 }
 
-// atomicWriteFile writes data to a temp file and renames it into place (crash-safe).
+// atomicWriteFile writes data to a same-directory temp file, fsyncs the
+// temp file's own contents, then renames it into place. This avoids a
+// truncated/partial file at path if the process crashes mid-write.
+//
+// Two caveats this does NOT cover, narrowing the "crash-safe" claim rather
+// than the implementation (existing callers' behavior is unchanged here):
+//   - Only the temp file's contents are fsynced, not the parent directory
+//     entry; a crash between the rename and a subsequent directory fsync
+//     can still lose the rename itself on some filesystems.
+//   - os.Rename's atomic-replace guarantee is a POSIX/Unix property; it is
+//     not guaranteed on Windows. It also does not follow a symlink at
+//     path — it replaces whatever is there, symlink or not — so a caller
+//     that must preserve a symlink's target should resolve path with
+//     filepath.EvalSymlinks first (see cmd/bd/proxied_server.go).
 func atomicWriteFile(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".backup-tmp-*")
@@ -109,9 +122,35 @@ func atomicWriteFile(path string, data []byte) error {
 	return nil
 }
 
+// localBackupBackend is what a Dolt-native backup into a local directory needs
+// from storage: the commit it would capture, and the backup itself. The direct
+// store supplies one (directLocalBackup) and so does the proxied provider
+// (proxiedLocalBackup, backup_proxied_server.go).
+type localBackupBackend interface {
+	CurrentCommit(ctx context.Context) (string, error)
+	BackupToDir(ctx context.Context, dir string) error
+}
+
+// directLocalBackup is localBackupBackend over an embedded or sql-server store.
+type directLocalBackup struct {
+	store storage.DoltStorage
+}
+
+func (b directLocalBackup) CurrentCommit(ctx context.Context) (string, error) {
+	return b.store.GetCurrentCommit(ctx)
+}
+
+func (b directLocalBackup) BackupToDir(ctx context.Context, dir string) error {
+	bs, ok := storage.UnwrapStore(b.store).(storage.BackupStore)
+	if !ok {
+		return fmt.Errorf("storage backend does not support backup operations")
+	}
+	return bs.BackupDatabase(ctx, dir)
+}
+
 // runBackupExport performs a Dolt-native backup to .beads/backup/.
 // Returns the updated state.
-func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
+func runBackupExport(ctx context.Context, backend localBackupBackend, force bool) (*backupState, error) {
 	dir, err := backupDir()
 	if err != nil {
 		return nil, err
@@ -122,32 +161,41 @@ func runBackupExport(ctx context.Context, force bool) (*backupState, error) {
 		return nil, err
 	}
 
+	// Read the watermark before the sync. A concurrent commit may land while
+	// BackupToDir is running; recording a later HEAD would claim that commit is
+	// present in a snapshot that started before it existed.
+	currentCommit, err := backend.CurrentCommit(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get current commit: %w", err)
+	}
+
 	// Change detection: skip if nothing changed (unless forced)
 	if !force {
-		currentCommit, err := store.GetCurrentCommit(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get current commit: %w", err)
-		}
 		if currentCommit == state.LastDoltCommit && state.LastDoltCommit != "" {
 			debug.Logf("backup: no changes since last backup (commit %s)\n", truncateHash(currentCommit))
 			return state, nil
 		}
 	}
 
-	bs, ok := storage.UnwrapStore(store).(storage.BackupStore)
-	if !ok {
-		return nil, fmt.Errorf("storage backend does not support backup operations")
-	}
-
-	if err := bs.BackupDatabase(ctx, dir); err != nil {
+	if err := backend.BackupToDir(ctx, dir); err != nil {
+		// Persist the attempt time even on failure so the throttle
+		// interval (checked by maybeAutoBackup via state.Timestamp)
+		// applies to the next command. Without this, a sync that keeps
+		// failing — e.g. a slow/overloaded shared Dolt server — retries
+		// on EVERY bd command instead of once per interval, turning a
+		// transient slowdown into a self-amplifying storm (the 2026-07
+		// shared-dolt CPU-pin incident). LastDoltCommit is deliberately
+		// left unchanged so change-detection still sees pending work and
+		// a real backup runs once the failure clears.
+		state.Timestamp = time.Now().UTC()
+		if saveErr := saveBackupState(dir, state); saveErr != nil {
+			debug.Logf("backup: failed to persist throttle state after error: %v\n", saveErr)
+		}
 		return nil, err
 	}
 
-	// Update watermarks
-	currentCommit, err := store.GetCurrentCommit(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get current commit for state: %w", err)
-	}
+	// The pre-sync commit is the newest commit this backup is guaranteed to
+	// contain. If HEAD moved during the sync, the next backup must see it.
 	state.LastDoltCommit = currentCommit
 	state.Timestamp = time.Now().UTC()
 

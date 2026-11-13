@@ -2,24 +2,73 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/steveyegge/beads/internal/beads"
 	"github.com/steveyegge/beads/internal/config"
+	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/debug"
 	"github.com/steveyegge/beads/internal/storage"
 )
 
 // isBackupAutoEnabled returns whether backup should run.
 // If user explicitly configured backup.enabled, use that.
-// Otherwise, auto-enable when a git remote exists.
+// Otherwise auto-enable when a git remote exists — BUT only in
+// embedded mode.
+//
+// In sql-server / shared-server mode (usesSQLServer()) the default is
+// OFF: N bd clients share a single Dolt server, and the Dolt-native
+// backup path (store.BackupDatabase) registers a server-side backup
+// remote under one fixed name pointing at THIS client's local
+// .beads/backup dir, then full-syncs the whole DB. With many clients
+// that means racing remove/add of the same name plus every client
+// full-syncing the entire history into its own dir — the amplifier
+// behind the 2026-07 shared-dolt CPU-pin incident. Operators who want
+// backups in server mode must opt in explicitly (backup.enabled=true
+// / BD_BACKUP_ENABLED=1) and coordinate destinations themselves.
 func isBackupAutoEnabled() bool {
 	if config.GetValueSource("backup.enabled") != config.SourceDefault {
 		return config.GetBool("backup.enabled")
 	}
+	if usesSQLServer() {
+		return false
+	}
 	return primeHasGitRemote()
+}
+
+// backupAutoStatusNote returns the parenthetical `bd backup status`
+// prints after the effective backup.enabled value, or "" when the value
+// speaks for itself. Callers pass the value isBackupAutoEnabled()
+// already computed so the note cannot disagree with the number beside
+// it — and so status does not re-run the git-remote probe.
+//
+// The note narrates the reason the decision actually used. An explicit
+// backup.enabled needs no note: the source explains it, and every shape
+// that reaches `bd backup status` honors it — including a managed-local
+// proxied server, whose post-run arm runs auto-backup (every other proxied
+// shape is refused by requireLocalProxiedBackup before status renders).
+// A server-mode default is OFF whether or not a git remote exists, so it
+// must not be attributed to the remote; before these arms existed, status
+// did exactly that.
+func backupAutoStatusNote(enabled bool) string {
+	if config.GetValueSource("backup.enabled") != config.SourceDefault {
+		return ""
+	}
+	if usesProxiedServer() {
+		return "auto: off in proxied-server mode; set backup.enabled=true to opt in"
+	}
+	if usesSQLServer() {
+		return "auto: off in sql-server mode"
+	}
+	if enabled {
+		return "auto: git remote detected"
+	}
+	return "auto: no git remote"
 }
 
 // clientServerShareFilesystem reports whether the configured Dolt
@@ -37,27 +86,53 @@ func isBackupAutoEnabled() bool {
 // works cross-filesystem (s3://, gs://, etc.) — auto-backup's
 // hardcoded file:// path can't help them.
 //
-// Detection bypasses Config.IsDoltServerMode() so it works correctly
-// regardless of whether GH#3545's host-mode-inference fix is in
-// place — the operator's intent is unambiguous from the host value
-// alone.
+// Detection follows the same effective-host precedence as
+// configfile.GetDoltServerHost / HostImpliesServerMode (env >
+// metadata.json > config.yaml, GH#3545), so a workspace whose remote
+// host lives only in metadata.json is classified the same way here as
+// by mode inference — the operator's intent is unambiguous from the
+// effective host value alone.
 func clientServerShareFilesystem() bool {
 	host := os.Getenv("BEADS_DOLT_SERVER_HOST")
+	if host == "" {
+		if bd := beads.FindBeadsDir(); bd != "" {
+			if cfg, err := configfile.Load(bd); err == nil && cfg != nil {
+				// An explicit dolt_mode=embedded pins local storage;
+				// a leftover dolt_server_host is inert then (same
+				// gate as HostImpliesServerMode), so local
+				// auto-backup stays available.
+				if !strings.EqualFold(cfg.DoltMode, configfile.DoltModeEmbedded) {
+					host = cfg.DoltServerHost
+				}
+			}
+		}
+	}
 	if host == "" {
 		// Fall back to in-struct config (config.yaml dolt.host etc.).
 		host = config.GetString("dolt.host")
 	}
-	switch host {
-	case "", "localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0":
-		return true
-	}
-	return false
+	return configfile.IsLocalHostString(host)
 }
 
 // autoBackupSkipNoticeOnce ensures the "auto-backup skipped" INFO
 // message fires at most once per process — operators running long
 // bd sessions don't need a chatty repeat on every command.
 var autoBackupSkipNoticeOnce sync.Once
+
+// autoBackupBackendForCommand returns the storage this command's auto-backup
+// runs against, or ok=false when there is nothing it may back up.
+func autoBackupBackendForCommand() (localBackupBackend, bool) {
+	if usesProxiedServer() {
+		return proxiedAutoBackupBackend()
+	}
+	if store == nil {
+		return nil, false
+	}
+	if lm, ok := storage.UnwrapStore(store).(storage.LifecycleManager); ok && lm.IsClosed() {
+		return nil, false
+	}
+	return directLocalBackup{store: store}, true
+}
 
 // maybeAutoBackup runs a Dolt-native backup if enabled and the throttle interval has passed.
 // Called from PersistentPostRun after auto-commit.
@@ -73,10 +148,8 @@ func maybeAutoBackup(ctx context.Context) {
 	if !isBackupAutoEnabled() {
 		return
 	}
-	if store == nil {
-		return
-	}
-	if lm, ok := storage.UnwrapStore(store).(storage.LifecycleManager); ok && lm.IsClosed() {
+	backend, ok := autoBackupBackendForCommand()
+	if !ok {
 		return
 	}
 
@@ -95,7 +168,11 @@ func maybeAutoBackup(ctx context.Context) {
 	// constructs is meaningless to the server — register fails on
 	// every command. Skip cleanly with a one-time INFO so operators
 	// know auto-backup is silent on purpose.
-	if !clientServerShareFilesystem() {
+	//
+	// Proxied workspaces do not consult the host: proxiedAutoBackupBackend
+	// has already required managed-local, where bd spawned the server on
+	// this filesystem itself.
+	if !usesProxiedServer() && !clientServerShareFilesystem() {
 		autoBackupSkipNoticeOnce.Do(func() {
 			if !isQuiet() && !jsonOutput {
 				fmt.Fprintln(os.Stderr,
@@ -133,7 +210,7 @@ func maybeAutoBackup(ctx context.Context) {
 	}
 
 	// Change detection: skip if nothing changed
-	currentCommit, err := store.GetCurrentCommit(ctx)
+	currentCommit, err := backend.CurrentCommit(ctx)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: auto-backup skipped: failed to get current commit: %v\n", err)
 		return
@@ -143,8 +220,21 @@ func maybeAutoBackup(ctx context.Context) {
 		return
 	}
 
+	// One backup at a time per workspace (backup_lock.go). Auto-backup never
+	// waits: a held lock means a backup is already running.
+	release, err := acquireBackupLock(0)
+	if err != nil {
+		if errors.Is(err, errBackupBusy) {
+			debug.Logf("backup: skipping — another backup is running\n")
+			return
+		}
+		fmt.Fprintf(os.Stderr, "Warning: auto-backup skipped: %v\n", err)
+		return
+	}
+	defer release()
+
 	// Run the backup (force=true since we already checked change detection above)
-	if _, err := runBackupExport(ctx, true); err != nil {
+	if _, err := runBackupExport(ctx, backend, true); err != nil {
 		if !isQuiet() && !jsonOutput {
 			fmt.Fprintf(os.Stderr, "Warning: auto-backup failed: %v\n", err)
 		}

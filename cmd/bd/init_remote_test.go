@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/steveyegge/beads/internal/config"
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
@@ -62,6 +63,34 @@ func TestInitServerExternalRemoteUsesServerCloneMode(t *testing.T) {
 	}
 }
 
+func TestInitDoltServerTLSFromEnv(t *testing.T) {
+	tests := []struct {
+		name string
+		env  string
+		want bool
+	}{
+		{name: "unset", want: false},
+		{name: "zero", env: "0", want: false},
+		{name: "false", env: "false", want: false},
+		{name: "one", env: "1", want: true},
+		{name: "true", env: "true", want: true},
+		{name: "mixed case true", env: "TrUe", want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.env == "" {
+				t.Setenv("BEADS_DOLT_SERVER_TLS", "")
+			} else {
+				t.Setenv("BEADS_DOLT_SERVER_TLS", tc.env)
+			}
+			if got := initDoltServerTLSFromEnv(); got != tc.want {
+				t.Fatalf("initDoltServerTLSFromEnv() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestInitExplicitEmptyRemoteSkipsAmbientConfig(t *testing.T) {
 	called := false
 	resolveConfiguredRemote := func() string {
@@ -97,9 +126,8 @@ func TestPersistInitSyncRemoteExplicitRemoteWritesTargetDir(t *testing.T) {
 	}
 
 	callerConfig := filepath.Join(callerBeadsDir, "config.yaml")
-	if err := os.WriteFile(callerConfig, []byte("sync.remote: git+ssh://git@example.com/wrong/repo.git\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	const callerRemote = "git+ssh://git@example.com/wrong/repo.git"
+	seedSyncRemote(t, callerBeadsDir, callerRemote)
 	targetConfig := filepath.Join(targetBeadsDir, "config.yaml")
 	if err := os.WriteFile(targetConfig, []byte("# Beads Config\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -133,6 +161,56 @@ func TestPersistInitSyncRemoteExplicitRemoteWritesTargetDir(t *testing.T) {
 	}
 	if strings.Contains(string(callerBytes), remote) {
 		t.Fatalf("caller config.yaml was modified instead of target:\n%s", callerBytes)
+	}
+	// Stronger than the absence above: the caller still resolves to what it had.
+	// A write that landed somewhere unreadable would satisfy "does not contain
+	// the new remote" while having quietly destroyed the old one.
+	if got := config.GetStringFromDir(callerBeadsDir, "sync.remote"); got != callerRemote {
+		t.Fatalf("caller sync.remote = %q, want it untouched at %q:\n%s", got, callerRemote, callerBytes)
+	}
+}
+
+// `bd init --remote` runs createConfigYaml and then immediately writes
+// sync.remote into what it just created. That template is comments and nothing
+// else, which is the one document shape yaml.v3 parses to no nodes at all — so a
+// writer that round-trips a node tree has nothing to write back but the key it
+// added, and the operator's first commit after init carries a config.yaml with
+// its entire documentation deleted. It is git-tracked, so they see it.
+//
+// This runs the real pair in the real order rather than asserting on a replica
+// of the template, so it stays true if either side moves.
+func TestInitPersistingSyncRemoteKeepsTheConfigTemplate(t *testing.T) {
+	beadsDir := filepath.Join(t.TempDir(), ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := createConfigYaml(beadsDir, false, ""); err != nil {
+		t.Fatalf("createConfigYaml: %v", err)
+	}
+	template, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const remote = "git+ssh://git@example.com/right/repo.git"
+	if err := persistInitSyncRemote(beadsDir, remote, remote, false, true, false); err != nil {
+		t.Fatalf("persistInitSyncRemote: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(beadsDir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(template), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.Contains(string(body), line) {
+			t.Errorf("init dropped a line of its own config template: %q\ngot:\n%s", line, body)
+		}
+	}
+	if got := config.GetStringFromDir(beadsDir, "sync.remote"); got != remote {
+		t.Errorf("sync.remote = %q, want %q\n%s", got, remote, body)
 	}
 }
 

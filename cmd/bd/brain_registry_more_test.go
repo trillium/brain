@@ -154,7 +154,7 @@ func TestPoisonedRegistryRowsNeverReachTheDisk(t *testing.T) {
 	shims := func() string { // everything a hostile row could add: commands, links, data directories
 		var sb strings.Builder
 		for _, d := range []string{".local", ".pi", "data"} {
-			sb.WriteString(snapshotTree(t, filepath.Join(b.home, d)))
+			sb.WriteString(registrySnapshotTree(t, filepath.Join(b.home, d)))
 		}
 		return sb.String()
 	}
@@ -569,7 +569,7 @@ func TestRideAlongIsWiredIntoEveryCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	pre := string(src)
-	i := strings.Index(pre, "PersistentPreRunE: func(cmd *cobra.Command, args []string) error {")
+	i := strings.Index(pre, "PersistentPreRunE: func(cmd *cobra.Command, args []string) (retErr error) {")
 	j := strings.Index(pre, "PersistentPostRunE:")
 	if i < 0 || j < i || !strings.Contains(pre[i:j], "registryRideAlong(rootCtx, cmd)") {
 		t.Fatal("PersistentPreRunE must call registryRideAlong: every command carries the epoch")

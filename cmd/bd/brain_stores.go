@@ -923,7 +923,8 @@ func provisionServerStore(ctx context.Context, name, beadsDir, host string, port
 		}
 	}()
 
-	store, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: !unified})
+	opened, err := dolt.NewFromConfigWithOptions(ctx, beadsDir, &dolt.Config{CreateIfMissing: !unified})
+	store, err := activateEventsJournalStore(beadsDir, opened, err)
 	if err != nil {
 		return "", fmt.Errorf("opening store (provision on shared server): %w", err)
 	}

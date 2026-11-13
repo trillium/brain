@@ -359,6 +359,9 @@ func getGitHubClient(config GitHubConfig) *github.Client {
 
 // runGitHubStatus implements the github status command.
 func runGitHubStatus(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github status is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-status")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -440,6 +443,9 @@ func currentStoreName() string {
 
 // runGitHubRepos implements the github repos command.
 func runGitHubRepos(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github repos is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-repos")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -578,6 +584,9 @@ func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
 // runGitHubSync implements the github sync command.
 // Uses the tracker.Engine for all sync operations.
 func runGitHubSync(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github sync is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-sync")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -751,7 +760,15 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		ShouldImport: gt.ShouldImport,
 		AfterConvert: gt.AfterConvert,
 	}
-	engine.PushHooks = &tracker.PushHooks{ContentEqual: gt.ContentEqual}
+	engine.PushHooks = buildGitHubPushHooks(gt)
+	if setup.Plan.SourceWins && setup.Plan.Push {
+		// A brain-to-github mirror must notice an edit made on GitHub. The
+		// push cache only knows the local copy is unchanged since the last
+		// push, so it would skip the issue; without it every linked issue is
+		// compared with the bulk listing (BulkLookup), one request per
+		// hundred issues.
+		engine.PushHooks.ContentHash = nil
+	}
 
 	opts := tracker.SyncOptions{
 		Pull:               setup.Plan.Pull,
@@ -799,6 +816,9 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 	if err != nil {
 		return result, HandleError("%v", err)
 	}
+	if err := commitSyncBeforeLastSync(ctx, gt, result); err != nil {
+		return result, HandleError("%v", err)
+	}
 
 	sum := summarizeGitHubRun(setup, result, githubSyncDryRun)
 	if scoped != nil {
@@ -814,6 +834,31 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		_, _ = fmt.Fprintln(out, "Run without --dry-run to apply changes")
 	}
 	return result, nil
+}
+
+// commitSyncBeforeLastSync makes the links this run wrote part of the history
+// the next run reads. The next pull decides whether an item was linked since
+// the last sync from external_ref as of last_sync in Dolt history (upstream's
+// pre-linked hydrate), and an item it thinks was linked since may be
+// overwritten from GitHub. In embedded mode the run's writes are committed
+// only when the command ends, after the render and the outbox, which can be
+// later than the last_sync the engine recorded; the link then looks new and
+// the next pull overwrites a brain edit. So the run is committed here and
+// last_sync recorded again after the commit. In server mode every write is
+// already committed, and this records the same position again.
+func commitSyncBeforeLastSync(ctx context.Context, gt *github.Tracker, result *tracker.SyncResult) error {
+	if result == nil || result.LastSync == "" {
+		return nil
+	}
+	if err := commitPendingIfEmbedded(ctx, store, actor, doltAutoCommitParams{Command: "github sync"}); err != nil {
+		return fmt.Errorf("committing the sync: %w", err)
+	}
+	lastSync := time.Now().UTC().Truncate(time.Second).Add(time.Second).Format(time.RFC3339Nano)
+	if err := store.SetLocalMetadata(ctx, gt.ConfigPrefix()+".last_sync", lastSync); err != nil {
+		return fmt.Errorf("recording last_sync: %w", err)
+	}
+	result.LastSync = lastSync
+	return nil
 }
 
 // githubPairCmd records the pairing between this store and a repository.
@@ -935,6 +980,33 @@ func runGitHubPair(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintln(out, ")")
 	_, _ = fmt.Fprintln(out, "Nothing was synced. Preview the first sync with: brain github sync --dry-run")
 	return nil
+}
+
+// buildGitHubPushHooks creates PushHooks for GitHub-specific push behavior.
+// The ContentEqual hook lets the engine skip issues whose pushable fields
+// already match GitHub, so repeated `github sync --push-only` / `github push`
+// runs don't re-PATCH unchanged issues (gastownhall/beads#4214). It is the
+// tracker's own comparison (brain): it also requires the item marker, so an
+// issue not yet linked by marker is updated once to receive it.
+func buildGitHubPushHooks(gt *github.Tracker) *tracker.PushHooks {
+	config := gt.MappingConfig()
+	if config == nil {
+		config = github.DefaultMappingConfig()
+	}
+	return &tracker.PushHooks{
+		ContentEqual: gt.ContentEqual,
+		// ContentHash lets the engine skip the per-issue GitHub fetch entirely
+		// when an issue is unchanged since its last push, so a no-op
+		// `github sync --push-only` makes ~zero REST calls instead of one GET
+		// per linked issue (gastownhall/beads#4214).
+		ContentHash: func(local *types.Issue) string {
+			return github.PushContentHash(local, config)
+		},
+		// TargetScope supplies the host and repository omitted by shorthand refs
+		// such as github:42, so changing GitHub target configuration invalidates
+		// the local no-op cache.
+		TargetScope: gt.PushTargetScope,
+	}
 }
 
 func runGitHubUnpair(cmd *cobra.Command, args []string) error {

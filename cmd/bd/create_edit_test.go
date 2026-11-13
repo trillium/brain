@@ -60,9 +60,9 @@ cp %[2]q/buf"$n" "$1"
 
 func withTerminal(t *testing.T, isTTY bool) {
 	t.Helper()
-	prev := stdinIsTerminal
-	stdinIsTerminal = func() bool { return isTTY }
-	t.Cleanup(func() { stdinIsTerminal = prev })
+	prev := composeStdinIsTerminal
+	composeStdinIsTerminal = func() bool { return isTTY }
+	t.Cleanup(func() { composeStdinIsTerminal = prev })
 }
 
 func TestParseComposeBuffer(t *testing.T) {

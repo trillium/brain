@@ -57,21 +57,25 @@ func (r uowGroupReader) members(ctx context.Context, groupID string) ([]groupMem
 }
 
 // autoCloseProxiedCompletedGroups is the proxied-server twin of
-// autoCloseCompletedGroups.
-func autoCloseProxiedCompletedGroups(ctx context.Context, uw uow.UnitOfWork, closedID, actorName, session string, jsonOut bool) {
+// autoCloseCompletedGroups. It returns the ids of the groups it closed, so a
+// caller that names its own commit message can name them too.
+func autoCloseProxiedCompletedGroups(ctx context.Context, uw uow.UnitOfWork, closedID, actorName, session string, jsonOut bool) []string {
 	ready, err := groupsReadyToClose(ctx, uowGroupReader{uw}, closedID)
 	if err != nil {
-		return
+		return nil
 	}
+	var closed []string
 	for _, p := range ready {
 		params := domain.CloseIssueParams{Reason: groupCloseReason, Session: session}
 		if _, err := uw.IssueUseCase().CloseIssue(ctx, p.Group.ID, params, actorName); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: could not auto-close finished group %s: %v\n", p.Group.ID, err)
 			continue
 		}
+		closed = append(closed, p.Group.ID)
 		if !jsonOut {
 			fmt.Printf("%s Auto-closed finished group %s\n", ui.RenderPass("✓"), formatFeedbackID(p.Group.ID, p.Group.Title))
 		}
-		autoCloseProxiedCompletedGroups(ctx, uw, p.Group.ID, actorName, session, jsonOut)
+		closed = append(closed, autoCloseProxiedCompletedGroups(ctx, uw, p.Group.ID, actorName, session, jsonOut)...)
 	}
+	return closed
 }

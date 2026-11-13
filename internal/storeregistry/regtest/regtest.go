@@ -6,7 +6,6 @@ package regtest
 import (
 	"context"
 	"database/sql"
-	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/steveyegge/beads/internal/brainunify"
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // Database is the name of the throwaway unified database.
@@ -30,12 +30,7 @@ type Server struct {
 // brain_store_prefixes tables a created store is recorded in.
 func New(t *testing.T) *Server {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("integration test starts a dolt server")
-	}
-	if _, err := exec.LookPath("dolt"); err != nil {
-		t.Skip("dolt binary not on PATH")
-	}
+	testutil.RequireDoltCLIOnly(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	t.Cleanup(cancel)
 	srv, err := brainunify.StartIsolatedServer(ctx, "dolt", filepath.Join(t.TempDir(), "dolt"))

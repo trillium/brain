@@ -288,7 +288,9 @@ Nothing runs on its own until you ask.
 - *`cannot tell which store this is`*: run the command through the store's own
   wrapper so its name is known.
 - *Items keep reappearing as new*: check `brain github status`; the repository
-  must be the one the items were synced with. Links into another repository are
-  deliberately ignored.
+  must be the one the items were synced with.
+- *Items are counted as skipped and never pushed*: they are linked into another
+  repository. A sync leaves an item linked elsewhere alone, link and all, rather
+  than reading its issue number in the paired repository.
 - *Hit a rate limit*: the sync stops cleanly and the next run continues; links
   and the marker make a half-finished run safe to repeat.

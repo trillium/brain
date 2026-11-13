@@ -121,7 +121,9 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 func (f *fakeGitHub) put(gh *github.Issue, labels []string) *github.Issue {
 	gh.Number = f.next
 	gh.ID = 9000 + f.next
-	gh.HTMLURL = fmt.Sprintf("https://github.com/acme/widgets/issues/%d", f.next)
+	// The fake is a GitHub Enterprise host: its issues live on the host that
+	// serves its API, as RefScope requires of a ref in the paired repository.
+	gh.HTMLURL = fmt.Sprintf("%s/acme/widgets/issues/%d", f.server.URL, f.next)
 	for _, l := range labels {
 		gh.Labels = append(gh.Labels, github.Label{Name: l})
 	}
@@ -300,7 +302,7 @@ func TestGitHubSyncTwoWayIsRepeatable(t *testing.T) {
 		t.Fatalf("after first sync: %d issues, %d posts; want 2 and 2", n, posts)
 	}
 	linkA := s.show(a).ExternalRef
-	if linkA == nil || !strings.HasPrefix(*linkA, "https://github.com/acme/widgets/issues/") {
+	if linkA == nil || !strings.HasPrefix(*linkA, gh.server.URL+"/acme/widgets/issues/") {
 		t.Fatalf("item %s is not linked to its issue: %v", a, linkA)
 	}
 	if body := gh.get(gh.numberOf(t, "Alpha")).Body; !strings.Contains(body, "first item") || !strings.Contains(body, github.BuildMarker("tw", a)) {

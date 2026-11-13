@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -29,102 +30,133 @@ Commands:
 
 DoltHub is recommended for cloud backup:
   bd backup init https://doltremoteapi.dolthub.com/<user>/<repo>
-  Set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD for authentication.`,
+  Set DOLT_REMOTE_USER and DOLT_REMOTE_PASSWORD for authentication.
+
+Auto-backup default:
+  When backup.enabled is unset, auto-backup turns ON in embedded mode if a
+  git remote exists, and stays OFF in sql-server / shared-server mode. In
+  server mode many bd clients share one Dolt server, and each would register
+  a server-side backup remote under the same name pointing at its own local
+  dir and full-sync the whole database — a self-amplifying storm. To back up
+  a shared server, run 'bd backup' explicitly (or set backup.enabled=true and
+  coordinate destinations). 'bd config get backup.enabled' shows the effective
+  value and its source.
+
+  A proxied-server workspace is server mode too: auto-backup is OFF by
+  default and backup.enabled=true opts in. Both the opt-in and the five
+  backup verbs above are honored only on a managed-local proxied server —
+  one bd started itself; on a Dolt server bd does not own they are refused.`,
 	GroupID: "sync",
 }
 
-var backupStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Show last backup status",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		evt := metrics.NewCommandEvent("backup-status")
-		defer func() {
-			if c := metrics.Global(); c != nil {
-				c.CloseEventAndAdd(evt)
+type backupSizeFunc func(context.Context) (bytes int64, available bool, err error)
+
+var backupStatusCmd = newBackupStatusCommand(doltBackupSize)
+
+func newBackupStatusCommand(sizeDatabase backupSizeFunc) *cobra.Command {
+	return &cobra.Command{
+		Use:           "status",
+		Short:         "Show last backup status",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if usesProxiedServer() {
+				if err := requireLocalProxiedBackup("backup status"); err != nil {
+					return err
+				}
 			}
-		}()
+			evt := metrics.NewCommandEvent("backup-status")
+			defer func() {
+				if c := metrics.Global(); c != nil {
+					c.CloseEventAndAdd(evt)
+				}
+			}()
 
-		// A shared database keeps one backup record for all its stores, in the
-		// database; the per-store folder is not consulted (or created).
-		if db, shared, err := sharedBackupTarget(rootCtx); err != nil {
-			return fmt.Errorf("cannot tell whether this database is shared by several stores: %w", err)
-		} else if shared {
-			return printSharedBackupStatus(rootCtx, db)
-		}
-
-		dir, err := backupDir()
-		if err != nil {
-			return err
-		}
-
-		state, err := loadBackupState(dir)
-		if err != nil {
-			return err
-		}
-
-		if jsonOutput {
-			result := map[string]interface{}{
-				"backup": state,
-				"dolt":   showDoltBackupStatusJSON(),
+			// A shared database keeps one backup record for all its stores, in the
+			// database; the per-store folder is not consulted (or created).
+			if db, shared, err := sharedBackupTarget(rootCtx); err != nil {
+				return fmt.Errorf("cannot tell whether this database is shared by several stores: %w", err)
+			} else if shared {
+				return printSharedBackupStatus(rootCtx, db)
 			}
-			if dbSize := showDBSizeJSON(); dbSize != nil {
-				result["database_size"] = dbSize
-			}
-			data, err := json.MarshalIndent(result, "", "  ")
+
+			dir, err := backupDir()
 			if err != nil {
 				return err
 			}
-			fmt.Println(string(data))
-			return nil
-		}
 
-		hasBackup := state.LastDoltCommit != ""
-		hasDolt := false
-		if cfg, _ := loadDoltBackupConfig(); cfg != nil {
-			hasDolt = true
-		}
-
-		if !hasBackup && !hasDolt {
-			fmt.Println("No backup has been performed yet.")
-			fmt.Println()
-			fmt.Println("Setup:")
-			fmt.Println("  bd backup init <path>    Set up a backup destination")
-			fmt.Println("  bd backup sync           Push to backup destination")
-			showDBSize()
-			return nil
-		}
-
-		if hasBackup {
-			fmt.Println("Backup:")
-			fmt.Printf("  Last backup: %s (%s ago)\n",
-				state.Timestamp.Format(time.RFC3339),
-				time.Since(state.Timestamp).Round(time.Second))
-			fmt.Printf("  Dolt commit: %s\n", state.LastDoltCommit)
-		}
-
-		// Show config (effective values with source)
-		enabled := isBackupAutoEnabled()
-		interval := config.GetDuration("backup.interval")
-		enabledSource := config.GetValueSource("backup.enabled")
-		enabledNote := ""
-		if enabledSource == config.SourceDefault {
-			if enabled {
-				enabledNote = " (auto: git remote detected)"
-			} else {
-				enabledNote = " (auto: no git remote)"
+			state, err := loadBackupState(dir)
+			if err != nil {
+				return err
 			}
-		}
-		fmt.Printf("\nConfig: enabled=%v%s interval=%s\n",
-			enabled, enabledNote, interval)
+			databaseSize, sizeAvailable, err := sizeDatabase(cmd.Context())
+			if err != nil {
+				return HandleErrorRespectJSON("measure database size: %v", err)
+			}
 
-		// Show Dolt backup info
-		showDoltBackupStatus()
+			if jsonOutput {
+				result := map[string]interface{}{
+					"backup": state,
+					"dolt":   showDoltBackupStatusJSON(),
+				}
+				if sizeAvailable {
+					result["database_size"] = showDBSizeJSON(databaseSize)
+				}
+				data, err := json.MarshalIndent(result, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(data))
+				return nil
+			}
 
-		// Show database size
-		showDBSize()
+			hasBackup := state.LastDoltCommit != ""
+			hasDolt := false
+			if cfg, _ := loadDoltBackupConfig(); cfg != nil {
+				hasDolt = true
+			}
 
-		return nil
-	},
+			if !hasBackup && !hasDolt {
+				fmt.Println("No backup has been performed yet.")
+				fmt.Println()
+				fmt.Println("Setup:")
+				fmt.Println("  bd backup init <path>    Set up a backup destination")
+				fmt.Println("  bd backup sync           Push to backup destination")
+				if sizeAvailable {
+					showDBSize(databaseSize)
+				}
+				return nil
+			}
+
+			if hasBackup {
+				fmt.Println("Backup:")
+				fmt.Printf("  Last backup: %s (%s ago)\n",
+					state.Timestamp.Format(time.RFC3339),
+					time.Since(state.Timestamp).Round(time.Second))
+				fmt.Printf("  Dolt commit: %s\n", state.LastDoltCommit)
+			}
+
+			// Show config (effective values with source)
+			enabled := isBackupAutoEnabled()
+			interval := config.GetDuration("backup.interval")
+			enabledNote := ""
+			if note := backupAutoStatusNote(enabled); note != "" {
+				enabledNote = " (" + note + ")"
+			}
+			fmt.Printf("\nConfig: enabled=%v%s interval=%s\n",
+				enabled, enabledNote, interval)
+
+			// Show Dolt backup info
+			showDoltBackupStatus()
+
+			// Show database size when the active backend can measure it locally.
+			if sizeAvailable {
+				showDBSize(databaseSize)
+			}
+
+			return nil
+		},
+	}
 }
 
 func init() {

@@ -3,7 +3,6 @@ package tracker
 import (
 	"context"
 
-	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -22,7 +21,7 @@ type IssueTracker interface {
 
 	// Init initializes the tracker with configuration from the beads config store.
 	// Called once before any sync operations.
-	Init(ctx context.Context, store storage.Storage) error
+	Init(ctx context.Context, store Store) error
 
 	// Validate checks that the tracker is properly configured and can connect.
 	Validate() error
@@ -52,6 +51,8 @@ type IssueTracker interface {
 	IsExternalRef(ref string) bool
 
 	// ExtractIdentifier extracts the human-readable identifier from an external_ref.
+	// It returns "" when the tracker cannot resolve ref to an identifier it
+	// can address; sync then leaves the linked issue alone.
 	ExtractIdentifier(ref string) string
 
 	// BuildExternalRef constructs an external_ref string for a tracker issue.
@@ -78,6 +79,15 @@ type LinkFinder interface {
 	// FindLinked returns the external issue that mirrors issue, or nil, nil
 	// when none does.
 	FindLinked(ctx context.Context, issue *types.Issue) (*TrackerIssue, error)
+}
+
+// DryRunLookup is an optional capability for trackers that can read every
+// linked issue cheaply (one listing rather than one request per issue). A dry
+// run asks it before reading the external copy, so its plan applies the same
+// up-to-date test a real push does; without it a dry run reads nothing remote
+// and counts every changed linked issue as an update.
+type DryRunLookup interface {
+	DryRunLooksUp() bool
 }
 
 // PullStatsProvider is an optional capability for trackers that can report

@@ -356,6 +356,9 @@ type adoStatusResult struct {
 
 // runADOStatus implements the ado status command.
 func runADOStatus(cmd *cobra.Command, _ []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("ado status is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("ado-status")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -409,6 +412,9 @@ func runADOStatus(cmd *cobra.Command, _ []string) error {
 
 // runADOProjects implements the ado projects command.
 func runADOProjects(cmd *cobra.Command, _ []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("ado projects is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("ado-projects")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -478,6 +484,9 @@ type adoSyncResult struct {
 // runADOSync implements the ado sync command.
 // Uses the tracker.Engine for all sync operations.
 func runADOSync(cmd *cobra.Command, _ []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("ado sync is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("ado-sync")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -768,6 +777,24 @@ func pushADOLinks(ctx context.Context, resolver *ado.LinkResolver, at *ado.Track
 	var warnings []string
 	linkCount := 0
 
+	// Build the set of ADO work item IDs beads tracks. PushLinks only removes a
+	// current relation when its target is in this set, so links to items beads
+	// does not track (e.g. human-created Related / Predecessor-Successor links)
+	// are preserved rather than clobbered. See GH#4522.
+	managedTargets := make(map[int]bool)
+	for _, issue := range allIssues {
+		if issue.ExternalRef == nil {
+			continue
+		}
+		ref := *issue.ExternalRef
+		if !at.IsExternalRef(ref) {
+			continue
+		}
+		if id, cerr := strconv.Atoi(at.ExtractIdentifier(ref)); cerr == nil {
+			managedTargets[id] = true
+		}
+	}
+
 	for _, issue := range allIssues {
 		if issue.ExternalRef == nil {
 			continue
@@ -823,7 +850,7 @@ func pushADOLinks(ctx context.Context, resolver *ado.LinkResolver, at *ado.Track
 			continue
 		}
 
-		errs := resolver.PushLinks(ctx, workItemID, items[0].Relations, desired)
+		errs := resolver.PushLinks(ctx, workItemID, items[0].Relations, desired, managedTargets)
 		for _, e := range errs {
 			msg := fmt.Sprintf("Link sync ADO #%d: %v", workItemID, e)
 			warnings = append(warnings, msg)

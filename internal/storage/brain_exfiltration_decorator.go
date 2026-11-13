@@ -51,6 +51,10 @@ func NewBrainExfiltrationDecorator(store DoltStorage, exf exfiltrator.Exfiltrato
 // (e.g., StoreLocator, RawDBAccessor). Mirrors HookFiringStore.Inner.
 func (d *BrainExfiltrationDecorator) Inner() DoltStorage { return d.inner }
 
+// Unwrap returns the underlying store, satisfying Unwrapper so UnwrapStore
+// walks through this decorator to the concrete store.
+func (d *BrainExfiltrationDecorator) Unwrap() DoltStorage { return d.inner }
+
 // ── Issue mutations ────────────────────────────────────────────────
 
 // CreateIssue creates an issue and renders the markdown for brain-kind

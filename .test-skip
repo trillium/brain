@@ -1,2 +1,36 @@
 # Tests to skip due to known issues
 # Format: one test name per line (regex patterns supported)
+
+# The brain fork removed upstream's .github/workflows (6c34ffcdc: no
+# autonomous CI triggers on the fork). These upstream tests assert properties
+# of those workflow files, so there is nothing for them to read.
+^TestCICapabilitySelectorWorkflowPreservesExistingAuthority$
+^TestAptGetStepsAreBoundedAndRetried$
+^TestAptGetStepTimeoutsExceedTheirOwnBudget$
+^TestCIWorkflowArtifactOwnership$
+^TestPullRequestWorkflowsTriggerOnHotfixBranches$
+^TestPRCIGateRequiresPolicyAndLintWrappers$
+^TestPRWorkflowExercisesWindowsBenchmarkEnvScrubbing$
+^TestPRCIGateRequiresJSWasmHookExecution$
+^TestPRCIGateRequiresGeneratedHookTimeoutProcessBoundary$
+^TestStorageDomainUOWJobsUseNestedTimeoutBudgets$
+^TestMacOSTestJobsReuseWorkspaceBDBinary$
+^TestPRPreflightPlatformsRunsTestScriptPrebuiltBinaryContract$
+^TestRepositoryTextEOLPolicyWorkflow$
+^TestGoCacheOwnershipTopology$
+^TestPRRiskGateReachesFullServerDoltStorageSuite$
+^TestWorkflowsInstallPinnedDolt$
+^TestProxiedLocalSmokeMatchesPinnedDoltVersion$
+^TestConformanceWorkflowHasOuterTimeoutBudget$
+^TestDoltImagePullWorkflowsUseRetryHelper$
+
+# The fork keeps its own .githooks (gofmt/lint, and the deploy check in
+# post-merge) without upstream's managed bd sections: the brain repo holds no
+# beads database, and the managed prepare-commit-msg adds agent-identity
+# trailers to commits, which the fork does not want.
+^TestTrackedManagedHookSectionsMatchGenerator$
+
+# Fails on upstream v1.3.4 itself (embedded tier): bd doctor deliberately
+# refuses a corrupt metadata.json (validateDoctorWorkspaceBackend), while this
+# test still expects it to succeed.
+^TestCorruptMetadataDiagnosticsRunAndDataFailsLoud$

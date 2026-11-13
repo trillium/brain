@@ -473,7 +473,7 @@ func (p *promoter) evaluateProbe(pl *promotePlan) {
 		pl.block("something is already listening on port %d on the target and this promotion did not start it (a different Dolt server, possibly a different live brain)", pl.Port)
 	}
 	for _, db := range pr.DatabasesPresent {
-		if containsStr(pr.DatabasesOurs, db) {
+		if hostListContains(pr.DatabasesOurs, db) {
 			continue
 		}
 		if staleOK && pr.OldServerPort > 0 {
@@ -487,7 +487,7 @@ func (p *promoter) evaluateProbe(pl *promotePlan) {
 		pl.block("the target already has a database named %s in %s that this promotion did not create: it holds a different brain (if it is the old copy from before this machine gave up the host role, use --replace-stale)", db, pl.DataDir)
 	}
 	for _, r := range pr.StoreRootsPresent {
-		if containsStr(pr.StoreRootsOurs, r) {
+		if hostListContains(pr.StoreRootsOurs, r) {
 			continue
 		}
 		if p.opts.MoveAside || staleOK {
