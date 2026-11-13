@@ -146,8 +146,10 @@ Times are from the rehearsal on a copy of mini0's databases (13 GB), on mini0.
    53 → 66 (13 to run), the ignored series 11 → 26 (15 to run), and
    `beads_global`'s remotes.
 4. **Check the disk on mini0.** The backup needs about the database's size
-   (13 GB for `brain_unified`), and each verification or rehearsal restores
-   another copy beside it while it runs (removed afterwards).
+   (13 GB for `brain_unified`). Its verification and a rehearsal open
+   copy-on-write clones of it (keep `--backup-dir` on the same APFS volume as
+   the scratch dir, the default), which cost nothing until the rehearsal
+   migrates its copy (a few GB). Leave 30 GB free.
 5. **Decide `beads_global`'s remotes.** `mini1`'s remote is unreachable; `mini3`
    serves a clone. A clone that keeps the old schema must not be merged or
    pushed back: migrate mini3's copy too, or remove the remote, before
@@ -177,17 +179,23 @@ a client missed in step 12 fails loudly instead of writing.
      --host 127.0.0.1 --port 3307 --user root \
      --backup-dir /Users/mini0/data/brain-upgrade-0.6.0
    ```
-   Both databases must print `VERIFIED`. If a writer was still running, the
-   backup refuses ("moved … while the backup ran"): find it, stop it, run again.
-9. **Rehearse (recommended):** the same flags with `rehearse`. It migrates a
-   restored copy and must print `rehearsal PASS` for both databases.
+   Both databases must print `VERIFIED` (about 15 minutes: the sync, then a
+   comparison of each database with its backup). If a writer was still
+   running, the backup refuses ("moved … while the backup ran"): find it, stop
+   it, run again.
+9. **Rehearse (optional):** the same flags with `rehearse` migrates a copy of
+   each backup and must print `rehearsal PASS`. It costs about as long as
+   `apply`; the rehearsal recorded below ran on a copy of these databases taken
+   on 2026-11-13, so skip it unless the data has changed shape since.
 10. **Apply:**
     ```sh
     BEADS_DOLT_PASSWORD=<root password> ~/.local/bin/bd-0.6.0 brain upgrade apply \
       --host 127.0.0.1 --port 3307 --user root \
       --backup-dir /Users/mini0/data/brain-upgrade-0.6.0 --allow-remote-backed
     ```
-    It prints a `verify PASS` table per database. On a FAIL, go to
+    It prints each migration with its time as it runs, then a `verify PASS`
+    table per database (rehearsed: `beads_global` 16 s, `brain_unified` 48 min,
+    plus about 2 minutes of verification each). On a FAIL, go to
     [Rollback](#rollback).
 11. **Converge the pin** (satellite-config) on mini0 and mini1. From here until
     step 12 finishes on a machine, its wrappers exit 78.
@@ -246,7 +254,45 @@ instead.
 
 ## Rehearsal
 
-REHEARSAL-RESULTS
+Everything below ran on copies; nothing live was migrated, restarted or
+changed.
+
+**The copy.** mini0's `brain_unified` and `beads_global` directories were
+cloned (APFS copy-on-write, read-only on the live files) at 2026-11-13 07:30 UTC
+and served on a scratch Dolt server. The copy's HEAD (`fa7vhl24…`) is a commit
+in the live database's `dolt_log`, so it is a consistent point of the live
+history; it holds 44,726 issues, 511,233 events, 42,190 comments and 7,686
+dependencies.
+
+| Step | `beads_global` | `brain_unified` |
+|---|---|---|
+| `plan` | brain rows at 54-56; main 53 → 66 (13), ignored 11 → 26 (15), brain 3/3; remotes `mini1`, `mini3` | brain rows at 54-56; main 53 → 66 (13), ignored 11 → 26 (15), brain 3/3 |
+| `backup` | VERIFIED: `dolt_hashof_db` `upohtmep8bre79thuj4d920qj1oion6s`, 27 tables | VERIFIED: `dolt_hashof_db` `u0s1cihnicarkrc2rq9sje0h17gecct7`, HEAD `fa7vhl24477382oqfk61vg4hrf6qe91h`, 52 tables |
+| `apply` | 14 migrations, 16 s; verify PASS | 15 migrations, 48 min; verify PASS |
+| verify detail | every table kept; `comments`, `events` ids rewritten | every table kept with its row count; all 25 brain tables identical; `events` (511,233), `comments` (42,190), `dependencies` (7,686) ids rewritten; `issues`, `wisps` gained `row_lock`, `storage_class`; new: `brain_schema_migrations`, `leases`, `bd_events_journal`, `bd_events_seq`, `provenance_events` |
+| `rollback --offline` | backup laid out in under a second | backup laid out in under a second |
+| `rollback --check` | the backed-up state | the backed-up state (`dolt_hashof_db` `u0s1cihn…` again) |
+| `plan` after rollback | identical to before, remotes kept | identical to before |
+
+Where `brain_unified`'s 48 minutes go: `0062_events_dolt_ignore` (moving
+511k events off the versioned plane) 12.8 min, reading `events` for the
+aux-row-id re-key about 25 min, the re-key itself 8.6 min, everything else
+about 2 min. The rest of the window is the backup (the sync took about 8 min)
+and the comparisons (each about 2 min per database on the live data's storage).
+
+Two things the rehearsal found and fixed before this PR:
+
+- **The aux-row-id re-key** issued one `UPDATE` per row. On `brain_unified`
+  it ran for hours and hit the time budget inside the re-key. It now moves
+  500 ids per statement past 1,000 rows (same ids, same order); that step is
+  the 8.6 min above.
+- **Dolt's own restore** (`DOLT_BACKUP('restore')`) of the 13 GB backup took
+  3 h 47 min: it checks every chunk's references across the whole history
+  first. Verifying and rolling back by laying the backup out as a database
+  takes seconds; the online rollback keeps the Dolt restore as the fallback.
+
+The 0.5.1 binary against the migrated copy fails closed:
+`schema version mismatch: database is at v66, binary knows up to v56`.
 
 ## Hazards
 
@@ -268,4 +314,16 @@ REHEARSAL-RESULTS
 
 ## Beads 1.3 primitives on brain stores
 
-PRIMITIVES-RESULTS
+Exercised through a brain store's own environment (`BEADS_DIR`, `BD_NAME`,
+the shared server) on the migrated copy.
+
+| Primitive | From `brain` / `task` | Notes |
+|---|---|---|
+| Leases (`update --claim`, `heartbeat`, `reclaim`) | **Works.** A claim writes a `leases` row, `heartbeat` extends it, `reclaim` leaves a live lease alone. | `leases` is dolt-ignored and node-local by design. The hooks.d guard does not intercept the lease reaper (task-k5szkv). |
+| Events journal (`events tail/export/prune`, `GET /v0/beads/events`, `events:watch`) | **Works** once a store opts in: `events-journal: true` in its `.beads/config.yaml` (or `BD_EVENTS_JOURNAL=1`). | One stream per database: on `brain_unified` the journal carries every store that journals, and readers see all of it (task-fbq74i). Each create journals two records: the create and the markdown render's `brain_slug` stamp. The journal does not replace brain's event outbox: it is a change feed, the outbox a delivery queue with acknowledgements. |
+| Revision tokens (`revision`, `expected_version`) | **Works** over `bd serve`: an update guarded by the current revision lands (200), by a stale one is refused (409). | |
+| `casMetadata` | **Works** over `bd serve`: first-writer-wins acquire, a lost race answers `swapped: false` with the current value. | |
+| `batchApply` | **Works** over `bd serve` (`--wide`); the create minted under the wrapper's prefix (`brain-…`). | With hooks.d guards declared, batch apply through the store fails closed (a guard cannot see inside it). |
+| `bd serve` | **Refused by default** on a store of the unified database; `--wide` serves it. | `bd serve` answers from a unit-of-work provider beneath the store, so the namespace scoping, the hooks.d guards and the markdown render do not apply to HTTP: reads answer for every store, writes render no markdown (render-all and the host render job catch up). A store with hooks.d definitions refuses to serve at all; on the unified database the every-store view must be asked for with `--wide`. Creates still mint under the wrapper's own prefix. Routing those layers through the provider is task-0ytyqc. |
+
+The transcript is in the PR's evidence.

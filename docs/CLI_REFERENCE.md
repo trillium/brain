@@ -8848,21 +8848,22 @@ Steps, in order:
   plan      read each database and report what the migration would do (a dry
             run: nothing is written)
   backup    take a Dolt-native backup of each database into --backup-dir,
-            restore it on an isolated server and compare it with the database
-            by dolt_hashof_db, HEAD, and every table's row count and whole-row
-            digest; only a backup that reproduces the database is marked
-            verified
-  rehearse  restore each backup on an isolated server, migrate the copy,
-            verify it, and roll the copy back; the live databases are not
-            touched
+            open it as a database on a Dolt server of its own and compare it
+            with the database by dolt_hashof_db, HEAD, and every table's row
+            count and whole-row digest; only a
+            backup that reproduces the database is marked verified
+  rehearse  lay each backup out as a copy on a Dolt server of its own,
+            migrate the copy, verify it, and roll it back the offline way;
+            the live databases are not touched
   apply     migrate each database whose verified backup still matches it
             exactly, then verify it
   verify    compare a migrated database with the state its backup holds:
             every schema series at latest, every table and column kept, every
             row count and digest unchanged outside the columns the migration
             rewrites on purpose
-  rollback  restore each backup over its database and prove the result is the
-            backed-up state (discards everything written since the backup)
+  rollback  put each backup back in place of its database and prove the
+            result is the backed-up state (discards everything written since
+            the backup); see 'rollback --help' for the online and offline ways
 
 Stop every writer before 'backup' and keep them stopped until 'verify' passes
 and every client runs the new binary: 'apply' refuses a database that changed
@@ -8895,13 +8896,13 @@ bd brain upgrade apply [flags]
       --host string           Dolt sql-server host (default "127.0.0.1")
       --json                  print the result as JSON
       --port int              Dolt sql-server port (default 3307)
-      --timeout duration      overall time budget (default 6h0m0s)
+      --timeout duration      overall time budget (default 24h0m0s)
       --user string           login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
 ##### bd brain upgrade backup
 
-Take a Dolt-native backup of each database and verify it by restoring it
+Take a Dolt-native backup of each database and verify it against the database
 
 ```
 bd brain upgrade backup [flags]
@@ -8917,8 +8918,8 @@ bd brain upgrade backup [flags]
       --json                 print the result as JSON
       --keep-scratch         keep the isolated server's data directory afterwards
       --port int             Dolt sql-server port (default 3307)
-      --scratch-dir string   directory for the isolated Dolt server that restores the backups (default: <backup-dir>/.scratch, removed afterwards)
-      --timeout duration     overall time budget (default 6h0m0s)
+      --scratch-dir string   directory a backup is opened in on a Dolt server of its own; same filesystem as --backup-dir so it can be cloned, not copied (default: <backup-dir>/.scratch, removed afterwards)
+      --timeout duration     overall time budget (default 24h0m0s)
       --user string          login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
@@ -8938,13 +8939,13 @@ bd brain upgrade plan [flags]
       --host string         Dolt sql-server host (default "127.0.0.1")
       --json                print the result as JSON
       --port int            Dolt sql-server port (default 3307)
-      --timeout duration    overall time budget (default 6h0m0s)
+      --timeout duration    overall time budget (default 24h0m0s)
       --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
 ##### bd brain upgrade rehearse
 
-Migrate, verify and roll back a copy restored from each backup, on an isolated server
+Migrate, verify and roll back a copy of each backup, on a Dolt server of its own
 
 ```
 bd brain upgrade rehearse [flags]
@@ -8960,14 +8961,30 @@ bd brain upgrade rehearse [flags]
       --json                 print the result as JSON
       --keep-scratch         keep the isolated server's data directory afterwards
       --port int             Dolt sql-server port (default 3307)
-      --scratch-dir string   directory for the isolated Dolt server that restores the backups (default: <backup-dir>/.scratch, removed afterwards)
-      --timeout duration     overall time budget (default 6h0m0s)
+      --scratch-dir string   directory a backup is opened in on a Dolt server of its own; same filesystem as --backup-dir so it can be cloned, not copied (default: <backup-dir>/.scratch, removed afterwards)
+      --timeout duration     overall time budget (default 24h0m0s)
       --user string          login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
 ##### bd brain upgrade rollback
 
-Restore each database from its backup and prove it is the backed-up state
+Puts each database back to the state its verified backup holds, discarding
+everything written since the backup.
+
+  rollback --yes                 online: DOLT_BACKUP('restore', '--force') on the
+                                 running server, then the remotes and backup
+                                 registrations the backup recorded are added back.
+                                 No restart, but slow on a large database: Dolt
+                                 checks every chunk's references across the whole
+                                 history first.
+  rollback --yes --offline --data-dir DIR
+                                 with the Dolt server STOPPED: each database
+                                 directory under DIR is moved aside (kept at
+                                 DIR.migrated-&lt;stamp&gt;/&lt;db&gt;) and the backup is laid out
+                                 in its place, keeping the repository config.
+                                 Minutes. Start the server, then run --check.
+  rollback --check               compare each database with the state its backup
+                                 holds (reads only).
 
 ```
 bd brain upgrade rollback [flags]
@@ -8977,11 +8994,14 @@ bd brain upgrade rollback [flags]
 
 ```
       --backup-dir string   directory holding the backups and their manifest (required)
+      --check               only compare each database with the state its backup holds
+      --data-dir string     the stopped Dolt server's data directory (with --offline)
       --database strings    database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
       --host string         Dolt sql-server host (default "127.0.0.1")
       --json                print the result as JSON
+      --offline             with the Dolt server stopped, lay each backup out in place of its database directory (minutes, not hours)
       --port int            Dolt sql-server port (default 3307)
-      --timeout duration    overall time budget (default 6h0m0s)
+      --timeout duration    overall time budget (default 24h0m0s)
       --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
       --yes                 confirm: replace each database with its backup, discarding everything written since
 ```
@@ -9002,7 +9022,7 @@ bd brain upgrade verify [flags]
       --host string         Dolt sql-server host (default "127.0.0.1")
       --json                print the result as JSON
       --port int            Dolt sql-server port (default 3307)
-      --timeout duration    overall time budget (default 6h0m0s)
+      --timeout duration    overall time budget (default 24h0m0s)
       --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 

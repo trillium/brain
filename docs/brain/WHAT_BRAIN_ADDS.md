@@ -36,6 +36,7 @@ What the 1.3 seams required, so each addition keeps working:
 | Shared servers are not migrated on open | `bd brain upgrade apply` is the designated migrator; the old binaries fail closed on the migrated schema until they are replaced. |
 | Proxied-server capability registry: every command needs a row | Every brain verb has a typed `proxy.brain.unsupported` refusal row (brain stores run in server mode, never proxied). |
 | `FatalError` helpers removed upstream | Kept for brain's verbs only (`cmd/bd/brain_fatal.go`, flushing metrics before exit); converting them to `HandleError` is a follow-up. |
+| `bd serve` answers from a unit-of-work provider beneath the store | Brain's namespace scoping, hooks.d guards and markdown render do not reach HTTP yet, so a store with hooks.d definitions refuses to serve and a unified-database store serves only with `--wide` (task-0ytyqc). |
 | Events journal (`bd events`, `events:watch`) | Available on brain stores alongside brain's own outbox, which it does not replace: the journal is a change feed for readers, the outbox a delivery queue with acknowledgements. See [`UPGRADE_1_3.md`](UPGRADE_1_3.md#beads-13-primitives-on-brain-stores). |
 
 **State legend:**
