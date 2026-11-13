@@ -1,14 +1,11 @@
 ---
-id: related
-title: bd related
-slug: /cli-reference/related
-sidebar_position: 999
+title: "bd related"
+description: "Walk the graph from a center brain doc and print the subgraph as a tree"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc related`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd related
+Generated from `bd help --doc related`.
 
 brain related performs a breadth-first walk of outgoing edges from
 the given center brain doc and prints the reachable subgraph as an

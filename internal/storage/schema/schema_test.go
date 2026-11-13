@@ -2101,22 +2101,6 @@ WHERE table_schema = DATABASE()
 	requireDoltColumnShape(t, dir, "wisps", "wisp_type", "varchar(32)", "YES")
 	requireDoltColumnShape(t, dir, "issues", "storage_class", "varchar(16)", "YES")
 	requireDoltColumnShape(t, dir, "wisps", "storage_class", "varchar(16)", "YES")
-
-	// Brain series 0001: ISA columns on issues.
-	requireDoltColumnShape(t, dir, "issues", "slug", "varchar(255)", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_phase", "varchar(32)", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_progress_m", "int", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_progress_n", "int", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_effort", "varchar(8)", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_mode", "varchar(32)", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_started_at", "datetime", "YES")
-	requireDoltColumnShape(t, dir, "issues", "isa_updated_at", "datetime", "YES")
-
-	// Brain series 0002: the isa_sections table and its columns.
-	requireDoltColumnShape(t, dir, "isa_sections", "issue_id", "varchar(255)", "NO")
-	requireDoltColumnShape(t, dir, "isa_sections", "section_name", "varchar(64)", "NO")
-	requireDoltColumnShape(t, dir, "isa_sections", "body", "longtext", "NO")
-	requireDoltColumnShape(t, dir, "isa_sections", "updated_at", "timestamp", "NO")
 }
 
 func runDoltCommand(t *testing.T, dir string, args ...string) {

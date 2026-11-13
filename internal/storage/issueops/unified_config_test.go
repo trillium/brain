@@ -209,7 +209,6 @@ func TestUnifiedScopedCustomTables(t *testing.T) {
 		t.Fatalf("types = %v", types)
 	}
 
-
 	mock.ExpectRollback()
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)

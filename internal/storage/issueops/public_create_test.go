@@ -19,7 +19,8 @@ func TestPreparePublicCreateRequestNormalizesAcceptedFieldsAndIgnoresDerivedFiel
 	request := publicops.CreateRequest{Actor: "actor", Issue: &publicops.Issue{
 		ID: "bd-public-create", Title: "title", Status: "custom", Priority: 2, IssueType: "custom-type",
 		Metadata: json.RawMessage(`{"key":true}`), ContentHash: "caller-hash", RowVersion: 42,
-		LeaseExpiresAt: &createdAt, CompactionLevel: 4, IDPrefix: "ignored", PrefixOverride: "ignored", IsLitePartial: true,
+		LeaseExpiresAt: &createdAt, CompactionLevel: 4, IDPrefix: "ignored", PrefixOverride: "brn", IsLitePartial: true,
+		Name: "derived-display-name",
 	}}
 
 	prepared, err := PreparePublicCreateRequest(request, PublicCreateContext{
@@ -28,8 +29,13 @@ func TestPreparePublicCreateRequestNormalizesAcceptedFieldsAndIgnoresDerivedFiel
 	if err != nil {
 		t.Fatalf("PreparePublicCreateRequest() error = %v", err)
 	}
-	if prepared.Issue.ContentHash == "caller-hash" || prepared.Issue.RowVersion != 0 || prepared.Issue.LeaseExpiresAt != nil || prepared.Issue.CompactionLevel != 0 || prepared.Issue.IDPrefix != "" || prepared.Issue.PrefixOverride != "" || prepared.Issue.IsLitePartial {
+	if prepared.Issue.ContentHash == "caller-hash" || prepared.Issue.RowVersion != 0 || prepared.Issue.LeaseExpiresAt != nil || prepared.Issue.CompactionLevel != 0 || prepared.Issue.IDPrefix != "" || prepared.Issue.IsLitePartial || prepared.Issue.Name != "" {
 		t.Fatalf("derived fields survived preparation: %#v", prepared.Issue)
+	}
+	// Brain: the mint prefix of `create --prefix` is carried; the store's
+	// namespace-ownership check still runs on the id minted under it.
+	if prepared.Issue.PrefixOverride != "brn" {
+		t.Fatalf("PrefixOverride = %q, want the caller's mint prefix carried", prepared.Issue.PrefixOverride)
 	}
 }
 
@@ -55,11 +61,16 @@ func TestPublicCreateIssueFieldClassificationIsComplete(t *testing.T) {
 		"Sender": true, "Ephemeral": true, "NoHistory": true, "WispType": true, "StorageClass": true, "Pinned": true, "IsTemplate": true,
 		"BondedFrom": true, "AwaitType": true, "AwaitID": true, "Timeout": true, "Waiters": true, "SourceFormula": true, "SourceLocation": true,
 		"MolType": true, "WorkType": true, "EventKind": true, "Actor": true, "Target": true, "Payload": true,
+		// Brain: the mint prefix of `create --prefix`, a prefix the store's
+		// namespace owns. The minted id passes ValidateNamespaceOwnership.
+		"PrefixOverride": true,
 	}
 	ignored := map[string]bool{
 		"ContentHash": true, "LeaseExpiresAt": true, "HeartbeatAt": true, "LeaseGrantedNode": true, "RowVersion": true,
 		"CompactionLevel": true, "CompactedAt": true, "CompactedAtCommit": true, "OriginalSize": true,
-		"IDPrefix": true, "PrefixOverride": true, "IsLitePartial": true,
+		"IDPrefix": true, "IsLitePartial": true,
+		// Brain: the voice identifier, derived from Title on every read.
+		"Name": true,
 		// IsBlocked is the persisted readiness projection, computed from the
 		// dependency graph. A caller cannot declare it; it is populated only
 		// where it is read back (journal snapshots).

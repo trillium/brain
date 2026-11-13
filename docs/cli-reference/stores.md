@@ -1,14 +1,11 @@
 ---
-id: stores
-title: bd stores
-slug: /cli-reference/stores
-sidebar_position: 999
+title: "bd stores"
+description: "Manage the brain federation store registry"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc stores`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd stores
+Generated from `bd help --doc stores`.
 
 Manage the registry of bd stores federated under brain.
 
@@ -21,9 +18,10 @@ shell wrapper scripts that need BRAIN_STORE_* variables.
 
 ```
 bd stores [flags]
+bd stores [command]
 ```
 
-### bd stores add
+## bd stores add
 
 Register a store in the brain federation registry
 
@@ -37,7 +35,7 @@ bd stores add <name> <beads-dir> [flags]
       --local-only   Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-### bd stores alias
+## bd stores alias
 
 Create a second CLI variant ('alias') that points at an already-
 registered store. Useful for singular/plural pairs (idea/ideas,
@@ -66,7 +64,7 @@ bd stores alias <existing-store> <new-name> [flags]
       --no-wrapper         Skip writing the wrapper at ~/.local/bin/<alias>
 ```
 
-### bd stores create
+## bd stores create
 
 Provision a new connected store end-to-end. Does, in order:
 
@@ -122,7 +120,7 @@ bd stores create <name> [flags]
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
 ```
 
-### bd stores doctor
+## bd stores doctor
 
 Walk every store registered in ~/.config/brain/stores.yaml and assert it
 answers a read. The registry is the source of truth for which stores must
@@ -203,7 +201,7 @@ bd stores doctor [flags]
       --timeout duration          Per-store read timeout (default 20s)
 ```
 
-### bd stores edit-back
+## bd stores edit-back
 
 Declare edit-back for a store in ~/.config/brain/stores.yaml.
 
@@ -228,7 +226,7 @@ file that disappears marks its bead for deletion, never removes it.
 bd stores edit-back <name> on|off [flags]
 ```
 
-### bd stores env
+## bd stores env
 
 Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 
@@ -236,7 +234,7 @@ Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 bd stores env [flags]
 ```
 
-### bd stores epoch
+## bd stores epoch
 
 Print the registry epoch (database) and the epoch applied on this machine
 
@@ -244,7 +242,7 @@ Print the registry epoch (database) and the epoch applied on this machine
 bd stores epoch [flags]
 ```
 
-### bd stores host-audit
+## bd stores host-audit
 
 Reports, as JSON, what this machine says about itself: the build stamp, the
 shared store-host.env, every literal Dolt host/port pin in the ~/.local/bin
@@ -267,7 +265,7 @@ bd stores host-audit [flags]
       --write-probe   Also write+read+delete a probe row in each store (see --help)
 ```
 
-### bd stores list
+## bd stores list
 
 List all registered stores
 
@@ -281,7 +279,7 @@ bd stores list [flags]
   -v, --verbose   Include each store's about blurb as an extra column
 ```
 
-### bd stores poller
+## bd stores poller
 
 The poller is the backstop that keeps an idle machine converged: launchd runs
 'brain stores sync --quiet' at load and every 5 minutes, logging under
@@ -295,9 +293,10 @@ within one tick of waking, in one step.
 
 ```
 bd stores poller [flags]
+bd stores poller [command]
 ```
 
-#### bd stores poller install
+### bd stores poller install
 
 Install and load the launch agent on this machine
 
@@ -314,7 +313,7 @@ bd stores poller install [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-#### bd stores poller print
+### bd stores poller print
 
 Print the launch agent plist (writes nothing)
 
@@ -329,7 +328,7 @@ bd stores poller print [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-#### bd stores poller status
+### bd stores poller status
 
 Say whether the launch agent is installed and loaded
 
@@ -337,7 +336,7 @@ Say whether the launch agent is installed and loaded
 bd stores poller status [flags]
 ```
 
-#### bd stores poller uninstall
+### bd stores poller uninstall
 
 Unload and remove the launch agent
 
@@ -352,7 +351,7 @@ bd stores poller uninstall [flags]
       --no-load   Remove the plist without running launchctl
 ```
 
-### bd stores reconcile
+## bd stores reconcile
 
 Merge an out-of-sync brain back into one.
 
@@ -382,15 +381,16 @@ bd stores reconcile [flags]
       --report string      Report file (default ~/.config/brain/reconcile-report.md)
 ```
 
-### bd stores registry
+## bd stores registry
 
 Inspect the shared store registry (export, log, report)
 
 ```
 bd stores registry [flags]
+bd stores registry [command]
 ```
 
-#### bd stores registry export
+### bd stores registry export
 
 Print the registry snapshot (state, entries, machine reports) as JSON
 
@@ -398,7 +398,7 @@ Print the registry snapshot (state, entries, machine reports) as JSON
 bd stores registry export [flags]
 ```
 
-#### bd stores registry log
+### bd stores registry log
 
 Show the registry's append-only history, newest first
 
@@ -412,7 +412,7 @@ bd stores registry log [flags]
       --limit int   How many rows (default 30)
 ```
 
-#### bd stores registry report
+### bd stores registry report
 
 Record a machine's applied state (used by client machines through their relay host)
 
@@ -426,7 +426,7 @@ bd stores registry report [flags]
       --machine-json string   The machine report as JSON
 ```
 
-### bd stores remove
+## bd stores remove
 
 Remove a store name from the brain fleet.
 
@@ -452,7 +452,7 @@ bd stores remove <name> [flags]
       --local-only   Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-### bd stores rename
+## bd stores rename
 
 Rename a connected store end-to-end. Does, in order:
 
@@ -488,7 +488,7 @@ bd stores rename <old-name> <new-name> [flags]
       --local-only         Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-### bd stores render-all
+## bd stores render-all
 
 Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
@@ -521,7 +521,7 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
-### bd stores rewrite-wrappers
+## bd stores rewrite-wrappers
 
 Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
 ~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
@@ -561,7 +561,7 @@ bd stores rewrite-wrappers [flags]
       --timeout duration   Per-store read timeout (default 20s)
 ```
 
-### bd stores set-about
+## bd stores set-about
 
 Attach a short description to a registered store, stored in the
 registry (~/.config/brain/stores.yaml) only. The wrapper script is left
@@ -577,7 +577,7 @@ Examples:
 bd stores set-about <store> <blurb> [flags]
 ```
 
-### bd stores shell-hook
+## bd stores shell-hook
 
 Print a shell function that, when you type a store name this machine has no
 wrapper for yet, asks the registry (the cached copy, instantly) and, if the
@@ -589,7 +589,7 @@ name is a store, runs it through 'brain store'. Add to your shell rc:
 bd stores shell-hook [zsh|bash] [flags]
 ```
 
-### bd stores sync
+## bd stores sync
 
 Reconcile this machine with the fleet's store registry.
 
@@ -634,7 +634,7 @@ bd stores sync [flags]
       --wait duration    How long to wait for another sync running here (default 30s)
 ```
 
-### bd stores verify
+## bd stores verify
 
 Compare this machine's real wrappers, agent links, stores.yaml and stores.env
 with the registry and print what is missing or orphaned. Changes nothing.

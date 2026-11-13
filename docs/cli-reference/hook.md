@@ -1,14 +1,11 @@
 ---
-id: hook
-title: bd hook
-slug: /cli-reference/hook
-sidebar_position: 999
+title: "bd hook"
+description: "Declared guard/observer hooks (hooks.d)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc hook`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd hook
+Generated from `bd help --doc hook`.
 
 Hooks declared in &lt;beadsDir&gt;/hooks.d/&lt;name&gt;.toml observe mutations and may
 refuse them. A guard hook runs before a write and can refuse it (fail-closed);
@@ -20,10 +17,10 @@ record in the store. Hooks never write: the store is the only writer.
 See docs/brain/HOOKS.md.
 
 ```
-bd hook [flags]
+bd hook [command]
 ```
 
-### bd hook list
+## bd hook list
 
 List every hook declared in hooks.d and report every definition that cannot be
 loaded. Exits non-zero when any definition is unusable. Writes nothing.
@@ -36,7 +33,7 @@ Examples:
 bd hook list [flags]
 ```
 
-### bd hook test
+## bd hook test
 
 Run a declared hook exactly as the write path would — same shell, same
 sanitized environment, same timeout — against a sample or supplied payload, and
@@ -58,7 +55,7 @@ bd hook test <name> [flags]
       --payload-file string   JSON file holding the payload to pipe to the hook
 ```
 
-### bd hook warnings
+## bd hook warnings
 
 List the durable warning records hooks have produced. A warning says which hook
 degraded and what happened; it stays "open" until acknowledged, so it can be

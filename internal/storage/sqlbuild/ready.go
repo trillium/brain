@@ -99,12 +99,17 @@ func BuildReadyWorkWhere(filter types.WorkFilter, tables FilterTables, in ReadyW
 		// eligible set: built-in open plus category-active custom statuses,
 		// matching the ready_issues view since migration 0025 (GH#5831).
 		// Any other singular status stays exact.
-		if filter.Status == types.StatusOpen {
+		if filter.Status == types.StatusOpen && filter.CustomStatusStore != "" {
+			// Brain unified database: the store's own custom statuses.
+			statusClause = "(status = ? OR status IN (SELECT name FROM brain_unified_custom_statuses WHERE `store` = ? AND category = 'active'))"
+			args = append(args, string(filter.Status), filter.CustomStatusStore)
+		} else if filter.Status == types.StatusOpen {
 			statusClause = "(status = ? OR status IN (SELECT name FROM custom_statuses WHERE category = 'active'))"
+			args = append(args, string(filter.Status))
 		} else {
 			statusClause = "status = ?"
+			args = append(args, string(filter.Status))
 		}
-		args = append(args, string(filter.Status))
 	case len(filter.Statuses) > 0:
 		ph, statusArgs := InPlaceholders(filter.Statuses)
 		statusClause = fmt.Sprintf("status IN (%s)", ph)

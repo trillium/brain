@@ -26,3 +26,15 @@ func (s trackedStore) GetIssue(_ context.Context, id string) (*types.Issue, erro
 	}
 	return nil, errors.New("not found")
 }
+
+// SearchIssues answers only an id lookup, the one search the tracker makes
+// to ask whether an item exists.
+func (s trackedStore) SearchIssues(_ context.Context, _ string, filter types.IssueFilter) ([]*types.Issue, error) {
+	var out []*types.Issue
+	for _, id := range filter.IDs {
+		if s.ids[id] {
+			out = append(out, &types.Issue{ID: id})
+		}
+	}
+	return out, nil
+}

@@ -81,6 +81,15 @@ type LinkFinder interface {
 	FindLinked(ctx context.Context, issue *types.Issue) (*TrackerIssue, error)
 }
 
+// DryRunLookup is an optional capability for trackers that can read every
+// linked issue cheaply (one listing rather than one request per issue). A dry
+// run asks it before reading the external copy, so its plan applies the same
+// up-to-date test a real push does; without it a dry run reads nothing remote
+// and counts every changed linked issue as an update.
+type DryRunLookup interface {
+	DryRunLooksUp() bool
+}
+
 // PullStatsProvider is an optional capability for trackers that can report
 // raw fetch counts separately from incremental pull candidates.
 type PullStatsProvider interface {

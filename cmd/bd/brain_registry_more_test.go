@@ -569,7 +569,7 @@ func TestRideAlongIsWiredIntoEveryCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	pre := string(src)
-	i := strings.Index(pre, "PersistentPreRunE: func(cmd *cobra.Command, args []string) error {")
+	i := strings.Index(pre, "PersistentPreRunE: func(cmd *cobra.Command, args []string) (retErr error) {")
 	j := strings.Index(pre, "PersistentPostRunE:")
 	if i < 0 || j < i || !strings.Contains(pre[i:j], "registryRideAlong(rootCtx, cmd)") {
 		t.Fatal("PersistentPreRunE must call registryRideAlong: every command carries the epoch")

@@ -9,4 +9,7 @@
 #
 # Set to HEAD to track the current checkout's source instead (the pre-pin
 # behavior).
-v1.2.2
+# The brain fork's docs describe brain's own build (upstream commands plus
+# brain's verbs), which no upstream release tag contains, so the fork tracks
+# the checkout.
+HEAD

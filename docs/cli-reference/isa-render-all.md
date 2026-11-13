@@ -1,14 +1,11 @@
 ---
-id: isa-render-all
-title: bd isa-render-all
-slug: /cli-reference/isa-render-all
-sidebar_position: 999
+title: "bd isa-render-all"
+description: "Re-render every active ISA to disk (useful after upgrades or corruption)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-render-all`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-render-all
+Generated from `bd help --doc isa-render-all`.
 
 Re-render every ISA in the substrate to its canonical exfil path.
 

@@ -54,7 +54,7 @@ Newest tranche — merged at brain head `15351ba8258d25a1ab4763d1116df23296e7ed8
 - `/Users/mini0/fm_home/mini0-ops/data/brain-unify-store-create/report.md` — create-path equivalence for `stories`, `task`, `brain`, `robots` through unified wrappers; the pre-fix silent `lifespan-` mint reproduced, then removed.
 - `/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md` — wide/narrow modes, storeless-mint refusal, runtime prefix claims, fresh-store provisioning (46 raw transcripts).
 
-Design doc: `docs/design/brain-single-database.md`.
+Design doc: `engdocs/design/brain-single-database.md`.
 
 | # | Feature | What it does | Where | State | Evidence |
 |---|---------|--------------|-------|-------|----------|

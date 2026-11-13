@@ -1,14 +1,11 @@
 ---
-id: rollout
-title: bd rollout
-slug: /cli-reference/rollout
-sidebar_position: 999
+title: "bd rollout"
+description: "Roll a binary and the store registry out to every machine, step by step, and prove it"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc rollout`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd rollout
+Generated from `bd help --doc rollout`.
 
 The one procedure for: create a store on the brain host, put a brain binary that
 knows about it on the other machines, and prove every machine has it. It
@@ -104,6 +101,7 @@ For each machine, in roster order:
 
 ```
 bd rollout [flags]
+bd rollout [command]
 ```
 
 **Flags:**
@@ -116,7 +114,7 @@ bd rollout [flags]
       --store string       Create this store first (run on the brain host) and prove it by name on every machine
 ```
 
-### bd rollout rollback
+## bd rollout rollback
 
 Restore the binary a rollout kept as bd.pre-&lt;sha&gt;, keeping the one it replaces as
 bd.post-&lt;sha&gt;. The kept binary comes from the rollout record, or --previous PATH
@@ -176,7 +174,7 @@ bd rollout rollback [flags]
       --previous string   A kept binary on the machine to restore (default: the one in the rollout record)
 ```
 
-### bd rollout status
+## bd rollout status
 
 Show the recorded binary, pin state and verification time of each machine
 

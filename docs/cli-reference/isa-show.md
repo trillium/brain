@@ -1,14 +1,11 @@
 ---
-id: isa-show
-title: bd isa-show
-slug: /cli-reference/isa-show
-sidebar_position: 999
+title: "bd isa-show"
+description: "Show an ISA document (full doc or a single section) without markdown rendering"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-show`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-show
+Generated from `bd help --doc isa-show`.
 
 Read an ISA-kind issue's full document (or a single section) directly from
 the substrate.

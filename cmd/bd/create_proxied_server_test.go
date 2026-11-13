@@ -212,10 +212,17 @@ func TestGraphApplyNodeIssue_DefaultsAndOpts(t *testing.T) {
 		}
 	})
 
-	t.Run("empty metadata leaves Metadata nil", func(t *testing.T) {
+	// Brain stamps the author kind into every new issue, so empty input still
+	// yields metadata, holding the stamp and nothing else.
+	t.Run("empty metadata carries only the author-kind stamp", func(t *testing.T) {
 		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{})
-		if issue.Metadata != nil {
-			t.Errorf("Metadata = %s, want nil for empty input", string(issue.Metadata))
+		var meta map[string]json.RawMessage
+		if err := json.Unmarshal(issue.Metadata, &meta); err != nil {
+			t.Fatalf("Metadata = %s: %v", string(issue.Metadata), err)
+		}
+		delete(meta, authorAgentKey)
+		if _, ok := meta[authorKindKey]; !ok || len(meta) != 1 {
+			t.Errorf("Metadata = %s, want only the author-kind stamp for empty input", string(issue.Metadata))
 		}
 	})
 

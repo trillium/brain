@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync/atomic"
 )
 
 // The brain migration series.
@@ -30,6 +31,28 @@ import (
 //go:embed migrations/brain/*.up.sql
 var upBrainMigrations embed.FS
 
+// brainSeriesEnabled turns the brain series (and the move of brain-numbered
+// rows out of the main series) on for MigrateUp, migrationWorkNeeded and
+// AllMigrationsSQL. The store packages that open databases turn it on at init
+// (brain_schema.go in dolt, embeddeddolt and uow), so every brain binary runs
+// it; this package's own tests leave it off unless a test turns it on, which
+// keeps upstream's exact-statement migration tests describing upstream's pass.
+var brainSeriesEnabled atomic.Bool
+
+// EnableBrainSeries turns the brain migration series on for this process.
+func EnableBrainSeries() { brainSeriesEnabled.Store(true) }
+
+// BrainSeriesEnabled reports whether the brain migration series is on.
+func BrainSeriesEnabled() bool { return brainSeriesEnabled.Load() }
+
+// SetBrainSeriesForTest sets the switch and returns a function restoring the
+// previous value.
+func SetBrainSeriesForTest(on bool) func() {
+	prev := brainSeriesEnabled.Load()
+	brainSeriesEnabled.Store(on)
+	return func() { brainSeriesEnabled.Store(prev) }
+}
+
 var brainSource = migrationSource{
 	files:       upBrainMigrations,
 	dir:         "migrations/brain",
@@ -38,6 +61,26 @@ var brainSource = migrationSource{
 
 // BrainSchemaCursorTable is the cursor table of the brain migration series.
 const BrainSchemaCursorTable = "brain_schema_migrations"
+
+// BrainMigrationSQL returns the frozen body of a brain-series migration by
+// file name (e.g. "0001_brain_isa_columns.up.sql"), for tests outside this
+// package that rebuild a database brain migrated under main-series numbers.
+func BrainMigrationSQL(name string) (string, error) {
+	data, err := brainSource.files.ReadFile(brainSource.dir + "/" + name)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// BrainMigrationNames lists the brain-series migration files in order.
+func BrainMigrationNames() []string {
+	var out []string
+	for _, f := range brainSource.list() {
+		out = append(out, f.name)
+	}
+	return out
+}
 
 // LatestBrainVersion answers the highest migration in the brain series.
 func LatestBrainVersion() int { return brainSource.latest() }

@@ -1,14 +1,11 @@
 ---
-id: host
-title: bd host
-slug: /cli-reference/host
-sidebar_position: 999
+title: "bd host"
+description: "Move the brain host role between machines (promote, verify, rollback)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc host`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd host
+Generated from `bd help --doc host`.
 
 The brain lives on one machine, the brain host: its Dolt server holds the
 database, and every other machine is a client (see 'brain remote'). 'brain host'
@@ -30,17 +27,19 @@ the old host's data is never modified or deleted. See docs/brain/HOST_PROMOTE.md
 
 ```
 bd host [flags]
+bd host [command]
 ```
 
-### bd host clients
+## bd host clients
 
 The machines known to follow this host (they are updated by a promotion)
 
 ```
 bd host clients [flags]
+bd host clients [command]
 ```
 
-#### bd host clients add
+### bd host clients add
 
 Record a machine that follows this host
 
@@ -48,7 +47,7 @@ Record a machine that follows this host
 bd host clients add <ssh-target> [flags]
 ```
 
-#### bd host clients list
+### bd host clients list
 
 List known clients
 
@@ -56,7 +55,7 @@ List known clients
 bd host clients list [flags]
 ```
 
-#### bd host clients remove
+### bd host clients remove
 
 Forget a client
 
@@ -64,7 +63,7 @@ Forget a client
 bd host clients remove <ssh-target> [flags]
 ```
 
-### bd host promote
+## bd host promote
 
 Move the brain host role from this machine to &lt;ssh-target&gt; (user@host).
 
@@ -113,7 +112,7 @@ bd host promote <ssh-target> [flags]
   -y, --yes                        Do not ask for confirmation
 ```
 
-### bd host render
+## bd host render
 
 Markdown under ~/data/&lt;store&gt;/ is a derived view of the database that only the
 brain host writes. A machine whose wrappers reach a Dolt server on another
@@ -136,15 +135,16 @@ bd host render [flags]
       --timeout duration   Longest one markdown root may take (default 30m0s)
 ```
 
-### bd host render-job
+## bd host render-job
 
 The launchd job that renders store markdown on the host (print, install, uninstall)
 
 ```
 bd host render-job [flags]
+bd host render-job [command]
 ```
 
-#### bd host render-job install
+### bd host render-job install
 
 Install the job, load it and declare it part of the host role
 
@@ -160,7 +160,7 @@ bd host render-job install [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-#### bd host render-job print
+### bd host render-job print
 
 Print the launch agent plist (writes nothing)
 
@@ -175,7 +175,7 @@ bd host render-job print [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-#### bd host render-job uninstall
+### bd host render-job uninstall
 
 Unload and remove the job and stop carrying it with the host role
 
@@ -189,7 +189,7 @@ bd host render-job uninstall [flags]
       --no-load   Remove the plist without running launchctl
 ```
 
-### bd host rollback
+## bd host rollback
 
 Undo a promotion. Everything either machine changed was journaled first, so
 this restores it: this machine serves the brain again, the new host stops.
@@ -210,15 +210,16 @@ bd host rollback [promotion-id] [flags]
       --force                Undo this machine even if the target cannot be reached (run rollback again later to finish the target)
 ```
 
-### bd host service
+## bd host service
 
 launchd jobs that belong to the host role and move with it
 
 ```
 bd host service [flags]
+bd host service [command]
 ```
 
-#### bd host service add
+### bd host service add
 
 Declare a job that moves with the host role
 
@@ -226,7 +227,7 @@ Declare a job that moves with the host role
 bd host service add <launchd-label> [flags]
 ```
 
-#### bd host service remove
+### bd host service remove
 
 Stop treating a job as part of the host role
 
@@ -234,7 +235,7 @@ Stop treating a job as part of the host role
 bd host service remove <launchd-label> [flags]
 ```
 
-### bd host status
+## bd host status
 
 Show this machine's role and any promotion in progress
 
@@ -248,7 +249,7 @@ bd host status [flags]
       --check   Also contact the server and hash its databases
 ```
 
-### bd host verify
+## bd host verify
 
 Check that the host role is where it should be and working
 

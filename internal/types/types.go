@@ -2023,13 +2023,13 @@ type IssueFilter struct {
 	DescriptionContains string
 	NotesContains       string
 	ExternalRefContains string
-	CommentsContains    string // Substring match against comment bodies (AND filter)
+	CommentsContains    string `json:",omitempty"` // Substring match against comment bodies (AND filter)
 
 	// SearchComments widens the free-text `query` match so it also hits comment
 	// bodies, not just title/ID. Most durable content in a long-lived store
 	// accumulates in comments, so a title-only search reports false misses
 	// (robots-4m0m). Opt-in: it adds a correlated EXISTS over the comments table.
-	SearchComments bool
+	SearchComments bool    `json:",omitempty"`
 	ExternalRef    *string // exact match on external_ref
 
 	// Date ranges
@@ -2100,7 +2100,7 @@ type IssueFilter struct {
 	// namespaces. A bead's namespace is its id prefix, so each namespace
 	// contributes one `id LIKE '<prefix>-%'` clause. Nil/empty = unscoped
 	// (the pre-unification behaviour; a legacy database has one namespace).
-	Namespaces []string
+	Namespaces []string `json:",omitempty"`
 
 	// Source repo filtering (for multi-repo support)
 	SourceRepo *string // Filter by source_repo field (nil = any)
@@ -2301,8 +2301,13 @@ func (f ReclaimFilter) IsEmpty() bool {
 type WorkFilter struct {
 	// Namespaces scopes the ready/blocked read to the listed stores'
 	// namespaces on the unified database (same semantics as IssueFilter's).
-	Namespaces []string
-	Status     Status
+	Namespaces []string `json:",omitempty"`
+	// CustomStatusStore names the store whose custom statuses decide which
+	// statuses count as ready-active on the unified database, where each
+	// store's custom statuses live in brain_unified_custom_statuses under
+	// its name. Empty reads the plain custom_statuses table.
+	CustomStatusStore string `json:"-"`
+	Status            Status
 	// Statuses filters to any of the given statuses (OR semantics) in a
 	// single query, so multi-status callers avoid one GetReadyWork round
 	// trip per status. Ignored when Status is set; when both are empty the
@@ -2385,7 +2390,7 @@ type StaleFilter struct {
 	LabelsAny     []string // OR semantics: issue must have AT LEAST ONE of these labels
 	ExcludeLabels []string // Exclusion: issue must NOT have ANY of these labels
 
-	Namespaces []string // Namespace scoping on the unified database (see IssueFilter)
+	Namespaces []string `json:",omitempty"` // Namespace scoping on the unified database (see IssueFilter)
 }
 
 // WispFilter is used to filter ListWisps queries.

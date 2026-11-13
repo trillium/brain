@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -170,7 +171,9 @@ func TestGatherCreateInputMapsSingleIssueFlags(t *testing.T) {
 			t.Errorf("DeferUntil = %v, want between %v and %v", in.deferUntil, beforeGather.Add(24*time.Hour), afterGather.Add(24*time.Hour))
 		}
 	}
-	if string(in.metadata) != `{"key":"value"}` || !in.metadataSet {
+	// Brain stamps the author kind into every new issue's metadata.
+	var meta map[string]string
+	if err := json.Unmarshal(in.metadata, &meta); err != nil || meta["key"] != "value" || meta[authorKindKey] == "" || !in.metadataSet {
 		t.Errorf("metadata = %q, set = %t", in.metadata, in.metadataSet)
 	}
 	if in.estimatedMinutes == nil || *in.estimatedMinutes != 90 {

@@ -1,14 +1,11 @@
 ---
-id: isa-by-slug
-title: bd isa-by-slug
-slug: /cli-reference/isa-by-slug
-sidebar_position: 999
+title: "bd isa-by-slug"
+description: "Resolve a slug to a brain id (O(1) lookup against the issues.slug column)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-by-slug`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-by-slug
+Generated from `bd help --doc isa-by-slug`.
 
 Resolve an ISA slug to its brain id. Lookup is O(1) against the
 issues.slug column (added in F1a; auto-populated in F1d).

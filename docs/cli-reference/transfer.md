@@ -1,14 +1,11 @@
 ---
-id: transfer
-title: bd transfer
-slug: /cli-reference/transfer
-sidebar_position: 999
+title: "bd transfer"
+description: "Atomically move a brain doc from one store to another"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc transfer`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd transfer
+Generated from `bd help --doc transfer`.
 
 brain transfer moves an existing brain doc from its current store
 to a destination store on the same Dolt SQL server, in a single

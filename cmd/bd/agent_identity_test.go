@@ -132,7 +132,6 @@ func TestAgentIdentityFileNameIgnoresTraversal(t *testing.T) {
 	}
 }
 
-
 // TestFrontmatterName covers the identity.md frontmatter reader.
 func TestFrontmatterName(t *testing.T) {
 	tests := []struct {

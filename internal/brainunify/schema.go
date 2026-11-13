@@ -99,7 +99,7 @@ var BrainTableDDL = map[string]string{
   KEY idx_brain_prefix_store (store)
 )`,
 	// brain_store_prefix_events is the append-only audit trail for the
-	// prefix-ownership record (docs/design/brain-prefix-release.md §Question d).
+	// prefix-ownership record (engdocs/design/brain-prefix-release.md §Question d).
 	// Every ownership change — a runtime claim and a runtime release alike —
 	// appends one row inside the same transaction that changes
 	// brain_store_prefixes, so no ownership change can ever be silent. Claims

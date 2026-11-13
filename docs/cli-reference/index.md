@@ -7,10 +7,33 @@ description: Generated reference for every bd command
 
 Generated from `bd help --docs-root`.
 
-This reference covers all 108 live top-level `bd` commands. Regenerate it with:
+This reference covers all 143 live top-level `bd` commands. Regenerate it with:
 
 ```bash
 ./scripts/generate-cli-docs.sh
+```
+
+## Global Flags
+
+These flags apply to all commands:
+
+```
+      --actor string              Actor name for audit trail (default: $BEADS_ACTOR, git user.name, $USER)
+      --cpu-profile               Generate CPU profile for performance analysis
+      --database string           Run against a different server database for this invocation, without changing the project's configured database (proxied-server mode only)
+      --db string                 Database path (default: auto-discover .beads/*.db). In proxied-server mode, a value that isn't an existing path is treated as a database name override (see --database)
+  -C, --directory string          Change to this directory before running the command (like git -C)
+      --dolt-auto-commit string   Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then (a live batch-mode bd process also flushes on SIGTERM/SIGHUP, except in proxied-server mode, where bd dolt commit is the only flush point). In proxied-server mode the deferral covers the writes the CLI makes on that route, including config and version metadata; explicit commit points (bd batch, bd mol bond/pour/squash, bd mol wisp create, and the wisp half of bd mol burn) still commit, and a bd serve process on the same database is unaffected. Default: on. Override via config key dolt.auto-commit
+      --global                    Use the global shared-server database (beads_global)
+      --ignore-schema-skew        Proceed despite forward schema drift (some queries may fail)
+      --json                      Output in JSON format
+      --mem-profile string        Write heap profile to FILE on exit (also respects BEADS_MEM_PROFILE)
+      --no-color                  Disable color output (also: NO_COLOR=1 or CLICOLOR=0)
+  -q, --quiet                     Suppress non-essential output (errors only)
+      --readonly                  Read-only mode: block write operations (for worker sandboxes)
+      --sandbox                   Sandbox mode: disables Dolt auto-push
+  -v, --verbose                   Enable verbose/debug output
+      --wide                      Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.
 ```
 
 ## Commands
@@ -23,6 +46,7 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd batch`](/cli-reference/batch)
 - [`bd blocked`](/cli-reference/blocked)
 - [`bd bootstrap`](/cli-reference/bootstrap)
+- [`bd brain`](/cli-reference/brain)
 - [`bd branch`](/cli-reference/branch)
 - [`bd children`](/cli-reference/children)
 - [`bd close`](/cli-reference/close)
@@ -31,6 +55,7 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd compact`](/cli-reference/compact)
 - [`bd completion`](/cli-reference/completion)
 - [`bd config`](/cli-reference/config)
+- [`bd conflicts`](/cli-reference/conflicts)
 - [`bd context`](/cli-reference/context)
 - [`bd cook`](/cli-reference/cook)
 - [`bd count`](/cli-reference/count)
@@ -46,6 +71,7 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd duplicates`](/cli-reference/duplicates)
 - [`bd edit`](/cli-reference/edit)
 - [`bd epic`](/cli-reference/epic)
+- [`bd events`](/cli-reference/events)
 - [`bd export`](/cli-reference/export)
 - [`bd federation`](/cli-reference/federation)
 - [`bd find-duplicates`](/cli-reference/find-duplicates)
@@ -57,13 +83,24 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd github`](/cli-reference/github)
 - [`bd gitlab`](/cli-reference/gitlab)
 - [`bd graph`](/cli-reference/graph)
+- [`bd group`](/cli-reference/group)
+- [`bd heartbeat`](/cli-reference/heartbeat)
 - [`bd history`](/cli-reference/history)
+- [`bd hook`](/cli-reference/hook)
 - [`bd hooks`](/cli-reference/hooks)
+- [`bd host`](/cli-reference/host)
 - [`bd human`](/cli-reference/human)
 - [`bd import`](/cli-reference/import)
 - [`bd info`](/cli-reference/info)
 - [`bd init`](/cli-reference/init)
 - [`bd init-safety`](/cli-reference/init-safety)
+- [`bd isa-by-slug`](/cli-reference/isa-by-slug)
+- [`bd isa-list`](/cli-reference/isa-list)
+- [`bd isa-render`](/cli-reference/isa-render)
+- [`bd isa-render-all`](/cli-reference/isa-render-all)
+- [`bd isa-render-pending`](/cli-reference/isa-render-pending)
+- [`bd isa-section`](/cli-reference/isa-section)
+- [`bd isa-show`](/cli-reference/isa-show)
 - [`bd jira`](/cli-reference/jira)
 - [`bd kv`](/cli-reference/kv)
 - [`bd label`](/cli-reference/label)
@@ -76,16 +113,20 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd merge-slot`](/cli-reference/merge-slot)
 - [`bd metrics`](/cli-reference/metrics)
 - [`bd migrate`](/cli-reference/migrate)
+- [`bd migrate-personal`](/cli-reference/migrate-personal)
 - [`bd mol`](/cli-reference/mol)
 - [`bd note`](/cli-reference/note)
 - [`bd notion`](/cli-reference/notion)
 - [`bd onboard`](/cli-reference/onboard)
 - [`bd orphans`](/cli-reference/orphans)
+- [`bd outbox`](/cli-reference/outbox)
+- [`bd patch`](/cli-reference/patch)
 - [`bd ping`](/cli-reference/ping)
 - [`bd preflight`](/cli-reference/preflight)
 - [`bd prime`](/cli-reference/prime)
 - [`bd priority`](/cli-reference/priority)
 - [`bd promote`](/cli-reference/promote)
+- [`bd provenance`](/cli-reference/provenance)
 - [`bd prune`](/cli-reference/prune)
 - [`bd purge`](/cli-reference/purge)
 - [`bd q`](/cli-reference/q)
@@ -93,15 +134,26 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd quickstart`](/cli-reference/quickstart)
 - [`bd ready`](/cli-reference/ready)
 - [`bd recall`](/cli-reference/recall)
+- [`bd recast`](/cli-reference/recast)
+- [`bd reclaim`](/cli-reference/reclaim)
 - [`bd recompute-blocked`](/cli-reference/recompute-blocked)
+- [`bd related`](/cli-reference/related)
 - [`bd remember`](/cli-reference/remember)
+- [`bd remote`](/cli-reference/remote)
 - [`bd rename`](/cli-reference/rename)
 - [`bd rename-prefix`](/cli-reference/rename-prefix)
+- [`bd render`](/cli-reference/render)
+- [`bd render-all`](/cli-reference/render-all)
+- [`bd render-import`](/cli-reference/render-import)
+- [`bd render-marks`](/cli-reference/render-marks)
 - [`bd reopen`](/cli-reference/reopen)
 - [`bd repo`](/cli-reference/repo)
 - [`bd restore`](/cli-reference/restore)
+- [`bd rollout`](/cli-reference/rollout)
 - [`bd rules`](/cli-reference/rules)
+- [`bd schema`](/cli-reference/schema)
 - [`bd search`](/cli-reference/search)
+- [`bd serve`](/cli-reference/serve)
 - [`bd set-state`](/cli-reference/set-state)
 - [`bd setup`](/cli-reference/setup)
 - [`bd ship`](/cli-reference/ship)
@@ -111,11 +163,17 @@ This reference covers all 108 live top-level `bd` commands. Regenerate it with:
 - [`bd state`](/cli-reference/state)
 - [`bd status`](/cli-reference/status)
 - [`bd statuses`](/cli-reference/statuses)
+- [`bd store`](/cli-reference/store)
+- [`bd store-prefix`](/cli-reference/store-prefix)
+- [`bd stores`](/cli-reference/stores)
 - [`bd supersede`](/cli-reference/supersede)
 - [`bd swarm`](/cli-reference/swarm)
+- [`bd sync`](/cli-reference/sync)
 - [`bd tag`](/cli-reference/tag)
 - [`bd todo`](/cli-reference/todo)
+- [`bd transfer`](/cli-reference/transfer)
 - [`bd types`](/cli-reference/types)
+- [`bd unclaim`](/cli-reference/unclaim)
 - [`bd undefer`](/cli-reference/undefer)
 - [`bd update`](/cli-reference/update)
 - [`bd upgrade`](/cli-reference/upgrade)

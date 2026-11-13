@@ -9,7 +9,7 @@ database was written to. The questions this design raised were all decided on
 the first and §Decided by the captain / §Decided items (formerly "Left to the
 captain") for the rest. Where the implementation chose a shape the design left
 open, §Implementation notes says so. User-facing page:
-[`docs/brain/PREFIX_RELEASE.md`](../brain/PREFIX_RELEASE.md).
+[`docs/brain/PREFIX_RELEASE.md`](../../docs/brain/PREFIX_RELEASE.md).
 **Companion material:** the namespace-model report
 (`/Users/mini0/fm_home/mini0-ops/data/brain-unify-namespace-model/report.md`,
 §Requirement 3), which records the runtime claim surface and the conflict rule

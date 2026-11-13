@@ -6206,6 +6206,13 @@ components:
         id:
           type: string
           description: Canonical issue id, e.g. `bd-abc`.
+        name:
+          type: string
+          description: >-
+            Brain voice identifier: a kebab-case name derived from `title`
+            (64 characters at most). A display aid only: not unique, not stable
+            across title edits, never a lookup key. Absent when the title has
+            no letters or digits.
         title:
           type: string
         description:
@@ -6415,6 +6422,7 @@ components:
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
+        name: { type: string }
         title: { type: string }
         description: { type: string }
         design: { type: string }
@@ -6504,6 +6512,7 @@ components:
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
+        name: { type: string }
         title: { type: string }
         description: { type: string }
         design: { type: string }
@@ -6673,6 +6682,12 @@ components:
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
+        name: { type: string }
+        unresolved:
+          type: boolean
+          description: >-
+            Brain: the edge's target has no issue row; the issue members carry
+            only the id and the title `(not found)`.
         title: { type: string }
         description: { type: string }
         design: { type: string }
@@ -6759,6 +6774,7 @@ components:
       properties:
         # --- repeated from Issue (see the pinned-schema note above) ---
         id: { type: string }
+        name: { type: string }
         title: { type: string }
         description: { type: string }
         design: { type: string }

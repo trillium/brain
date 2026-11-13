@@ -1,14 +1,11 @@
 ---
-id: isa-section
-title: bd isa-section
-slug: /cli-reference/isa-section
-sidebar_position: 999
+title: "bd isa-section"
+description: "Upsert one of the twelve canonical ISA sections on an isa-kind issue"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-section`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-section
+Generated from `bd help --doc isa-section`.
 
 Set one of the twelve canonical ISA document sections on an isa-kind issue.
 

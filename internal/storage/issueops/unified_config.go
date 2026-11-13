@@ -9,7 +9,7 @@ import (
 )
 
 // This file teaches the config layer the unified database's shape
-// (docs/design/brain-single-database.md, "What changes shape" and the
+// (engdocs/design/brain-single-database.md, "What changes shape" and the
 // pre-cutover checklist item "the config/metadata seeding story").
 //
 // In the unified database the template store's own single-valued tables

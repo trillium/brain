@@ -1,14 +1,11 @@
 ---
-id: outbox
-title: bd outbox
-slug: /cli-reference/outbox
-sidebar_position: 999
+title: "bd outbox"
+description: "Durable event outbox: delivery state, retries, backlog"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc outbox`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd outbox
+Generated from `bd help --doc outbox`.
 
 Operator verbs for the durable event outbox.
 
@@ -36,10 +33,10 @@ acknowledgement retires an event; an unacknowledged event stays visible in
 'bd outbox list' forever.
 
 ```
-bd outbox [flags]
+bd outbox [command]
 ```
 
-### bd outbox ack
+## bd outbox ack
 
 Record an acknowledgement for one outbox event by hand.
 
@@ -59,7 +56,7 @@ bd outbox ack <seq> --subscriber <name> [flags]
       --subscriber string   Subscriber that acknowledged (required)
 ```
 
-### bd outbox deliver
+## bd outbox deliver
 
 Deliver due outbox events to their configured subscribers.
 
@@ -81,7 +78,7 @@ bd outbox deliver [flags]
       --all   Attempt every pending event, ignoring the backoff schedule
 ```
 
-### bd outbox list
+## bd outbox list
 
 List outbox events with the delivery state of each.
 
@@ -99,7 +96,7 @@ bd outbox list [flags]
       --pending-only   Only unretired events
 ```
 
-### bd outbox purge
+## bd outbox purge
 
 Delete retired outbox events (delivered and acknowledged) whose
 delivered_at is older than --before. Pending events are never touched: the
@@ -115,7 +112,7 @@ bd outbox purge --before <RFC3339> [flags]
       --before string   Delete retired events delivered before this RFC3339 timestamp (required)
 ```
 
-### bd outbox record
+## bd outbox record
 
 Record outbox events by hand for issues whose mutation committed but whose
 event was not recorded — the repair for the one window the outbox cannot close

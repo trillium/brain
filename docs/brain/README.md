@@ -17,9 +17,9 @@ Anything that's specifically about the brain layer — the `kind` discriminator,
 - [`GITHUB_SYNC.md`](GITHUB_SYNC.md) — syncing a store with a GitHub repository's issues: pair a store with a repository (`brain github pair`), pick the direction per store (two-way, brain-to-github, github-to-brain), the conflict policy, how items and issues stay linked so a repeat run never duplicates either, what is and is not carried (comments are not), `--dry-run` plans with counts, and the optional `--watch` / launchd schedule. See `../../divergence/0045-github-sync-pairings.md`.
 - [`VOICE_IDENTIFIERS.md`](VOICE_IDENTIFIERS.md) — the additive `name` field on every issue-bearing JSON payload: derivation rule, collision behaviour, why `id` stays canonical, and how an agent should present a bead when speaking.
 - [`MERGING_DATABASES.md`](MERGING_DATABASES.md) — the workflow for merging several databases into one with `bd brain unify` and keeping the merge current with `unify replay`: when to rebuild instead of replay, what a replay refuses to do, the verifier (`--reference live`) as the acceptance test, and the collision behaviour a replay inherits from the build. See `../../divergence/0027-brain-unify-replay.md`.
-- [`PREFIX_RELEASE.md`](PREFIX_RELEASE.md) — `bd store-prefix release` and `history`: how to give a runtime prefix claim up, every refusal path, why a beads-carrying prefix can never be released (absolute, no override), the append-only `brain_store_prefix_events` trail, and the stated pre-adoption gap. The decided design lives in [`../design/brain-prefix-release.md`](../design/brain-prefix-release.md) (see `../divergence/0021-brain-prefix-release-design.md`).
+- [`PREFIX_RELEASE.md`](PREFIX_RELEASE.md) — `bd store-prefix release` and `history`: how to give a runtime prefix claim up, every refusal path, why a beads-carrying prefix can never be released (absolute, no override), the append-only `brain_store_prefix_events` trail, and the stated pre-adoption gap. The decided design lives in [`../../engdocs/design/brain-prefix-release.md`](../../engdocs/design/brain-prefix-release.md) (see `../divergence/0021-brain-prefix-release-design.md`).
 - [`event-outbox.md`](event-outbox.md) — the durable event outbox: events as rows in the store, delivered with bounded-backoff retries until acknowledged; what an acknowledgement is (HTTP 2xx / exit 0 / `bd outbox ack`), what late, double and never mean, the retry schedule, the backlog bound and how to see the backlog. See `../../divergence/0031-durable-event-outbox.md`.
-- [`../design/brain-prefix-release.md`](../design/brain-prefix-release.md) — the design (not yet built) for releasing and transferring a runtime prefix claim: who may release, what release means for the beads (a beads-carrying prefix cannot be released — absolute refusal, decided 2026-10-07, no `--with-beads` override), the transfer path, the append-only audit record, the refusal rules, and the cutover interaction. Lives in `../design/` alongside `brain-single-database.md` because it extends that document's namespace model; see `../divergence/0021-brain-prefix-release-design.md`.
+- [`../../engdocs/design/brain-prefix-release.md`](../../engdocs/design/brain-prefix-release.md) — the design (not yet built) for releasing and transferring a runtime prefix claim: who may release, what release means for the beads (a beads-carrying prefix cannot be released — absolute refusal, decided 2026-10-07, no `--with-beads` override), the transfer path, the append-only audit record, the refusal rules, and the cutover interaction. Lives in `engdocs/design/` alongside `brain-single-database.md` because it extends that document's namespace model; see `../divergence/0021-brain-prefix-release-design.md`.
 
 This directory will grow as brain v0.3 is built. Beyond the explainer above, expected residents:
 
@@ -52,8 +52,8 @@ The divergence trail records every code-changing commit on brain with its ration
 
 For anything bd-related (the upstream parent project):
 
-- [`../adr/`](../adr/) — bd's accepted architecture decision records.
-- [`../design/`](../design/) — bd's design docs (Dolt concurrency, KV store, OTel).
+- [`engdocs/adr/`](../../engdocs/adr/) — bd's accepted architecture decision records.
+- [`engdocs/design/`](../../engdocs/design/) — bd's design docs (Dolt concurrency, KV store, OTel).
 - [`../`](../) — bd's root docs directory (CLI reference, FAQ, internals, Dolt backend, federation, integrations).
 
 Keep brain-specific docs out of those locations.

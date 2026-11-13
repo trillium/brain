@@ -1,6 +1,6 @@
 ---
 title: "bd github"
-description: "Commands for syncing issues between beads and GitHub."
+description: "GitHub integration commands"
 ---
 
 {/* AUTO-GENERATED: do not edit manually */}
@@ -26,7 +26,36 @@ Configuration can be set via 'bd config' or environment variables:
 With no token configured, 'gh auth token' (the GitHub CLI's login) is used.
 
 ```
-bd github [flags]
+bd github [command]
+```
+
+## bd github pair
+
+Record which GitHub repository this store syncs with, and which way changes travel.
+
+  brain github pair trillium/brain                                  two-way (default)
+  brain github pair trillium/brain --direction brain-to-github      brain is the source
+  brain github pair trillium/brain --direction github-to-brain      GitHub is the source
+  brain github pair trillium/brain --conflict prefer-local          brain wins two-way conflicts
+
+The pairing is saved in this store's own config and touches no other store.
+Nothing is synced by pairing; run 'brain github sync --dry-run' to see what the
+first sync would do.
+
+Pair one repository with one store. Two stores two-way paired with the same
+repository would each import the other's native issues.
+
+```
+bd github pair <owner/repo> [flags]
+```
+
+**Flags:**
+
+```
+      --conflict string    Two-way conflict policy: prefer-newer (default), prefer-local or prefer-github
+      --direction string   Direction: two-way (default), brain-to-github or github-to-brain
+      --force              Repoint a store that is already paired with a different repository
+      --no-verify          Do not check that the repository exists and is reachable
 ```
 
 ## bd github pull
@@ -69,6 +98,72 @@ List GitHub repositories that the configured token has access to.
 
 ```
 bd github repos [flags]
+```
+
+## bd github schedule
+
+Manage a background job that runs 'github sync' for this store.
+
+  brain github schedule print      show the launchd job without installing it
+  brain github schedule install    write the job and load it (macOS launchd)
+  brain github schedule status     say whether the job is installed and loaded
+  brain github schedule remove     unload and delete the job
+
+The job runs the store's own command, so it uses the store's pairing and
+direction. It needs a recorded pairing ('github pair'), and the GitHub login
+the sync uses (GITHUB_TOKEN or the gh CLI's login) must be available to a
+background process. Nothing is scheduled until 'install' is run.
+
+Without launchd, 'brain github sync --watch --interval 10m' keeps syncing in a
+terminal, and the same command line works in a cron entry.
+
+```
+bd github schedule [flags]
+bd github schedule [command]
+```
+
+### bd github schedule install
+
+Write the launchd job and load it
+
+```
+bd github schedule install [flags]
+```
+
+**Flags:**
+
+```
+      --interval duration   Time between syncs (minimum 1m) (default 15m0s)
+```
+
+### bd github schedule print
+
+Show the launchd job without installing it
+
+```
+bd github schedule print [flags]
+```
+
+**Flags:**
+
+```
+      --interval duration   Time between syncs (minimum 1m) (default 15m0s)
+```
+
+### bd github schedule remove
+
+Unload and delete the launchd job
+
+```
+bd github schedule remove [flags]
+```
+
+### bd github schedule status
+
+Say whether the launchd job is installed and loaded
+
+```
+bd github schedule status [flags]
 ```
 
 ## bd github status
@@ -137,7 +232,7 @@ bd github sync [flags]
       --watch                   Keep running and sync every --interval (off by default; see 'github schedule' for a background job)
 ```
 
-### bd github unpair
+## bd github unpair
 
 Forget the repository, direction and conflict policy for this store.
 

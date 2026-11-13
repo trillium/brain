@@ -68,7 +68,9 @@ was not safe to repeat on a wrapped store (below).
   creates one; a lost `external_ref` is repaired, not duplicated. Pull maps a
   marker back onto its item, skips another store's mirrors, and refuses an
   issue that repeats the marker of an item linked elsewhere. A URL for a
-  different repository is no longer an `external_ref` for this pairing.
+  different repository names no issue in this pairing: since beads 1.3
+  (upstream #8068) the item is skipped and keeps its link, where brain once
+  treated it as unlinked and created a new issue.
 - **Writes nothing when nothing changed.** A `ContentEqual` push hook skips
   issues that already match, so repeat syncs do not PATCH every issue. Dry run
   now applies the same up-to-date test as a real push, so its counts are the

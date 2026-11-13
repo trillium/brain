@@ -28,7 +28,6 @@ func TestVersionScriptsAnchorExactVersionLine(t *testing.T) {
 	for _, script := range []string{
 		"scripts/check-versions.sh",
 		"scripts/update-versions.sh",
-		"scripts/check-docs-version.sh",
 		"scripts/gen-winres.sh",
 		"scripts/upgrade-smoke-test.sh",
 	} {

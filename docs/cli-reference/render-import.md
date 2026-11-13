@@ -1,14 +1,11 @@
 ---
-id: render-import
-title: bd render-import
-slug: /cli-reference/render-import
-sidebar_position: 999
+title: "bd render-import"
+description: "Import edits from the store's rendered markdown into their beads (opt-in per store), and mark beads whose rendered file was deleted"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc render-import`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd render-import
+Generated from `bd help --doc render-import`.
 
 Import edits made to this store's rendered markdown files back into the
 beads they name, and mark beads whose rendered file has been deleted.

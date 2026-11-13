@@ -115,12 +115,14 @@ Any key whose name contains `api_key`, `api-key`, `secret`, `token`, or `passwor
 | `git.author` | — | `BD_GIT_AUTHOR` | (none) | Override commit author for beads commits |
 | `git.no-gpg-sign` | — | `BD_GIT_NO_GPG_SIGN` | `false` | Disable GPG signing for beads commits |
 | `create.require-description` | — | `BD_CREATE_REQUIRE_DESCRIPTION` | `false` | Require description on `bd create` |
+| `create.id-pattern` | — | — | (none) | Date-keyed ids, one bead per period: `day` (`<prefix>-YYYY-MM-DD`), `week` (the Sunday that starts the week, `<prefix>-YYYY-MM-DD`), `month` (`<prefix>-YYYY-MM`), `quarter` (`<prefix>-YYYY-qN`), `year` (`<prefix>-YYYY`), in America/Los_Angeles. `bd create` takes the id from today or `--date`, validates `--id` against the pattern, and refuses a second bead for the same period (naming the existing one). `--file`/`--graph` are refused; `--parent` children and wisps are exempt |
 | `validation.on-create` | — | `BD_VALIDATION_ON_CREATE` | `none` | Template validation: `none`, `warn`, `error` |
 | `validation.on-close` | — | `BD_VALIDATION_ON_CLOSE` | `none` | Template validation on close |
 | `validation.on-sync` | — | `BD_VALIDATION_ON_SYNC` | `none` | Template validation before sync |
 | `validation.metadata.mode` | — | — | `none` | Metadata schema validation |
 | `hierarchy.max-depth` | — | — | `3` | Max hierarchical ID nesting depth |
-| `backup.enabled` | — | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` (see [below](#auto-backup)) |
+| `hierarchy.priority` | — | — | (unset) | `specificity` opts one store into the parent-child ladder: P0 is the broadest capability and each child along a parent-child edge uses a higher priority number, through P4 (see [below](#parent-child-priority-ladder)) |
+| `backup.enabled` | — | `BD_BACKUP_ENABLED` | `false` | Enable periodic Dolt-native backup to `.beads/backup/` (one backup for a database shared by several stores; see [below](#auto-backup)) |
 | `backup.interval` | — | `BD_BACKUP_INTERVAL` | `15m` | Minimum time between auto-backups |
 | `backup.git-push` | — | — | `false` | Auto-push backup repo |
 | `backup.git-repo` | — | `BD_BACKUP_GIT_REPO` | (none) | Backup git repo URL; when set, backups go to a `backup/` directory inside that repo |
@@ -231,6 +233,18 @@ How it works:
 - If data changed and the throttle interval has passed, a Dolt-native backup is synced to `.beads/backup/` (or to a `backup/` directory inside `backup.git-repo` when configured).
 - State is tracked in `backup_state.json` inside the backup directory.
 
+**A database shared by several stores** (the brain unified database, recognised by its `brain_unified_config` table) is backed up **once**, not once per store:
+
+- The destination is the one you registered with `bd backup init <path>` (the `default` entry of the database's backup registrations, which every store on the database sees). Auto-backup never registers a destination of its own on a shared database. With no `default` destination, or with only some other name registered, `bd` prints `auto-backup REFUSED — no backup was taken` and skips the backup; it does not fall back to a per-store copy. Run `bd backup init <path>` once, from any store, to fix it.
+- The throttle (`backup.interval`) and change detection are kept in the database, in the dolt-ignored table `brain_shared_backup_state`, so every store shares them. `.beads/backup/` is not created or read.
+- Two stores whose commands finish together run one sync: the first takes a Dolt named lock (`bd-shared-backup:<database>`), the others find it held and skip. A manual `bd backup sync` takes the same lock (waiting up to 2 minutes) and records the same state.
+- Also refused, loudly: a shared-database check that cannot be answered, an unreadable state row, a state table that cannot be created.
+- `bd backup status` shows the shared record (destination, last backup, Dolt commit, and the refusal if auto-backup is refused).
+- A database used by a single store is unchanged: `.beads/backup/` and `backup_state.json`, as above.
+- Per-store folders left by earlier versions (`.beads/backup/` in each store) are not touched or deleted; remove them yourself once the shared backup is verified.
+
+Design: [divergence/0032-shared-database-backup.md](https://github.com/trillium/brain/blob/main/divergence/0032-shared-database-backup.md).
+
 Manual commands (see [bd backup](/cli-reference/backup)):
 
 ```bash
@@ -279,6 +293,25 @@ For most developers no configuration is needed — issue authorship matches comm
 export BEADS_ACTOR="my-github-handle"
 ```
 
+When no explicit actor is set (no `--actor`, `actor` config key, `BEADS_ACTOR` or `BD_ACTOR`) and the process is running as a fleet agent, a new issue's `created_by` names that agent instead of the git identity: `PARLAY_AGENT_NAME`, else the `name:` field of `~/.parlay/agents/$PARLAY_AGENT_ID/identity.md`, else `PARLAY_AGENT_ID`. Only the filing attribution changes; the actor used for claims, assignees, comments and events still resolves as listed above.
+
+A new issue's metadata also records what kind of author filed it, so the share of human-written issues can be counted exactly rather than bounded:
+
+- `author_kind` is `human`, `agent` or `procedural`.
+- `author_agent` names the agent, and is present only when `author_kind` is `agent`.
+
+The kind is `BEADS_AUTHOR_KIND` when that is set to one of the three values (a script or scheduled job declares itself `procedural` this way; any other value is ignored), else `agent` when the process runs as a fleet agent as described above, else `human`. A key already present in `--metadata` is kept as given. Issues created before this stamp have neither key.
+
+### Audit Event Payload Size
+
+Every update writes an `events` row holding a JSON copy of the issue before the change plus a JSON copy of the applied updates. Without a cap that is quadratic for append-heavy fields: `bd note` rewrites the whole `notes` field, so appending one line to a bead whose notes are already 320 KB writes a ~640 KB event row. One auto-documenting ledger reached **3.3 GB of raw event payload backing 5 MB of actual notes**.
+
+So string values in event payloads are capped at `BEADS_EVENT_FIELD_LIMIT` bytes (default 1024). Oversize values keep their head and tail with an `…[bd: elided N bytes]…` marker in between, and when a field was *appended* to rather than rewritten, the unchanged leading bytes collapse to a marker so the row costs bytes proportional to the appended text. The event still records which fields changed, who changed them, and what text was added; the full field value lives in the `issues` table (and in that table's own Dolt history).
+
+The cap is strict: the elision markers count against it, so no recorded value ever exceeds the configured limit. At limits too small to hold a marker at all, the value is simply truncated on a rune boundary, and output is always valid UTF-8.
+
+Set `BEADS_EVENT_FIELD_LIMIT=0` to disable elision and record full before/after copies. Only do that on stores with small text fields: on an append-heavy store it reintroduces multi-gigabyte growth.
+
 ## Project-Level Settings (Database)
 
 These are written to the Dolt database by `bd config set` and have no env var override. Common namespaces:
@@ -298,11 +331,30 @@ These are written to the Dolt database by `bd config set` and have no env var ov
 | `types.infra` | Infra types routed to the wisps table instead of the versioned issues table |
 | `compact_tier1_days`, `compact_tier2_days` | Age thresholds in days for `bd admin compact` tier eligibility (defaults `30` and `90`) |
 | `issue_id_mode` | `hash` (default) \| `counter` (see [below](#sequential-counter-ids)) |
+| `bookkeeping.retention_days` | Retention for closed `bookkeeping`-labeled issues removed by `bd admin cleanup --bookkeeping` (default `30`; see [below](#bookkeeping-retention)) |
 | `min_hash_length`, `max_hash_length` | Adaptive ID bounds (defaults `3` and `8`) |
 | `max_collision_prob` | Hash ID collision tolerance (default `0.25`) |
 | `doctor.suppress.*` | Suppress specific `bd doctor` warnings by check slug (warnings only; errors always show) |
 
 Issue prefix (`issue_prefix`) is **not** settable via `bd config set` — use `bd init --prefix`, `bd bootstrap`, or `bd rename-prefix`.
+
+### Bookkeeping Retention
+
+Issues labeled `bookkeeping` are procedural records (session trails, guard decisions, state-change records) kept apart from deliberately written issues. `bd admin cleanup --bookkeeping` deletes the ones that are closed and older than the retention period; open ones and unlabeled ones are never touched. A closed one that other issues depend on is skipped and reported, and `--cascade` is rejected with `--bookkeeping`.
+
+```bash
+bd config set bookkeeping.retention_days 14   # default: 30
+bd admin cleanup --bookkeeping --dry-run      # list what would be removed
+bd admin cleanup --bookkeeping --force        # remove it
+```
+
+`--older-than N` overrides the configured value for one run. A configured value that is not a positive whole number is an error.
+
+### Parent-Child Priority Ladder
+
+`hierarchy.priority` is a per-store opt-in for a specificity ladder on parent-child edges. `bd config set hierarchy.priority specificity` writes the store's `config.yaml` (the `hierarchy.` namespace is yaml-backed, the same family as `hierarchy.max-depth`) and does not write the SQL config table. Unset means today's behavior: priority 0 stays critical, and `bd ready` still sorts by priority ascending.
+
+When the value is `specificity`, P0 is the broadest capability. Each child along a parent-child edge uses a higher priority number, through P4. A parent at 4 may have a child at 4. Skips are legal (a P0 parent may have a P3 child). `bd create --parent`, `bd update --parent`, `bd dep add --type parent-child`, and `bd create --graph` reject an edge that breaks the rule and name both ids and both numbers. `bd lint hierarchy` lists existing violating edges and writes nothing; it exits non-zero when any exist. Other stores stay on today's behavior until they set the key.
 
 ### Custom Statuses and Types
 
@@ -480,6 +532,8 @@ Selected commonly-used variables:
 | `BEADS_DIR` | Force the active beads workspace directory |
 | `BEADS_ACTOR` | Actor identity (preferred over `BD_ACTOR`, which is a deprecated alias) |
 | `BEADS_IDENTITY` | Sender identity for `bd mail` |
+| `BEADS_EVENT_FIELD_LIMIT` | Per-field byte cap on audit-event payloads (default `1024`; `0` records full before/after copies; see [Audit Event Payload Size](#audit-event-payload-size)) |
+| `BEADS_AUTHOR_KIND` | Declare the author kind stamped on new issues: `human`, `agent` or `procedural` (see [Actor Identity Resolution](#actor-identity-resolution)) |
 | `BEADS_FSCK_TIMEOUT` | Runtime-only timeout for the pre-push `dolt fsck --quiet` integrity check (default `30s`) |
 | `BEADS_DOLT_SERVER_MODE`, `BEADS_DOLT_SHARED_SERVER`, `BEADS_DOLT_DATA_DIR`, `BEADS_DOLT_PORT`, ... | Embedded/server Dolt overrides |
 | `BEADS_DOLT_BIN` | Pin the exact external `dolt` CLI binary managed proxied-server mode spawns, overriding PATH lookup (highest precedence; an explicit path that fails validation is an error, not a silent fallback to PATH). On Windows the executable extension may be omitted — `C:\tools\dolt` finds `C:\tools\dolt.exe` via PATHEXT, though a file at the exact spelled path wins if both exist |

@@ -54,9 +54,6 @@ type Tracker struct {
 	Owner string
 	Repo  string
 
-	owner string
-	repo  string
-
 	// BulkLookup makes FetchIssue answer from one listing of the whole
 	// repository instead of one request per issue. A sync that checks every
 	// linked item (a dry run, a push) sets it: a listing is a hundred issues
@@ -67,6 +64,12 @@ type Tracker struct {
 	// and by the brain item id named in their marker.
 	index *issueIndex
 }
+
+// DryRunLooksUp lets a dry run test each linked issue against the repository
+// listing, which BulkLookup makes one request per hundred issues.
+func (t *Tracker) DryRunLooksUp() bool { return t.BulkLookup }
+
+var _ tracker.DryRunLookup = (*Tracker)(nil)
 
 type issueIndex struct {
 	byNumber map[string]*tracker.TrackerIssue
@@ -111,7 +114,6 @@ func (t *Tracker) Init(ctx context.Context, store tracker.Store) error {
 	}
 
 	t.client = NewClient(token, owner, repo)
-	t.owner, t.repo = owner, repo
 
 	// Allow custom base URL for GitHub Enterprise
 	baseURL := t.getConfig(ctx, "github.url", "GITHUB_API_URL")
@@ -406,39 +408,18 @@ func canonicalGitHubBaseURL(raw string) string {
 	return u.String()
 }
 
-// issueURLPattern captures owner, repo and number from an issue URL on any
-// host (github.com or an Enterprise server).
-var issueURLPattern = regexp.MustCompile(`^https?://[^/]+/([^/]+)/([^/]+)/issues/(\d+)(?:[/?#].*)?$`)
-
-// IsExternalRef checks if a ref is a link to an issue in THIS tracker's
-// repository. It recognizes full GitHub URLs and the "github:{id}" shorthand
+// IsExternalRef checks if a ref belongs to this GitHub tracker.
+// It recognizes both full GitHub URLs and the "github:{id}" shorthand format
 // produced by BuildExternalRef when a URL is unavailable.
 //
-// A URL for a different repository is not this tracker's ref: issue numbers
-// only mean something inside one repository, so a link left over from a
-// previous pairing must not be read as a number in the current one.
+// A URL for another repository is still a GitHub ref: ExtractIdentifier gives
+// it no number, so the sync skips the item and leaves its link alone rather
+// than reading the number in the configured repository.
 func (t *Tracker) IsExternalRef(ref string) bool {
 	if ghShorthandPattern.MatchString(ref) {
 		return true
 	}
-	if !strings.Contains(ref, "github") || !issueNumberPattern.MatchString(ref) {
-		return false
-	}
-	// Once initialized, the repository scope decides: the configured
-	// repository under its configured name or any other name GitHub resolves
-	// to it (a rename or transfer, see RefScope).
-	if t.client != nil {
-		_, ok := t.RefScope().IssueNumberFromRef(ref)
-		return ok
-	}
-	if t.owner == "" || t.repo == "" {
-		return true
-	}
-	m := issueURLPattern.FindStringSubmatch(ref)
-	if m == nil {
-		return false
-	}
-	return strings.EqualFold(m[1], t.owner) && strings.EqualFold(m[2], t.repo)
+	return strings.Contains(ref, "github.com") && issueNumberPattern.MatchString(ref)
 }
 
 // ExtractIdentifier extracts the issue number from a GitHub URL or shorthand ref.

@@ -1,14 +1,11 @@
 ---
-id: isa-render-pending
-title: bd isa-render-pending
-slug: /cli-reference/isa-render-pending
-sidebar_position: 999
+title: "bd isa-render-pending"
+description: "List ISAs whose on-disk markdown is stale relative to the substrate"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-render-pending`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-render-pending
+Generated from `bd help --doc isa-render-pending`.
 
 List every ISA whose on-disk markdown is stale relative to the
 substrate.

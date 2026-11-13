@@ -48,6 +48,12 @@ func (f *fakeGateCheckStore) CloseIssue(_ context.Context, id, reason, actor, se
 	return nil
 }
 
+// GetDependentsWithMetadata reports no dependents: closing a gate asks for the
+// groups it belongs to, and the gates under test belong to none.
+func (f *fakeGateCheckStore) GetDependentsWithMetadata(context.Context, string) ([]*types.IssueWithDependencyMetadata, error) {
+	return nil, nil
+}
+
 func captureGateStdout(t *testing.T, fn func()) string {
 	t.Helper()
 

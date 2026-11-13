@@ -6,7 +6,7 @@ that verb. It does **not** reopen silent rewriting — every ownership change,
 a claim or a release, appends a row to an append-only event table in the same
 transaction as the change, so there is no ownership change without a trail.
 
-The design and its decisions: [`../design/brain-prefix-release.md`](../design/brain-prefix-release.md).
+The design and its decisions: [`../../engdocs/design/brain-prefix-release.md`](../../engdocs/design/brain-prefix-release.md).
 Command text: [`../CLI_REFERENCE.md`](../CLI_REFERENCE.md#bd-store-prefix).
 
 ## Release

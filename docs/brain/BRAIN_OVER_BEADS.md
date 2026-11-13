@@ -329,7 +329,7 @@ The new ids are the authoring store's prefix plus the first 12 hex characters of
 
 ## Shared-database backup
 
-Upstream auto-backup runs once per project. On a database shared by many stores, that meant one private copy of the same data per store. Brain recognises the shared database and backs it up once, to the `default` destination registered with `bd backup init <path>`. See the Auto-Backup section of [`../CONFIG.md`](../CONFIG.md#auto-backup).
+Upstream auto-backup runs once per project. On a database shared by many stores, that meant one private copy of the same data per store. Brain recognises the shared database and backs it up once, to the `default` destination registered with `bd backup init <path>`. See the Auto-Backup section of [configuration reference](../reference/configuration.md#auto-backup).
 
 The checks run in this order. The throttle and the change check are made twice, once before and once after taking the lock, because the store that held the lock may have just finished a backup.
 

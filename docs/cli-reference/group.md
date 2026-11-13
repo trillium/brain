@@ -1,14 +1,11 @@
 ---
-id: group
-title: bd group
-slug: /cli-reference/group
-sidebar_position: 999
+title: "bd group"
+description: "Finish-line groups: one bead that tracks a push and closes itself when it is done"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc group`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd group
+Generated from `bd help --doc group`.
 
 A group is a bead that tracks other beads with non-blocking "tracks"
 edges. Members are never blocked by the group and tracking does not change
@@ -21,10 +18,10 @@ for durable knowledge rather than as a to-do list.
 Members must live in the same store as the group.
 
 ```
-bd group [flags]
+bd group [command]
 ```
 
-### bd group add
+## bd group add
 
 Track more beads in a group
 
@@ -32,7 +29,7 @@ Track more beads in a group
 bd group add <group-id> <member-id>... [flags]
 ```
 
-### bd group create
+## bd group create
 
 Create a finish-line group, optionally tracking members
 
@@ -47,7 +44,7 @@ bd group create <title> [member-id...] [flags]
   -p, --priority int         Group priority (0-4) (default 2)
 ```
 
-### bd group remove
+## bd group remove
 
 Stop tracking beads in a group
 
@@ -55,7 +52,7 @@ Stop tracking beads in a group
 bd group remove <group-id> <member-id>... [flags]
 ```
 
-### bd group show
+## bd group show
 
 Show a group's members and progress
 
@@ -63,7 +60,7 @@ Show a group's members and progress
 bd group show <group-id> [flags]
 ```
 
-### bd group sync
+## bd group sync
 
 Close every open group whose members are all closed
 

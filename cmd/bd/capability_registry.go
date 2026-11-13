@@ -541,6 +541,7 @@ var proxyPermittedPaths = []string{
 }
 
 func init() {
+	proxyCapabilityRegistry = append(proxyCapabilityRegistry, brainProxyCapabilityRows...)
 	for _, path := range proxyPermittedPaths {
 		proxyCapabilityRegistry = append(proxyCapabilityRegistry, permitted(path))
 	}

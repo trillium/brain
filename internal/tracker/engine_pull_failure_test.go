@@ -155,7 +155,11 @@ func TestEngineSyncFailedPullIsNotPushed(t *testing.T) {
 				}}
 			}}
 
-			result, err := NewEngine(mock, store, "sync").Sync(ctx, SyncOptions{Pull: true, Push: true})
+			// External-wins makes the pull attempt the update for a local copy
+			// that is newer: under the default timestamp rule a two-way pull
+			// with no sync position keeps that brain copy and skips the pull
+			// instead (brain), which is not the failure this test exercises.
+			result, err := NewEngine(mock, store, "sync").Sync(ctx, SyncOptions{Pull: true, Push: true, ConflictResolution: ConflictExternal})
 			if err != nil {
 				t.Fatalf("Sync: %v", err)
 			}

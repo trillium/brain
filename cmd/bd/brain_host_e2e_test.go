@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/testutil"
 )
 
 // Two scratch hosts on one machine, two real Dolt servers, the real binary, and
@@ -75,9 +77,7 @@ func (h *e2eHost) sql(t *testing.T, port int, q string) string {
 }
 
 func TestHostPromoteEndToEnd(t *testing.T) {
-	if testing.Short() {
-		t.Skip("end-to-end promotion needs real dolt servers")
-	}
+	testutil.RequireDoltCLIOnly(t)
 	doltPath, err := exec.LookPath("dolt")
 	if err != nil {
 		t.Skip("dolt not installed")

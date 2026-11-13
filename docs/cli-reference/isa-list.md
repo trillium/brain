@@ -1,14 +1,11 @@
 ---
-id: isa-list
-title: bd isa-list
-slug: /cli-reference/isa-list
-sidebar_position: 999
+title: "bd isa-list"
+description: "List every ISA (or only active ISAs)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-list`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-list
+Generated from `bd help --doc isa-list`.
 
 List all ISA-kind issues with their phase, progress, effort, and last
 update. With --active, filters out ISAs whose phase is LEARN (i.e. completed

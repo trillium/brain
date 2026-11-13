@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -177,6 +178,7 @@ func TestCLICompatibleBrainMigration0003UsesDirectCreateIndexDDL(t *testing.T) {
 // behavioural contract: after applying all migrations, two rows with the same
 // non-NULL slug must collide, while multiple NULL-slug rows must coexist.
 func TestBrainMigration0003EnforcesSlugUniquenessAndAllowsMultipleNulls(t *testing.T) {
+	defer SetBrainSeriesForTest(true)()
 	testutil.RequireDoltBinary(t)
 
 	dir := filepath.Join(t.TempDir(), "slug-unique")
@@ -224,6 +226,7 @@ SELECT id FROM issues WHERE slug = 'shared-slug'`)
 // TestBrainMigration0003IsIdempotentThroughDoltCLI applies the source 0056.up.sql
 // twice and asserts the second pass is a no-op.
 func TestBrainMigration0003IsIdempotentThroughDoltCLI(t *testing.T) {
+	defer SetBrainSeriesForTest(true)()
 	testutil.RequireDoltBinary(t)
 
 	upSQL0056, err := os.ReadFile("migrations/brain/0003_brain_slug_unique.up.sql")
@@ -277,6 +280,7 @@ func TestCLICompatibleBrainMigration0001UsesDirectAddColumnDDL(t *testing.T) {
 // pattern and CREATE TABLE IF NOT EXISTS together produce no errors on the
 // second pass — the contract called out in ISC-22.
 func TestSourceBrainMigrations0001And0002AreIdempotentThroughDoltCLI(t *testing.T) {
+	defer SetBrainSeriesForTest(true)()
 	testutil.RequireDoltBinary(t)
 
 	upSQL0054, err := os.ReadFile("migrations/brain/0001_brain_isa_columns.up.sql")
@@ -330,5 +334,72 @@ WHERE table_schema = DATABASE()
   AND table_name = 'isa_sections'`)
 	if len(rows) != 1 || rows[0]["n"] != "1" {
 		t.Fatalf("expected isa_sections table to exist exactly once after two idempotent passes, got: %v", rows)
+	}
+}
+
+// TestAllMigrationsSQLCarriesTheBrainSeries: with the brain series on, the
+// fresh bundle lands the brain schema and records the series in its own
+// cursor, while the main cursor holds upstream's series alone.
+func TestAllMigrationsSQLCarriesTheBrainSeries(t *testing.T) {
+	defer SetBrainSeriesForTest(true)()
+	testutil.RequireDoltBinary(t)
+
+	dir := filepath.Join(t.TempDir(), "cli-bundle-brain")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create CLI bundle dir: %v", err)
+	}
+	runDoltCommand(t, dir, "init", "--name", "test", "--email", "test@example.com")
+	runDoltSQL(t, dir, AllMigrationsSQL())
+
+	rows := queryDoltCSV(t, dir, `SELECT COALESCE(MAX(version), 0) AS v, COUNT(*) AS n FROM schema_migrations`)
+	if len(rows) != 1 || rows[0]["v"] != strconv.Itoa(LatestVersion()) || rows[0]["n"] != strconv.Itoa(LatestVersion()) {
+		t.Fatalf("main cursor = %v, want max = count = %d", rows, LatestVersion())
+	}
+	rows = queryDoltCSV(t, dir, `SELECT COALESCE(MAX(version), 0) AS v, COUNT(*) AS n FROM brain_schema_migrations`)
+	if len(rows) != 1 || rows[0]["v"] != strconv.Itoa(LatestBrainVersion()) || rows[0]["n"] != strconv.Itoa(LatestBrainVersion()) {
+		t.Fatalf("brain cursor = %v, want max = count = %d", rows, LatestBrainVersion())
+	}
+
+	// Brain series 0001: ISA columns on issues.
+	requireDoltColumnShape(t, dir, "issues", "slug", "varchar(255)", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_phase", "varchar(32)", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_progress_m", "int", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_progress_n", "int", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_effort", "varchar(8)", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_mode", "varchar(32)", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_started_at", "datetime", "YES")
+	requireDoltColumnShape(t, dir, "issues", "isa_updated_at", "datetime", "YES")
+
+	// Brain series 0002: the isa_sections table and its columns.
+	requireDoltColumnShape(t, dir, "isa_sections", "issue_id", "varchar(255)", "NO")
+	requireDoltColumnShape(t, dir, "isa_sections", "section_name", "varchar(64)", "NO")
+	requireDoltColumnShape(t, dir, "isa_sections", "body", "longtext", "NO")
+	requireDoltColumnShape(t, dir, "isa_sections", "updated_at", "timestamp", "NO")
+}
+
+// TestAllMigrationsSQLWithoutTheBrainSeriesIsUpstreams: with the series off
+// (this package's default), the bundle is upstream's byte for byte.
+func TestAllMigrationsSQLWithoutTheBrainSeriesIsUpstreams(t *testing.T) {
+	defer SetBrainSeriesForTest(false)()
+	if strings.Contains(AllMigrationsSQL(), BrainSchemaCursorTable) {
+		t.Fatal("bundle names the brain cursor with the brain series off")
+	}
+}
+
+// TestBrainMigrationHashesNameEveryBody: the hash table that recognises
+// brain's rows in schema_migrations covers every brain body, one version each.
+func TestBrainMigrationHashesNameEveryBody(t *testing.T) {
+	hashes := brainMigrationHashes()
+	if len(hashes) != LatestBrainVersion() {
+		t.Fatalf("hashes for %d bodies, series has %d", len(hashes), LatestBrainVersion())
+	}
+	seen := map[int]bool{}
+	for _, v := range hashes {
+		seen[v] = true
+	}
+	for v := 1; v <= LatestBrainVersion(); v++ {
+		if !seen[v] {
+			t.Errorf("no hash maps to brain version %d", v)
+		}
 	}
 }

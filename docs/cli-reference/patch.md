@@ -1,14 +1,11 @@
 ---
-id: patch
-title: bd patch
-slug: /cli-reference/patch
-sidebar_position: 999
+title: "bd patch"
+description: "Patch a single field on an issue (non-interactive)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc patch`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd patch
+Generated from `bd help --doc patch`.
 
 Patch a single field on an issue, non-interactively.
 

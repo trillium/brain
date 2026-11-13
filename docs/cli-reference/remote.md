@@ -1,14 +1,11 @@
 ---
-id: remote
-title: bd remote
-slug: /cli-reference/remote
-sidebar_position: 999
+title: "bd remote"
+description: "Client mode: run brain and every store command on a brain host over ssh"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc remote`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd remote
+Generated from `bd help --doc remote`.
 
 Make this machine a client of another machine's brain.
 
@@ -34,9 +31,10 @@ Config: ~/.config/brain/remote.yaml. See docs/brain/REMOTE.md.
 
 ```
 bd remote [flags]
+bd remote [command]
 ```
 
-### bd remote disconnect
+## bd remote disconnect
 
 Close the shared ssh connection (the next call reopens it)
 
@@ -44,7 +42,7 @@ Close the shared ssh connection (the next call reopens it)
 bd remote disconnect [flags]
 ```
 
-### bd remote install
+## bd remote install
 
 Reads the host's store registry ('brain stores list' there) and writes one
 small wrapper per store into --dir (default: the directory of this binary).
@@ -70,7 +68,7 @@ bd remote install [flags]
       --prune          Remove generated wrappers for stores the host no longer has
 ```
 
-### bd remote set
+## bd remote set
 
 Name the brain host (an ssh target such as user@host)
 
@@ -85,7 +83,7 @@ bd remote set <ssh-target> [flags]
       --no-check         Save without contacting the host
 ```
 
-### bd remote status
+## bd remote status
 
 Show the configured host, reachability, latency and versions
 
@@ -93,7 +91,7 @@ Show the configured host, reachability, latency and versions
 bd remote status [flags]
 ```
 
-### bd remote unset
+## bd remote unset
 
 Stop forwarding; use local databases again
 
@@ -101,7 +99,7 @@ Stop forwarding; use local databases again
 bd remote unset [flags]
 ```
 
-### bd remote verify
+## bd remote verify
 
 Checks the wrappers in --dir (default: this binary's directory) for every
 store in the registry:

@@ -1,14 +1,11 @@
 ---
-id: isa-render
-title: bd isa-render
-slug: /cli-reference/isa-render
-sidebar_position: 999
+title: "bd isa-render"
+description: "Render an ISA from the substrate to canonical IsaFormat v2.7 markdown on disk"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc isa-render`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd isa-render
+Generated from `bd help --doc isa-render`.
 
 Render an ISA-kind issue to canonical markdown at
 &lt;exfil-root&gt;/&lt;slug&gt;/ISA.md.

@@ -702,6 +702,16 @@ func serveIssueRoles(src serveRoleSource, journalEnabled bool) (serveRoles, erro
 		// true, and useless. Name the condition that actually happened.
 		return roles, errors.New("no store is open for this workspace")
 	}
+	// Brain: the markdown render decorator sits above the hook layer and
+	// hands out the hook layer's role wrappers wired to its renderer, so it is
+	// peeled first — a network write renders no markdown, for the same reason
+	// it fires no hook script ('render-all' reconciles). Declared guard hooks
+	// (hooks.d) sit beneath both and stay in force.
+	if rendered, ok := src.(*storage.BrainExfiltrationDecorator); ok {
+		if inner, ok := rendered.Unwrap().(serveRoleSource); ok {
+			src = inner
+		}
+	}
 	if hooked, ok := src.(*storage.HookFiringStore); ok {
 		src = hooked.Unwrap()
 	}

@@ -1,14 +1,11 @@
 ---
-id: brain
-title: bd brain
-slug: /cli-reference/brain
-sidebar_position: 999
+title: "bd brain"
+description: "brain — knowledge graph + task tool on top of bd"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc brain`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd brain
+Generated from `bd help --doc brain`.
 
 brain v0.3 absorbs bd into a single tool that unifies tasks and
 knowledge under one substrate (Dolt) with markdown as the exfiltrated
@@ -25,9 +22,10 @@ See ISA.md §"Decisions" → "First-Tranche Decisions" → "Decision 5
 
 ```
 bd brain [flags]
+bd brain [command]
 ```
 
-### bd brain link
+## bd brain link
 
 brain link writes one typed edge (a row in the dependencies table)
 between two existing brain docs.
@@ -62,7 +60,7 @@ bd brain link <from> <to> [flags]
       --type string    Edge type: any well-known bd dependency type (escape hatch)
 ```
 
-### bd brain new
+## bd brain new
 
 brain new creates a brain doc of the given kind.
 
@@ -105,7 +103,7 @@ bd brain new <kind> <title> [flags]
       --slug string   Optional slug (required for kind=isa; auto-generated from title when omitted)
 ```
 
-### bd brain promote
+## bd brain promote
 
 brain promote is NOT a brain verb. It is a redirector for the natural-
 language verb that often comes to mind when someone wants to shift a
@@ -124,7 +122,7 @@ times in shell history.
 bd brain promote [flags]
 ```
 
-### bd brain recast
+## bd brain recast
 
 brain recast shifts the kind of an existing brain doc. Every edge
 survives. Every comment survives. The body survives. The ID survives.
@@ -165,7 +163,7 @@ bd recast <id> [flags]
       --to string   Target kind: one of task | knowledge | both (required)
 ```
 
-### bd brain related
+## bd brain related
 
 brain related performs a breadth-first walk of outgoing edges from
 the given center brain doc and prints the reachable subgraph as an
@@ -201,7 +199,7 @@ bd related <id> [flags]
       --depth int   BFS depth cap (0 prints the center alone; higher walks further) (default 2)
 ```
 
-### bd brain rollout
+## bd brain rollout
 
 The one procedure for: create a store on the brain host, put a brain binary that
 knows about it on the other machines, and prove every machine has it. It
@@ -297,6 +295,7 @@ For each machine, in roster order:
 
 ```
 bd rollout [flags]
+bd rollout [command]
 ```
 
 **Flags:**
@@ -309,7 +308,7 @@ bd rollout [flags]
       --store string       Create this store first (run on the brain host) and prove it by name on every machine
 ```
 
-#### bd brain rollout rollback
+### bd brain rollout rollback
 
 Restore the binary a rollout kept as bd.pre-&lt;sha&gt;, keeping the one it replaces as
 bd.post-&lt;sha&gt;. The kept binary comes from the rollout record, or --previous PATH
@@ -369,7 +368,7 @@ bd rollout rollback [flags]
       --previous string   A kept binary on the machine to restore (default: the one in the rollout record)
 ```
 
-#### bd brain rollout status
+### bd brain rollout status
 
 Show the recorded binary, pin state and verification time of each machine
 
@@ -377,7 +376,7 @@ Show the recorded binary, pin state and verification time of each machine
 bd rollout status [flags]
 ```
 
-### bd brain store
+## bd brain store
 
 Resolve &lt;name&gt; from the shared registry at call time and run the command
 against that store, exactly as its wrapper would:
@@ -400,7 +399,7 @@ sends an unknown command name here when the registry has it.
 bd store <name> [command…] [flags]
 ```
 
-### bd brain stores
+## bd brain stores
 
 Manage the registry of bd stores federated under brain.
 
@@ -413,9 +412,10 @@ shell wrapper scripts that need BRAIN_STORE_* variables.
 
 ```
 bd stores [flags]
+bd stores [command]
 ```
 
-#### bd brain stores add
+### bd brain stores add
 
 Register a store in the brain federation registry
 
@@ -429,7 +429,7 @@ bd stores add <name> <beads-dir> [flags]
       --local-only   Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-#### bd brain stores alias
+### bd brain stores alias
 
 Create a second CLI variant ('alias') that points at an already-
 registered store. Useful for singular/plural pairs (idea/ideas,
@@ -458,7 +458,7 @@ bd stores alias <existing-store> <new-name> [flags]
       --no-wrapper         Skip writing the wrapper at ~/.local/bin/<alias>
 ```
 
-#### bd brain stores create
+### bd brain stores create
 
 Provision a new connected store end-to-end. Does, in order:
 
@@ -514,7 +514,7 @@ bd stores create <name> [flags]
       --path string         Filesystem root for the new store (default: $HOME/data/<name>)
 ```
 
-#### bd brain stores doctor
+### bd brain stores doctor
 
 Walk every store registered in ~/.config/brain/stores.yaml and assert it
 answers a read. The registry is the source of truth for which stores must
@@ -595,7 +595,7 @@ bd stores doctor [flags]
       --timeout duration          Per-store read timeout (default 20s)
 ```
 
-#### bd brain stores edit-back
+### bd brain stores edit-back
 
 Declare edit-back for a store in ~/.config/brain/stores.yaml.
 
@@ -620,7 +620,7 @@ file that disappears marks its bead for deletion, never removes it.
 bd stores edit-back <name> on|off [flags]
 ```
 
-#### bd brain stores env
+### bd brain stores env
 
 Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 
@@ -628,7 +628,7 @@ Write ~/.config/brain/stores.env from the registry (for shell wrappers)
 bd stores env [flags]
 ```
 
-#### bd brain stores epoch
+### bd brain stores epoch
 
 Print the registry epoch (database) and the epoch applied on this machine
 
@@ -636,7 +636,7 @@ Print the registry epoch (database) and the epoch applied on this machine
 bd stores epoch [flags]
 ```
 
-#### bd brain stores host-audit
+### bd brain stores host-audit
 
 Reports, as JSON, what this machine says about itself: the build stamp, the
 shared store-host.env, every literal Dolt host/port pin in the ~/.local/bin
@@ -659,7 +659,7 @@ bd stores host-audit [flags]
       --write-probe   Also write+read+delete a probe row in each store (see --help)
 ```
 
-#### bd brain stores list
+### bd brain stores list
 
 List all registered stores
 
@@ -673,7 +673,7 @@ bd stores list [flags]
   -v, --verbose   Include each store's about blurb as an extra column
 ```
 
-#### bd brain stores poller
+### bd brain stores poller
 
 The poller is the backstop that keeps an idle machine converged: launchd runs
 'brain stores sync --quiet' at load and every 5 minutes, logging under
@@ -687,9 +687,10 @@ within one tick of waking, in one step.
 
 ```
 bd stores poller [flags]
+bd stores poller [command]
 ```
 
-##### bd brain stores poller install
+#### bd brain stores poller install
 
 Install and load the launch agent on this machine
 
@@ -706,7 +707,7 @@ bd stores poller install [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-##### bd brain stores poller print
+#### bd brain stores poller print
 
 Print the launch agent plist (writes nothing)
 
@@ -721,7 +722,7 @@ bd stores poller print [flags]
       --wrapper string   Absolute path of the brain wrapper the job runs (default ~/.local/bin/brain)
 ```
 
-##### bd brain stores poller status
+#### bd brain stores poller status
 
 Say whether the launch agent is installed and loaded
 
@@ -729,7 +730,7 @@ Say whether the launch agent is installed and loaded
 bd stores poller status [flags]
 ```
 
-##### bd brain stores poller uninstall
+#### bd brain stores poller uninstall
 
 Unload and remove the launch agent
 
@@ -744,7 +745,7 @@ bd stores poller uninstall [flags]
       --no-load   Remove the plist without running launchctl
 ```
 
-#### bd brain stores reconcile
+### bd brain stores reconcile
 
 Merge an out-of-sync brain back into one.
 
@@ -774,15 +775,16 @@ bd stores reconcile [flags]
       --report string      Report file (default ~/.config/brain/reconcile-report.md)
 ```
 
-#### bd brain stores registry
+### bd brain stores registry
 
 Inspect the shared store registry (export, log, report)
 
 ```
 bd stores registry [flags]
+bd stores registry [command]
 ```
 
-##### bd brain stores registry export
+#### bd brain stores registry export
 
 Print the registry snapshot (state, entries, machine reports) as JSON
 
@@ -790,7 +792,7 @@ Print the registry snapshot (state, entries, machine reports) as JSON
 bd stores registry export [flags]
 ```
 
-##### bd brain stores registry log
+#### bd brain stores registry log
 
 Show the registry's append-only history, newest first
 
@@ -804,7 +806,7 @@ bd stores registry log [flags]
       --limit int   How many rows (default 30)
 ```
 
-##### bd brain stores registry report
+#### bd brain stores registry report
 
 Record a machine's applied state (used by client machines through their relay host)
 
@@ -818,7 +820,7 @@ bd stores registry report [flags]
       --machine-json string   The machine report as JSON
 ```
 
-#### bd brain stores remove
+### bd brain stores remove
 
 Remove a store name from the brain fleet.
 
@@ -844,7 +846,7 @@ bd stores remove <name> [flags]
       --local-only   Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-#### bd brain stores rename
+### bd brain stores rename
 
 Rename a connected store end-to-end. Does, in order:
 
@@ -880,7 +882,7 @@ bd stores rename <old-name> <new-name> [flags]
       --local-only         Act on this machine only; do not write the shared store registry (other machines are not told)
 ```
 
-#### bd brain stores render-all
+### bd brain stores render-all
 
 Iterate every store registered in ~/.config/brain/stores.yaml and
 trigger markdown exfiltration for each one. The current bd binary is
@@ -913,7 +915,7 @@ bd stores render-all [flags]
       --json   Emit a structured JSON object instead of per-store text summaries
 ```
 
-#### bd brain stores rewrite-wrappers
+### bd brain stores rewrite-wrappers
 
 Rewrites the BEADS_DIR and BRAIN_KNOWLEDGE_ROOT lines of each existing
 ~/.local/bin wrapper (registered stores and 'brain stores alias' wrappers) to
@@ -953,7 +955,7 @@ bd stores rewrite-wrappers [flags]
       --timeout duration   Per-store read timeout (default 20s)
 ```
 
-#### bd brain stores set-about
+### bd brain stores set-about
 
 Attach a short description to a registered store, stored in the
 registry (~/.config/brain/stores.yaml) only. The wrapper script is left
@@ -969,7 +971,7 @@ Examples:
 bd stores set-about <store> <blurb> [flags]
 ```
 
-#### bd brain stores shell-hook
+### bd brain stores shell-hook
 
 Print a shell function that, when you type a store name this machine has no
 wrapper for yet, asks the registry (the cached copy, instantly) and, if the
@@ -981,7 +983,7 @@ name is a store, runs it through 'brain store'. Add to your shell rc:
 bd stores shell-hook [zsh|bash] [flags]
 ```
 
-#### bd brain stores sync
+### bd brain stores sync
 
 Reconcile this machine with the fleet's store registry.
 
@@ -1026,7 +1028,7 @@ bd stores sync [flags]
       --wait duration    How long to wait for another sync running here (default 30s)
 ```
 
-#### bd brain stores verify
+### bd brain stores verify
 
 Compare this machine's real wrappers, agent links, stores.yaml and stores.env
 with the registry and print what is missing or orphaned. Changes nothing.
@@ -1042,7 +1044,7 @@ bd stores verify [flags]
       --probe int   Also read through the wrappers of the newest N stores
 ```
 
-### bd brain unify
+## bd brain unify
 
 brain stores each keep their own Dolt database on a shared server. 'unify'
 consolidates them into ONE authoritative database while preserving the logical
@@ -1081,10 +1083,10 @@ writes only to a Dolt server it starts itself, so a build cannot modify a live
 store even by accident.
 
 ```
-bd brain unify [flags]
+bd brain unify [command]
 ```
 
-#### bd brain unify build
+### bd brain unify build
 
 Construct the unified database in an isolated Dolt server from live store data
 
@@ -1108,7 +1110,7 @@ bd brain unify build [flags]
       --timeout duration              overall time budget for the build (default 4h0m0s)
 ```
 
-#### bd brain unify plan
+### bd brain unify plan
 
 Print the deterministic mapping from every current store into the unified database
 
@@ -1129,7 +1131,7 @@ bd brain unify plan [flags]
       --timeout duration              overall time budget for the plan (default 20m0s)
 ```
 
-#### bd brain unify ready
+### bd brain unify ready
 
 ready asks the running server that hosts the merged database whether it holds
 everything the sources hold. It is a replay that decides everything and applies
@@ -1166,7 +1168,7 @@ bd brain unify ready [flags]
       --verify                        also run the recorded verification of the merged database (a few minutes)
 ```
 
-#### bd brain unify replay
+### bd brain unify replay
 
 A merged database is built from a moment in the past. Every bead written,
 edited or closed in a source store after that moment exists only in the source.
@@ -1221,7 +1223,7 @@ bd brain unify replay [flags]
       --timeout duration              overall time budget for the replay (default 4h0m0s)
 ```
 
-#### bd brain unify verify
+### bd brain unify verify
 
 Compare the unified database against production by counts, size and content digest
 

@@ -1,14 +1,11 @@
 ---
-id: store
-title: bd store
-slug: /cli-reference/store
-sidebar_position: 999
+title: "bd store"
+description: "Run a command against any store the registry knows, without needing its wrapper"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc store`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd store
+Generated from `bd help --doc store`.
 
 Resolve &lt;name&gt; from the shared registry at call time and run the command
 against that store, exactly as its wrapper would:

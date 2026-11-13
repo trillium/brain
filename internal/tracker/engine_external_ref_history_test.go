@@ -274,14 +274,29 @@ func TestEngineExternalRefChangedAfter_NoHistoryCapabilityFallsBack(t *testing.T
 	e := &Engine{Store: store}
 	lastSync := time.Now()
 
-	t.Run("touched after lastSync reports changed", func(t *testing.T) {
+	// Brain: without the commit history an edit cannot be told from a
+	// re-link, and treating every edit as a re-link let a pull overwrite the
+	// edit with the external copy. Only an issue created after the last sync
+	// counts as re-linked.
+	t.Run("edited after lastSync is not taken for a re-link", func(t *testing.T) {
 		local := newTestIssue("bd-1", lastSync.Add(-time.Hour), lastSync.Add(time.Hour))
 		changed, err := e.externalRefChangedAfter(context.Background(), local, "ref", lastSync)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		if changed {
+			t.Error("expected changed=false for an issue only edited after lastSync (heuristic fallback)")
+		}
+	})
+
+	t.Run("created after lastSync reports changed", func(t *testing.T) {
+		local := newTestIssue("bd-3", lastSync.Add(time.Hour), lastSync.Add(time.Hour))
+		changed, err := e.externalRefChangedAfter(context.Background(), local, "ref", lastSync)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if !changed {
-			t.Error("expected changed=true when UpdatedAt is after lastSync (heuristic fallback)")
+			t.Error("expected changed=true when CreatedAt is after lastSync (heuristic fallback)")
 		}
 	})
 

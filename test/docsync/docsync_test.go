@@ -41,6 +41,26 @@ var docsPublishExemptions = map[string]bool{
 	"RECOVERY.md": true,
 }
 
+// docsGitHubViewedDirs are docs/ subtrees read on GitHub rather than published
+// through Mintlify, held to the pointer-stub rules: exact relative links that
+// must resolve. docs/brain/ is the brain fork's own documentation; it is
+// linked from brain's command help by path, so it stays where it is.
+var docsGitHubViewedDirs = []string{"brain/"}
+
+// isGitHubViewedDoc reports whether a docs/-relative page is GitHub-viewed:
+// a pointer stub or a page under a GitHub-viewed subtree.
+func isGitHubViewedDoc(rel string) bool {
+	if docsPublishExemptions[rel] {
+		return true
+	}
+	for _, dir := range docsGitHubViewedDirs {
+		if strings.HasPrefix(rel, dir) {
+			return true
+		}
+	}
+	return false
+}
+
 // rootDocFiles are the curated root-level markdown files whose local links
 // are checked GitHub-style. CHANGELOG.md is deliberately absent: its
 // historical entries reference files that no longer exist.
@@ -247,7 +267,7 @@ func TestEveryDocsPageIsPublished(t *testing.T) {
 			t.Fatal(err)
 		}
 		rel = filepath.ToSlash(rel)
-		if docsPublishExemptions[rel] {
+		if isGitHubViewedDoc(rel) {
 			continue
 		}
 		pageForm := strings.TrimSuffix(rel, filepath.Ext(rel))
@@ -283,7 +303,7 @@ func TestDocsSiteLinks(t *testing.T) {
 	for _, path := range files {
 		rel, _ := filepath.Rel(docsRoot, path)
 		rel = filepath.ToSlash(rel)
-		isStub := docsPublishExemptions[rel]
+		isStub := isGitHubViewedDoc(rel)
 
 		data, err := os.ReadFile(path)
 		if err != nil {

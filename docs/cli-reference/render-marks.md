@@ -1,14 +1,11 @@
 ---
-id: render-marks
-title: bd render-marks
-slug: /cli-reference/render-marks
-sidebar_position: 999
+title: "bd render-marks"
+description: "Show or clear the \"marked-for-deletion\" label beads carry when their rendered file was deleted"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc render-marks`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd render-marks
+Generated from `bd help --doc render-marks`.
 
 Dealing with deletion marks.
 
@@ -31,9 +28,10 @@ separate decision ('bd delete &lt;id&gt;') and never automatic.
 
 ```
 bd render-marks [flags]
+bd render-marks [command]
 ```
 
-### bd render-marks clear
+## bd render-marks clear
 
 Clear the "marked-for-deletion" label on the named beads. This is the ONLY
 way a mark leaves a bead — no render path clears it by itself.
@@ -47,7 +45,7 @@ the deletion intent by actually deleting the substrate bead, use
 bd render-marks clear <id>... [flags]
 ```
 
-### bd render-marks list
+## bd render-marks list
 
 List the beads whose rendered file was deleted and whose deletion has not
 been reviewed yet. Each bead carries the "marked-for-deletion" label.

@@ -1,14 +1,11 @@
 ---
-id: recast
-title: bd recast
-slug: /cli-reference/recast
-sidebar_position: 999
+title: "bd recast"
+description: "Change the kind of an existing brain doc in place (edges/comments preserved)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc recast`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd recast
+Generated from `bd help --doc recast`.
 
 brain recast shifts the kind of an existing brain doc. Every edge
 survives. Every comment survives. The body survives. The ID survives.

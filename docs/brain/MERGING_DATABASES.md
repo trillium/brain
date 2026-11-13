@@ -6,8 +6,8 @@ the databases it was built from are still being written to. This page is the
 workflow: which verb to run when, and what each one will refuse to do. The flag
 lists are in the [CLI reference](../CLI_REFERENCE.md#bd-brain-unify); the design
 of the merge itself (prefix namespaces, the collision model) is in
-[`../design/brain-single-database.md`](../design/brain-single-database.md) and
-[`../design/brain-collision-duplication-records.md`](../design/brain-collision-duplication-records.md).
+[`../../engdocs/design/brain-single-database.md`](../../engdocs/design/brain-single-database.md) and
+[`../../engdocs/design/brain-collision-duplication-records.md`](../../engdocs/design/brain-collision-duplication-records.md).
 What happens to an id that more than one source holds is the section
 [Duplicated ids](#duplicated-ids-identical-copies-merge-differing-copies-become-conflict-beads).
 

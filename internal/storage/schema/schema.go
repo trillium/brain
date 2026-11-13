@@ -594,7 +594,9 @@ func AllMigrationsSQL() string {
 			mainSource.cursorTable, f.version, hex.EncodeToString(sum[:]))
 	}
 	// Brain: the brain series follows the main series it extends.
-	b.WriteString(brainSeriesSQL())
+	if brainSeriesEnabled.Load() {
+		b.WriteString(brainSeriesSQL())
+	}
 	return b.String()
 }
 
@@ -693,12 +695,14 @@ func MigrateUp(ctx context.Context, db DBConn) (int, error) {
 	// under main-series numbers (brain_series.go) gets them moved into the
 	// brain series before anything reads the main cursor, so upstream's
 	// migrations at those numbers apply instead of being skipped.
-	brainHealed, err := healBrainNumberedMainMigrations(ctx, db)
-	if err != nil {
-		return 0, err
-	}
-	if brainHealed {
-		reconciled++
+	if brainSeriesEnabled.Load() {
+		brainHealed, err := healBrainNumberedMainMigrations(ctx, db)
+		if err != nil {
+			return 0, err
+		}
+		if brainHealed {
+			reconciled++
+		}
 	}
 
 	applied, err := migrateUpAfterReconcile(ctx, db, seedChanged)
@@ -797,11 +801,13 @@ func migrateUpAfterReconcile(ctx context.Context, db DBConn, seedChanged bool) (
 	if err != nil {
 		return 0, fmt.Errorf("checking dirty tables against pending migrations: %w", err)
 	}
-	touchedBrainDirtyTables, err := brainSource.pendingMigrationDirtyTables(ctx, db, dirtyBefore)
-	if err != nil {
-		return 0, fmt.Errorf("checking dirty tables against pending brain migrations: %w", err)
+	if brainSeriesEnabled.Load() {
+		touchedBrainDirtyTables, err := brainSource.pendingMigrationDirtyTables(ctx, db, dirtyBefore)
+		if err != nil {
+			return 0, fmt.Errorf("checking dirty tables against pending brain migrations: %w", err)
+		}
+		touchedDirtyTables = append(touchedDirtyTables, touchedBrainDirtyTables...)
 	}
-	touchedDirtyTables = append(touchedDirtyTables, touchedBrainDirtyTables...)
 	if len(touchedDirtyTables) > 0 {
 		return 0, &DirtyTablesError{Tables: touchedDirtyTables}
 	}
@@ -817,12 +823,14 @@ func migrateUpAfterReconcile(ctx context.Context, db DBConn, seedChanged bool) (
 
 	// Brain: the brain series runs right after the main series it extends
 	// (its migrations alter issues and add isa_sections), in the same pass.
-	appliedBrain, brainColumnAdded, err := brainSource.migrate(ctx, db, 0)
-	if err != nil {
-		return applied, fmt.Errorf("brain migrations: %w", err)
+	if brainSeriesEnabled.Load() {
+		appliedBrain, brainColumnAdded, err := brainSource.migrate(ctx, db, 0)
+		if err != nil {
+			return applied, fmt.Errorf("brain migrations: %w", err)
+		}
+		applied += appliedBrain
+		mainColumnAdded = mainColumnAdded || brainColumnAdded
 	}
-	applied += appliedBrain
-	mainColumnAdded = mainColumnAdded || brainColumnAdded
 
 	backfilled, err := ensureBackfilledCustomStatusesCustomTypes(ctx, db)
 	if err != nil {
@@ -941,7 +949,10 @@ func migrateUpAfterReconcile(ctx context.Context, db DBConn, seedChanged bool) (
 // pass (see rekeyAuxRowIDsPending). Making a repaired DB re-converge immediately
 // would mean folding that drift record in here — a deliberate non-goal for now.
 func migrationWorkNeeded(ctx context.Context, db DBConn) (bool, error) {
-	if !mainSource.atLatest(ctx, db) || !ignoredSource.atLatest(ctx, db) || !brainSource.atLatest(ctx, db) {
+	if !mainSource.atLatest(ctx, db) || !ignoredSource.atLatest(ctx, db) {
+		return true, nil
+	}
+	if brainSeriesEnabled.Load() && !brainSource.atLatest(ctx, db) {
 		return true, nil
 	}
 	// A database already at the latest numbered migration still needs work if it

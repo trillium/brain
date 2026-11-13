@@ -1,14 +1,11 @@
 ---
-id: render-all
-title: bd render-all
-slug: /cli-reference/render-all
-sidebar_position: 999
+title: "bd render-all"
+description: "Re-render every issue's markdown (useful after corruption or root change)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc render-all`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd render-all
+Generated from `bd help --doc render-all`.
 
 Walk every issue in the substrate and render its markdown to the
 configured exfil root.

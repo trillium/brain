@@ -1,14 +1,11 @@
 ---
-id: render
-title: bd render
-slug: /cli-reference/render
-sidebar_position: 999
+title: "bd render"
+description: "Re-render an issue's markdown to the store's exfiltration root"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc render`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd render
+Generated from `bd help --doc render`.
 
 Render the markdown for a single issue and write it to disk under
 &lt;exfil-root&gt;/entries/&lt;kind&gt;/&lt;slug&gt;.md.

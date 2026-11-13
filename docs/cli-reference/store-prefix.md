@@ -1,14 +1,11 @@
 ---
-id: store-prefix
-title: bd store-prefix
-slug: /cli-reference/store-prefix
-sidebar_position: 999
+title: "bd store-prefix"
+description: "Show or extend the unified database's namespace record (brain_store_prefixes)"
 ---
 
-<!-- AUTO-GENERATED: do not edit manually -->
-Generated from `bd help --doc store-prefix`
+{/* AUTO-GENERATED: do not edit manually */}
 
-## bd store-prefix
+Generated from `bd help --doc store-prefix`.
 
 Manage the unified database's prefix-ownership record at runtime.
 
@@ -47,9 +44,10 @@ command refuses instead of pretending.
 
 ```
 bd store-prefix [flags]
+bd store-prefix [command]
 ```
 
-### bd store-prefix add
+## bd store-prefix add
 
 Claim an id prefix for the named store in the unified database's
 brain_store_prefixes record, so beads can mint under it immediately.
@@ -77,7 +75,7 @@ bd store-prefix add <prefix> [flags]
       --store string   Store whose namespace claims the prefix (default: the wrapper's BD_NAME)
 ```
 
-### bd store-prefix history
+## bd store-prefix history
 
 Print the ownership trail of one id prefix from the append-only
 brain_store_prefix_events table: every claim and every release recorded from
@@ -93,7 +91,7 @@ path changes ownership silently.
 bd store-prefix history <prefix> [flags]
 ```
 
-### bd store-prefix list
+## bd store-prefix list
 
 List every id prefix the unified database's brain_store_prefixes record
 knows: the prefix, the store that owns it, the reason the ownership was
@@ -104,7 +102,7 @@ runtime "operator-added"), and the bead count observed at claim time.
 bd store-prefix list [flags]
 ```
 
-### bd store-prefix release
+## bd store-prefix release
 
 Free a prefix this namespace owns on the unified database's
 brain_store_prefixes record, as a deliberate act by the owning store's own

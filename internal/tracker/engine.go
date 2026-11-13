@@ -1142,7 +1142,7 @@ func (e *Engine) doPush(ctx context.Context, opts SyncOptions, skipIDs, forceIDs
 				// Content unchanged since last push: a real run would skip this
 				// issue, so the preview must say so too (gastownhall/beads#4214).
 				stats.Skipped++
-			} else if e.pushUpToDate(ctx, issue, extRef, forceIDs) {
+			} else if e.dryRunLooksUp() && e.pushUpToDate(ctx, issue, extRef, forceIDs) {
 				// Same test a real push applies, so the plan matches the run.
 				stats.Skipped++
 			} else {
@@ -1271,6 +1271,13 @@ func (e *Engine) externalUpToDate(local *types.Issue, ext *TrackerIssue) bool {
 // fetches the linked external issue and reports whether a real push would
 // skip it. A lookup that fails counts as not up to date, as it does in a real
 // push.
+// dryRunLooksUp reports whether a dry run may read external copies to test
+// whether each linked issue is already up to date (see DryRunLookup).
+func (e *Engine) dryRunLooksUp() bool {
+	l, ok := e.Tracker.(DryRunLookup)
+	return ok && l.DryRunLooksUp()
+}
+
 func (e *Engine) pushUpToDate(ctx context.Context, local *types.Issue, extRef string, forceIDs map[string]bool) bool {
 	if forceIDs[local.ID] {
 		return false
