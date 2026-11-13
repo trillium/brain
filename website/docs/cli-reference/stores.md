@@ -244,6 +244,64 @@ Print the registry epoch (database) and the epoch applied on this machine
 bd stores epoch [flags]
 ```
 
+### bd stores host
+
+Show the federation's store-host record: which Dolt sql-server the stores live
+on, where that value came from, and the credential REFERENCE (MySQL user and
+the path of the password file) — never a password.
+
+The record lives at ~/.config/brain/store-host.env (override the path with
+BRAIN_STORE_HOST_FILE), as KEY=VALUE lines so the generated store wrappers can
+source it at run time:
+
+  BEADS_DOLT_SERVER_HOST=&lt;host&gt;
+  BEADS_DOLT_SERVER_PORT=&lt;port&gt;
+  BEADS_DOLT_SERVER_USER=&lt;mysql user&gt;          # optional
+  BEADS_CREDENTIALS_FILE=&lt;password file path&gt;  # optional
+
+A process environment value of the same name overrides the record. The record
+is one file per machine because where the federation lives is one fact per
+machine: baking it into wrappers, metadata and shell rc files is how a host's
+stores drift apart and read as 'registered but does not answer'.
+
+The server is also probed for TCP reachability, so a missing record is distinct
+from a record that names an unreachable server. It does not verify credentials.
+
+```
+bd stores host [flags]
+```
+
+**Flags:**
+
+```
+      --json             Emit a structured JSON object
+      --probe duration   Dial the resolved server this long to report whether it answers (0 to skip) (default 2s)
+```
+
+#### bd stores host set
+
+Write the federation's one store-host record: the Dolt host and port every
+store on this machine should use, plus an optional credential REFERENCE (the
+MySQL user and the path of the password file).
+
+Unrelated lines in the record are preserved, so a hand-written comment or an
+extra setting survives. The file is written atomically with 0600 permissions.
+Secrets are refused: pass the password file's PATH with --credentials, never a
+password.
+
+```
+bd stores host set [flags]
+```
+
+**Flags:**
+
+```
+      --credentials string   Path of the password file the record should reference (never a password)
+      --host string          Dolt sql-server host (required)
+      --port int             Dolt sql-server port (required)
+      --user string          MySQL user for this server (a credential reference, not a secret)
+```
+
 ### bd stores host-audit
 
 Reports, as JSON, what this machine says about itself: the build stamp, the
@@ -279,6 +337,24 @@ bd stores list [flags]
 
 ```
   -v, --verbose   Include each store's about blurb as an extra column
+```
+
+### bd stores orphans
+
+List every generated store wrapper in ~/.local/bin whose name is not in the
+federation registry (~/.config/brain/stores.yaml).
+
+A wrapper with no registry entry is a CLI in PATH that resolves a store the
+federation does not know about: either the store was renamed or removed and the
+wrapper was left behind, or it was never registered. Only files this tool
+generated count (the generated header is the marker), so a hand-written script
+that happens to share a store's name is never reported — or touched.
+
+Nothing is deleted: register the store again with 'brain stores add &lt;name&gt;
+&lt;beads-dir&gt;', or remove the file yourself.
+
+```
+bd stores orphans [flags]
 ```
 
 ### bd stores poller

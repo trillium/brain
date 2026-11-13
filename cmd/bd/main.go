@@ -411,10 +411,28 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 			return true
 		}
 	}
+	// The connection verbs run when no store can be opened (robots-r1zd5:
+	// every store failing 'Access denied'). 'brain stores host set' is the
+	// store-host record's writer, and 'brain doctor' is the same probe as
+	// 'brain stores doctor'.
+	if p := cmd.Parent(); p != nil {
+		if p.Name() == "host" && cmd.Name() == "set" {
+			if g := p.Parent(); g != nil && g.Name() == "stores" {
+				return true
+			}
+		}
+		if p.Name() == "brain" && cmd.Name() == "doctor" {
+			return true
+		}
+	}
 	if cmd.Parent() == nil || cmd.Parent().Name() != "stores" {
 		return false
 	}
 	switch cmd.Name() {
+	case "host", "rewrite-wrappers", "orphans":
+		// None of them reads the caller's store; aborting on a broken caller
+		// store is exactly what they exist to survive.
+		return true
 	case "doctor":
 		// The per-store probe must run with no usable caller store. The fleet
 		// proof reads the registry, so it needs a connection unless this machine
@@ -1160,7 +1178,7 @@ var rootCmd = &cobra.Command{
 			doltCfg.ServerHost = cfg.GetDoltServerHost()
 			// Use doltserver.DefaultConfig for port resolution (env > port file >
 			// config.yaml). Port 0 is fine here — auto-start will resolve it.
-			doltCfg.ServerPort = doltserver.DefaultConfig(beadsDir).Port
+			doltCfg.ServerPort = runtimeDoltServerPort(beadsDir)
 			doltCfg.ServerSocket = cfg.GetDoltServerSocket()
 			doltCfg.ServerUser = cfg.GetDoltServerUser()
 			// Use the resolved port for credential lookup — metadata.json port
@@ -1511,6 +1529,10 @@ var rootCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func runtimeDoltServerPort(beadsDir string) int {
+	return doltserver.DefaultConfig(beadsDir).Port
 }
 
 func shouldRunPostCommandAutoExport(cmd *cobra.Command) bool {

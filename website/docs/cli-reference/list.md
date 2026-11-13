@@ -38,6 +38,7 @@ bd list [flags]
       --format string                Output format: 'digraph' (for golang.org/x/tools/cmd/digraph), 'dot' (Graphviz), or Go template
       --has-metadata-key string      Filter issues that have this metadata key set
       --id string                    Filter by specific issue IDs (comma-separated, e.g., bd-1,bd-5,bd-10)
+      --include-deps                 With --json, add a dependencies array ({id, type} per outgoing edge) to each row from one batched query; ignored for text output
       --include-gates                Include gate issues in output (normally hidden)
       --include-infra                Include infrastructure beads (agent/role/message) in output
       --include-templates            Include template molecules in output

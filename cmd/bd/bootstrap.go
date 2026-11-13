@@ -442,7 +442,15 @@ func bootstrapServerDoltDir(beadsDir string, cfg *configfile.Config, isSharedSer
 }
 
 func bootstrapServerPort(beadsDir string, cfg *configfile.Config, isSharedServer bool) int {
+	if _, _, ok := configfile.StoreHostFromFile(); ok {
+		return runtimeDoltServerPort(beadsDir)
+	}
 	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
+		if port, err := strconv.Atoi(p); err == nil && port > 0 {
+			return port
+		}
+	}
+	if p := os.Getenv("BEADS_DOLT_PORT"); p != "" {
 		if port, err := strconv.Atoi(p); err == nil && port > 0 {
 			return port
 		}
@@ -874,7 +882,7 @@ func cloneViaEmbedded(ctx context.Context, beadsDir, remoteURL, dbName string) e
 // data directory, which is the correct behavior for externally managed
 // servers where bd does not know the filesystem layout.
 func cloneViaServer(ctx context.Context, beadsDir, remoteURL, dbName string, cfg *configfile.Config) error {
-	port := serverClonePort(beadsDir, cfg)
+	port := serverClonePort(beadsDir)
 	dsn := doltutil.ServerDSN{
 		Socket:   cfg.GetDoltServerSocket(),
 		Host:     cfg.GetDoltServerHost(),
@@ -907,27 +915,8 @@ func cloneViaServer(ctx context.Context, beadsDir, remoteURL, dbName string, cfg
 	return nil
 }
 
-func serverClonePort(beadsDir string, cfg *configfile.Config) int {
-	if cfg != nil && cfg.DoltServerPort > 0 {
-		return cfg.DoltServerPort
-	}
-	if p := os.Getenv("BEADS_DOLT_SERVER_PORT"); p != "" {
-		if port, err := strconv.Atoi(p); err == nil && port > 0 {
-			return port
-		}
-	}
-	if p := os.Getenv("BEADS_DOLT_PORT"); p != "" {
-		if port, err := strconv.Atoi(p); err == nil && port > 0 {
-			return port
-		}
-	}
-	if resolved := doltserver.DefaultConfig(beadsDir); resolved.Port > 0 {
-		return resolved.Port
-	}
-	if cfg != nil {
-		return cfg.GetDoltServerPort()
-	}
-	return configfile.DefaultDoltServerPort
+func serverClonePort(beadsDir string) int {
+	return runtimeDoltServerPort(beadsDir)
 }
 
 // cloneViaCLI clones by shelling out to the dolt CLI.

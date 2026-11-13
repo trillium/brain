@@ -268,6 +268,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd audit record](#bd-audit-record) — Append an audit interaction entry
 - [bd blocked](#bd-blocked) — Show blocked issues
 - [bd brain](#bd-brain) — brain — knowledge graph + task tool on top of bd
+  - [bd brain doctor](#bd-brain-doctor) — Check every store answers a read and every wrapper reads the one store-host record (alias of 'brain stores doctor')
   - [bd brain link](#bd-brain-link) — Link two brain docs with a typed edge
   - [bd brain new](#bd-brain-new) — Create a new brain doc (kind = task | knowledge | both | isa)
   - [bd brain promote](#bd-brain-promote) — Redirect: did you mean `brain recast &lt;id&gt; --to=&lt;kind&gt;`?
@@ -365,8 +366,10 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd stores edit-back](#bd-stores-edit-back) — Declare whether a store accepts edits from its rendered markdown files
   - [bd stores env](#bd-stores-env) — Write ~/.config/brain/stores.env from the registry (for shell wrappers)
   - [bd stores epoch](#bd-stores-epoch) — Print the registry epoch (database) and the epoch applied on this machine
+  - [bd stores host](#bd-stores-host) — Show the one store-host record every machine reads (host, port, credential reference)
   - [bd stores host-audit](#bd-stores-host-audit) — Report this machine's store-host, host pins, per-store probes and build stamp (used by 'stores doctor --fleet')
   - [bd stores list](#bd-stores-list) — List all registered stores
+  - [bd stores orphans](#bd-stores-orphans) — List generated store wrappers that have no registry entry
   - [bd stores poller](#bd-stores-poller) — The per-machine launchd job that runs 'brain stores sync' (print, install, uninstall, status)
   - [bd stores reconcile](#bd-stores-reconcile) — One-time recovery: adopt this machine's stores into the shared registry and report what needs a human
   - [bd stores registry](#bd-stores-registry) — Inspect the shared store registry (export, log, report)
@@ -5587,10 +5590,19 @@ EXAMPLES:
   bd admin cleanup --older-than 30 --force          # Only issues closed 30+ days ago
   bd admin cleanup --ephemeral --force              # Only closed wisps (transient molecules)
   bd admin cleanup --dry-run                        # Preview what would be deleted
+  bd admin cleanup --bookkeeping --dry-run          # Preview expired bookkeeping issues
+  bd admin cleanup --bookkeeping --force            # Delete closed bookkeeping issues past retention
+
+BOOKKEEPING:
+With --bookkeeping, only closed issues labeled "bookkeeping" are considered, and
+only those closed more than N days ago. N is --older-than, else the
+bookkeeping.retention_days config key, else 30. Open bookkeeping issues and
+issues without the label are never touched. A bookkeeping issue that other
+issues depend on is skipped and reported; the rest still expire.
 
 SAFETY:
 - Requires --force flag to actually delete (unless --dry-run)
-- Supports --cascade to delete dependents
+- Supports --cascade to delete dependents (not with --bookkeeping)
 - Shows preview of what will be deleted
 - Use --json for programmatic output
 
@@ -5605,6 +5617,7 @@ bd admin cleanup [flags]
 **Flags:**
 
 ```
+      --bookkeeping      Only delete closed issues labeled "bookkeeping" past the retention period (bookkeeping.retention_days, default 30)
       --cascade          Recursively delete all dependent issues
       --dry-run          Preview what would be deleted without making changes
       --ephemeral        Only delete closed wisps (transient molecules)
@@ -6324,6 +6337,77 @@ See ISA.md §"Decisions" → "First-Tranche Decisions" → "Decision 5
 bd brain
 ```
 
+#### bd brain doctor
+
+Walk every store registered in ~/.config/brain/stores.yaml and assert it
+answers a read. The registry is the source of truth for which stores must
+work; anything registered but unreadable is a provisioning bug.
+
+Each store is probed the way an agent would reach it: its CLI wrapper at
+~/.local/bin/&lt;name&gt; is invoked with 'list --limit 1'. Stores registered
+with --no-wrapper are probed directly with BEADS_DIR pinned, and reported
+as a warning so the missing wrapper stays visible.
+
+A store fails when the probe exits non-zero, times out, or prints
+'no beads database found' — the signature of a half-provisioned store that
+was registered but never initialized. Such a store is silently non-functional
+for as long as nobody happens to use it; for queue-shaped stores (staleness,
+review, inbox) 'silently empty' is indistinguishable from 'nothing to do',
+so the failure is invisible by construction until something asserts it.
+
+Without --fleet it also checks the identity of the installed bd/brain
+binary: it warns when the build stamp's commit is not the brain repo's
+current main (checked against the clone's origin/main; set BRAIN_REPO to
+point at the clone), when it was built from a dirty tree, or when the binary
+carries no stamp at all. Fix: scripts/install-from-repo.sh.
+
+It also checks that this machine really reads its store host from the shared
+store-host.env, and reports each finding with a fix command: a wrapper (also
+copies in ~/.pi/agent/bin) that sets the host itself, a loopback store-host.env
+with no Dolt server here (a relay), no credentials entry for the host it names,
+a wrapper whose BEADS_DIR does not exist, and a store whose metadata.json names
+another server. See docs/brain/FLEET_DOCTOR.md.
+
+Run it from a scheduler (launchd/cron) or a session-start probe so a
+half-provisioned store surfaces within a day rather than a week.
+
+With --fleet it instead proves the whole fleet converged on the shared store
+registry: it reads the registry epoch and the generated artefacts (wrappers,
+agent links, stores.yaml/env) on every machine of the roster over ssh,
+read-only, and reports converged / lagging / drifted with the exact fix
+command (exit 0 converged, 1 not converged, 2 registry unreadable).
+
+--fleet also audits every machine (docs/brain/FLEET_DOCTOR.md): the installed
+binary's build stamp against the repo's main, store-host.env against the live
+host, wrapper and shim env-file host pins that disagree, a read and a write
+probe of each store (the write probe creates and drops its own table
+brain_fleet_probe_&lt;nonce&gt;; --no-write-probe skips it), backup freshness, reachability
+(an unreachable machine is reported and never touched), and orphan beads on
+--old-host or stray Dolt servers. Any drift exits 1. --repair rewrites drifted
+wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
+nothing else.
+
+Exit codes:
+  0 — every store answered a read
+  1 — at least one store failed (or, with --strict, produced a warning)
+
+Every exit 1 is accompanied by a 'FAILING STORES: &lt;names&gt;' line so a
+scheduler can attribute the failure. When the registry itself is unreadable
+no store names are known, so the line carries the __registry__ sentinel.
+
+```
+bd brain doctor [flags]
+```
+
+**Flags:**
+
+```
+      --jobs int           Probe this many stores concurrently (default 8)
+      --json               Emit a structured JSON object instead of per-store text lines
+      --strict             Exit non-zero on warnings too (missing wrapper, stale registry path)
+      --timeout duration   Per-store read timeout (default 20s)
+```
+
 #### bd brain link
 
 brain link writes one typed edge (a row in the dependencies table)
@@ -6933,6 +7017,64 @@ Print the registry epoch (database) and the epoch applied on this machine
 bd stores epoch
 ```
 
+##### bd brain stores host
+
+Show the federation's store-host record: which Dolt sql-server the stores live
+on, where that value came from, and the credential REFERENCE (MySQL user and
+the path of the password file) — never a password.
+
+The record lives at ~/.config/brain/store-host.env (override the path with
+BRAIN_STORE_HOST_FILE), as KEY=VALUE lines so the generated store wrappers can
+source it at run time:
+
+  BEADS_DOLT_SERVER_HOST=&lt;host&gt;
+  BEADS_DOLT_SERVER_PORT=&lt;port&gt;
+  BEADS_DOLT_SERVER_USER=&lt;mysql user&gt;          # optional
+  BEADS_CREDENTIALS_FILE=&lt;password file path&gt;  # optional
+
+A process environment value of the same name overrides the record. The record
+is one file per machine because where the federation lives is one fact per
+machine: baking it into wrappers, metadata and shell rc files is how a host's
+stores drift apart and read as 'registered but does not answer'.
+
+The server is also probed for TCP reachability, so a missing record is distinct
+from a record that names an unreachable server. It does not verify credentials.
+
+```
+bd stores host [flags]
+```
+
+**Flags:**
+
+```
+      --json             Emit a structured JSON object
+      --probe duration   Dial the resolved server this long to report whether it answers (0 to skip) (default 2s)
+```
+
+###### bd brain stores host set
+
+Write the federation's one store-host record: the Dolt host and port every
+store on this machine should use, plus an optional credential REFERENCE (the
+MySQL user and the path of the password file).
+
+Unrelated lines in the record are preserved, so a hand-written comment or an
+extra setting survives. The file is written atomically with 0600 permissions.
+Secrets are refused: pass the password file's PATH with --credentials, never a
+password.
+
+```
+bd stores host set [flags]
+```
+
+**Flags:**
+
+```
+      --credentials string   Path of the password file the record should reference (never a password)
+      --host string          Dolt sql-server host (required)
+      --port int             Dolt sql-server port (required)
+      --user string          MySQL user for this server (a credential reference, not a secret)
+```
+
 ##### bd brain stores host-audit
 
 Reports, as JSON, what this machine says about itself: the build stamp, the
@@ -6968,6 +7110,24 @@ bd stores list [flags]
 
 ```
   -v, --verbose   Include each store's about blurb as an extra column
+```
+
+##### bd brain stores orphans
+
+List every generated store wrapper in ~/.local/bin whose name is not in the
+federation registry (~/.config/brain/stores.yaml).
+
+A wrapper with no registry entry is a CLI in PATH that resolves a store the
+federation does not know about: either the store was renamed or removed and the
+wrapper was left behind, or it was never registered. Only files this tool
+generated count (the generated header is the marker), so a hand-written script
+that happens to share a store's name is never reported — or touched.
+
+Nothing is deleted: register the store again with 'brain stores add &lt;name&gt;
+&lt;beads-dir&gt;', or remove the file yourself.
+
+```
+bd stores orphans
 ```
 
 ##### bd brain stores poller
@@ -10080,6 +10240,64 @@ Print the registry epoch (database) and the epoch applied on this machine
 bd stores epoch [flags]
 ```
 
+#### bd stores host
+
+Show the federation's store-host record: which Dolt sql-server the stores live
+on, where that value came from, and the credential REFERENCE (MySQL user and
+the path of the password file) — never a password.
+
+The record lives at ~/.config/brain/store-host.env (override the path with
+BRAIN_STORE_HOST_FILE), as KEY=VALUE lines so the generated store wrappers can
+source it at run time:
+
+  BEADS_DOLT_SERVER_HOST=&lt;host&gt;
+  BEADS_DOLT_SERVER_PORT=&lt;port&gt;
+  BEADS_DOLT_SERVER_USER=&lt;mysql user&gt;          # optional
+  BEADS_CREDENTIALS_FILE=&lt;password file path&gt;  # optional
+
+A process environment value of the same name overrides the record. The record
+is one file per machine because where the federation lives is one fact per
+machine: baking it into wrappers, metadata and shell rc files is how a host's
+stores drift apart and read as 'registered but does not answer'.
+
+The server is also probed for TCP reachability, so a missing record is distinct
+from a record that names an unreachable server. It does not verify credentials.
+
+```
+bd stores host [flags]
+```
+
+**Flags:**
+
+```
+      --json             Emit a structured JSON object
+      --probe duration   Dial the resolved server this long to report whether it answers (0 to skip) (default 2s)
+```
+
+##### bd stores host set
+
+Write the federation's one store-host record: the Dolt host and port every
+store on this machine should use, plus an optional credential REFERENCE (the
+MySQL user and the path of the password file).
+
+Unrelated lines in the record are preserved, so a hand-written comment or an
+extra setting survives. The file is written atomically with 0600 permissions.
+Secrets are refused: pass the password file's PATH with --credentials, never a
+password.
+
+```
+bd stores host set [flags]
+```
+
+**Flags:**
+
+```
+      --credentials string   Path of the password file the record should reference (never a password)
+      --host string          Dolt sql-server host (required)
+      --port int             Dolt sql-server port (required)
+      --user string          MySQL user for this server (a credential reference, not a secret)
+```
+
 #### bd stores host-audit
 
 Reports, as JSON, what this machine says about itself: the build stamp, the
@@ -10115,6 +10333,24 @@ bd stores list [flags]
 
 ```
   -v, --verbose   Include each store's about blurb as an extra column
+```
+
+#### bd stores orphans
+
+List every generated store wrapper in ~/.local/bin whose name is not in the
+federation registry (~/.config/brain/stores.yaml).
+
+A wrapper with no registry entry is a CLI in PATH that resolves a store the
+federation does not know about: either the store was renamed or removed and the
+wrapper was left behind, or it was never registered. Only files this tool
+generated count (the generated header is the marker), so a hand-written script
+that happens to share a store's name is never reported — or touched.
+
+Nothing is deleted: register the store again with 'brain stores add &lt;name&gt;
+&lt;beads-dir&gt;', or remove the file yourself.
+
+```
+bd stores orphans [flags]
 ```
 
 #### bd stores poller
