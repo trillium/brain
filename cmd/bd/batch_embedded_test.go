@@ -247,3 +247,57 @@ func TestBatch_RollbackTriggerStillFailsAtStorageLayer(t *testing.T) {
 		t.Fatal("expected AddDependency on missing IDs to fail; if not, rewrite TestBatch_RollbackOnError")
 	}
 }
+
+// TestBatch_LabelAndDescriptionInBatch exercises the grammar added for a
+// one-call obligation discharge: label add/remove and 'update ... description='
+// in a single transaction. It asserts the labels and description landed and
+// that a mid-batch label removal took effect.
+func TestBatch_LabelAndDescriptionInBatch(t *testing.T) {
+	tmpDir := t.TempDir()
+	st := newTestStoreWithPrefix(t, filepath.Join(tmpDir, ".beads", "beads.db"), "tbl")
+	ctx := context.Background()
+
+	seedBatchTestIssues(t, ctx, st, "tbl-1")
+
+	// A full discharge shape: rate (label add) + record (update description) +
+	// advance status + drop a label, all inside one transaction.
+	script := `label add tbl-1 helpful
+label add tbl-1 reviewed
+update tbl-1 description="## Decision: chose the batch path" status=in_progress
+label remove tbl-1 reviewed
+`
+	if err := runBatchScriptInTx(t, ctx, st, script); err != nil {
+		t.Fatalf("batch run: %v", err)
+	}
+
+	got, err := st.GetIssue(ctx, "tbl-1")
+	if err != nil {
+		t.Fatalf("GetIssue tbl-1: %v", err)
+	}
+	if !strings.Contains(got.Description, "chose the batch path") {
+		t.Errorf("tbl-1 description = %q, want it to contain the batch decision", got.Description)
+	}
+	if string(got.Status) != "in_progress" {
+		t.Errorf("tbl-1 status = %q, want in_progress", got.Status)
+	}
+
+	labels, err := st.GetLabels(ctx, "tbl-1")
+	if err != nil {
+		t.Fatalf("GetLabels tbl-1: %v", err)
+	}
+	hasHelpful, hasReviewed := false, false
+	for _, l := range labels {
+		switch l {
+		case "helpful":
+			hasHelpful = true
+		case "reviewed":
+			hasReviewed = true
+		}
+	}
+	if !hasHelpful {
+		t.Errorf("expected label 'helpful' present, got %v", labels)
+	}
+	if hasReviewed {
+		t.Errorf("expected label 'reviewed' removed within the batch, got %v", labels)
+	}
+}
