@@ -6,13 +6,18 @@ package schema
 // numbering; the bodies they read are byte-identical to those files.
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/DATA-DOG/go-sqlmock"
+
+	"github.com/steveyegge/beads/internal/storage/rowid"
 	"github.com/steveyegge/beads/internal/testutil"
 )
 
@@ -401,5 +406,41 @@ func TestBrainMigrationHashesNameEveryBody(t *testing.T) {
 		if !seen[v] {
 			t.Errorf("no hash maps to brain version %d", v)
 		}
+	}
+}
+
+// A large re-key moves ids in chunks, one UPDATE per chunk, to the same ids
+// in the same order the statement-per-row path uses.
+func TestRekeyAuxRowTableBatchesALargeTable(t *testing.T) {
+	prevAbove := auxRekeyBatchAbove
+	auxRekeyBatchAbove = 1
+	defer func() { auxRekeyBatchAbove = prevAbove }()
+
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	expectColumnExists(mock, true)
+	expectCommentsSelect(mock).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "issue_id", "author", "text", "created_at"}).
+			AddRow("random-a", "bd-1", "steve", "first", "2026-06-09 12:00:00").
+			AddRow("random-b", "bd-1", "steve", "second", "2026-06-09 12:00:01"))
+	newA := rowid.New("comments", 0, commentDigest("bd-1", "steve", "first", "2026-06-09 12:00:00"))
+	newB := rowid.New("comments", 0, commentDigest("bd-1", "steve", "second", "2026-06-09 12:00:01"))
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE comments SET id = CASE id WHEN ? THEN ? WHEN ? THEN ? END WHERE id IN (?,?)")).
+		WithArgs("random-a", newA, "random-b", newB, "random-a", "random-b").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+
+	wrote, err := rekeyAuxRowTable(context.Background(), db, commentsTable)
+	if err != nil {
+		t.Fatalf("rekeyAuxRowTable: %v", err)
+	}
+	if !wrote {
+		t.Error("expected wrote=true when rows were re-keyed")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }

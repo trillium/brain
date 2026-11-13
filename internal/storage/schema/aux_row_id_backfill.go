@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/steveyegge/beads/internal/storage/rowid"
 )
@@ -628,12 +629,55 @@ func rekeyAuxRowTable(ctx context.Context, db DBConn, t auxRekeyTable) (bool, er
 	// Deterministic UPDATE order (groups is a map) so runs are reproducible.
 	sort.Slice(todo, func(i, j int) bool { return todo[i].oldID < todo[j].oldID })
 
-	for _, r := range todo {
-		//nolint:gosec // G201: table name is a hardcoded constant, never user input.
-		if _, err := db.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET id = ? WHERE id = ?`, t.name),
-			r.newID, r.oldID); err != nil {
-			return true, fmt.Errorf("re-key id %s -> %s: %w", r.oldID, r.newID, err)
+	// Brain: a large re-key moves its ids in chunks, one UPDATE per chunk
+	// rather than per row. Each statement is its own transaction, and on a
+	// large audit table (brain's events: half a million rows) a statement per
+	// row took hours. The rows, their order and their new ids are the same
+	// either way; a small re-key keeps the statement per row.
+	start := time.Now()
+	if len(todo) > auxRekeyBatchAbove {
+		fmt.Fprintf(stderr, "Re-keying %d %s row ids…\n", len(todo), t.name)
+	}
+	chunkSize := 1
+	if len(todo) > auxRekeyBatchAbove {
+		chunkSize = auxRekeyChunk
+	}
+	for lo := 0; lo < len(todo); lo += chunkSize {
+		chunk := todo[lo:min(lo+chunkSize, len(todo))]
+		if len(chunk) == 1 {
+			r := chunk[0]
+			//nolint:gosec // G201: table name is a hardcoded constant, never user input.
+			if _, err := db.ExecContext(ctx, fmt.Sprintf(`UPDATE %s SET id = ? WHERE id = ?`, t.name),
+				r.newID, r.oldID); err != nil {
+				return true, fmt.Errorf("re-key id %s -> %s: %w", r.oldID, r.newID, err)
+			}
+			continue
 		}
+		var cases strings.Builder
+		args := make([]any, 0, 3*len(chunk))
+		for _, r := range chunk {
+			cases.WriteString(" WHEN ? THEN ?")
+			args = append(args, r.oldID, r.newID)
+		}
+		for _, r := range chunk {
+			args = append(args, r.oldID)
+		}
+		//nolint:gosec // G201: table name is a hardcoded constant, never user input; values are bound.
+		q := fmt.Sprintf(`UPDATE %s SET id = CASE id%s END WHERE id IN (%s)`,
+			t.name, cases.String(), strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ","))
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			return true, fmt.Errorf("re-key ids %s -> %s and %d more in one batch: %w", chunk[0].oldID, chunk[0].newID, len(chunk)-1, err)
+		}
+	}
+	if len(todo) > auxRekeyBatchAbove {
+		fmt.Fprintf(stderr, "  done (%.1fs)\n", time.Since(start).Seconds())
 	}
 	return len(todo) > 0, nil
 }
+
+// auxRekeyBatchAbove is the re-key size past which ids move in chunks of
+// auxRekeyChunk; a variable so a test can batch a small table.
+var auxRekeyBatchAbove = 1000
+
+// auxRekeyChunk is how many ids one re-key UPDATE moves.
+const auxRekeyChunk = 500

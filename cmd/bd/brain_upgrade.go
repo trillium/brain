@@ -88,7 +88,7 @@ func init() {
 		c.Flags().StringVar(&upgradeUser, "user", "", "login on the server (default BEADS_DOLT_SERVER_USER, then root)")
 		c.Flags().StringSliceVar(&upgradeDatabases, "database", nil, "database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)")
 		c.Flags().BoolVar(&upgradeJSON, "json", false, "print the result as JSON")
-		c.Flags().DurationVar(&upgradeTimeout, "timeout", 6*time.Hour, "overall time budget")
+		c.Flags().DurationVar(&upgradeTimeout, "timeout", 24*time.Hour, "overall time budget")
 	}
 	for _, c := range []*cobra.Command{upgradeBackupCmd, upgradeRehearseCmd, upgradeApplyCmd, upgradeVerifyCmd, upgradeRollbackCmd} {
 		c.Flags().StringVar(&upgradeBackupDir, "backup-dir", "", "directory holding the backups and their manifest (required)")
@@ -464,6 +464,7 @@ var upgradeRehearseCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		defer schema.SetProgressOutput(cmd.ErrOrStderr())()
 		var results []brainupgrade.Rehearsal
 		failed := false
 		for _, name := range targets {
@@ -608,6 +609,10 @@ var upgradeApplyCmd = &cobra.Command{
 			}
 			backups = append(backups, b)
 		}
+		// Each migration and its time, and each aux-table re-key, are printed
+		// as they run: a large database migrates for long enough that the
+		// progress has to reach the operator's log.
+		defer schema.SetProgressOutput(cmd.ErrOrStderr())()
 		var results []brainupgrade.ApplyResult
 		failed := false
 		for _, b := range backups {

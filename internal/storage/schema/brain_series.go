@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -44,6 +45,17 @@ func EnableBrainSeries() { brainSeriesEnabled.Store(true) }
 
 // BrainSeriesEnabled reports whether the brain migration series is on.
 func BrainSeriesEnabled() bool { return brainSeriesEnabled.Load() }
+
+// SetProgressOutput sends migration progress lines (each migration and its
+// time, the re-key of each aux table) to w instead of only to a terminal. It
+// returns a function that restores the previous writer. `bd brain upgrade`
+// uses it, because a migration of a large brain database runs for long enough
+// that its progress must reach a log.
+func SetProgressOutput(w io.Writer) func() {
+	prev := stderr
+	stderr = w
+	return func() { stderr = prev }
+}
 
 // SetBrainSeriesForTest sets the switch and returns a function restoring the
 // previous value.
