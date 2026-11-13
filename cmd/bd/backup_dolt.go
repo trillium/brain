@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,7 +12,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/beads"
-	"github.com/steveyegge/beads/internal/doltserver"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/versioncontrolops"
@@ -45,6 +46,12 @@ DoltHub (recommended for cloud backup):
 
 After adding, run 'bd backup sync' to push your data.`,
 	Args: cobra.ExactArgs(1),
+	// As on `backup status`: the failures here are configuration and I/O
+	// errors, not usage errors, and cobra's default prints the message, then
+	// "Error: exit code 1", then the whole usage block — three things where one
+	// was wanted, and on --json it lands after the JSON object.
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		evt := metrics.NewCommandEvent("backup-init")
 		defer func() {
@@ -55,6 +62,10 @@ After adding, run 'bd backup sync' to push your data.`,
 
 		ctx := rootCtx
 		rawPath := args[0]
+
+		if usesProxiedServer() {
+			return runBackupInitProxied(ctx, rawPath)
+		}
 
 		if store == nil {
 			return fmt.Errorf("no store available")
@@ -120,6 +131,8 @@ backup location configured with 'bd backup init'.
 The backup is atomic — if the sync fails, the previous backup state is preserved.
 
 Run 'bd backup init <path>' first to configure a destination.`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		evt := metrics.NewCommandEvent("backup-sync")
 		defer func() {
@@ -129,6 +142,23 @@ Run 'bd backup init <path>' first to configure a destination.`,
 		}()
 
 		ctx := rootCtx
+		if usesProxiedServer() {
+			if err := requireLocalProxiedBackup("backup sync"); err != nil {
+				return err
+			}
+		}
+		release, err := acquireBackupLock(backupLockWait)
+		if err != nil {
+			if errors.Is(err, errBackupBusy) {
+				return HandleErrorRespectJSON("%v; retry when it completes", err)
+			}
+			return HandleErrorRespectJSON("%v", err)
+		}
+		defer release()
+
+		if usesProxiedServer() {
+			return runBackupSyncProxied(ctx)
+		}
 		if store == nil {
 			return fmt.Errorf("no store available")
 		}
@@ -377,46 +407,50 @@ func showDoltBackupStatusJSON() map[string]interface{} {
 	return result
 }
 
-// doltBackupSize returns the approximate size of the Dolt data directory in bytes.
-func doltBackupSize() (int64, error) {
-	beadsDir := beads.FindBeadsDir()
-	if beadsDir == "" {
-		return 0, fmt.Errorf("%s", activeWorkspaceNotFoundError())
+// doltBackupSize returns the active database size when the current store
+// instance can measure its storage locally. Unsupported backends preserve the
+// optional status-field contract instead of failing the command.
+//
+// Proxied mode has no store to ask — the provider owns the connection — so the
+// fork lives here, where "which backend measures this database" is already the
+// question being answered.
+func doltBackupSize(ctx context.Context) (int64, bool, error) {
+	if usesProxiedServer() {
+		return doltBackupSizeProxied(ctx)
 	}
-	dataDir := doltserver.ResolveDoltDir(beadsDir)
-	return dirSize(dataDir)
+	if store == nil {
+		return 0, false, fmt.Errorf("no storage backend is open")
+	}
+	return doltBackupSizeForStore(ctx, store)
 }
 
-// dirSize walks a directory tree and sums file sizes.
-func dirSize(path string) (int64, error) {
-	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil // skip errors (permission denied, etc.)
+func doltBackupSizeForStore(ctx context.Context, candidate storage.DoltStorage) (int64, bool, error) {
+	sizer, ok := storage.UnwrapStore(candidate).(storage.ActiveDatabaseSizer)
+	if !ok {
+		return 0, false, nil
+	}
+	return doltBackupSizeFromSizer(ctx, sizer)
+}
+
+func doltBackupSizeFromSizer(ctx context.Context, sizer storage.ActiveDatabaseSizer) (int64, bool, error) {
+	size, err := sizer.ActiveDatabaseSize(ctx)
+	if err != nil {
+		var unsupported *storage.ErrUnsupported
+		if errors.As(err, &unsupported) {
+			return 0, false, nil
 		}
-		if !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	return size, err
+		return 0, false, err
+	}
+	return size, true, nil
 }
 
 // showDBSize prints the database size as part of status.
-func showDBSize() {
-	size, err := doltBackupSize()
-	if err != nil {
-		return
-	}
+func showDBSize(size int64) {
 	fmt.Printf("  Database size: %s\n", formatBytes(size))
 }
 
 // showDBSizeJSON returns database size for JSON output.
-func showDBSizeJSON() map[string]interface{} {
-	size, err := doltBackupSize()
-	if err != nil {
-		return nil
-	}
+func showDBSizeJSON(size int64) map[string]interface{} {
 	return map[string]interface{}{
 		"bytes": size,
 		"human": formatBytes(size),
@@ -430,7 +464,9 @@ var backupRemoveCmd = &cobra.Command{
 
 This unregisters the backup remote from Dolt and removes the local
 backup configuration. The backup data at the destination is not deleted.`,
-	Aliases: []string{"rm"},
+	Aliases:       []string{"rm"},
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		evt := metrics.NewCommandEvent("backup-remove")
 		defer func() {
@@ -440,6 +476,9 @@ backup configuration. The backup data at the destination is not deleted.`,
 		}()
 
 		ctx := rootCtx
+		if usesProxiedServer() {
+			return runBackupRemoveProxied(ctx)
+		}
 		if store == nil {
 			return fmt.Errorf("no store available")
 		}
@@ -457,7 +496,7 @@ backup configuration. The backup data at the destination is not deleted.`,
 		}
 
 		// Also remove backup_export if it exists (auto-export may have created it at same URL)
-		_ = bs.BackupRemove(ctx, "backup_export")
+		_ = bs.BackupRemove(ctx, versioncontrolops.ExportBackupName)
 
 		// Remove local config
 		if path, err := doltBackupConfigPath(); err == nil {

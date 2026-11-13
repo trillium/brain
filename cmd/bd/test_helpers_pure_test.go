@@ -85,8 +85,21 @@ func generateUniqueTestID(t *testing.T, prefix string, index int) string {
 // TestMain resets viper, but any test calling config.Initialize() re-loads the real config.
 // This helper ensures viper is reset after the test completes, preventing state pollution
 // (e.g., repo config values leaking into JSONL export tests).
+//
+// Tests automatically opt out of <module-root>/.beads/config.yaml via
+// BEADS_TEST_IGNORE_REPO_CONFIG; tests that want the repo config must override
+// before calling this helper.
+//
+// BEADS_DIR is pinned via t.Setenv here so that a test earlier in the binary which
+// resolved a real BEADS_DIR via raw os.Setenv (e.g. running actual CLI command
+// dispatch) doesn't leak it forward past this test. config.Initialize honors
+// BEADS_TEST_IGNORE_REPO_CONFIG on the BEADS_DIR source too, so such a leaked value
+// can no longer re-import the repo's own config (ga-e6h6i); tests that want the repo
+// config must unset the flag before calling this helper.
 func initConfigForTest(t *testing.T) {
 	t.Helper()
+	t.Setenv("BEADS_DIR", os.Getenv("BEADS_DIR"))
+	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
 	config.ResetForTesting()
 	if err := config.Initialize(); err != nil {
 		t.Fatalf("config.Initialize: %v", err)
@@ -107,6 +120,10 @@ func ensureCleanGlobalState(t *testing.T) {
 	t.Helper()
 	// Reset CommandContext so accessor functions fall back to globals
 	resetCommandContext()
+	// Pin BEADS_DIR so real CLI command dispatch this test triggers (which sets
+	// BEADS_DIR via raw os.Setenv with no restore, e.g. prepareSelectedCommandContext)
+	// doesn't leak into later tests in the same binary.
+	t.Setenv("BEADS_DIR", os.Getenv("BEADS_DIR"))
 }
 
 // savedGlobals holds a snapshot of package-level globals for safe restoration.
@@ -206,19 +223,36 @@ func captureStdout(t *testing.T, fn func() error) string {
 
 	oldStdout := os.Stdout
 	r, w, _ := os.Pipe()
+
+	done := make(chan string, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+
 	os.Stdout = w
+	restored := false
+	restore := func() string {
+		if restored {
+			return ""
+		}
+		restored = true
+		w.Close()
+		os.Stdout = oldStdout
+		out := <-done
+		_ = r.Close()
+		return out
+	}
+	defer restore()
 
 	err := fn()
 
-	w.Close()
-	var buf bytes.Buffer
-	buf.ReadFrom(r)
-	os.Stdout = oldStdout
-
+	out := restore()
 	if err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
-	return buf.String()
+	return out
 }
 
 // captureStderr captures stderr output from fn and returns it as a string.
@@ -234,7 +268,6 @@ func captureStderr(t *testing.T, fn func()) string {
 	if err != nil {
 		t.Fatalf("os.Pipe: %v", err)
 	}
-	os.Stderr = w
 
 	var buf bytes.Buffer
 	done := make(chan struct{})
@@ -243,11 +276,22 @@ func captureStderr(t *testing.T, fn func()) string {
 		close(done)
 	}()
 
+	os.Stderr = w
+	restored := false
+	restore := func() {
+		if restored {
+			return
+		}
+		restored = true
+		_ = w.Close()
+		os.Stderr = old
+		<-done
+		_ = r.Close()
+	}
+	defer restore()
+
 	fn()
-	_ = w.Close()
-	os.Stderr = old
-	<-done
-	_ = r.Close()
+	restore()
 
 	return buf.String()
 }
@@ -274,6 +318,15 @@ func findPrebuiltBDBinary() (string, error) {
 // tests. Uses the gms_pure_go tag so the resulting binary works in either
 // CGO mode. Lives in the pure-Go helpers file so subprocess-style tests can
 // run without the test package itself depending on cgo at compile time.
+//
+// The fast path is BEADS_TEST_BD_BINARY (exported by scripts/test.sh and CI),
+// via findPrebuiltBDBinary. There is deliberately NO repo-root ./bd reuse
+// here anymore: that "optimization" silently ran subprocess tests against
+// whatever stale binary happened to sit in the checkout root — a two-day-old
+// one produced phantom TestCreateDepsAtomicity failures (features the source
+// under test had, the binary didn't). Tests must exercise the checkout's
+// source or an explicitly supplied binary, never an incidental artifact
+// (wy-4mtr0).
 func buildBDForInitTests(t *testing.T) string {
 	t.Helper()
 	initTestBDOnce.Do(func() {
@@ -289,13 +342,6 @@ func buildBDForInitTests(t *testing.T) string {
 		bdBinary := "bd"
 		if runtime.GOOS == windowsOS {
 			bdBinary = "bd.exe"
-		}
-		// Preserve the existing local optimization: if a bd binary exists in
-		// the repository root, init-style subprocess tests can reuse it.
-		existingBD := filepath.Join("..", "..", bdBinary)
-		if _, err := os.Stat(existingBD); err == nil {
-			initTestBD, _ = filepath.Abs(existingBD)
-			return
 		}
 		// Fall back to building.
 		tmpDir, err := testTempDir("bd-init-test-*")
@@ -327,4 +373,104 @@ func runGitForBootstrapTest(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, string(output))
 	}
+}
+
+// initGitRepoAt turns dir into a git repository with a test identity, giving
+// the no-workspace tests a walk boundary so FindBeadsDir cannot climb out of
+// the temp dir into a real .beads above it.
+//
+// This lives in the pure-Go helper file, not alongside the embedded-Dolt
+// helpers: cmd/bd/where_test.go carries no build tag, so it compiles under
+// CGO_ENABLED=0 where every `//go:build cgo` file is excluded. Keep this
+// helper stdlib-only and keep it here.
+func initGitRepoAt(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		// Force repo-local hooks so tests ignore any global hooksPath override.
+		{"config", "core.hooksPath", ".git/hooks"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %v\n%s", args[0], err, out)
+		}
+	}
+}
+
+// snapshotBootstrapEnv saves all BD_/BEADS_-prefixed env vars, clears them,
+// and registers a t.Cleanup to restore them. It restores via t.Cleanup
+// (rather than returning a function for the caller to defer) because
+// t.Cleanup callbacks only start running after the test function's own
+// regular defers have all completed. Tests using this helper commonly call
+// t.Setenv("BEADS_DIR", ...) / t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", ...)
+// afterward; t.Setenv captures its "restore to" value at call time, which
+// would be the already-wiped (absent) state. If this helper's own
+// restoration ran via a caller-deferred function, it would run before those
+// t.Setenv cleanups fire and its correct restoration would be clobbered by
+// them, permanently leaking the wipe forward into later tests in the same
+// binary. Registering via t.Cleanup here instead makes this the
+// first-registered (and thus, by t.Cleanup's LIFO order, last-run) cleanup,
+// so it always has the final word.
+func snapshotBootstrapEnv(t *testing.T) {
+	t.Helper()
+	saved := make(map[string]string)
+	for _, env := range os.Environ() {
+		if strings.HasPrefix(env, "BD_") || strings.HasPrefix(env, "BEADS_") {
+			parts := strings.SplitN(env, "=", 2)
+			key := parts[0]
+			saved[key] = os.Getenv(key)
+			_ = os.Unsetenv(key)
+		}
+	}
+	t.Cleanup(func() {
+		for _, env := range os.Environ() {
+			if strings.HasPrefix(env, "BD_") || strings.HasPrefix(env, "BEADS_") {
+				parts := strings.SplitN(env, "=", 2)
+				_ = os.Unsetenv(parts[0])
+			}
+		}
+		for key, val := range saved {
+			_ = os.Setenv(key, val)
+		}
+	})
+}
+
+// setupSyncRemoteConfig writes sync.remote to .beads/config.yaml and
+// initializes the config subsystem so resolveSyncRemote() can read it.
+// Returns a cleanup function that resets config state.
+func setupSyncRemoteConfig(t *testing.T, beadsDir, remote string) func() {
+	t.Helper()
+	seedSyncRemote(t, beadsDir, remote)
+	config.ResetForTesting()
+	t.Setenv("BEADS_DIR", beadsDir)
+	t.Setenv("BEADS_TEST_IGNORE_REPO_CONFIG", "1")
+	if err := config.Initialize(); err != nil {
+		t.Fatalf("config.Initialize: %v", err)
+	}
+	return func() { config.ResetForTesting() }
+}
+
+// newForgeSyncRemoteWorkspace builds a workspace whose config.yaml carries
+// remote as sync.remote and chdirs into it, returning the .beads path.
+func newForgeSyncRemoteWorkspace(t *testing.T, remote string) string {
+	t.Helper()
+	snapshotBootstrapEnv(t)
+
+	tmpDir := t.TempDir()
+	beadsDir := filepath.Join(tmpDir, ".beads")
+	if err := os.MkdirAll(beadsDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := setupSyncRemoteConfig(t, beadsDir, remote)
+	t.Cleanup(cleanup)
+
+	oldWd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatal(err)
+	}
+	return beadsDir
 }

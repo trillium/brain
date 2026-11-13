@@ -193,6 +193,23 @@ func (sc UnifiedScope) configReadArgs() []any {
 	return []any{sc.Store}
 }
 
+// ConfigKeyExistsInTx reports whether a config row exists for key — in the
+// wrapper's namespace on the unified database, in the plain config table
+// everywhere else. Unlike GetConfigInTx it tells a missing row from an empty
+// value.
+func ConfigKeyExistsInTx(ctx context.Context, tx DBTX, key string) (bool, error) {
+	sc := UnifiedScopeForTx(ctx, tx)
+	var value sql.NullString
+	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), key)...).Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // customTable answers the table a custom-config statement should address
 // and the namespace WHERE-clause (with trailing space) under this scope.
 func (sc UnifiedScope) customTable(t unifiedTable) (string, string) {

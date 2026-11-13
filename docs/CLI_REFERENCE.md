@@ -4448,17 +4448,16 @@ Store a memory that persists across sessions and account rotations.
 Memories are injected at prime time (bd prime) so you have them
 in every session without manual loading.
 
-Each memory also gets a companion knowledge issue holding the same text, so
-the insight can be commented on, tagged, shown, and searched like any other
-bead. The memory key and the issue ID both name it: the key is what 'bd
-memories' and 'bd prime' read, the issue ID is what comment/tag/show take
-(and the key resolves to it). Pass --no-bead to store the memory alone.
+The positional arg is the memory CONTENT (the key is auto-generated from it
+unless --key is given). As a convenience, if the arg is a bare key naming an
+existing memory, it is RECALLED instead of stored (same as 'bd recall');
+a bare key naming nothing is refused. Use --key to store slug-like content.
 
 Examples:
   bd remember "always run tests with -race flag"
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
-  bd remember "prod deploy needs a second approver" --no-bead
+  bd remember dolt-phantoms        # bare existing key: reads it (= bd recall)
 
 ```
 bd remember "<insight>" [flags]
@@ -7299,9 +7298,11 @@ its ~/.pi/agent/bin link. 'sync' computes the difference and applies it.
   - A removed store leaves a tombstone; each machine removes only its own
     generated wrapper and link. Database rows and data directories stay.
 
-Triggers: the launchd poller (every 5 minutes and at load), the ride-along on
-every bd/brain command, and create/rename/remove on the machine that made the
-change. --dry-run prints the plan and changes nothing.
+Examples:
+  # Configure delegation (one-time setup)
+  `export BEADS_MAIL_DELEGATE="gt mail"`
+  # or
+  bd config set mail.delegate "gt mail"
 
 --machine NAME runs the sync on that fleet machine over ssh (see
 'brain stores doctor --fleet' for the roster).

@@ -3,7 +3,6 @@ package tracker
 import (
 	"context"
 
-	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -22,7 +21,7 @@ type IssueTracker interface {
 
 	// Init initializes the tracker with configuration from the beads config store.
 	// Called once before any sync operations.
-	Init(ctx context.Context, store storage.Storage) error
+	Init(ctx context.Context, store Store) error
 
 	// Validate checks that the tracker is properly configured and can connect.
 	Validate() error
@@ -52,6 +51,8 @@ type IssueTracker interface {
 	IsExternalRef(ref string) bool
 
 	// ExtractIdentifier extracts the human-readable identifier from an external_ref.
+	// It returns "" when the tracker cannot resolve ref to an identifier it
+	// can address; sync then leaves the linked issue alone.
 	ExtractIdentifier(ref string) string
 
 	// BuildExternalRef constructs an external_ref string for a tracker issue.

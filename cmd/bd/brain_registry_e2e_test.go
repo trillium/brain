@@ -469,12 +469,12 @@ func TestSyncIsIdempotent(t *testing.T) {
 	if _, err := runRegistrySync(context.Background(), syncOptions{Source: dbSource{db: b.db}}); err != nil {
 		t.Fatal(err)
 	}
-	before := snapshotTree(t, b.home)
+	before := registrySnapshotTree(t, b.home)
 	rep, err := runRegistrySync(context.Background(), syncOptions{Source: dbSource{db: b.db}})
 	if err != nil || rep.Changed != 0 || rep.Status != "converged" {
 		t.Fatalf("second sync must change nothing: %+v %v", rep, err)
 	}
-	if after := snapshotTree(t, b.home); after != before {
+	if after := registrySnapshotTree(t, b.home); after != before {
 		t.Errorf("the tree changed on an idempotent run:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
@@ -485,12 +485,12 @@ func TestDryRunChangesNothingAndPrintsAPlan(t *testing.T) {
 	f.adopt(a)
 	a.createStore("recipes")
 	b.use()
-	before := snapshotTree(t, b.home)
+	before := registrySnapshotTree(t, b.home)
 	rep, err := runRegistrySync(context.Background(), syncOptions{Source: dbSource{db: b.db}, DryRun: true})
 	if err != nil || rep.Status != "dry-run" {
 		t.Fatalf("%+v %v", rep, err)
 	}
-	if snapshotTree(t, b.home) != before {
+	if registrySnapshotTree(t, b.home) != before {
 		t.Error("--dry-run changed the disk")
 	}
 	var out bytes.Buffer
@@ -560,7 +560,7 @@ func TestBackupAndRestoreOfReplacedWrapper(t *testing.T) {
 	}
 }
 
-func snapshotTree(t *testing.T, root string) string {
+func registrySnapshotTree(t *testing.T, root string) string {
 	t.Helper()
 	var sb strings.Builder
 	_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {

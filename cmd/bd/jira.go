@@ -119,11 +119,12 @@ func runJiraSync(cmd *cobra.Command, args []string) error {
 		return HandleErrorRespectJSON("cannot use both --prefer-local and --prefer-jira")
 	}
 
-	if err := ensureStoreActive(); err != nil {
+	trackerStore, err := trackerStoreForCommand(rootCtx)
+	if err != nil {
 		return HandleErrorRespectJSON("database not available: %v", err)
 	}
 
-	if err := validateJiraConfig(); err != nil {
+	if err := validateJiraConfigForStore(trackerStore); err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
@@ -134,15 +135,15 @@ func runJiraSync(cmd *cobra.Command, args []string) error {
 	if len(cliProjects) > 0 {
 		jt.SetProjectKeys(tracker.DeduplicateStrings(cliProjects))
 	}
-	if err := jt.Init(ctx, store); err != nil {
+	if err := jt.Init(ctx, trackerStore); err != nil {
 		return HandleErrorRespectJSON("initializing Jira tracker: %v", err)
 	}
 
-	engine := tracker.NewEngine(jt, store, actor)
+	engine := tracker.NewEngine(jt, trackerStore, actor)
 	engine.OnMessage = func(msg string) { fmt.Println("  " + msg) }
 	engine.OnWarning = func(msg string) { fmt.Fprintf(os.Stderr, "Warning: %s\n", msg) }
 
-	engine.PushHooks = buildJiraPushHooks(ctx)
+	engine.PushHooks = buildJiraPushHooksForStore(ctx, trackerStore)
 
 	opts := tracker.SyncOptions{
 		Pull:       pull,
@@ -204,9 +205,13 @@ func runJiraSync(cmd *cobra.Command, args []string) error {
 
 // buildJiraPushHooks creates PushHooks for Jira-specific push behavior.
 func buildJiraPushHooks(ctx context.Context) *tracker.PushHooks {
+	return buildJiraPushHooksForStore(ctx, tracker.NewStore(store))
+}
+
+func buildJiraPushHooksForStore(ctx context.Context, st tracker.Store) *tracker.PushHooks {
 	return &tracker.PushHooks{
 		ShouldPush: func(issue *types.Issue) bool {
-			pushPrefix, _ := store.GetConfig(ctx, "jira.push_prefix")
+			pushPrefix, _ := st.GetConfig(ctx, "jira.push_prefix")
 			if pushPrefix == "" {
 				return true
 			}
@@ -232,20 +237,26 @@ func runJiraStatus(cmd *cobra.Command, args []string) error {
 
 	ctx := rootCtx
 
-	if err := ensureStoreActive(); err != nil {
+	trackerStore, err := trackerStoreForCommand(rootCtx)
+	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
 
-	jiraURL, _ := store.GetConfig(ctx, "jira.url")
-	lastSync, _ := store.GetConfig(ctx, "jira.last_sync")
+	jiraURL, _ := trackerStore.GetConfig(ctx, "jira.url")
+	lastSync, _ := trackerStore.GetConfig(ctx, "jira.last_sync")
 
-	pluralProjects, _ := store.GetConfig(ctx, "jira.projects")
-	singularProject, _ := store.GetConfig(ctx, "jira.project")
+	pluralProjects, _ := trackerStore.GetConfig(ctx, "jira.projects")
+	singularProject, _ := trackerStore.GetConfig(ctx, "jira.project")
 	projectKeys := tracker.ResolveProjectIDs(nil, pluralProjects, singularProject)
 
 	configured := jiraURL != "" && len(projectKeys) > 0
 
-	allIssues, err := store.SearchIssues(ctx, "", types.IssueFilter{})
+	// jira sync is a round-trip path — opt out of BEADS_MAX_ROWS
+	// (designer §4.1) so a misconfigured env doesn't abort partway.
+	allIssues, err := trackerStore.SearchIssues(ctx, "", types.IssueFilter{
+		MaxRows:       0,
+		MaxRowsSource: "",
+	})
 	if err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
@@ -318,26 +329,29 @@ func runJiraStatus(cmd *cobra.Command, args []string) error {
 
 // validateJiraConfig checks that required Jira configuration is present.
 func validateJiraConfig() error {
-	if err := ensureStoreActive(); err != nil {
-		return fmt.Errorf("database not available: %w", err)
-	}
+	return validateJiraConfigForStore(tracker.NewStore(store))
+}
 
+func validateJiraConfigForStore(st tracker.Store) error {
 	ctx := rootCtx
-	jiraURL, _ := store.GetConfig(ctx, "jira.url")
+	if st == nil {
+		return fmt.Errorf("database not available")
+	}
+	jiraURL, _ := st.GetConfig(ctx, "jira.url")
 
 	if jiraURL == "" {
 		return fmt.Errorf("jira.url not configured\nRun: bd config set jira.url \"https://company.atlassian.net\"")
 	}
 
 	// Check for project configuration (singular or plural).
-	pluralProjects, _ := store.GetConfig(ctx, "jira.projects")
-	singularProject, _ := store.GetConfig(ctx, "jira.project")
+	pluralProjects, _ := st.GetConfig(ctx, "jira.projects")
+	singularProject, _ := st.GetConfig(ctx, "jira.project")
 	projectKeys := tracker.ResolveProjectIDs(nil, pluralProjects, singularProject)
 	if len(projectKeys) == 0 {
 		return fmt.Errorf("no Jira project configured\nRun: bd config set jira.project \"PROJ\"\nOr:  bd config set jira.projects \"PROJ1,PROJ2\"")
 	}
 
-	apiToken, _ := store.GetConfig(ctx, "jira.api_token")
+	apiToken, _ := st.GetConfig(ctx, "jira.api_token")
 	if apiToken == "" && os.Getenv("JIRA_API_TOKEN") == "" {
 		return fmt.Errorf("Jira API token not configured\nRun: bd config set jira.api_token \"YOUR_TOKEN\"\nOr: export JIRA_API_TOKEN=YOUR_TOKEN")
 	}

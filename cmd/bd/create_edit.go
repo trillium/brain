@@ -31,9 +31,9 @@ const composeHelpBody = `# Everything below this line is ignored.
 // composeHelp is the full scissors block as it appears in a fresh buffer.
 const composeHelp = composeScissors + "\n" + composeHelpBody
 
-// stdinIsTerminal reports whether compose can hand the terminal to an editor.
+// composeStdinIsTerminal reports whether compose can hand the terminal to an editor.
 // It is a var so tests can drive the interactive path without a real tty.
-var stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+var composeStdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
 
 // composeDraftPath holds the editor buffer of an in-flight compose. It stays on
 // disk until the bead is actually created (discardComposeDraft), so a create
@@ -225,7 +225,7 @@ func maybeComposeCreate(cmd *cobra.Command, args []string) ([]string, error) {
 	if !editFlag {
 		// Bare `bd create` at a terminal composes instead of erroring out; every
 		// non-interactive caller keeps the existing "title required" behavior.
-		if hasTitle || !stdinIsTerminal() {
+		if hasTitle || !composeStdinIsTerminal() {
 			return args, nil
 		}
 		if silent, _ := cmd.Flags().GetBool("silent"); silent {
@@ -233,7 +233,7 @@ func maybeComposeCreate(cmd *cobra.Command, args []string) ([]string, error) {
 		}
 	}
 
-	if !stdinIsTerminal() {
+	if !composeStdinIsTerminal() {
 		return args, HandleError("--edit needs an interactive terminal\n" +
 			"  Non-interactive callers: bd create \"<title>\" --description \"<body>\"\n" +
 			"  or pipe the body:        bd create \"<title>\" --stdin")

@@ -15,7 +15,7 @@ import (
 // command (and the ssh session) that started it.
 func detachedProcAttr() *syscall.SysProcAttr { return &syscall.SysProcAttr{Setsid: true} }
 
-func pidAlive(pid int) bool {
+func hostPidAlive(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
@@ -30,14 +30,14 @@ func terminatePid(pid, port int) error {
 	}
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		if !pidAlive(pid) && (port == 0 || !portListening(port)) {
+		if !hostPidAlive(pid) && (port == 0 || !portListening(port)) {
 			return nil
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	time.Sleep(500 * time.Millisecond)
-	if pidAlive(pid) {
+	if hostPidAlive(pid) {
 		return fmt.Errorf("process %d did not exit", pid)
 	}
 	return nil

@@ -132,14 +132,6 @@ func TestAgentIdentityFileNameIgnoresTraversal(t *testing.T) {
 	}
 }
 
-func mustReadFile(t *testing.T, path string) []byte {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return data
-}
 
 // TestFrontmatterName covers the identity.md frontmatter reader.
 func TestFrontmatterName(t *testing.T) {

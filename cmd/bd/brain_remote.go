@@ -303,7 +303,7 @@ func remoteForwardingActive(args []string) (cfg *remoteConfig, name string, acti
 	}
 	// An explicit BEADS_DIR naming a local beads project wins over the client
 	// config in HOME, so the store it names is opened here instead of forwarded.
-	if beads.ExplicitBeadsDir() != "" {
+	if beads.ExplicitBeadsProjectDir() != "" {
 		return nil, "", false, nil
 	}
 	cfg, err = loadRemoteConfig()

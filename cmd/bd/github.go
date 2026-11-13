@@ -359,6 +359,9 @@ func getGitHubClient(config GitHubConfig) *github.Client {
 
 // runGitHubStatus implements the github status command.
 func runGitHubStatus(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github status is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-status")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -440,6 +443,9 @@ func currentStoreName() string {
 
 // runGitHubRepos implements the github repos command.
 func runGitHubRepos(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github repos is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-repos")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -578,6 +584,9 @@ func resolveGitHubSetup(cmd *cobra.Command) (*githubSetup, error) {
 // runGitHubSync implements the github sync command.
 // Uses the tracker.Engine for all sync operations.
 func runGitHubSync(cmd *cobra.Command, args []string) error {
+	if usesProxiedServer() {
+		return HandleErrorRespectJSON("github sync is not supported in proxied-server mode")
+	}
 	evt := metrics.NewCommandEvent("github-sync")
 	defer func() {
 		if c := metrics.Global(); c != nil {
@@ -751,7 +760,7 @@ func runGitHubSyncOnce(cmd *cobra.Command, setup *githubSetup) (*tracker.SyncRes
 		ShouldImport: gt.ShouldImport,
 		AfterConvert: gt.AfterConvert,
 	}
-	engine.PushHooks = &tracker.PushHooks{ContentEqual: gt.ContentEqual}
+	engine.PushHooks = buildGitHubPushHooks(gt)
 
 	opts := tracker.SyncOptions{
 		Pull:               setup.Plan.Pull,
@@ -935,6 +944,33 @@ func runGitHubPair(cmd *cobra.Command, args []string) error {
 	_, _ = fmt.Fprintln(out, ")")
 	_, _ = fmt.Fprintln(out, "Nothing was synced. Preview the first sync with: brain github sync --dry-run")
 	return nil
+}
+
+// buildGitHubPushHooks creates PushHooks for GitHub-specific push behavior.
+// The ContentEqual hook lets the engine skip issues whose pushable fields
+// already match GitHub, so repeated `github sync --push-only` / `github push`
+// runs don't re-PATCH unchanged issues (gastownhall/beads#4214). It is the
+// tracker's own comparison (brain): it also requires the item marker, so an
+// issue not yet linked by marker is updated once to receive it.
+func buildGitHubPushHooks(gt *github.Tracker) *tracker.PushHooks {
+	config := gt.MappingConfig()
+	if config == nil {
+		config = github.DefaultMappingConfig()
+	}
+	return &tracker.PushHooks{
+		ContentEqual: gt.ContentEqual,
+		// ContentHash lets the engine skip the per-issue GitHub fetch entirely
+		// when an issue is unchanged since its last push, so a no-op
+		// `github sync --push-only` makes ~zero REST calls instead of one GET
+		// per linked issue (gastownhall/beads#4214).
+		ContentHash: func(local *types.Issue) string {
+			return github.PushContentHash(local, config)
+		},
+		// TargetScope supplies the host and repository omitted by shorthand refs
+		// such as github:42, so changing GitHub target configuration invalidates
+		// the local no-op cache.
+		TargetScope: gt.PushTargetScope,
+	}
 }
 
 func runGitHubUnpair(cmd *cobra.Command, args []string) error {

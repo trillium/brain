@@ -154,7 +154,7 @@ func TestPoisonedRegistryRowsNeverReachTheDisk(t *testing.T) {
 	shims := func() string { // everything a hostile row could add: commands, links, data directories
 		var sb strings.Builder
 		for _, d := range []string{".local", ".pi", "data"} {
-			sb.WriteString(snapshotTree(t, filepath.Join(b.home, d)))
+			sb.WriteString(registrySnapshotTree(t, filepath.Join(b.home, d)))
 		}
 		return sb.String()
 	}

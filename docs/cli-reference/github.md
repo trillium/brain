@@ -1,0 +1,150 @@
+---
+title: "bd github"
+description: "Commands for syncing issues between beads and GitHub."
+---
+
+{/* AUTO-GENERATED: do not edit manually */}
+
+Generated from `bd help --doc github`.
+
+Commands for syncing a brain store with the issues of a GitHub repository.
+
+A store is paired with one repository, and the pairing names the direction
+changes travel (see 'github pair'):
+
+  two-way          items and issues are kept in step both ways (default)
+  brain-to-github  brain is the source; GitHub issues mirror it
+  github-to-brain  GitHub is the source; brain items mirror it
+
+Configuration can be set via 'bd config' or environment variables:
+  github.token / GITHUB_TOKEN           - Personal access token
+  github.owner / GITHUB_OWNER           - Repository owner
+  github.repo / GITHUB_REPO             - Repository name
+  github.repository / GITHUB_REPOSITORY - Combined "owner/repo" format
+  github.url / GITHUB_API_URL           - Custom API URL (GitHub Enterprise)
+
+With no token configured, 'gh auth token' (the GitHub CLI's login) is used.
+
+```
+bd github [flags]
+```
+
+## bd github pull
+
+Pull one or more items from GitHub.
+
+Accepts bead IDs or external references as positional arguments.
+Equivalent to: bd github sync --pull-only --issues &lt;refs&gt;
+
+```
+bd github pull [refs...] [flags]
+```
+
+**Flags:**
+
+```
+      --dry-run   Preview pull without making changes
+```
+
+## bd github push
+
+Push one or more beads issues to GitHub.
+
+Accepts bead IDs as positional arguments.
+Equivalent to: bd github sync --push-only --issues &lt;ids&gt;
+
+```
+bd github push [bead-ids...] [flags]
+```
+
+**Flags:**
+
+```
+      --dry-run   Preview push without making changes
+```
+
+## bd github repos
+
+List GitHub repositories that the configured token has access to.
+
+```
+bd github repos [flags]
+```
+
+## bd github status
+
+Display current GitHub configuration and sync status.
+
+```
+bd github status [flags]
+```
+
+## bd github sync
+
+Synchronize this store's items with the issues of its paired repository.
+
+The direction comes from the store's pairing ('github pair'). A store with no
+recorded direction syncs two-way:
+- Pulls new/updated issues from GitHub into brain
+- Pushes brain items to GitHub
+
+An item and its issue stay linked: the item remembers the issue's URL, and the
+issue carries a hidden marker naming the item, so running sync again never
+creates a second copy of either. Closing or reopening on one side is carried
+to the other. Comments are not synced.
+
+On a two-way pairing, --pull-only or --push-only narrows a single run to one
+half. On a one-way pairing the flag for the opposite half is refused.
+
+If an item and its issue were both changed since the last sync, the conflict
+policy decides: --prefer-newer (default) keeps whichever side was edited last,
+--prefer-local keeps brain's version, --prefer-github keeps GitHub's. The
+policy can be recorded on the pairing with 'github pair --conflict'.
+
+Use --dry-run first: it prints what each side would create, update or link,
+with counts, and changes nothing.
+
+With --project &lt;project-id&gt; the run is limited to the items that belong to one
+project record (kept in the projects store) and goes one way, brain to GitHub,
+into the repository that record names. An item belongs when it is under the
+record or carries the label project:&lt;id&gt;; nothing else is sent. The plan lists
+every item with the reason it is included. A real run into a public repository
+needs --allow-public.
+
+With --watch the command stays running and syncs every --interval.
+
+```
+bd github sync [flags]
+```
+
+**Flags:**
+
+```
+      --allow-public            With --project: allow a real run to publish into a public repository (a dry run never needs it)
+      --direction string        Direction for this run only when the store has no recorded pairing (two-way, brain-to-github, github-to-brain)
+      --dry-run                 Show what would be synced without making changes
+      --interval duration       Time between syncs with --watch (minimum 30s) (default 5m0s)
+      --issues string           Comma-separated bead IDs to sync selectively (e.g., bd-abc,bd-def). Mutually exclusive with --parent.
+      --parent string           Limit push to this bead and its descendants (push only). Mutually exclusive with --issues.
+      --prefer-github           On conflict, use GitHub version
+      --prefer-local            On conflict, keep local beads version
+      --prefer-newer            On conflict, use most recent version (default)
+      --project string          Sync only the items that belong to this project record (for example project-73bi.1), one way, brain to GitHub, into the repository the record names
+      --project-label strings   With --project: also count items carrying this label (for example project:brain) as the project's; repeatable
+      --pull-only               Only pull GitHub issues into brain
+      --push-only               Only push brain items to GitHub
+      --repo string             Run against this owner/repo for this run only, without saving a pairing
+      --watch                   Keep running and sync every --interval (off by default; see 'github schedule' for a background job)
+```
+
+### bd github unpair
+
+Forget the repository, direction and conflict policy for this store.
+
+Items keep the link they remember to their issues and the issues keep their
+markers, so pairing the same repository again picks up where it left off. No
+item and no issue is deleted.
+
+```
+bd github unpair [flags]
+```

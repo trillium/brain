@@ -120,7 +120,7 @@ func (m *serviceManager) start(ctx context.Context, svc hostService, spec server
 
 func (m *serviceManager) startProcess(ctx context.Context, svc hostService, spec serverSpec, j *journal) error {
 	if portListening(spec.Port) {
-		if pid := readPid(svc.PidFile); pid > 0 && pidAlive(pid) {
+		if pid := readPid(svc.PidFile); pid > 0 && hostPidAlive(pid) {
 			return waitServerReady(ctx, spec.Port, 30*time.Second) // ours, already up
 		}
 		return fmt.Errorf("something else is already listening on port %d", spec.Port)
@@ -208,7 +208,7 @@ func (m *serviceManager) stop(ctx context.Context, svc hostService, port int, di
 		return errors.New("the server is managed outside brain; stop it yourself, then re-run")
 	case "process":
 		pid := readPid(svc.PidFile)
-		if pid <= 0 || !pidAlive(pid) {
+		if pid <= 0 || !hostPidAlive(pid) {
 			if portListening(port) {
 				return fmt.Errorf("port %d is in use by a process brain did not start (no live pid in %s)", port, svc.PidFile)
 			}
@@ -265,7 +265,7 @@ func (m *serviceManager) undo(e journalEntry) (string, error) {
 		switch e.Action {
 		case "started":
 			pid := readPid(svc.PidFile)
-			if pid > 0 && pidAlive(pid) {
+			if pid > 0 && hostPidAlive(pid) {
 				if err := terminatePid(pid, 0); err != nil {
 					return "", err
 				}

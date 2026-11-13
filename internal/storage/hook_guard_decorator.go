@@ -206,6 +206,10 @@ func NewHookGuardStore(store DoltStorage, defs []hooksdef.Definition, opts HookG
 // Inner returns the wrapped store (see UnwrapStore).
 func (g *HookGuardStore) Inner() DoltStorage { return g.inner }
 
+// Unwrap returns the underlying store, satisfying Unwrapper so UnwrapStore
+// walks through this decorator to the concrete store.
+func (g *HookGuardStore) Unwrap() DoltStorage { return g.inner }
+
 // mutate is the whole top-level contract: guard, write, observe.
 func (g *HookGuardStore) mutate(ctx context.Context, m mutation, op func() error) error {
 	pre, err := g.eng.guard(ctx, m)

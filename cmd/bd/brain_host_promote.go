@@ -463,7 +463,7 @@ func (p *promoter) phaseRestore(ctx context.Context) error {
 	}
 	for _, d := range p.st.Databases {
 		how := "rebuilt"
-		if containsStr(resp.Reused, d.Name) {
+		if hostListContains(resp.Reused, d.Name) {
 			how = "kept from the seed (nothing had changed)"
 		}
 		p.say("        %s %s on the target; its hash equals the frozen %s", d.Name, how, shortHash(resp.Hashes[d.Name]))
@@ -900,7 +900,7 @@ func (p *promoter) phaseVerify(ctx context.Context) error {
 		req := peerSmokeReq{Port: s.TargetServer.Port}
 		for i, name := range s.Stores {
 			wrapper := filepath.Join(s.BinDir, name)
-			if !containsStr(s.Wrappers, name) {
+			if !hostListContains(s.Wrappers, name) {
 				req.Stores = append(req.Stores, peerSmokeStore{Name: name, BeadsDir: s.FinalBeads[i]})
 				continue
 			}

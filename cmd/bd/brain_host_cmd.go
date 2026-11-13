@@ -211,7 +211,7 @@ var brainHostServiceAddCmd = &cobra.Command{
 			return fmt.Errorf("invalid launchd label %q", args[0])
 		}
 		return editHostConfig(func(cfg *hostConfig) error {
-			if !containsStr(cfg.Services, args[0]) {
+			if !hostListContains(cfg.Services, args[0]) {
 				cfg.Services = append(cfg.Services, args[0])
 				sort.Strings(cfg.Services)
 			}
@@ -323,7 +323,7 @@ func runHostPromote(cmd *cobra.Command, opts promoteOptions) error {
 	if err != nil || home == "" {
 		return errors.New("cannot resolve the home directory")
 	}
-	if opts.StopAfter != "" && !containsStr(promotePhases, opts.StopAfter) {
+	if opts.StopAfter != "" && !hostListContains(promotePhases, opts.StopAfter) {
 		return fmt.Errorf("--stop-after: unknown phase %q (phases: %s)", opts.StopAfter, strings.Join(promotePhases, ", "))
 	}
 	switch opts.ServiceKind {

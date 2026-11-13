@@ -184,7 +184,7 @@ func TestUnifiedScopedCustomTables(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_unified_custom_statuses (`store`, name, category) VALUES (?, ?, ?)")).
 		WithArgs("assert", "review", "active").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	if err := SyncCustomStatusesTable(ctx, tx, "review:active"); err != nil {
+	if err := syncCustomStatusesTable(ctx, tx, "review:active"); err != nil {
 		t.Fatalf("SyncCustomStatusesTable scoped: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestUnifiedScopedCustomTables(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_unified_custom_types (`store`, name) VALUES (?, ?)")).
 		WithArgs("assert", "gate").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	if err := SyncCustomTypesTable(ctx, tx, `["gate"]`); err != nil {
+	if err := syncCustomTypesTable(ctx, tx, `["gate"]`); err != nil {
 		t.Fatalf("SyncCustomTypesTable scoped: %v", err)
 	}
 
@@ -209,17 +209,6 @@ func TestUnifiedScopedCustomTables(t *testing.T) {
 		t.Fatalf("types = %v", types)
 	}
 
-	// EnsureCustomTypeInTx resolves the namespace's types first (table hit,
-	// no config fallback), finds no "convoy", and inserts it namespaced.
-	mock.ExpectQuery(regexp.QuoteMeta("SELECT name FROM brain_unified_custom_types WHERE `store` = ? ORDER BY name")).
-		WithArgs("assert").
-		WillReturnRows(sqlmock.NewRows([]string{"name"}).AddRow("gate"))
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_unified_custom_types (`store`, name) VALUES (?, ?)")).
-		WithArgs("assert", "convoy").
-		WillReturnResult(sqlmock.NewResult(1, 1))
-	if err := EnsureCustomTypeInTx(ctx, tx, "convoy"); err != nil {
-		t.Fatalf("EnsureCustomTypeInTx scoped: %v", err)
-	}
 
 	mock.ExpectRollback()
 	if err := tx.Rollback(); err != nil {
@@ -243,7 +232,7 @@ func TestUnifiedScopedCustomTablesLegacy(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO custom_statuses (name, category) VALUES (?, ?)")).
 		WithArgs("review", "active").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	if err := SyncCustomStatusesTable(ctx, tx, "review:active"); err != nil {
+	if err := syncCustomStatusesTable(ctx, tx, "review:active"); err != nil {
 		t.Fatalf("SyncCustomStatusesTable legacy: %v", err)
 	}
 

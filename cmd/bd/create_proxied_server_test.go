@@ -2,15 +2,13 @@ package main
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/steveyegge/beads/internal/config"
-	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
+	"github.com/steveyegge/beads/issueops"
 )
 
 func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
@@ -55,11 +53,17 @@ func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
 	if got.Title != "Title" {
 		t.Errorf("Title = %q", got.Title)
 	}
+	if got.Description != "Desc" || got.Design != "Design" || got.AcceptanceCriteria != "Accept" || got.Notes != "Notes" || got.SpecID != "spec-1" {
+		t.Errorf("content fields = %+v", got)
+	}
 	if got.IssueType != types.TypeFeature {
 		t.Errorf("IssueType = %q, want feature (normalized from feat)", got.IssueType)
 	}
 	if got.Priority != 1 {
 		t.Errorf("Priority = %d", got.Priority)
+	}
+	if got.Assignee != "alice" {
+		t.Errorf("Assignee = %q, want alice", got.Assignee)
 	}
 	if got.Status != types.StatusDeferred {
 		t.Errorf("Status = %q, want %q", got.Status, types.StatusDeferred)
@@ -70,8 +74,8 @@ func TestBuildCreateIssueFromInput_PopulatesAllFields(t *testing.T) {
 	if got.EstimatedMinutes == nil || *got.EstimatedMinutes != 90 {
 		t.Errorf("EstimatedMinutes = %v, want 90", got.EstimatedMinutes)
 	}
-	if !got.Ephemeral {
-		t.Errorf("Ephemeral = false, want true")
+	if !got.Ephemeral || got.NoHistory {
+		t.Errorf("storage flags = ephemeral:%t no_history:%t, want true:false", got.Ephemeral, got.NoHistory)
 	}
 	if got.CreatedBy != "tester" || got.Owner != "tester@example.com" {
 		t.Errorf("identity fields wrong: %q / %q", got.CreatedBy, got.Owner)
@@ -100,9 +104,37 @@ func TestBuildCreateIssueFromInput_EmptyExternalRefIsNilPointer(t *testing.T) {
 	}
 }
 
-func TestMaterializeGraphNodeIssue_DefaultsAndOpts(t *testing.T) {
+func TestBuildCreateIssueFromInput_ExplicitStatusWinsOverDefer(t *testing.T) {
+	deferUntil := time.Now().UTC().Add(24 * time.Hour)
+	got := buildCreateIssueFromInput(createInput{
+		title:      "T",
+		priority:   2,
+		issueType:  "task",
+		status:     "blocked",
+		deferUntil: &deferUntil,
+	})
+	if got.Status != types.StatusBlocked {
+		t.Errorf("Status = %q, want %q", got.Status, types.StatusBlocked)
+	}
+	if got.DeferUntil == nil || !got.DeferUntil.Equal(deferUntil) {
+		t.Errorf("DeferUntil = %v, want %v", got.DeferUntil, deferUntil)
+	}
+}
+
+// nodeIssueFromInput mirrors buildDomainGraphPlan's per-node materialization
+// so unit tests can exercise graphApplyNodeIssue with createInput-level opts.
+func nodeIssueFromInput(t *testing.T, node GraphApplyNode, in createInput) *types.Issue {
+	t.Helper()
+	issue, err := graphApplyNodeIssue(node, in.graphApplyOptions(), in.createdBy, in.owner)
+	if err != nil {
+		t.Fatalf("graphApplyNodeIssue: %v", err)
+	}
+	return issue
+}
+
+func TestGraphApplyNodeIssue_DefaultsAndOpts(t *testing.T) {
 	t.Run("type and priority defaults", func(t *testing.T) {
-		issue := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{createdBy: "t"})
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{createdBy: "t"})
 		if issue.IssueType != types.TypeTask {
 			t.Errorf("type default = %q, want task", issue.IssueType)
 		}
@@ -116,7 +148,7 @@ func TestMaterializeGraphNodeIssue_DefaultsAndOpts(t *testing.T) {
 
 	t.Run("explicit priority and type", func(t *testing.T) {
 		p := 0
-		issue := materializeGraphNodeIssue(GraphApplyNode{
+		issue := nodeIssueFromInput(t, GraphApplyNode{
 			Key: "n", Title: "N", Type: "bug", Priority: &p,
 		}, createInput{})
 		if issue.IssueType != types.TypeBug {
@@ -128,14 +160,14 @@ func TestMaterializeGraphNodeIssue_DefaultsAndOpts(t *testing.T) {
 	})
 
 	t.Run("ephemeral and no-history propagate", func(t *testing.T) {
-		issue := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{
 			ephemeral: true,
 			noHistory: false,
 		})
 		if !issue.Ephemeral {
 			t.Errorf("ephemeral not propagated")
 		}
-		issue2 := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{
+		issue2 := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{
 			noHistory: true,
 		})
 		if !issue2.NoHistory {
@@ -143,34 +175,105 @@ func TestMaterializeGraphNodeIssue_DefaultsAndOpts(t *testing.T) {
 		}
 	})
 
+	t.Run("per-node storage class overrides plan flags", func(t *testing.T) {
+		off := false
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N", Ephemeral: &off}, createInput{
+			ephemeral: true,
+		})
+		if issue.Ephemeral {
+			t.Errorf("node-level ephemeral=false should override --ephemeral")
+		}
+		on := true
+		issue2 := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N", NoHistory: &on}, createInput{})
+		if !issue2.NoHistory {
+			t.Errorf("node-level no_history=true not applied")
+		}
+	})
+
+	t.Run("conflicting effective storage class errors", func(t *testing.T) {
+		on := true
+		_, err := graphApplyNodeIssue(GraphApplyNode{Key: "n", Title: "N", NoHistory: &on}, GraphApplyOptions{Ephemeral: true}, "", "")
+		if err == nil {
+			t.Fatal("expected error for effective ephemeral+no_history")
+		}
+	})
+
 	t.Run("metadata marshalled to JSON", func(t *testing.T) {
-		issue := materializeGraphNodeIssue(GraphApplyNode{
+		issue := nodeIssueFromInput(t, GraphApplyNode{
 			Key: "n", Title: "N",
-			Metadata: map[string]string{"a": "1", "b": "2"},
+			Metadata: map[string]json.RawMessage{"a": json.RawMessage(`"1"`), "b": json.RawMessage(`2`)},
 		}, createInput{})
-		var roundTrip map[string]string
+		var roundTrip map[string]any
 		if err := json.Unmarshal(issue.Metadata, &roundTrip); err != nil {
 			t.Fatalf("metadata not valid JSON: %v", err)
 		}
-		if roundTrip["a"] != "1" || roundTrip["b"] != "2" {
+		if roundTrip["a"] != "1" || roundTrip["b"] != float64(2) {
 			t.Errorf("metadata round-trip wrong: %v", roundTrip)
 		}
 	})
 
 	t.Run("empty metadata leaves Metadata nil", func(t *testing.T) {
-		issue := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{})
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{})
 		if issue.Metadata != nil {
 			t.Errorf("Metadata = %s, want nil for empty input", string(issue.Metadata))
 		}
 	})
 
 	t.Run("identity fields copied", func(t *testing.T) {
-		issue := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N"}, createInput{
 			createdBy: "alice",
 			owner:     "alice@example.com",
 		})
 		if issue.CreatedBy != "alice" || issue.Owner != "alice@example.com" {
 			t.Errorf("identity copy wrong: %q / %q", issue.CreatedBy, issue.Owner)
+		}
+	})
+
+	t.Run("node owner overrides ambient owner", func(t *testing.T) {
+		issue := nodeIssueFromInput(t, GraphApplyNode{Key: "n", Title: "N", Owner: "bob@example.com"}, createInput{
+			owner: "alice@example.com",
+		})
+		if issue.Owner != "bob@example.com" {
+			t.Errorf("Owner = %q, want node override", issue.Owner)
+		}
+	})
+
+	t.Run("native content and planning fields copied", func(t *testing.T) {
+		est := 90
+		issue := nodeIssueFromInput(t, GraphApplyNode{
+			Key: "n", Title: "N",
+			Design:             "d",
+			AcceptanceCriteria: "ac",
+			Notes:              "notes",
+			SpecID:             "spec-1",
+			ExternalRef:        "gh-9",
+			EstimatedMinutes:   &est,
+			WispType:           "heartbeat",
+			MolType:            "swarm",
+			Pinned:             true,
+			Status:             "in_progress",
+			ID:                 "bd-abc123",
+		}, createInput{})
+		if issue.Design != "d" || issue.AcceptanceCriteria != "ac" || issue.Notes != "notes" || issue.SpecID != "spec-1" {
+			t.Errorf("content fields lost: %+v", issue)
+		}
+		if issue.ExternalRef == nil || *issue.ExternalRef != "gh-9" {
+			t.Errorf("ExternalRef = %v", issue.ExternalRef)
+		}
+		if issue.EstimatedMinutes == nil || *issue.EstimatedMinutes != 90 {
+			t.Errorf("EstimatedMinutes = %v", issue.EstimatedMinutes)
+		}
+		if issue.WispType != types.WispType("heartbeat") || issue.MolType != types.MolType("swarm") {
+			t.Errorf("wisp/mol type lost: %q %q", issue.WispType, issue.MolType)
+		}
+		if !issue.Pinned {
+			t.Errorf("Pinned lost")
+		}
+		if issue.Status != types.StatusInProgress {
+			t.Errorf("Status = %q, want in_progress", issue.Status)
+		}
+		if issue.ID != "bd-abc123" {
+			t.Errorf("ID = %q, want explicit ID", issue.ID)
 		}
 	})
 }
@@ -189,7 +292,10 @@ func TestBuildDomainGraphPlan(t *testing.T) {
 		},
 	}
 
-	got := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	got, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	if err != nil {
+		t.Fatalf("buildDomainGraphPlan: %v", err)
+	}
 
 	if len(got.Nodes) != 2 {
 		t.Fatalf("nodes len = %d", len(got.Nodes))
@@ -225,28 +331,119 @@ func TestBuildDomainGraphPlan(t *testing.T) {
 	}
 }
 
-func TestParseMarkdownDepSpecs(t *testing.T) {
+// TestBuildDomainGraphPlan_AliasesAndDeps pins the proxied path's handling of
+// the parent/estimate aliases and per-node deps — all three were silently
+// dropped before reaching the domain apply (review finding).
+func TestBuildDomainGraphPlan_AliasesAndDeps(t *testing.T) {
+	est := 90
+	canonical := 30
+	plan := GraphApplyPlan{
+		Nodes: []GraphApplyNode{
+			{Key: "root", Title: "Root"},
+			{Key: "child", Title: "Child", Parent: "root", Estimate: &est,
+				Deps: []GraphApplyNodeDep{{Target: "root"}, {Target: "ext-1", Type: "related"}}},
+			{Key: "both", Title: "Both", EstimatedMinutes: &canonical, Estimate: &est},
+		},
+	}
+
+	got, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	if err != nil {
+		t.Fatalf("buildDomainGraphPlan: %v", err)
+	}
+
+	c := got.Nodes[1]
+	if c.ParentKey != "root" {
+		t.Errorf("parent alias not folded into ParentKey: %q", c.ParentKey)
+	}
+	if c.Issue.EstimatedMinutes == nil || *c.Issue.EstimatedMinutes != 90 {
+		t.Errorf("estimate alias lost: %v", c.Issue.EstimatedMinutes)
+	}
+	if len(c.Deps) != 2 {
+		t.Fatalf("deps len = %d, want 2", len(c.Deps))
+	}
+	if c.Deps[0].Target != "root" || c.Deps[0].Type != types.DepBlocks {
+		t.Errorf("dep 0 = %+v, want target root type blocks", c.Deps[0])
+	}
+	if c.Deps[1].Target != "ext-1" || c.Deps[1].Type != types.DependencyType("related") {
+		t.Errorf("dep 1 = %+v", c.Deps[1])
+	}
+
+	b := got.Nodes[2]
+	if b.Issue.EstimatedMinutes == nil || *b.Issue.EstimatedMinutes != 30 {
+		t.Errorf("estimated_minutes should win over the alias: %v", b.Issue.EstimatedMinutes)
+	}
+}
+
+// TestBuildDomainGraphPlanCoversEdgeFields pins the hand-maintained field
+// copies in buildDomainGraphPlan: every GraphApplyEdge and GraphApplyNodeDep
+// field must survive the projection into its domain counterpart. This is the
+// edge-side twin of TestGraphApplyNodeCoversCreateIssueParams — the proxied
+// path silently dropping fields (gate/spawner/thread, node deps) is the
+// regression class this branch fixes.
+func TestBuildDomainGraphPlanCoversEdgeFields(t *testing.T) {
+	fill := func(typ reflect.Type) reflect.Value {
+		v := reflect.New(typ).Elem()
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			if f.Type.Kind() != reflect.String {
+				t.Fatalf("%s field %s: unhandled kind %s; extend this parity test", typ.Name(), f.Name, f.Type.Kind())
+			}
+			v.Field(i).SetString(fmt.Sprintf("v%d", i))
+		}
+		return v
+	}
+	assertCopied := func(src reflect.Value, dst reflect.Value) {
+		typ := src.Type()
+		for i := 0; i < typ.NumField(); i++ {
+			name := typ.Field(i).Name
+			df := dst.FieldByName(name)
+			if !df.IsValid() {
+				t.Errorf("domain.%s has no field %q for %s.%s", dst.Type().Name(), name, typ.Name(), name)
+				continue
+			}
+			if got, want := df.String(), src.Field(i).String(); got != want {
+				t.Errorf("%s.%s = %q after projection, want %q (dropped in buildDomainGraphPlan?)", dst.Type().Name(), name, got, want)
+			}
+		}
+	}
+
+	edge := fill(reflect.TypeOf(GraphApplyEdge{}))
+	dep := fill(reflect.TypeOf(GraphApplyNodeDep{}))
+	plan := GraphApplyPlan{
+		Nodes: []GraphApplyNode{{Key: "k", Title: "T",
+			Deps: []GraphApplyNodeDep{dep.Interface().(GraphApplyNodeDep)}}},
+		Edges: []GraphApplyEdge{edge.Interface().(GraphApplyEdge)},
+	}
+	got, err := buildDomainGraphPlan(plan, createInput{createdBy: "t"})
+	if err != nil {
+		t.Fatalf("buildDomainGraphPlan: %v", err)
+	}
+	assertCopied(edge, reflect.ValueOf(got.Edges[0]))
+	assertCopied(dep, reflect.ValueOf(got.Nodes[0].Deps[0]))
+}
+
+func TestParseMarkdownDependencies(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      []string
-		want    []domain.DependencySpec
+		want    []issueops.CreateDependency
 		wantErr bool
 	}{
 		{"empty", nil, nil, false},
 		{"whitespace skipped", []string{"  ", ""}, nil, false},
 		{"bare id → blocks edge", []string{"bd-1"},
-			[]domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-1"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-1"}}, false},
 		{"type:id preserved verbatim (no alias)", []string{"depends-on:bd-2"},
-			[]domain.DependencySpec{{Type: types.DependencyType("depends-on"), TargetID: "bd-2"}}, false},
+			[]issueops.CreateDependency{{Type: types.DependencyType("depends-on"), TargetID: "bd-2"}}, false},
 		{"discovered-from preserved", []string{"discovered-from:bd-3"},
-			[]domain.DependencySpec{{Type: types.DepDiscoveredFrom, TargetID: "bd-3"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepDiscoveredFrom, TargetID: "bd-3"}}, false},
 		{"whitespace trimmed", []string{"  blocks : bd-4 "},
-			[]domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-4"}}, false},
+			[]issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-4"}}, false},
 		{"empty type rejected", []string{":bd-1"}, nil, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseMarkdownDepSpecs(tt.in, "Test Title")
+			got, err := parseMarkdownDependencies(tt.in, "Test Title")
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected error, got %v", got)
@@ -263,82 +460,39 @@ func TestParseMarkdownDepSpecs(t *testing.T) {
 	}
 }
 
-func TestParseMarkdownDepSpecs_DoesNotSwapBlocks(t *testing.T) {
-	got, err := parseMarkdownDepSpecs([]string{"blocks:bd-5"}, "T")
+func TestParseMarkdownDependencies_DoesNotSwapBlocks(t *testing.T) {
+	got, err := parseMarkdownDependencies([]string{"blocks:bd-5"}, "T")
 	if err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	want := []domain.DependencySpec{{Type: types.DepBlocks, TargetID: "bd-5"}}
+	want := []issueops.CreateDependency{{Type: types.DepBlocks, TargetID: "bd-5"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %#v, want %#v (no swap-direction)", got, want)
 	}
 }
 
-func TestResolveProxiedCustomTypes_PrefersDBTypes(t *testing.T) {
-	got := resolveProxiedCustomTypes([]string{"db-a", "db-b"})
-	if !reflect.DeepEqual(got, []string{"db-a", "db-b"}) {
-		t.Errorf("got %#v, want [db-a db-b] — DB types must win when non-empty", got)
-	}
-}
-
-func TestResolveProxiedCustomTypes_FallsBackToYAML(t *testing.T) {
-	restore := withTestYAMLCustomTypes(t, "molecule,gate,convoy")
-	defer restore()
-
-	for _, dbTypes := range [][]string{nil, {}} {
-		got := resolveProxiedCustomTypes(dbTypes)
-		if !reflect.DeepEqual(got, []string{"molecule", "gate", "convoy"}) {
-			t.Errorf("dbTypes=%v: got %#v, want YAML fallback [molecule gate convoy]", dbTypes, got)
-		}
-	}
-}
-
-func TestResolveProxiedCustomTypes_EmptyEverywhere(t *testing.T) {
-	restore := withTestYAMLCustomTypes(t, "")
-	defer restore()
-
-	got := resolveProxiedCustomTypes(nil)
-	if len(got) != 0 {
-		t.Errorf("expected empty result, got %#v", got)
-	}
-}
-
-func withTestYAMLCustomTypes(t *testing.T, customCSV string) func() {
-	t.Helper()
-	tmpDir := t.TempDir()
-	beadsDir := filepath.Join(tmpDir, ".beads")
-	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
-		t.Fatalf("mkdir .beads: %v", err)
-	}
-	var content string
-	if customCSV != "" {
-		content = "types:\n  custom: \"" + customCSV + "\"\n"
-	}
-	if err := os.WriteFile(filepath.Join(beadsDir, "config.yaml"), []byte(content), 0o644); err != nil {
-		t.Fatalf("write config.yaml: %v", err)
-	}
-	t.Chdir(tmpDir)
-
-	config.ResetForTesting()
-	if err := config.Initialize(); err != nil {
-		t.Fatalf("config.Initialize: %v", err)
-	}
-	return func() { config.ResetForTesting() }
-}
-
-func TestMaterializeGraphNodeIssue_StampsAuthorKind(t *testing.T) {
+// TestGraphApplyNodeIssue_StampsAuthorKind: a graph-plan node gets the
+// author-kind stamp, merged into its own metadata (brain; the proxied route
+// shares graphApplyNodeIssue with the direct one).
+func TestGraphApplyNodeIssue_StampsAuthorKind(t *testing.T) {
 	clearAuthorEnv(t)
 	t.Setenv(authorKindEnvVar, authorKindProcedural)
 
-	issue := materializeGraphNodeIssue(GraphApplyNode{
-		Key: "n", Title: "N", Metadata: map[string]string{"k": "v"},
-	}, createInput{})
+	issue, err := graphApplyNodeIssue(GraphApplyNode{
+		Key: "n", Title: "N", Metadata: map[string]json.RawMessage{"k": json.RawMessage(`"v"`)},
+	}, GraphApplyOptions{}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := decodeStamp(t, issue.Metadata)
 	if got[authorKindKey] != authorKindProcedural || got["k"] != "v" {
 		t.Errorf("metadata = %v, want author_kind procedural with k preserved", got)
 	}
 
-	bare := materializeGraphNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, createInput{})
+	bare, err := graphApplyNodeIssue(GraphApplyNode{Key: "n", Title: "N"}, GraphApplyOptions{}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if decodeStamp(t, bare.Metadata)[authorKindKey] != authorKindProcedural {
 		t.Errorf("node without metadata not stamped: %s", bare.Metadata)
 	}

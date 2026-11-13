@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // This file implements the unified database's namespace rules for minting
@@ -134,7 +136,7 @@ func EnsureStorePrefixEventsTable(ctx context.Context, q DBTX) error {
 // compaction; brain_store_prefixes stays current state and the events table
 // is its complete history from adoption onward.
 func appendStorePrefixEvent(ctx context.Context, q DBTX, eventType, prefix, actor, oldStore, newStore, reason string, beadCount int64) (string, error) {
-	id := NewEventID()
+	id := newStorePrefixEventID()
 	if len(reason) > 64 {
 		return "", fmt.Errorf("event reason %q exceeds brain_store_prefix_events.reason's 64 characters", reason)
 	}
@@ -146,6 +148,14 @@ func appendStorePrefixEvent(ctx context.Context, q DBTX, eventType, prefix, acto
 		return "", fmt.Errorf("appending %s event for prefix %q: %w", eventType, prefix, err)
 	}
 	return id, nil
+}
+
+// newStorePrefixEventID mints the primary key of a brain_store_prefix_events
+// row. The trail is append-only and an event has no natural identity (the
+// same claim can be released and re-claimed), so the id is random, minted
+// once app-side; UUIDv7 keeps the trail time-sortable.
+func newStorePrefixEventID() string {
+	return uuid.Must(uuid.NewV7()).String()
 }
 
 // liveStorePrefixBeadCount counts the beads that carry prefix right now, from

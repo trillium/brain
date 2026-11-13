@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"os"
+	"io"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/types"
@@ -12,23 +12,24 @@ import (
 
 // renderGraphDOT renders the graph in Graphviz DOT format.
 // Output can be piped to graphviz: bd graph --dot <id> | dot -Tsvg > graph.svg
-func renderGraphDOT(layout *GraphLayout, subgraph *TemplateSubgraph) {
+func renderGraphDOT(out io.Writer, layout *GraphLayout, subgraph *TemplateSubgraph) error {
+	w := &graphExportWriter{out: out}
 	if len(layout.Nodes) == 0 {
-		fmt.Println("digraph beads { }")
-		return
+		w.println("digraph beads { }")
+		return w.wrapError("DOT")
 	}
 
-	fmt.Println("digraph beads {")
-	fmt.Println("  rankdir=LR;")
-	fmt.Println("  node [shape=box, style=\"rounded,filled\", fontname=\"Helvetica\", fontsize=11];")
-	fmt.Println("  edge [color=\"#666666\"];")
-	fmt.Println()
+	w.println("digraph beads {")
+	w.println("  rankdir=LR;")
+	w.println("  node [shape=box, style=\"rounded,filled\", fontname=\"Helvetica\", fontsize=11];")
+	w.println("  edge [color=\"#666666\"];")
+	w.println()
 
 	// Emit nodes grouped by layer using subgraph clusters for rank alignment
 	for layerIdx, layer := range layout.Layers {
-		fmt.Printf("  subgraph cluster_layer_%d {\n", layerIdx)
-		fmt.Println("    style=invis;")
-		fmt.Printf("    rank=same;\n")
+		w.printf("  subgraph cluster_layer_%d {\n", layerIdx)
+		w.println("    style=invis;")
+		w.printf("    rank=same;\n")
 		for _, id := range layer {
 			node := layout.Nodes[id]
 			if node == nil {
@@ -37,12 +38,12 @@ func renderGraphDOT(layout *GraphLayout, subgraph *TemplateSubgraph) {
 			label, fillColor, fontColor := dotNodeAttrs(node)
 			// Escape quotes in label
 			label = strings.ReplaceAll(label, "\"", "\\\"")
-			fmt.Printf("    \"%s\" [label=\"%s\", fillcolor=\"%s\", fontcolor=\"%s\"];\n",
+			w.printf("    \"%s\" [label=\"%s\", fillcolor=\"%s\", fontcolor=\"%s\"];\n",
 				dotEscapeID(id), label, fillColor, fontColor)
 		}
-		fmt.Println("  }")
+		w.println("  }")
 	}
-	fmt.Println()
+	w.println()
 
 	// Emit edges
 	for _, dep := range subgraph.Dependencies {
@@ -56,11 +57,41 @@ func renderGraphDOT(layout *GraphLayout, subgraph *TemplateSubgraph) {
 		}
 		edgeStyle := dotEdgeStyle(dep.Type)
 		// dep.DependsOnID -> dep.IssueID (blocker points to blocked)
-		fmt.Printf("  \"%s\" -> \"%s\"%s;\n",
+		w.printf("  \"%s\" -> \"%s\"%s;\n",
 			dotEscapeID(dep.DependsOnID), dotEscapeID(dep.IssueID), edgeStyle)
 	}
 
-	fmt.Println("}")
+	w.println("}")
+	return w.wrapError("DOT")
+}
+
+// graphExportWriter records the first output failure and suppresses later
+// writes. Writer-aware graph and list paths can therefore return one stable
+// root cause without buffering their whole output or changing successful bytes.
+type graphExportWriter struct {
+	out io.Writer
+	err error
+}
+
+func (w *graphExportWriter) printf(format string, args ...interface{}) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = fmt.Fprintf(w.out, format, args...)
+}
+
+func (w *graphExportWriter) println(args ...interface{}) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = fmt.Fprintln(w.out, args...)
+}
+
+func (w *graphExportWriter) wrapError(kind string) error {
+	if w.err == nil {
+		return nil
+	}
+	return fmt.Errorf("writing %s output: %w", kind, w.err)
 }
 
 // dotNodeAttrs returns the DOT label, fill color, and font color for a node
@@ -127,19 +158,17 @@ func statusPlainIcon(status types.Status) string {
 // renderGraphHTML generates a self-contained HTML file with an interactive D3.js
 // force-directed graph visualization. The output is a complete HTML document that
 // can be opened in any browser.
-func renderGraphHTML(layout *GraphLayout, subgraph *TemplateSubgraph) {
+func renderGraphHTML(out io.Writer, layout *GraphLayout, subgraph *TemplateSubgraph) error {
 	nodes := buildHTMLGraphData(layout, subgraph)
 	edges := buildHTMLEdgeData(layout, subgraph)
 
 	nodesJSON, err := json.Marshal(nodes)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling nodes: %v\n", err)
-		return
+		return fmt.Errorf("marshaling HTML graph nodes: %w", err)
 	}
 	edgesJSON, err := json.Marshal(edges)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error marshaling edges: %v\n", err)
-		return
+		return fmt.Errorf("marshaling HTML graph edges: %w", err)
 	}
 
 	title := "Beads Dependency Graph"
@@ -147,9 +176,10 @@ func renderGraphHTML(layout *GraphLayout, subgraph *TemplateSubgraph) {
 		title = fmt.Sprintf("Beads: %s (%s)", subgraph.Root.Title, subgraph.Root.ID)
 	}
 
-	if _, err := fmt.Fprintf(os.Stdout, htmlTemplate, html.EscapeString(title), string(nodesJSON), string(edgesJSON)); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing HTML output: %v\n", err)
+	if _, err := fmt.Fprintf(out, htmlTemplate, html.EscapeString(title), string(nodesJSON), string(edgesJSON)); err != nil {
+		return fmt.Errorf("writing HTML output: %w", err)
 	}
+	return nil
 }
 
 // HTMLNode is the JSON structure for a node in the HTML visualization
@@ -214,7 +244,7 @@ const htmlTemplate = `<!DOCTYPE html>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: #1a1a2e; color: #eee; overflow: hidden; }
-svg { width: 100vw; height: 100vh; display: block; }
+#graph { width: 100vw; height: 100vh; display: block; }
 .node rect { rx: 6; ry: 6; stroke-width: 1.5; cursor: pointer; }
 .node text { font-size: 11px; pointer-events: none; }
 .node .id-text { font-size: 9px; fill: #999; }
@@ -247,6 +277,7 @@ svg { width: 100vw; height: 100vh; display: block; }
   <div class="legend-item"><svg width="30" height="10"><line x1="0" y1="5" x2="30" y2="5" stroke="#666" stroke-width="1.5" stroke-dasharray="5,3"/></svg> parent-child</div>
 </div>
 <div id="controls">
+  <button onclick="fitToView()">Fit View</button>
   <button onclick="resetZoom()">Reset View</button>
   <button onclick="toggleLabels()">Toggle Labels</button>
   Drag nodes to rearrange. Scroll to zoom. Click for details.
@@ -320,11 +351,29 @@ simulation.on("tick", () => {
 function dragStart(e, d) { if (!e.active) simulation.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; }
 function dragged(e, d) { d.fx = e.x; d.fy = e.y; }
 function dragEnd(e, d) { if (!e.active) simulation.alphaTarget(0); d.fx = null; d.fy = null; }
-function resetZoom() { svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity); }
+function fitToView() {
+  if (!nodes.length) return;
+  const padding = 40;
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+  nodes.forEach(d => {
+    if (typeof d.x !== "number" || typeof d.y !== "number") return;
+    xMin = Math.min(xMin, d.x - nodeW/2);
+    xMax = Math.max(xMax, d.x + nodeW/2);
+    yMin = Math.min(yMin, d.y - nodeH/2);
+    yMax = Math.max(yMax, d.y + nodeH/2);
+  });
+  if (!isFinite(xMin)) return;
+  const bboxW = xMax - xMin + 2*padding;
+  const bboxH = yMax - yMin + 2*padding;
+  const scale = Math.min(width/bboxW, height/bboxH, 4);
+  const tx = width/2 - scale * (xMin + xMax)/2;
+  const ty = height/2 - scale * (yMin + yMax)/2;
+  svg.transition().duration(500).call(zoom.transform, d3.zoomIdentity.translate(tx, ty).scale(scale));
+}
+function resetZoom() { fitToView(); }
 function toggleLabels() { showLabels = !showLabels; node.selectAll("text").style("opacity", showLabels ? 1 : 0); }
 
-// Initial zoom to fit
-svg.call(zoom.transform, d3.zoomIdentity.translate(width/4, height/4).scale(0.8));
+setTimeout(fitToView, 1500);
 </script>
 </body>
 </html>

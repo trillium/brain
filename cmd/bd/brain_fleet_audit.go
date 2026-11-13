@@ -404,10 +404,10 @@ func probeStoreWrite(ctx context.Context, wrapper string, nonce string) probeRes
 	cleanup := func() error {
 		var errs []string
 		if out, err := run("sql", "DELETE FROM "+writeProbeTable+" WHERE id='"+nonce+"'"); err != nil && !strings.Contains(out, "doesn't exist") && !strings.Contains(out, "not found") {
-			errs = append(errs, "delete: "+firstLine([]byte(out)))
+			errs = append(errs, "delete: "+doctorFirstLine([]byte(out)))
 		}
 		if out, err := run("sql", "DROP TABLE IF EXISTS "+writeProbeTable); err != nil {
-			errs = append(errs, "drop: "+firstLine([]byte(out)))
+			errs = append(errs, "drop: "+doctorFirstLine([]byte(out)))
 		}
 		if len(errs) > 0 {
 			return errors.New(strings.Join(errs, "; "))
@@ -419,7 +419,7 @@ func probeStoreWrite(ctx context.Context, wrapper string, nonce string) probeRes
 			r.Status, r.Reason = "skipped", "embedded store: no SQL server to probe"
 			return finish()
 		}
-		msg := firstLine([]byte(out))
+		msg := doctorFirstLine([]byte(out))
 		if msg == "" {
 			msg = err.Error()
 		}
@@ -456,7 +456,7 @@ var backupTimestampRe = regexp.MustCompile(`"(?:timestamp|last_backup|last_sync)
 func backupAge(ctx context.Context, wrapper string, now time.Time) probeResult {
 	out, err := storeSQL(ctx, wrapper, "backup", "status", "--json")
 	if err != nil {
-		return probeResult{Status: "fail", Reason: "backup status: " + firstLine([]byte(out))}
+		return probeResult{Status: "fail", Reason: "backup status: " + doctorFirstLine([]byte(out))}
 	}
 	for _, m := range backupTimestampRe.FindAllStringSubmatch(out, -1) {
 		if t, perr := time.Parse(time.RFC3339Nano, m[1]); perr == nil && !t.IsZero() && t.Year() > 2000 {
