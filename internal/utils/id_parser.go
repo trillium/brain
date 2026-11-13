@@ -72,12 +72,28 @@ func notFoundErr(ctx context.Context, store PartialIDResolverStore, input string
 		return base
 	}
 	if v, err := store.GetConfig(ctx, kvkeys.MemoryConfigKeyPrefix+input); err == nil && v != "" {
-		tool := toolName()
-		return fmt.Errorf("no issue found matching %q -- but %q is a stored memory key, not an issue ID. "+
-			"Memories live outside the issue table; read it with '%s memories %s'. "+
-			"To make it an issue instead, use '%s create'", input, input, tool, input, tool)
+		return &MemoryKeyError{Input: input, Tool: toolName()}
 	}
 	return base
+}
+
+// MemoryKeyError is the not-found error for an input that is a stored memory
+// key rather than an issue ID. Commands that print their own not-found text
+// (bd show) use Pointer as the hint, so the memory is not lost behind it.
+type MemoryKeyError struct {
+	Input string
+	Tool  string
+}
+
+func (e *MemoryKeyError) Error() string {
+	return fmt.Sprintf("no issue found matching %q -- but %s", e.Input, e.Pointer())
+}
+
+// Pointer names the memory and how to read it.
+func (e *MemoryKeyError) Pointer() string {
+	return fmt.Sprintf("%q is a stored memory key, not an issue ID. "+
+		"Memories live outside the issue table; read it with '%s memories %s'. "+
+		"To make it an issue instead, use '%s create'", e.Input, e.Tool, e.Input, e.Tool)
 }
 
 // memoryBeadAlias returns the issue ID a `bd remember` memory key is linked to,

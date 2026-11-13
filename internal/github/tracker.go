@@ -414,10 +414,17 @@ func canonicalGitHubBaseURL(raw string) string {
 //
 // A URL for another repository is still a GitHub ref: ExtractIdentifier gives
 // it no number, so the sync skips the item and leaves its link alone rather
-// than reading the number in the configured repository.
+// than reading the number in the configured repository. Brain: once the
+// tracker is initialized, a ref into the configured repository counts on any
+// host the repository is served from (GitHub Enterprise), not only github.com.
 func (t *Tracker) IsExternalRef(ref string) bool {
 	if ghShorthandPattern.MatchString(ref) {
 		return true
+	}
+	if t.client != nil {
+		if _, ok := t.RefScope().IssueNumberFromRef(ref); ok {
+			return true
+		}
 	}
 	return strings.Contains(ref, "github.com") && issueNumberPattern.MatchString(ref)
 }

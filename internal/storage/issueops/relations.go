@@ -110,7 +110,10 @@ func FinishRelatedPage(items []*types.IssueWithDependencyMetadata, depTypes []ty
 		allowed[depType] = struct{}{}
 	}
 	for _, item := range items {
-		if item == nil {
+		// Brain: the dependency reads report an edge whose target has no row
+		// (another store's bead, an external ref) as an unresolved entry for
+		// 'dep list'. Relations answer only neighbors this database holds.
+		if item == nil || item.Unresolved {
 			continue
 		}
 		if len(allowed) > 0 {

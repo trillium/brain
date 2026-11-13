@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/uimd"
+	"github.com/steveyegge/beads/internal/utils"
 	"github.com/steveyegge/beads/issueops"
 )
 
@@ -132,7 +134,12 @@ var showCmd = &cobra.Command{
 				if result != nil {
 					result.Close()
 				}
-				if isNotFoundErr(err) {
+				var memoryKey *utils.MemoryKeyError
+				if errors.As(err, &memoryKey) {
+					// Brain: a memory key pasted into show points at the memory.
+					fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
+					fmt.Fprintf(os.Stderr, "Hint: %s\n", memoryKey.Pointer())
+				} else if isNotFoundErr(err) {
 					fmt.Fprintf(os.Stderr, "Issue %s not found\n", id)
 					fmt.Fprintf(os.Stderr, "Hint: %s\n", showNotFoundHint(id))
 				} else {

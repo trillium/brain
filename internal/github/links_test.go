@@ -46,6 +46,11 @@ func TestExtractIdentifierIsRepositoryScoped(t *testing.T) {
 		{"https://github.com/someone/widgets/issues/7", ""},
 		{"github:7", "7"},
 	}
+	// On a GitHub Enterprise host the configured repository's refs count too.
+	ghe := &Tracker{client: NewClient("", "acme", "widgets").WithBaseURL("https://ghe.example.com/api/v3")}
+	if !ghe.IsExternalRef("https://ghe.example.com/acme/widgets/issues/7") || ghe.ExtractIdentifier("https://ghe.example.com/acme/widgets/issues/7") != "7" {
+		t.Error("a ref into the configured repository on its Enterprise host must be this tracker's")
+	}
 	for _, c := range cases {
 		if !tr.IsExternalRef(c.ref) {
 			t.Errorf("IsExternalRef(%q) = false, want true", c.ref)
