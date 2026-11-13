@@ -98,11 +98,23 @@ run `backup`, `rehearse` and `rollback` on the server's own machine.
 | Step | Writes to the live server? | What it does |
 |---|---|---|
 | `plan` | no | Per database: the cursors, brain's rows in `schema_migrations`, every migration left to run, the Dolt remotes, and whether a verified backup still matches. The dry run. |
-| `backup --backup-dir D` | no (reads; the backup goes to `D`) | `DOLT_BACKUP('sync-url', file://D/<db>)` (no backup remote is registered), then restores it on an isolated server and compares it with the database: `dolt_hashof_db()` (which covers the working set and the dolt-ignored tables), HEAD, and every table's row count, B-13 whole-row digest and `dolt_hashof_table`. Only an identical restore is marked verified. Records everything in `D/brain-upgrade-manifest.json`. |
-| `rehearse --backup-dir D` | no | Restores each backup on an isolated server, migrates the copy, verifies it, rolls the copy back and proves the rollback. |
+| `backup --backup-dir D` | no (reads; the backup goes to `D`) | `DOLT_BACKUP('sync-url', file://D/<db>)` (no backup remote is registered), then opens the backup as a database on a Dolt server of its own and compares it with the database: `dolt_hashof_db()` (which covers the working set and the dolt-ignored tables), HEAD, the length of HEAD's history, and every table's row count, B-13 whole-row digest and `dolt_hashof_table`. Only an identical copy is marked verified. Records everything, including the database's remotes and backup registrations, in `D/brain-upgrade-manifest.json`. |
+| `rehearse --backup-dir D` | no | Lays each backup out as a copy on a Dolt server of its own, migrates the copy, verifies it, rolls the copy back the offline way and proves the rollback. |
 | `apply --backup-dir D` | **yes** | Refuses unless every selected database has a verified backup and is still exactly its state (`dolt_hashof_db()` equal). Refuses a database with Dolt remotes unless `--allow-remote-backed`. Then migrates (`schema.MigrateUpWithLock`) and verifies. |
 | `verify --backup-dir D` | no | Every series at latest; every table and column the backup had is still there; per table, the row count and the whole-row digest over the columns the migration does not rewrite on purpose are unchanged. |
-| `rollback --backup-dir D --yes` | **yes** | `DOLT_BACKUP('restore', '--force', …)` over each database, then proves the result is the backed-up state (`dolt_hashof_db()` and every digest). |
+| `rollback --backup-dir D --yes --offline --data-dir DIR` | **yes** (server stopped) | Moves each database directory aside (kept as `<db>.migrated-<stamp>`) and lays the backup out in its place, keeping the repository config. Then start the server and run `rollback --check`. |
+| `rollback --backup-dir D --yes` | **yes** | Online: `DOLT_BACKUP('restore', '--force', …)` on the running server, then puts back the remotes and backup registrations, then proves the backed-up state. Slow on a large database (see [Rehearsal](#rehearsal)). |
+| `rollback --backup-dir D --check` | no | Compares each database with the state its backup holds. |
+
+**Why the backup is opened rather than restored.** A `file://` Dolt backup is a
+chunk store in the same layout as a database's `.dolt/noms`. Laid out under a
+database directory (cloned copy-on-write on APFS, so it costs no space and
+seconds), it opens as that database with its branches and working set.
+`DOLT_BACKUP('restore')` would do the same and then check every chunk's
+references across the whole history; on the 13 GB `brain_unified` that check
+runs for hours with Dolt 2.2.3. The comparison after opening (database hash,
+HEAD, history length, every table) is what proves the backup, and it is the
+same comparison B-13 used.
 
 The whole-row digest is the one B-13 used: per table, `COUNT(*)` and
 `BIT_XOR(CONV(SUBSTR(MD5(JSON_OBJECT(<every column>)), 1, 15), 16, 10))`, which
@@ -201,23 +213,34 @@ a client missed in step 12 fails loudly instead of writing.
 
 ## Rollback
 
-**Before step 11** (the databases are migrated, nothing runs 0.6.0 yet):
+**Before step 11** (the databases are migrated, nothing runs 0.6.0 yet), the
+fast way, on mini0:
 
 ```sh
-BEADS_DOLT_PASSWORD=<root password> ~/.local/bin/bd-0.6.0 brain upgrade rollback \
+launchctl bootout gui/$UID/com.brain.dolt-server        # stop the server
+~/.local/bin/bd-0.6.0 brain upgrade rollback --yes --offline \
+  --data-dir /Users/mini0/dolt-host/data \
+  --backup-dir /Users/mini0/data/brain-upgrade-0.6.0
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.brain.dolt-server.plist
+BEADS_DOLT_PASSWORD=<root password> ~/.local/bin/bd-0.6.0 brain upgrade rollback --check \
   --host 127.0.0.1 --port 3307 --user root \
-  --backup-dir /Users/mini0/data/brain-upgrade-0.6.0 --yes
+  --backup-dir /Users/mini0/data/brain-upgrade-0.6.0
 ```
 
-It restores each database from its backup over the migrated one and proves the
-result is the backed-up state (`dolt_hashof_db()` and every table digest). Then
-restart the writers on the old binary; nothing else changed.
+The migrated databases stay beside the restored ones as
+`<db>.migrated-<stamp>`; delete them once the rollback is settled. `--check`
+must report every database as the backed-up state. Then restart the writers on
+the old binary; nothing else changed.
+
+Without stopping the server, `rollback --yes` (no `--offline`) restores through
+`DOLT_BACKUP('restore', '--force')`. It needs no restart, but on `brain_unified`
+it runs for hours (see [Rehearsal](#rehearsal)), so it is the fallback.
 
 **After step 11:** revert the pin, run `brain rollout rollback --apply` (it puts
-each machine's `bd.pre-<sha>` back), then run `brain upgrade rollback` as above.
-A rollback restores the databases as they were at the backup: anything written
-after the migration is lost. If writes happened, export them first (for
-example `dolt diff` between the migration's last commit and HEAD) or fix forward
+each machine's `bd.pre-<sha>` back), then roll the databases back as above.
+A rollback returns the databases to the backup: anything written after the
+migration is lost. If writes happened, export them first (for example
+`dolt diff` between the migration's last commit and HEAD) or fix forward
 instead.
 
 ## Rehearsal

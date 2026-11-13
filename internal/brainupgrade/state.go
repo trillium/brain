@@ -4,14 +4,18 @@
 // The steps are separate because they have different safety properties:
 //
 //	plan      reads the database and reports what the migration would do
-//	backup    syncs a Dolt-native backup, restores it on an isolated server and
-//	          compares it with the database, table by table
+//	backup    syncs a Dolt-native backup, opens it as a database on a Dolt
+//	          server of its own and compares it with the database, table by
+//	          table
 //	apply     migrates a database whose verified backup still matches it
 //	verify    compares the migrated database with the state its backup recorded
-//	rollback  restores the backup over the database and proves the result is
-//	          the backed-up state
-//	rehearse  runs apply, verify and rollback on a copy restored from the
-//	          backup, on an isolated server, never on the database itself
+//	rollback  puts the backup back in place of the database (online through
+//	          DOLT_BACKUP restore, or offline by laying the backup out in place
+//	          of the stopped server's database directory) and proves the result
+//	          is the backed-up state
+//	rehearse  runs apply, verify and an offline rollback on a copy laid out
+//	          from the backup, on a Dolt server of its own, never on the
+//	          database itself
 //
 // The comparison is the B-13 whole-row digest: per table, the row count and
 // bit_xor over every row's md5(json_object(<every column>)), which is
@@ -79,11 +83,19 @@ type TableState struct {
 type DatabaseState struct {
 	Name string `json:"name"`
 	// DBHash is dolt_hashof_db(): the whole database, working set included.
-	DBHash  string             `json:"db_hash"`
-	Head    string             `json:"head"`
+	DBHash string `json:"db_hash"`
+	Head   string `json:"head"`
+	// Commits is the length of HEAD's history (dolt_log): reading it walks
+	// every commit, so equal counts on two copies mean neither lost history.
+	Commits int64              `json:"commits"`
 	Schema  schema.UpgradePlan `json:"schema"`
 	Tables  []TableState       `json:"tables"`
-	TakenAt time.Time          `json:"taken_at"`
+	// Remotes and Backups are the repository's registrations (name=url).
+	// They are repository config, not data: a backup does not carry them,
+	// so a rollback puts them back from here.
+	Remotes []string  `json:"remotes,omitempty"`
+	Backups []string  `json:"backups,omitempty"`
+	TakenAt time.Time `json:"taken_at"`
 }
 
 // Table returns the named table's state.
@@ -123,6 +135,15 @@ func Capture(ctx context.Context, conn *sql.Conn) (DatabaseState, error) {
 	if err := conn.QueryRowContext(ctx, "SELECT DOLT_HASHOF('HEAD')").Scan(&st.Head); err != nil {
 		return st, fmt.Errorf("reading HEAD of %s: %w", st.Name, err)
 	}
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM dolt_log").Scan(&st.Commits); err != nil {
+		return st, fmt.Errorf("reading the history of %s: %w", st.Name, err)
+	}
+	if st.Remotes, err = registrations(ctx, conn, "dolt_remotes"); err != nil {
+		return st, err
+	}
+	if st.Backups, err = registrations(ctx, conn, "dolt_backups"); err != nil {
+		return st, err
+	}
 	if st.Schema, err = schema.PlanUpgrade(ctx, conn); err != nil {
 		return st, fmt.Errorf("reading the schema cursors of %s: %w", st.Name, err)
 	}
@@ -138,6 +159,24 @@ func Capture(ctx context.Context, conn *sql.Conn) (DatabaseState, error) {
 		st.Tables = append(st.Tables, ts)
 	}
 	return st, nil
+}
+
+// registrations lists a dolt_remotes or dolt_backups table as name=url.
+func registrations(ctx context.Context, conn *sql.Conn, table string) ([]string, error) {
+	rows, err := conn.QueryContext(ctx, "SELECT name, url FROM "+table+" ORDER BY name")
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", table, err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var name, u string
+		if err := rows.Scan(&name, &u); err != nil {
+			return nil, err
+		}
+		out = append(out, name+"="+u)
+	}
+	return out, rows.Err()
 }
 
 // ListTables lists the base tables of the selected database, sorted. The
@@ -256,6 +295,9 @@ func CompareIdentical(want, got DatabaseState) []string {
 	}
 	if want.Head != got.Head {
 		diffs = append(diffs, fmt.Sprintf("HEAD %s, want %s", got.Head, want.Head))
+	}
+	if want.Commits != got.Commits {
+		diffs = append(diffs, fmt.Sprintf("%d commits in HEAD's history, want %d", got.Commits, want.Commits))
 	}
 	gotTables := map[string]TableState{}
 	for _, t := range got.Tables {

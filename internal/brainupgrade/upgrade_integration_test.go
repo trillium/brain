@@ -5,12 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/steveyegge/beads/internal/brainunify"
 	"github.com/steveyegge/beads/internal/brainupgrade"
 	"github.com/steveyegge/beads/internal/storage/schema"
 	"github.com/steveyegge/beads/internal/testutil"
@@ -21,12 +21,17 @@ const fixtureDB = "brain_unified"
 // startServer starts an isolated Dolt sql-server and returns its endpoint.
 func startServer(t *testing.T, ctx context.Context) brainupgrade.Endpoint {
 	t.Helper()
-	srv, err := brainunify.StartIsolatedServer(ctx, "dolt", t.TempDir())
+	return startServerOn(t, ctx, filepath.Join(t.TempDir(), "data")).Endpoint()
+}
+
+func startServerOn(t *testing.T, ctx context.Context, dataDir string) *brainupgrade.Server {
+	t.Helper()
+	srv, err := brainupgrade.StartServer(ctx, "dolt", dataDir)
 	if err != nil {
 		t.Fatalf("starting dolt sql-server: %v", err)
 	}
 	t.Cleanup(func() { _ = srv.Stop() })
-	return brainupgrade.Endpoint{Host: "127.0.0.1", Port: srv.Port, User: "root"}
+	return srv
 }
 
 func sha256Hex(s string) string {
@@ -110,7 +115,7 @@ func backupVerified(t *testing.T, ctx context.Context, live brainupgrade.Endpoin
 		t.Fatalf("TakeBackup: %v", err)
 	}
 	b := brainupgrade.Backup{Database: fixtureDB, URL: url, State: st}
-	diffs, err := brainupgrade.VerifyBackup(ctx, startServer(t, ctx), b)
+	diffs, err := brainupgrade.VerifyBackup(ctx, "dolt", t.TempDir(), b)
 	if err != nil {
 		t.Fatalf("VerifyBackup: %v", err)
 	}
@@ -152,6 +157,10 @@ func TestBackupApplyVerifyRollback(t *testing.T) {
 	defer cancel()
 	live := startServer(t, ctx)
 	seedBrainOneOne(t, ctx, live)
+	peer := "file://" + filepath.ToSlash(t.TempDir())
+	if err := schema.DrainCall(ctx, conn(t, ctx, live).Conn, "CALL DOLT_REMOTE('add', 'peer', ?)", peer); err != nil {
+		t.Fatal(err)
+	}
 	b := backupVerified(t, ctx, live)
 
 	res, err := brainupgrade.Apply(ctx, conn(t, ctx, live).Conn, b)
@@ -186,6 +195,10 @@ func TestBackupApplyVerifyRollback(t *testing.T) {
 	}
 	if !rb.OK() {
 		t.Fatalf("the rollback is not the backed-up state: %v", rb.Diffs)
+	}
+	// A restore drops the repository's config; the rollback puts it back.
+	if got, err := brainupgrade.Remotes(ctx, conn(t, ctx, live).Conn); err != nil || len(got) != 1 || got[0] != "peer="+peer {
+		t.Fatalf("remotes after rollback = %v, %v; want the peer back", got, err)
 	}
 	plan, err := schema.PlanUpgrade(ctx, conn(t, ctx, live).Conn)
 	if err != nil {
@@ -273,12 +286,15 @@ func TestRehearseRunsOnACopyAndLeavesTheDatabaseAlone(t *testing.T) {
 	seedBrainOneOne(t, ctx, live)
 	b := backupVerified(t, ctx, live)
 
-	reh, err := brainupgrade.Rehearse(ctx, startServer(t, ctx), b)
+	reh, err := brainupgrade.Rehearse(ctx, "dolt", t.TempDir(), b)
 	if err != nil {
 		t.Fatalf("Rehearse: %v", err)
 	}
 	if !reh.OK() {
 		t.Fatalf("rehearsal failed: copy %v, verify %v, rollback %v", reh.CopyDiffs, reh.Apply.Report.Failures, reh.Rollback.Diffs)
+	}
+	if reh.Rollback.Mode != "offline" || reh.Rollback.Aside == "" {
+		t.Errorf("the rehearsal must roll back the way the runbook does (offline, keeping the migrated copy): %+v", reh.Rollback)
 	}
 	if reh.After.Schema.Pending() {
 		t.Fatalf("the rehearsed copy is not at latest: %+v", reh.After.Schema)
@@ -331,5 +347,50 @@ func TestRemotesNamesEveryDoltRemote(t *testing.T) {
 	got, err := brainupgrade.Remotes(ctx, c.Conn)
 	if err != nil || len(got) != 1 || got[0] != "peer="+url {
 		t.Fatalf("Remotes = %v, %v; want [peer=%s]", got, err, url)
+	}
+}
+
+func TestOfflineRollbackPutsTheBackupInPlace(t *testing.T) {
+	testutil.RequireDoltCLIOnly(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Minute)
+	defer cancel()
+	dataDir := filepath.Join(t.TempDir(), "data")
+	srv := startServerOn(t, ctx, dataDir)
+	live := srv.Endpoint()
+	seedBrainOneOne(t, ctx, live)
+	peer := "file://" + filepath.ToSlash(t.TempDir())
+	if err := schema.DrainCall(ctx, conn(t, ctx, live).Conn, "CALL DOLT_REMOTE('add', 'peer', ?)", peer); err != nil {
+		t.Fatal(err)
+	}
+	b := backupVerified(t, ctx, live)
+	c, err := live.Conn(ctx, fixtureDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := brainupgrade.Apply(ctx, c.Conn, b); err != nil || !res.Report.OK() {
+		t.Fatalf("Apply: %v %v", err, res.Report.Failures)
+	}
+	_ = c.Close()
+
+	if err := srv.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	aside, err := brainupgrade.OfflineRollback(dataDir, b)
+	if err != nil {
+		t.Fatalf("OfflineRollback: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(aside, ".dolt")); err != nil {
+		t.Fatalf("the migrated database must be kept aside: %v", err)
+	}
+	again := startServerOn(t, ctx, dataDir).Endpoint()
+	diffs, err := brainupgrade.CheckRestored(ctx, again, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(diffs) > 0 {
+		t.Fatalf("the offline rollback is not the backed-up state: %v", diffs)
+	}
+	if got, err := brainupgrade.Remotes(ctx, conn(t, ctx, again).Conn); err != nil || len(got) != 1 || got[0] != "peer="+peer {
+		t.Fatalf("remotes after the offline rollback = %v, %v; want the peer kept", got, err)
 	}
 }

@@ -14,7 +14,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/steveyegge/beads/internal/brainunify"
 	"github.com/steveyegge/beads/internal/brainupgrade"
 	"github.com/steveyegge/beads/internal/configfile"
 	"github.com/steveyegge/beads/internal/storage/schema"
@@ -35,21 +34,22 @@ Steps, in order:
   plan      read each database and report what the migration would do (a dry
             run: nothing is written)
   backup    take a Dolt-native backup of each database into --backup-dir,
-            restore it on an isolated server and compare it with the database
-            by dolt_hashof_db, HEAD, and every table's row count and whole-row
-            digest; only a backup that reproduces the database is marked
-            verified
-  rehearse  restore each backup on an isolated server, migrate the copy,
-            verify it, and roll the copy back; the live databases are not
-            touched
+            open it as a database on a Dolt server of its own and compare it
+            with the database by dolt_hashof_db, HEAD, the length of its
+            history, and every table's row count and whole-row digest; only a
+            backup that reproduces the database is marked verified
+  rehearse  lay each backup out as a copy on a Dolt server of its own,
+            migrate the copy, verify it, and roll it back the offline way;
+            the live databases are not touched
   apply     migrate each database whose verified backup still matches it
             exactly, then verify it
   verify    compare a migrated database with the state its backup holds:
             every schema series at latest, every table and column kept, every
             row count and digest unchanged outside the columns the migration
             rewrites on purpose
-  rollback  restore each backup over its database and prove the result is the
-            backed-up state (discards everything written since the backup)
+  rollback  put each backup back in place of its database and prove the
+            result is the backed-up state (discards everything written since
+            the backup); see 'rollback --help' for the online and offline ways
 
 Stop every writer before 'backup' and keep them stopped until 'verify' passes
 and every client runs the new binary: 'apply' refuses a database that changed
@@ -73,6 +73,9 @@ var (
 	upgradeKeep      bool
 	upgradeYes       bool
 	upgradeRemotesOK bool
+	upgradeOffline   bool
+	upgradeCheck     bool
+	upgradeDataDir   string
 	upgradeJSON      bool
 	upgradeTimeout   time.Duration
 )
@@ -92,11 +95,14 @@ func init() {
 	}
 	upgradePlanCmd.Flags().StringVar(&upgradeBackupDir, "backup-dir", "", "also report whether each database still matches its verified backup here")
 	for _, c := range []*cobra.Command{upgradeBackupCmd, upgradeRehearseCmd} {
-		c.Flags().StringVar(&upgradeScratch, "scratch-dir", "", "directory for the isolated Dolt server that restores the backups (default: <backup-dir>/.scratch, removed afterwards)")
+		c.Flags().StringVar(&upgradeScratch, "scratch-dir", "", "directory a backup is opened in on a Dolt server of its own; same filesystem as --backup-dir so it can be cloned, not copied (default: <backup-dir>/.scratch, removed afterwards)")
 		c.Flags().StringVar(&upgradeDoltBin, "dolt-bin", "dolt", "dolt binary for the isolated server")
 		c.Flags().BoolVar(&upgradeKeep, "keep-scratch", false, "keep the isolated server's data directory afterwards")
 	}
 	upgradeApplyCmd.Flags().BoolVar(&upgradeRemotesOK, "allow-remote-backed", false, "migrate a database that has Dolt remotes; every clone of it must then be migrated by this binary too, and nothing may push the old schema back")
+	upgradeRollbackCmd.Flags().BoolVar(&upgradeOffline, "offline", false, "with the Dolt server stopped, lay each backup out in place of its database directory (minutes, not hours)")
+	upgradeRollbackCmd.Flags().StringVar(&upgradeDataDir, "data-dir", "", "the stopped Dolt server's data directory (with --offline)")
+	upgradeRollbackCmd.Flags().BoolVar(&upgradeCheck, "check", false, "only compare each database with the state its backup holds")
 	upgradeRollbackCmd.Flags().BoolVar(&upgradeYes, "yes", false, "confirm: replace each database with its backup, discarding everything written since")
 
 	brainCmd.AddCommand(brainUpgradeCmd)
@@ -213,25 +219,20 @@ func emitUpgradeJSON(cmd *cobra.Command, v any) error {
 	return enc.Encode(v)
 }
 
-// isolatedUpgradeServer starts the isolated Dolt server a backup is restored
-// on, under --scratch-dir or <backup-dir>/.scratch.
-func isolatedUpgradeServer(ctx context.Context, purpose string) (brainupgrade.Endpoint, func(), error) {
+// upgradeScratchDir is a fresh directory, under --scratch-dir or
+// <backup-dir>/.scratch, for the Dolt server a backup is opened on; done
+// removes it unless --keep-scratch.
+func upgradeScratchDir(purpose string) (dir string, done func()) {
 	base := upgradeScratch
 	if base == "" {
 		base = filepath.Join(upgradeBackupDir, ".scratch")
 	}
-	dir := filepath.Join(base, fmt.Sprintf("%s-%d", purpose, time.Now().UnixNano()))
-	srv, err := brainunify.StartIsolatedServer(ctx, upgradeDoltBin, dir)
-	if err != nil {
-		return brainupgrade.Endpoint{}, nil, err
-	}
-	stop := func() {
-		_ = srv.Stop()
+	dir = filepath.Join(base, fmt.Sprintf("%s-%d", purpose, time.Now().UnixNano()))
+	return dir, func() {
 		if !upgradeKeep {
 			_ = os.RemoveAll(dir)
 		}
 	}
-	return brainupgrade.Endpoint{Host: "127.0.0.1", Port: srv.Port, User: "root"}, stop, nil
 }
 
 // upgradePlanEntry is one database in the plan.
@@ -350,7 +351,7 @@ func pendingText(names []string) string {
 
 var upgradeBackupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "Take a Dolt-native backup of each database and verify it by restoring it",
+	Short: "Take a Dolt-native backup of each database and verify it against the database",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		if err := requireBackupDir(); err != nil {
@@ -393,18 +394,15 @@ var upgradeBackupCmd = &cobra.Command{
 				return err
 			}
 			// The server wrote the backup; seeing it here is what proves this
-			// command runs where a restore can read it.
+			// command runs where the backup can be opened and rolled back from.
 			if _, err := os.Stat(filepath.Join(upgradeBackupDir, name)); err != nil {
 				return fmt.Errorf("the server reports a backup of %s at %s, but it is not visible here (%w): run this on the server's machine", name, url, err)
 			}
 			b := brainupgrade.Backup{Database: name, URL: url, State: st}
-			_, _ = fmt.Fprintf(out, "%s: verifying the backup by restoring it on an isolated server\n", name)
-			srv, stop, err := isolatedUpgradeServer(ctx, "verify-"+name)
-			if err != nil {
-				return err
-			}
-			diffs, err := brainupgrade.VerifyBackup(ctx, srv, b)
-			stop()
+			_, _ = fmt.Fprintf(out, "%s: verifying the backup: opening it on a Dolt server of its own and comparing\n", name)
+			dir, done := upgradeScratchDir("verify-" + name)
+			diffs, err := brainupgrade.VerifyBackup(ctx, upgradeDoltBin, dir, b)
+			done()
 			if err != nil {
 				return err
 			}
@@ -453,7 +451,7 @@ func writeBackupResult(out io.Writer, b brainupgrade.Backup) {
 
 var upgradeRehearseCmd = &cobra.Command{
 	Use:   "rehearse",
-	Short: "Migrate, verify and roll back a copy restored from each backup, on an isolated server",
+	Short: "Migrate, verify and roll back a copy of each backup, on a Dolt server of its own",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		m, err := loadUpgradeManifest()
@@ -473,13 +471,10 @@ var upgradeRehearseCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: restoring a copy from %s on an isolated server\n", name, b.URL)
-			srv, stop, err := isolatedUpgradeServer(ctx, "rehearse-"+name)
-			if err != nil {
-				return err
-			}
-			reh, err := brainupgrade.Rehearse(ctx, srv, b)
-			stop()
+			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: rehearsing on a copy of %s on a Dolt server of its own\n", name, b.URL)
+			dir, done := upgradeScratchDir("rehearse-" + name)
+			reh, err := brainupgrade.Rehearse(ctx, upgradeDoltBin, dir, b)
+			done()
 			if err != nil {
 				return err
 			}
@@ -521,9 +516,9 @@ func writeRehearsal(out io.Writer, r brainupgrade.Rehearsal) {
 	}
 	_, _ = fmt.Fprintf(out, "  migration: %d migrations in %.1fs\n", r.Apply.Applied, r.Apply.Seconds)
 	writeMigrationReport(out, r.Apply.Report)
-	_, _ = fmt.Fprintf(out, "  rollback: restored in %.1fs, dolt_hashof_db %s", r.Rollback.Seconds, r.Rollback.DBHash)
+	_, _ = fmt.Fprintf(out, "  rollback (%s: stop, put the backup in place, start): %.1fs", r.Rollback.Mode, r.Rollback.Seconds)
 	if r.Rollback.OK() {
-		_, _ = fmt.Fprintln(out, " (the backed-up state)")
+		_, _ = fmt.Fprintf(out, ", dolt_hashof_db %s: the backed-up state\n", r.Apply.Report.DBHashBefore)
 	} else {
 		_, _ = fmt.Fprintln(out)
 		for _, d := range r.Rollback.Diffs {
@@ -710,25 +705,44 @@ var upgradeVerifyCmd = &cobra.Command{
 
 var upgradeRollbackCmd = &cobra.Command{
 	Use:   "rollback",
-	Short: "Restore each database from its backup and prove it is the backed-up state",
-	Args:  cobra.NoArgs,
+	Short: "Put each database back to its backup and prove it is the backed-up state",
+	Long: `Puts each database back to the state its verified backup holds, discarding
+everything written since the backup.
+
+  rollback --yes                 online: DOLT_BACKUP('restore', '--force') on the
+                                 running server, then the remotes and backup
+                                 registrations the backup recorded are added back.
+                                 No restart, but slow on a large database: Dolt
+                                 checks every chunk's references across the whole
+                                 history first.
+  rollback --yes --offline --data-dir DIR
+                                 with the Dolt server STOPPED: each database
+                                 directory under DIR is moved aside (kept as
+                                 <db>.migrated-<stamp>) and the backup is laid out
+                                 in its place, keeping the repository config.
+                                 Minutes. Start the server, then run --check.
+  rollback --check               compare each database with the state its backup
+                                 holds (reads only).`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		m, err := loadUpgradeManifest()
 		if err != nil {
 			return err
 		}
-		if !upgradeYes {
-			return errors.New("rollback replaces each database with its backup and discards everything written since; pass --yes to confirm")
+		if !upgradeYes && !upgradeCheck {
+			return errors.New("rollback replaces each database with its backup and discards everything written since; pass --yes to confirm (or --check to only compare)")
+		}
+		if upgradeOffline && upgradeDataDir == "" {
+			return errors.New("--offline needs --data-dir, the stopped server's data directory")
 		}
 		ctx, cancel := context.WithTimeout(cmd.Context(), upgradeTimeout)
 		defer cancel()
 		ep := upgradeEndpoint()
-		targets, err := upgradeTargets(ctx, ep, m)
+		targets, err := upgradeTargets(ctx, brainupgrade.Endpoint{}, m)
 		if err != nil {
 			return err
 		}
-		var results []brainupgrade.RollbackResult
-		failed := false
+		var backups []brainupgrade.Backup
 		for _, name := range targets {
 			b, err := manifestBackup(m, name)
 			if err != nil {
@@ -737,15 +751,41 @@ var upgradeRollbackCmd = &cobra.Command{
 			if !b.Verified {
 				return fmt.Errorf("the backup of %s was never verified; refusing to restore it", name)
 			}
-			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: restoring from %s\n", name, b.URL)
-			res, err := brainupgrade.Rollback(ctx, ep, b)
+			backups = append(backups, b)
+		}
+		if upgradeOffline {
+			// Swapping the directory under a running server would leave it
+			// serving the old files; the server must be down.
+			if db, err := ep.Open(ctx, ""); err == nil {
+				_ = db.Close()
+				return fmt.Errorf("the Dolt server on %s is running; stop it before an offline rollback (or roll back online without --offline)", ep)
+			}
+		}
+		var results []brainupgrade.RollbackResult
+		failed := false
+		for _, b := range backups {
+			var res brainupgrade.RollbackResult
+			switch {
+			case upgradeCheck:
+				res = brainupgrade.RollbackResult{Database: b.Database, Mode: "check"}
+				res.Diffs, err = brainupgrade.CheckRestored(ctx, ep, b)
+			case upgradeOffline:
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: laying out %s in place of %s\n", b.Database, b.URL, filepath.Join(upgradeDataDir, b.Database))
+				start := time.Now()
+				res = brainupgrade.RollbackResult{Database: b.Database, Mode: "offline"}
+				res.Aside, err = brainupgrade.OfflineRollback(upgradeDataDir, b)
+				res.Seconds = time.Since(start).Seconds()
+			default:
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s: restoring from %s on the running server\n", b.Database, b.URL)
+				res, err = brainupgrade.Rollback(ctx, ep, b)
+			}
 			if err != nil {
 				return err
 			}
 			if !res.OK() {
 				failed = true
 			}
-			if _, err := writeUpgradeReport("rollback", name, res); err != nil {
+			if _, err := writeUpgradeReport("rollback-"+res.Mode, b.Database, res); err != nil {
 				return err
 			}
 			results = append(results, res)
@@ -756,18 +796,24 @@ var upgradeRollbackCmd = &cobra.Command{
 			}
 		} else {
 			for _, r := range results {
-				verdict := "the backed-up state"
-				if !r.OK() {
-					verdict = "DIFFERS from the backed-up state"
+				switch {
+				case r.Mode == "offline":
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: backup laid out in %.1fs; the migrated database is kept at %s\n", r.Database, r.Seconds, r.Aside)
+				case r.OK():
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: the backed-up state (%s)\n", r.Database, r.Mode)
+				default:
+					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: DIFFERS from the backed-up state (%s)\n", r.Database, r.Mode)
+					for _, d := range r.Diffs {
+						_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  differs: %s\n", d)
+					}
 				}
-				_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s: restored in %.1fs, dolt_hashof_db %s: %s\n", r.Database, r.Seconds, r.DBHash, verdict)
-				for _, d := range r.Diffs {
-					_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  differs: %s\n", d)
-				}
+			}
+			if upgradeOffline {
+				_, _ = fmt.Fprintln(cmd.OutOrStdout(), "Start the Dolt server, then prove the result with: bd brain upgrade rollback --check --backup-dir "+upgradeBackupDir)
 			}
 		}
 		if failed {
-			return errors.New("a restored database is not its backed-up state")
+			return errors.New("a database is not its backed-up state")
 		}
 		return nil
 	},

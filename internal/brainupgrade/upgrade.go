@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/steveyegge/beads/internal/storage/doltutil"
@@ -185,20 +186,7 @@ func BeadsDatabases(ctx context.Context, db *sql.DB) ([]string, error) {
 // Remotes lists the Dolt remotes of the database conn has selected, as
 // "name=url".
 func Remotes(ctx context.Context, conn *sql.Conn) ([]string, error) {
-	rows, err := conn.QueryContext(ctx, "SELECT name, url FROM dolt_remotes ORDER BY name")
-	if err != nil {
-		return nil, fmt.Errorf("listing dolt remotes: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var out []string
-	for rows.Next() {
-		var name, url string
-		if err := rows.Scan(&name, &url); err != nil {
-			return nil, err
-		}
-		out = append(out, name+"="+url)
-	}
-	return out, rows.Err()
+	return registrations(ctx, conn, "dolt_remotes")
 }
 
 // ErrChanged reports a database that is no longer the state its backup holds.
@@ -240,29 +228,37 @@ func Restore(ctx context.Context, db *sql.DB, url, database string, force bool) 
 	return nil
 }
 
-// VerifyBackup restores b on srv, an isolated server holding no database of
-// that name, reads the restored state and compares it with the state b
-// recorded. It returns the differences; none means the backup reproduces the
-// database.
-func VerifyBackup(ctx context.Context, srv Endpoint, b Backup) ([]string, error) {
-	root, err := srv.Open(ctx, "")
+// VerifyBackup lays b out as a database under scratchDir (see Materialize),
+// opens it on a Dolt server of its own, reads its state and compares it with
+// the state b recorded. It returns the differences; none means the backup
+// reproduces the database. scratchDir is left for the caller to remove.
+func VerifyBackup(ctx context.Context, bin, scratchDir string, b Backup) ([]string, error) {
+	dataDir := filepath.Join(scratchDir, "data")
+	if err := Materialize(b, filepath.Join(dataDir, b.Database)); err != nil {
+		return nil, err
+	}
+	srv, err := StartServer(ctx, bin, dataDir)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = root.Close() }()
-	if err := Restore(ctx, root, b.URL, b.Database, false); err != nil {
-		return nil, err
-	}
-	c, err := srv.Conn(ctx, b.Database)
+	defer func() { _ = srv.Stop() }()
+	return CheckRestored(ctx, srv.Endpoint(), b)
+}
+
+// CheckRestored reads the state of b's database on the server at ep and
+// compares it with the state b recorded, for a copy that must be exactly the
+// backup (a verification copy, a rollback).
+func CheckRestored(ctx context.Context, ep Endpoint, b Backup) ([]string, error) {
+	c, err := ep.Conn(ctx, b.Database)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = c.Close() }()
-	restored, err := Capture(ctx, c.Conn)
+	got, err := Capture(ctx, c.Conn)
 	if err != nil {
 		return nil, err
 	}
-	return CompareIdentical(b.State, restored), nil
+	return CompareIdentical(b.State, got), nil
 }
 
 // ApplyResult is one database's migration.
@@ -311,22 +307,29 @@ func Apply(ctx context.Context, conn *sql.Conn, b Backup) (ApplyResult, error) {
 	return res, nil
 }
 
-// RollbackResult is one database's restore from its backup.
+// RollbackResult is one database's return to its backup.
 type RollbackResult struct {
-	Database string   `json:"database"`
-	DBHash   string   `json:"db_hash"`
-	Seconds  float64  `json:"seconds"`
-	Diffs    []string `json:"diffs,omitempty"`
+	Database string `json:"database"`
+	// Mode is "online" (DOLT_BACKUP restore on the running server) or
+	// "offline" (the backup laid out in place of the stopped server's
+	// database directory).
+	Mode    string   `json:"mode"`
+	Aside   string   `json:"replaced_dir_kept_at,omitempty"`
+	Seconds float64  `json:"seconds"`
+	Diffs   []string `json:"diffs,omitempty"`
 }
 
 // OK reports whether the database is the backed-up state again.
 func (r RollbackResult) OK() bool { return len(r.Diffs) == 0 }
 
-// Rollback restores b over its database on srv, replacing whatever the
-// database holds, then reads the result and compares it with the state b
-// recorded.
+// Rollback restores b over its database on the running server at srv with
+// DOLT_BACKUP('restore', '--force'), puts back the remotes and backup
+// registrations b recorded (a restore drops the repository's config), and
+// proves the result is the backed-up state. On a large database this is slow:
+// Dolt checks every chunk's references across the whole history. The offline
+// path (OfflineRollback) takes minutes.
 func Rollback(ctx context.Context, srv Endpoint, b Backup) (RollbackResult, error) {
-	res := RollbackResult{Database: b.Database}
+	res := RollbackResult{Database: b.Database, Mode: "online"}
 	root, err := srv.Open(ctx, "")
 	if err != nil {
 		return res, err
@@ -341,21 +344,28 @@ func Rollback(ctx context.Context, srv Endpoint, b Backup) (RollbackResult, erro
 	if err != nil {
 		return res, err
 	}
-	defer func() { _ = c.Close() }()
-	got, err := Capture(ctx, c.Conn)
-	if err != nil {
-		return res, err
+	for _, reg := range []struct {
+		call  string
+		pairs []string
+	}{{"DOLT_REMOTE", b.State.Remotes}, {"DOLT_BACKUP", b.State.Backups}} {
+		for _, pair := range reg.pairs {
+			name, u, _ := strings.Cut(pair, "=")
+			if err := schema.DrainCall(ctx, c.Conn, "CALL "+reg.call+"('add', ?, ?)", name, u); err != nil {
+				_ = c.Close()
+				return res, fmt.Errorf("re-registering %s %s on %s: %w", strings.ToLower(strings.TrimPrefix(reg.call, "DOLT_")), name, b.Database, err)
+			}
+		}
 	}
-	res.DBHash = got.DBHash
-	res.Diffs = CompareIdentical(b.State, got)
-	return res, nil
+	_ = c.Close()
+	res.Diffs, err = CheckRestored(ctx, srv, b)
+	return res, err
 }
 
-// Rehearsal is a migration run on a copy restored from a backup.
+// Rehearsal is a migration run on a copy laid out from a backup.
 type Rehearsal struct {
 	Database string `json:"database"`
-	// CopyDiffs compares the restored copy with the backed-up state; it must
-	// be empty, or the rehearsal did not run on the backup.
+	// CopyDiffs compares the copy with the backed-up state; it must be
+	// empty, or the rehearsal did not run on the backup.
 	CopyDiffs []string       `json:"copy_diffs,omitempty"`
 	Apply     ApplyResult    `json:"apply"`
 	After     DatabaseState  `json:"after"`
@@ -368,20 +378,28 @@ func (r Rehearsal) OK() bool {
 	return len(r.CopyDiffs) == 0 && r.Apply.Report.OK() && r.Rollback.OK()
 }
 
-// Rehearse restores b on srv, an isolated server, migrates the copy, verifies
-// it, reads its state after the migration, then rolls the copy back and
-// proves the rollback. Nothing outside srv is touched.
-func Rehearse(ctx context.Context, srv Endpoint, b Backup) (Rehearsal, error) {
+// Rehearse lays b out under scratchDir, serves it on a Dolt server of its own,
+// migrates and verifies the copy, reads its state after the migration, then
+// rolls it back the way the runbook does on the host (stop the server, put
+// the backup in place of the database directory, start it) and proves the
+// rollback. Nothing outside scratchDir is touched.
+func Rehearse(ctx context.Context, bin, scratchDir string, b Backup) (Rehearsal, error) {
 	reh := Rehearsal{Database: b.Database}
-	root, err := srv.Open(ctx, "")
+	dataDir := filepath.Join(scratchDir, "data")
+	if err := Materialize(b, filepath.Join(dataDir, b.Database)); err != nil {
+		return reh, err
+	}
+	srv, err := StartServer(ctx, bin, dataDir)
 	if err != nil {
 		return reh, err
 	}
-	defer func() { _ = root.Close() }()
-	if err := Restore(ctx, root, b.URL, b.Database, false); err != nil {
-		return reh, err
-	}
-	c, err := srv.Conn(ctx, b.Database)
+	stopped := false
+	defer func() {
+		if !stopped {
+			_ = srv.Stop()
+		}
+	}()
+	c, err := srv.Endpoint().Conn(ctx, b.Database)
 	if err != nil {
 		return reh, err
 	}
@@ -403,8 +421,22 @@ func Rehearse(ctx context.Context, srv Endpoint, b Backup) (Rehearsal, error) {
 		return reh, err
 	}
 	_ = c.Close()
-	if reh.Rollback, err = Rollback(ctx, srv, b); err != nil {
+
+	start := time.Now()
+	if err := srv.Stop(); err != nil {
 		return reh, err
 	}
-	return reh, nil
+	stopped = true
+	aside, err := OfflineRollback(dataDir, b)
+	if err != nil {
+		return reh, err
+	}
+	srv, err = StartServer(ctx, bin, dataDir)
+	if err != nil {
+		return reh, err
+	}
+	stopped = false
+	reh.Rollback = RollbackResult{Database: b.Database, Mode: "offline", Aside: aside, Seconds: time.Since(start).Seconds()}
+	reh.Rollback.Diffs, err = CheckRestored(ctx, srv.Endpoint(), b)
+	return reh, err
 }
