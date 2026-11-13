@@ -722,8 +722,8 @@ everything written since the backup.
                                  history first.
   rollback --yes --offline --data-dir DIR
                                  with the Dolt server STOPPED: each database
-                                 directory under DIR is moved aside (kept as
-                                 <db>.migrated-<stamp>) and the backup is laid out
+                                 directory under DIR is moved aside (kept at
+                                 DIR.migrated-<stamp>/<db>) and the backup is laid out
                                  in its place, keeping the repository config.
                                  Minutes. Start the server, then run --check.
   rollback --check               compare each database with the state its backup

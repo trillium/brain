@@ -382,6 +382,9 @@ func TestOfflineRollbackPutsTheBackupInPlace(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(aside, ".dolt")); err != nil {
 		t.Fatalf("the migrated database must be kept aside: %v", err)
 	}
+	if rel, err := filepath.Rel(dataDir, aside); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("the migrated database is kept inside the data dir (%s), where the server would serve it", aside)
+	}
 	again := startServerOn(t, ctx, dataDir).Endpoint()
 	diffs, err := brainupgrade.CheckRestored(ctx, again, b)
 	if err != nil {

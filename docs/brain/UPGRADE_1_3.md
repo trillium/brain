@@ -102,7 +102,7 @@ run `backup`, `rehearse` and `rollback` on the server's own machine.
 | `rehearse --backup-dir D` | no | Lays each backup out as a copy on a Dolt server of its own, migrates the copy, verifies it, rolls the copy back the offline way and proves the rollback. |
 | `apply --backup-dir D` | **yes** | Refuses unless every selected database has a verified backup and is still exactly its state (`dolt_hashof_db()` equal). Refuses a database with Dolt remotes unless `--allow-remote-backed`. Then migrates (`schema.MigrateUpWithLock`) and verifies. |
 | `verify --backup-dir D` | no | Every series at latest; every table and column the backup had is still there; per table, the row count and the whole-row digest over the columns the migration does not rewrite on purpose are unchanged. |
-| `rollback --backup-dir D --yes --offline --data-dir DIR` | **yes** (server stopped) | Moves each database directory aside (kept as `<db>.migrated-<stamp>`) and lays the backup out in its place, keeping the repository config. Then start the server and run `rollback --check`. |
+| `rollback --backup-dir D --yes --offline --data-dir DIR` | **yes** (server stopped) | Moves each database directory out of the data dir (kept at `DIR.migrated-<stamp>/<db>`, where the server does not serve it) and lays the backup out in its place, keeping the repository config. Then start the server and run `rollback --check`. |
 | `rollback --backup-dir D --yes` | **yes** | Online: `DOLT_BACKUP('restore', '--force', …)` on the running server, then puts back the remotes and backup registrations, then proves the backed-up state. Slow on a large database (see [Rehearsal](#rehearsal)). |
 | `rollback --backup-dir D --check` | no | Compares each database with the state its backup holds. |
 
@@ -227,8 +227,9 @@ BEADS_DOLT_PASSWORD=<root password> ~/.local/bin/bd-0.6.0 brain upgrade rollback
   --backup-dir /Users/mini0/data/brain-upgrade-0.6.0
 ```
 
-The migrated databases stay beside the restored ones as
-`<db>.migrated-<stamp>`; delete them once the rollback is settled. `--check`
+The migrated databases are kept at
+`/Users/mini0/dolt-host/data.migrated-<stamp>/<db>`, outside the data dir;
+delete them once the rollback is settled. `--check`
 must report every database as the backed-up state. Then restart the writers on
 the old binary; nothing else changed.
 

@@ -276,6 +276,12 @@ func runServe() error {
 	if err != nil {
 		return HandleError("%v", err)
 	}
+	// Brain: the provider arm serves beneath every brain layer of the store.
+	if db.source == serveSourceProvider {
+		if err := brainServeGate(rootCtx, info.BeadsDir, store, namespaceWide); err != nil {
+			return HandleError("bd serve: %v", err)
+		}
+	}
 
 	if db.source == serveSourceStore {
 		// Nothing to create. PersistentPreRunE already opened this workspace

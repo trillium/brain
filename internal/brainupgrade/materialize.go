@@ -109,16 +109,21 @@ func copyFile(src, dst string) error {
 
 // OfflineRollback puts the backup b in place of its database directory under
 // dataDir, which the Dolt server serving it must not be running on. The
-// current directory is kept beside it as <db>.migrated-<UTC stamp>, and its
-// repository config (.dolt/repo_state.json and config.json: the remotes and
-// backup registrations, which a backup does not carry) is carried over. It
-// returns where the replaced directory went.
+// current directory is kept outside dataDir, so the restarted server does not
+// serve it as a database of its own: at <dataDir>.migrated-<UTC stamp>/<db>.
+// Its repository config (.dolt/repo_state.json and config.json: the remotes
+// and backup registrations, which a backup does not carry) is carried over.
+// It returns where the replaced directory went.
 func OfflineRollback(dataDir string, b Backup) (string, error) {
 	dbDir := filepath.Join(dataDir, b.Database)
 	if _, err := os.Stat(filepath.Join(dbDir, ".dolt")); err != nil {
 		return "", fmt.Errorf("%s is not a Dolt database directory: %w", dbDir, err)
 	}
-	aside := fmt.Sprintf("%s.migrated-%s", dbDir, time.Now().UTC().Format("20060102T150405Z"))
+	asideDir := fmt.Sprintf("%s.migrated-%s", filepath.Clean(dataDir), time.Now().UTC().Format("20060102T150405Z"))
+	if err := os.MkdirAll(asideDir, 0o750); err != nil {
+		return "", err
+	}
+	aside := filepath.Join(asideDir, b.Database)
 	if err := os.Rename(dbDir, aside); err != nil {
 		return "", fmt.Errorf("moving %s aside: %w", dbDir, err)
 	}
