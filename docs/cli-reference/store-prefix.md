@@ -31,7 +31,7 @@ ids carry it, and every read (narrow or wide) resolves ownership from this
 same record.
 
 Release and history are the deliberate ownership-change edge
-(docs/design/brain-prefix-release.md): release deletes the row only through
+(engdocs/design/brain-prefix-release.md): release deletes the row only through
 an explicit, confirmed act by the owner's own namespace, and every ownership
 change — a claim and a release alike — appends a row to the append-only
 brain_store_prefix_events audit table in the same transaction, so ownership

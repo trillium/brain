@@ -3383,3 +3383,60 @@ func TestShouldPushIssue_ExcludeIDDirect(t *testing.T) {
 		})
 	}
 }
+
+// lookupTracker is a mockTracker that can read linked issues cheaply, so a dry
+// run may test them against the real push's up-to-date rule.
+type lookupTracker struct{ *mockTracker }
+
+func (lookupTracker) DryRunLooksUp() bool { return true }
+
+// A dry run reads remote copies only from a tracker that says it can do so
+// cheaply (DryRunLookup); otherwise it reads nothing and counts a changed
+// linked issue as an update, as upstream's dry run does.
+func TestEngineDryRunReadsRemoteOnlyWhenTheTrackerCanLookUp(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		lookup        bool
+		wantFetches   int
+		wantUpdated   int
+		wantSkippedAt int
+	}{
+		{name: "no lookup", lookup: false, wantFetches: 0, wantUpdated: 1},
+		{name: "lookup", lookup: true, wantFetches: 1, wantUpdated: 0, wantSkippedAt: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := newTestStore(t)
+			defer store.Close()
+			issue := &types.Issue{
+				ID: "bd-dry1", Title: "Same on both sides", Status: types.StatusOpen,
+				IssueType: types.TypeTask, Priority: 2, ExternalRef: strPtr("https://test.test/EXT-DRY1"),
+			}
+			if err := store.CreateIssue(ctx, issue, "test-actor"); err != nil {
+				t.Fatalf("CreateIssue() error: %v", err)
+			}
+			mock := newMockTracker("test")
+			mock.issues = []TrackerIssue{{ID: "EXT-DRY1", Identifier: "EXT-DRY1", Title: "Same on both sides", UpdatedAt: time.Now().Add(-time.Hour)}}
+			var it IssueTracker = mock
+			if tc.lookup {
+				it = lookupTracker{mock}
+			}
+			engine := NewEngine(it, store, "test-actor")
+			engine.PushHooks = &PushHooks{ContentEqual: func(local *types.Issue, remote *TrackerIssue) bool { return local.Title == remote.Title }}
+
+			result, err := engine.Sync(ctx, SyncOptions{Push: true, DryRun: true})
+			if err != nil {
+				t.Fatalf("Sync() error: %v", err)
+			}
+			if mock.fetchCalls != tc.wantFetches {
+				t.Errorf("FetchIssue calls = %d, want %d", mock.fetchCalls, tc.wantFetches)
+			}
+			if result.PushStats.Updated != tc.wantUpdated {
+				t.Errorf("dry-run updated = %d, want %d", result.PushStats.Updated, tc.wantUpdated)
+			}
+			if tc.wantSkippedAt > 0 && result.PushStats.Skipped < tc.wantSkippedAt {
+				t.Errorf("dry-run skipped = %d, want the up-to-date issue skipped", result.PushStats.Skipped)
+			}
+		})
+	}
+}

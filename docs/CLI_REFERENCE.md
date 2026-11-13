@@ -299,6 +299,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd brain store](#bd-brain-store) — Run a command against any store the registry knows, without needing its wrapper
   - [bd brain stores](#bd-brain-stores) — Manage the brain federation store registry
   - [bd brain unify](#bd-brain-unify) — Plan, build, replay and verify the consolidation of brain's stores into one Dolt database
+  - [bd brain upgrade](#bd-brain-upgrade) — Migrate brain's Dolt databases to this binary's schema behind a verified backup
 - [bd completion](#bd-completion) — Generate the autocompletion script for the specified shell
   - [bd completion bash](#bd-completion-bash) — Generate the autocompletion script for bash
   - [bd completion fish](#bd-completion-fish) — Generate the autocompletion script for fish
@@ -5405,7 +5406,7 @@ ids carry it, and every read (narrow or wide) resolves ownership from this
 same record.
 
 Release and history are the deliberate ownership-change edge
-(docs/design/brain-prefix-release.md): release deletes the row only through
+(engdocs/design/brain-prefix-release.md): release deletes the row only through
 an explicit, confirmed act by the owner's own namespace, and every ownership
 change — a claim and a release alike — appends a row to the append-only
 brain_store_prefix_events audit table in the same transaction, so ownership
@@ -8835,6 +8836,174 @@ bd brain unify verify [flags]
       --rescue-orphans-from strings   replica database that stays excluded as a store but whose beads no store holds are brought in as db:<name> (repeatable; give the same value to plan, build, replay and verify)
       --template string               store whose schema the unified database inherited
       --timeout duration              overall time budget for verification (default 3h0m0s)
+```
+
+#### bd brain upgrade
+
+Moves every brain database on a Dolt server (brain_unified and any per-store
+database) from the beads 1.1 schema to the schema this binary carries.
+
+Steps, in order:
+
+  plan      read each database and report what the migration would do (a dry
+            run: nothing is written)
+  backup    take a Dolt-native backup of each database into --backup-dir,
+            restore it on an isolated server and compare it with the database
+            by dolt_hashof_db, HEAD, and every table's row count and whole-row
+            digest; only a backup that reproduces the database is marked
+            verified
+  rehearse  restore each backup on an isolated server, migrate the copy,
+            verify it, and roll the copy back; the live databases are not
+            touched
+  apply     migrate each database whose verified backup still matches it
+            exactly, then verify it
+  verify    compare a migrated database with the state its backup holds:
+            every schema series at latest, every table and column kept, every
+            row count and digest unchanged outside the columns the migration
+            rewrites on purpose
+  rollback  restore each backup over its database and prove the result is the
+            backed-up state (discards everything written since the backup)
+
+Stop every writer before 'backup' and keep them stopped until 'verify' passes
+and every client runs the new binary: 'apply' refuses a database that changed
+after its backup, because restoring that backup would lose the change.
+
+The steps need a login that may run DOLT_BACKUP and DDL (the server's root
+account): --user, BEADS_DOLT_SERVER_USER, then root; the password from
+BEADS_DOLT_PASSWORD, else the [host:port] entry of the beads credentials file.
+A file:// backup is written by the server, so run 'backup', 'rehearse' and
+'rollback' on the server's own machine.
+
+```
+bd brain upgrade [command]
+```
+
+##### bd brain upgrade apply
+
+Migrate each database whose verified backup still matches it, then verify it
+
+```
+bd brain upgrade apply [flags]
+```
+
+**Flags:**
+
+```
+      --allow-remote-backed   migrate a database that has Dolt remotes; every clone of it must then be migrated by this binary too, and nothing may push the old schema back
+      --backup-dir string     directory holding the backups and their manifest (required)
+      --database strings      database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --host string           Dolt sql-server host (default "127.0.0.1")
+      --json                  print the result as JSON
+      --port int              Dolt sql-server port (default 3307)
+      --timeout duration      overall time budget (default 6h0m0s)
+      --user string           login on the server (default BEADS_DOLT_SERVER_USER, then root)
+```
+
+##### bd brain upgrade backup
+
+Take a Dolt-native backup of each database and verify it by restoring it
+
+```
+bd brain upgrade backup [flags]
+```
+
+**Flags:**
+
+```
+      --backup-dir string    directory holding the backups and their manifest (required)
+      --database strings     database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --dolt-bin string      dolt binary for the isolated server (default "dolt")
+      --host string          Dolt sql-server host (default "127.0.0.1")
+      --json                 print the result as JSON
+      --keep-scratch         keep the isolated server's data directory afterwards
+      --port int             Dolt sql-server port (default 3307)
+      --scratch-dir string   directory for the isolated Dolt server that restores the backups (default: <backup-dir>/.scratch, removed afterwards)
+      --timeout duration     overall time budget (default 6h0m0s)
+      --user string          login on the server (default BEADS_DOLT_SERVER_USER, then root)
+```
+
+##### bd brain upgrade plan
+
+Report what the migration would do to each database (reads only)
+
+```
+bd brain upgrade plan [flags]
+```
+
+**Flags:**
+
+```
+      --backup-dir string   also report whether each database still matches its verified backup here
+      --database strings    database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --host string         Dolt sql-server host (default "127.0.0.1")
+      --json                print the result as JSON
+      --port int            Dolt sql-server port (default 3307)
+      --timeout duration    overall time budget (default 6h0m0s)
+      --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
+```
+
+##### bd brain upgrade rehearse
+
+Migrate, verify and roll back a copy restored from each backup, on an isolated server
+
+```
+bd brain upgrade rehearse [flags]
+```
+
+**Flags:**
+
+```
+      --backup-dir string    directory holding the backups and their manifest (required)
+      --database strings     database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --dolt-bin string      dolt binary for the isolated server (default "dolt")
+      --host string          Dolt sql-server host (default "127.0.0.1")
+      --json                 print the result as JSON
+      --keep-scratch         keep the isolated server's data directory afterwards
+      --port int             Dolt sql-server port (default 3307)
+      --scratch-dir string   directory for the isolated Dolt server that restores the backups (default: <backup-dir>/.scratch, removed afterwards)
+      --timeout duration     overall time budget (default 6h0m0s)
+      --user string          login on the server (default BEADS_DOLT_SERVER_USER, then root)
+```
+
+##### bd brain upgrade rollback
+
+Restore each database from its backup and prove it is the backed-up state
+
+```
+bd brain upgrade rollback [flags]
+```
+
+**Flags:**
+
+```
+      --backup-dir string   directory holding the backups and their manifest (required)
+      --database strings    database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --host string         Dolt sql-server host (default "127.0.0.1")
+      --json                print the result as JSON
+      --port int            Dolt sql-server port (default 3307)
+      --timeout duration    overall time budget (default 6h0m0s)
+      --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
+      --yes                 confirm: replace each database with its backup, discarding everything written since
+```
+
+##### bd brain upgrade verify
+
+Compare each migrated database with the state its backup holds
+
+```
+bd brain upgrade verify [flags]
+```
+
+**Flags:**
+
+```
+      --backup-dir string   directory holding the backups and their manifest (required)
+      --database strings    database to act on (repeatable; default: every database on the server that holds beads, or every one in the manifest)
+      --host string         Dolt sql-server host (default "127.0.0.1")
+      --json                print the result as JSON
+      --port int            Dolt sql-server port (default 3307)
+      --timeout duration    overall time budget (default 6h0m0s)
+      --user string         login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
 ### bd completion
