@@ -990,6 +990,9 @@ func TestGraphApplyNodeCoversCreateIssueParams(t *testing.T) {
 	}
 	excluded := map[string]string{
 		"CreatedBy": "always the ambient actor identity; plans do not impersonate creators",
+		// Brain: a plan mints under the store's own prefix; --prefix is a
+		// one-bead override for create and quick, not a plan-wide setting.
+		"PrefixOverride": "brain's --prefix is a single-bead create/quick override; plans mint under the store's prefix",
 	}
 
 	nodeType := reflect.TypeOf(GraphApplyNode{})

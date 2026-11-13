@@ -56,6 +56,12 @@ var brainProxyCapabilityRows = []capabilityRow{
 
 	// --- brain fleet: stores, hosts, remotes, rollout, unify, GitHub pairing -
 	brainRefusal("brain unify build"),
+	brainRefusal("brain upgrade apply"),
+	brainRefusal("brain upgrade backup"),
+	brainRefusal("brain upgrade plan"),
+	brainRefusal("brain upgrade rehearse"),
+	brainRefusal("brain upgrade rollback"),
+	brainRefusal("brain upgrade verify"),
 	brainRefusal("brain unify plan"),
 	brainRefusal("brain unify ready"),
 	brainRefusal("brain unify replay"),

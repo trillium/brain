@@ -12,6 +12,7 @@ package main
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -53,6 +54,9 @@ func showStrayMetadata(t *testing.T, bd, dir, id string) map[string]interface{} 
 func TestUpdateStrayMetadataPositionalRefusedBeforeWrite(t *testing.T) {
 	bd, dir := setupMultiIDUpdateDB(t)
 	id := createMultiIDUpdateIssue(t, bd, dir, "stray metadata target")
+	// Brain stamps metadata on create (author_kind, brain_slug); the refused
+	// update must leave it exactly as create did.
+	before := showStrayMetadata(t, bd, dir, id)
 
 	// Only `probe_a=1` binds to the flag; `probe_b=2` and `probe_c=3` land as
 	// positional ids. The command must refuse before writing anything.
@@ -68,8 +72,8 @@ func TestUpdateStrayMetadataPositionalRefusedBeforeWrite(t *testing.T) {
 	// The refusal is before any write: no pair — not even the bound probe_a —
 	// may have landed. This is the half a message-only fix would leave broken.
 	meta := showStrayMetadata(t, bd, dir, id)
-	if len(meta) != 0 {
-		t.Errorf("metadata is %v, want empty: refusal must prevent the partial write", meta)
+	if !reflect.DeepEqual(meta, before) {
+		t.Errorf("metadata is %v, want %v as create left it: refusal must prevent the partial write", meta, before)
 	}
 }
 

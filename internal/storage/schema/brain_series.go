@@ -111,9 +111,9 @@ func brainMigrationHashes() map[string]int {
 // BrainNumberedRow is one schema_migrations row that records a brain migration
 // under a main-series number.
 type BrainNumberedRow struct {
-	MainVersion  int
-	BrainVersion int
-	ContentHash  string
+	MainVersion  int    `json:"main_version"`
+	BrainVersion int    `json:"brain_version"`
+	ContentHash  string `json:"content_hash"`
 }
 
 // FindBrainNumberedMainRows lists the schema_migrations rows whose content
@@ -241,6 +241,123 @@ func healBrainNumberedMainMigrations(ctx context.Context, db DBConn) (bool, erro
 	fmt.Fprintf(stderr, "Moved brain migrations recorded at %v into %s; upstream migrations above %d will apply.\n",
 		brainVersions, brainSource.cursorTable, lowest-1)
 	return true, nil
+}
+
+// UpgradePlan is what MigrateUp would do to a database, read without writing:
+// the brain rows the heal moves out of schema_migrations, and the main,
+// ignored and brain migrations left to run once it has.
+type UpgradePlan struct {
+	// MainRecorded is MAX(version) in schema_migrations as it stands.
+	MainRecorded int `json:"main_recorded"`
+	// BrainRowsInMain are the brain migrations recorded under main numbers.
+	BrainRowsInMain []BrainNumberedRow `json:"brain_rows_in_main,omitempty"`
+	// MainEffective is the main cursor once the heal has moved brain's rows
+	// out: the last upstream migration that actually ran.
+	MainEffective int      `json:"main_effective"`
+	MainLatest    int      `json:"main_latest"`
+	PendingMain   []string `json:"pending_main,omitempty"`
+
+	IgnoredCurrent int      `json:"ignored_current"`
+	IgnoredLatest  int      `json:"ignored_latest"`
+	PendingIgnored []string `json:"pending_ignored,omitempty"`
+
+	// BrainCurrent counts the brain rows still in schema_migrations, which the
+	// heal carries into the brain cursor rather than re-running.
+	BrainCurrent int      `json:"brain_current"`
+	BrainLatest  int      `json:"brain_latest"`
+	PendingBrain []string `json:"pending_brain,omitempty"`
+
+	// HealRefusal is the heal's refusal (ErrBrainRowsNotAtTop) when it would
+	// refuse; MigrateUp then stops before running anything.
+	HealRefusal string `json:"heal_refusal,omitempty"`
+}
+
+// Pending reports whether MigrateUp has any migration left to run.
+func (p UpgradePlan) Pending() bool {
+	return len(p.BrainRowsInMain) > 0 || len(p.PendingMain) > 0 || len(p.PendingIgnored) > 0 || len(p.PendingBrain) > 0
+}
+
+// PlanUpgrade reads what MigrateUp would do to the connected database. It
+// issues reads only. MigrateUp also runs repairs and re-keys that need no
+// cursor row (aux row ids, dependency ids); those are not listed here.
+func PlanUpgrade(ctx context.Context, db DBConn) (UpgradePlan, error) {
+	plan := UpgradePlan{MainLatest: LatestVersion(), IgnoredLatest: LatestIgnoredVersion(), BrainLatest: LatestBrainVersion()}
+	var err error
+	if plan.MainRecorded, err = mainSource.currentVersion(ctx, db); err != nil {
+		return plan, err
+	}
+	if plan.BrainRowsInMain, err = FindBrainNumberedMainRows(ctx, db); err != nil {
+		return plan, err
+	}
+	plan.MainEffective = plan.MainRecorded
+	if len(plan.BrainRowsInMain) > 0 {
+		lowest := plan.BrainRowsInMain[0].MainVersion
+		brainAt := map[int]bool{}
+		var brainVersions []int
+		for _, r := range plan.BrainRowsInMain {
+			brainAt[r.MainVersion] = true
+			brainVersions = append(brainVersions, r.MainVersion)
+			if r.MainVersion < lowest {
+				lowest = r.MainVersion
+			}
+			if r.BrainVersion > plan.BrainCurrent {
+				plan.BrainCurrent = r.BrainVersion
+			}
+		}
+		above, err := mainVersionsAbove(ctx, db, lowest)
+		if err != nil {
+			return plan, err
+		}
+		var foreign []int
+		for _, v := range above {
+			if !brainAt[v] {
+				foreign = append(foreign, v)
+			}
+		}
+		if len(foreign) > 0 {
+			sort.Ints(brainVersions)
+			plan.HealRefusal = (&ErrBrainRowsNotAtTop{BrainVersions: brainVersions, Above: foreign}).Error()
+		}
+		below, err := mainVersionBelow(ctx, db, lowest)
+		if err != nil {
+			return plan, err
+		}
+		plan.MainEffective = below
+	}
+	if current, err := brainSource.currentVersion(ctx, db); err != nil {
+		return plan, err
+	} else if current > plan.BrainCurrent {
+		plan.BrainCurrent = current
+	}
+	if plan.IgnoredCurrent, err = ignoredSource.currentVersion(ctx, db); err != nil {
+		return plan, err
+	}
+	plan.PendingMain = migrationNamesAbove(mainSource, plan.MainEffective)
+	plan.PendingIgnored = migrationNamesAbove(ignoredSource, plan.IgnoredCurrent)
+	plan.PendingBrain = migrationNamesAbove(brainSource, plan.BrainCurrent)
+	return plan, nil
+}
+
+// mainVersionBelow answers the highest schema_migrations version below
+// ceiling, 0 when there is none.
+func mainVersionBelow(ctx context.Context, db DBConn, ceiling int) (int, error) {
+	var v int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COALESCE(MAX(version), 0) FROM "+mainSource.cursorTable+" WHERE version < ?", ceiling).Scan(&v); err != nil {
+		return 0, fmt.Errorf("reading %s: %w", mainSource.cursorTable, err)
+	}
+	return v, nil
+}
+
+// migrationNamesAbove lists a series' migration files numbered above current.
+func migrationNamesAbove(m migrationSource, current int) []string {
+	var names []string
+	for _, f := range m.list() {
+		if f.version > current {
+			names = append(names, strings.TrimSuffix(f.name, ".up.sql"))
+		}
+	}
+	return names
 }
 
 // mainVersionsAbove lists the schema_migrations versions at or above floor.

@@ -36,6 +36,10 @@ var systemTypeDescriptions = map[types.IssueType]string{
 	types.TypeMolecule: "Molecule root for swarm coordination (bd mol)",
 	types.TypeGate:     "Async coordination gate (bd gate, formula gates)",
 	types.TypeEvent:    "Audit-trail event (bd set-state)",
+	// Brain's document kinds (brain new <kind>).
+	types.TypeKnowledge: "Brain knowledge doc: a note kept for reference, not work (brain new knowledge)",
+	types.TypeBoth:      "Brain doc that is both knowledge and a task (brain new both)",
+	types.TypeISA:       "Brain ISA doc: a structured intent with canonical sections (brain new isa)",
 }
 
 // systemWorkTypes lists every built-in type that is not a core work type, in

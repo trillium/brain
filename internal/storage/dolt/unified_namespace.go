@@ -161,7 +161,7 @@ func (s *DoltStore) scopeNamespaces(ctx context.Context, f types.IssueFilter) ty
 func (s *DoltStore) scopeWorkNamespaces(ctx context.Context, f types.WorkFilter) types.WorkFilter {
 	// The ready-active custom statuses are the wrapper's own on the unified
 	// database in both read modes: the statuses are settings, not beads.
-	if f.CustomStatusStore == "" {
+	if f.CustomStatusStore == "" && s.db != nil {
 		if sc := issueops.UnifiedScopeForTx(ctx, s.db); sc.Enabled() {
 			f.CustomStatusStore = sc.Store
 		}

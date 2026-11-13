@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased (brain 0.6.0)
 
+Rebased on beads 1.3.4 (`1.3.4+brain.0.6.0`). Brain's additions carry across the
+1.3 seams: the markdown render and the hooks.d guard wrap upstream's write roles,
+brain's migrations move to their own series (`brain_schema_migrations`) so
+upstream's 0054-0066 apply, and every brain verb has a proxied-server
+capability row. New: `bd brain upgrade plan|backup|rehearse|apply|verify|rollback`
+migrates the live databases behind a backup that is restored and digest-checked
+before anything is migrated. GitHub sync now follows upstream's repository
+scoping: an item linked into another repository is skipped and keeps its link.
+See [docs/brain/UPGRADE_1_3.md](docs/brain/UPGRADE_1_3.md).
+
 Store registry: the shared database holds the one list of stores with an epoch
 bumped in the same transaction as every create, rename and remove. New:
 `brain stores sync|verify|reconcile|epoch|registry|poller|shell-hook`,
