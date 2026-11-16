@@ -14,7 +14,7 @@ in every session without manual loading.
 
 The positional arg is the memory CONTENT (the key is auto-generated from it
 unless --key is given). As a convenience, if the arg is a bare key naming an
-existing memory, it is RECALLED instead of stored (same as 'bd recall');
+existing memory, it is RECALLED instead of stored (same as 'bd memories recall');
 a bare key naming nothing is refused. Use --key to store slug-like content.
 
 Each memory also gets a companion knowledge issue holding the same text, so
@@ -28,7 +28,7 @@ Examples:
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
   bd remember "prod deploy needs a second approver" --no-bead
-  bd remember dolt-phantoms        # bare existing key: reads it (= bd recall)
+  bd remember dolt-phantoms        # bare existing key: reads it (= bd memories recall)
 
 ```
 bd remember "<insight>" [flags]

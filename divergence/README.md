@@ -139,3 +139,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0045](0045-github-sync-pairings.md) | pair a store with a github repository and choose the sync direction | proposed |
 | [0046](0046-github-sync-project-scope.md) | scope a github sync to one project's items and send them to that project's repository | proposed |
 | [0047](0047-federation-backup.md) | back every registered store's database up with DOLT_BACKUP and prove each backup on a Dolt server of its own | proposed |
+| [0048](0048-brain-recall.md) | brain recall ranks beads with BM25 over full bodies and comments | proposed |

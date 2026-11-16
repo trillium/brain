@@ -199,11 +199,11 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd kv list](#bd-kv-list) — List all key-value pairs
   - [bd kv set](#bd-kv-set) — Set a key-value pair
 - [bd memories](#bd-memories) — List or search persistent memories
+  - [bd memories recall](#bd-memories-recall) — Retrieve a specific memory
 - [bd migrate-personal](#bd-migrate-personal) — Move personal planning issues from the project database to your planning repo
 - [bd onboard](#bd-onboard) — Display minimal snippet for agent instructions file
 - [bd prime](#bd-prime) — Output AI-optimized workflow context
 - [bd quickstart](#bd-quickstart) — Quick start guide for bd
-- [bd recall](#bd-recall) — Retrieve a specific memory
 - [bd remember](#bd-remember) — Store a persistent memory
 - [bd setup](#bd-setup) — Setup integration with AI editors
 - [bd store-prefix](#bd-store-prefix) — Show or extend the unified database's namespace record (brain_store_prefixes)
@@ -294,6 +294,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd brain link](#bd-brain-link) — Link two brain docs with a typed edge
   - [bd brain new](#bd-brain-new) — Create a new brain doc (kind = task | knowledge | both | isa)
   - [bd brain promote](#bd-brain-promote) — Redirect: did you mean `brain recast &lt;id&gt; --to=&lt;kind&gt;`?
+  - [bd brain recall](#bd-brain-recall) — BM25-ranked search over full bead bodies and comments
   - [bd brain recast](#bd-brain-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
   - [bd brain related](#bd-brain-related) — Walk the graph from a center brain doc and print the subgraph as a tree
   - [bd brain rollout](#bd-brain-rollout) — Roll a binary and the store registry out to every machine, step by step, and prove it
@@ -367,6 +368,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd notion sync](#bd-notion-sync) — Sync issues with Notion
 - [bd orphans](#bd-orphans) — Identify orphaned issues (referenced in commits but still open)
 - [bd ready](#bd-ready) — Show ready work (open, no active blockers)
+- [bd recall](#bd-recall) — BM25-ranked search over full bead bodies and comments
 - [bd recast](#bd-recast) — Change the kind of an existing brain doc in place (edges/comments preserved)
 - [bd related](#bd-related) — Walk the graph from a center brain doc and print the subgraph as a tree
 - [bd remote](#bd-remote) — Client mode: run brain and every store command on a brain host over ssh
@@ -5184,6 +5186,19 @@ Examples:
 
 ```
 bd memories [search]
+bd memories [command]
+```
+
+#### bd memories recall
+
+Retrieve the full content of a memory by its key.
+
+Examples:
+  bd memories recall dolt-phantoms
+  bd memories recall auth-jwt
+
+```
+bd memories recall <key>
 ```
 
 ### bd migrate-personal
@@ -5299,18 +5314,6 @@ Display a quick start guide showing common bd workflows and patterns.
 bd quickstart
 ```
 
-### bd recall
-
-Retrieve the full content of a memory by its key.
-
-Examples:
-  bd recall dolt-phantoms
-  bd recall auth-jwt
-
-```
-bd recall <key>
-```
-
 ### bd remember
 
 Store a memory that persists across sessions and account rotations.
@@ -5320,7 +5323,7 @@ in every session without manual loading.
 
 The positional arg is the memory CONTENT (the key is auto-generated from it
 unless --key is given). As a convenience, if the arg is a bare key naming an
-existing memory, it is RECALLED instead of stored (same as 'bd recall');
+existing memory, it is RECALLED instead of stored (same as 'bd memories recall');
 a bare key naming nothing is refused. Use --key to store slug-like content.
 
 Each memory also gets a companion knowledge issue holding the same text, so
@@ -5334,7 +5337,7 @@ Examples:
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
   bd remember "prod deploy needs a second approver" --no-bead
-  bd remember dolt-phantoms        # bare existing key: reads it (= bd recall)
+  bd remember dolt-phantoms        # bare existing key: reads it (= bd memories recall)
 
 ```
 bd remember "<insight>" [flags]
@@ -7780,6 +7783,47 @@ times in shell history.
 
 ```
 bd brain promote
+```
+
+#### bd brain recall
+
+brain recall ranks every bead in this wrapper's namespace against a
+free-text query and prints the best matches with their scores.
+
+brain search is a substring filter: every word of the query must appear
+somewhere in the bead, and the survivors are ordered by where the words sit.
+recall is a ranking instead. It weighs the whole bead — title, description,
+design, notes, acceptance criteria, close reason, labels and the full text
+of every comment — with BM25 (term frequency against document length, rare
+words counting more), so a bead that mentions the topic only in a comment,
+or many times in a long note, surfaces with a score that says how well it
+fits. Words need not all match; the ones that do decide the rank. All
+statuses are searched, closed beads included.
+
+Each hit prints its score, status icon, id, kind, title, and which fields
+matched (title, body, comment, label). --json emits the same as an object
+with query, tokens, corpus size and hits. No hit at all exits non-zero.
+
+--kind filters on the bead's issue_type exactly (knowledge, task, isa,
+decision, …). --wide ranks every store's beads instead of this wrapper's.
+
+The memory plane's read-by-key verb moved to 'bd memories recall &lt;key&gt;'
+('bd remember &lt;key&gt;' reads it too).
+
+Examples:
+  brain recall "kokoro speak daemon"
+  brain recall --top 10 "tailnet phone"
+  brain recall --kind knowledge --json "talon vocabulary"
+
+```
+bd recall <query> [flags]
+```
+
+**Flags:**
+
+```
+      --kind string   Only beads of this kind (issue_type): knowledge, task, isa, decision, …
+      --top int       Number of hits to print (negative for all) (default 5)
 ```
 
 #### bd brain recast
@@ -11023,6 +11067,47 @@ bd ready [flags]
   -s, --sort string                  Sort policy: priority (default), hybrid, oldest (default "priority")
   -t, --type string                  Filter by issue type (task, bug, feature, epic, decision, merge-request). Aliases: mr→merge-request, feat→feature, mol→molecule, dec/adr→decision
   -u, --unassigned                   Show only unassigned issues
+```
+
+### bd recall
+
+brain recall ranks every bead in this wrapper's namespace against a
+free-text query and prints the best matches with their scores.
+
+brain search is a substring filter: every word of the query must appear
+somewhere in the bead, and the survivors are ordered by where the words sit.
+recall is a ranking instead. It weighs the whole bead — title, description,
+design, notes, acceptance criteria, close reason, labels and the full text
+of every comment — with BM25 (term frequency against document length, rare
+words counting more), so a bead that mentions the topic only in a comment,
+or many times in a long note, surfaces with a score that says how well it
+fits. Words need not all match; the ones that do decide the rank. All
+statuses are searched, closed beads included.
+
+Each hit prints its score, status icon, id, kind, title, and which fields
+matched (title, body, comment, label). --json emits the same as an object
+with query, tokens, corpus size and hits. No hit at all exits non-zero.
+
+--kind filters on the bead's issue_type exactly (knowledge, task, isa,
+decision, …). --wide ranks every store's beads instead of this wrapper's.
+
+The memory plane's read-by-key verb moved to 'bd memories recall &lt;key&gt;'
+('bd remember &lt;key&gt;' reads it too).
+
+Examples:
+  brain recall "kokoro speak daemon"
+  brain recall --top 10 "tailnet phone"
+  brain recall --kind knowledge --json "talon vocabulary"
+
+```
+bd recall <query> [flags]
+```
+
+**Flags:**
+
+```
+      --kind string   Only beads of this kind (issue_type): knowledge, task, isa, decision, …
+      --top int       Number of hits to print (negative for all) (default 5)
 ```
 
 ### bd recast

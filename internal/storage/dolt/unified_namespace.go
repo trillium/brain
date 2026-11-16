@@ -185,3 +185,12 @@ func (s *DoltStore) statisticNamespaces(ctx context.Context) []string {
 	}
 	return prefixes
 }
+
+// NarrowNamespacePrefixes answers the id prefixes the wrapper's namespace owns
+// on the unified database, for callers outside the store that run their own
+// raw reads (brain recall). unified=false means the connected database is not
+// unified and the caller should not scope. It ignores the process-wide read
+// mode: the caller decides whether --wide applies to its read.
+func NarrowNamespacePrefixes(ctx context.Context, q issueops.DBTX) ([]string, bool) {
+	return resolveNamespacePrefixes(ctx, q)
+}
