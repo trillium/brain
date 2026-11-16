@@ -4,8 +4,8 @@
 #
 # A case passes when one of its target ids is in the top N (fixture "top")
 # of the verb's ranked output. Both verbs are run read-only against the live
-# store named by the fixture, through that store's wrapper, so point BD_BIN
-# at a scratch build to score an uncommitted binary:
+# store named by the fixture, through that store's wrapper. The wrapper honors
+# BD_BIN, so point it at a scratch build to score an uncommitted binary:
 #
 #   BD_BIN=/path/to/bd scripts/brain-recall-eval.sh
 #   scripts/brain-recall-eval.sh --json      # machine-readable per-case rows

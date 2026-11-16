@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	recallverb "github.com/steveyegge/beads/internal/brain/verb/recall"
@@ -158,14 +157,7 @@ const recallBodyExpr = "CONCAT_WS(' ', COALESCE(description,''), COALESCE(design
 // prefilter — the text that the pure ranker must tokenize. The five reads run
 // concurrently on the pool's connections.
 func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string) ([]recallverb.Doc, error) {
-	t0 := time.Now()
-	lap := func(what string) {
-		if os.Getenv("BRAIN_RECALL_TIMING") != "" {
-			fmt.Fprintf(os.Stderr, "recall %-8s %s\n", what, time.Since(t0))
-		}
-	}
 	patterns := recallPrefixes(ctx, db, wide)
-	lap("scope")
 	regex := strings.Join(likes, "|")
 
 	type labelRow struct {
@@ -225,7 +217,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("recall: read issues: %w", err)
 		}
-		lap("issues")
 		return nil
 	})
 	g.Go(func() error {
@@ -244,7 +235,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 			return err
 		}
 		bodies = out
-		lap("bodies")
 		return nil
 	})
 	g.Go(func() error {
@@ -267,7 +257,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("recall: read labels: %w", err)
 		}
-		lap("labels")
 		return nil
 	})
 	g.Go(func() error {
@@ -291,7 +280,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("recall: read comment lengths: %w", err)
 		}
-		lap("clens")
 		return nil
 	})
 	g.Go(func() error {
@@ -310,7 +298,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 			return err
 		}
 		comments = out
-		lap("comments")
 		return nil
 	})
 	if err := g.Wait(); err != nil {
@@ -343,7 +330,6 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 			docs[i].Comments = append(docs[i].Comments, r.text)
 		}
 	}
-	lap("join")
 	return docs, nil
 }
 
