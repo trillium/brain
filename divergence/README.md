@@ -141,3 +141,4 @@ A relative markdown link back to the record this commit advances. Always include
 | [0047](0047-federation-backup.md) | back every registered store's database up with DOLT_BACKUP and prove each backup on a Dolt server of its own | proposed |
 | [0048](0048-dependency-edge-ids.md) | give dependency edges their own id in list --include-deps and dep remove | proposed |
 | [0049](0049-knowledge-kind-guards.md) | refuse claim, close and blocks edges on knowledge beads, with --force for triage | proposed |
+| [0050](0050-brain-recall.md) | brain recall ranks beads with BM25 over full bodies and comments | proposed |

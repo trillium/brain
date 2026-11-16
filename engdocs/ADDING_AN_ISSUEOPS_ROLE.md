@@ -422,7 +422,7 @@ MEANS, and the parts every later reader trusts.
 ## The second namespace
 
 `memoryops.Memories` is the first role in a leaf that is NOT `issueops`: the
-`kv.memory.*` plane behind `bd remember`, `bd recall`, `bd forget`,
+`kv.memory.*` plane behind `bd remember`, `bd memories recall`, `bd forget`,
 `bd memories` and `bd prime`'s injection. Steps 1-11 transferred without
 argument — same accessor on `storage.Storage`, same two decorators declared
 rather than inherited, same three wirings over two independent bodies. What

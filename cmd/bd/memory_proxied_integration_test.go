@@ -84,7 +84,7 @@ func TestProxiedServerMemory(t *testing.T) {
 		}
 
 		// Recall returns the full content byte-for-byte (listing truncates).
-		out = bdProxiedMem(t, bd, p.dir, "recall", "dolt-phantoms")
+		out = bdProxiedMem(t, bd, p.dir, "memories", "recall", "dolt-phantoms")
 		if out != content+"\n" {
 			t.Errorf("recall not byte-preserving:\nwant: %q\ngot:  %q", content+"\n", out)
 		}
@@ -94,7 +94,7 @@ func TestProxiedServerMemory(t *testing.T) {
 		if !strings.Contains(out, "Updated [dolt-phantoms]") {
 			t.Errorf("expected 'Updated [dolt-phantoms]', got: %s", out)
 		}
-		out = bdProxiedMem(t, bd, p.dir, "recall", "dolt-phantoms")
+		out = bdProxiedMem(t, bd, p.dir, "memories", "recall", "dolt-phantoms")
 		if out != "updated insight\n" {
 			t.Errorf("expected updated content, got: %q", out)
 		}
@@ -117,7 +117,7 @@ func TestProxiedServerMemory(t *testing.T) {
 		}
 
 		// Recall of a missing key likewise.
-		out = bdProxiedMemFail(t, bd, p.dir, "recall", "dolt-phantoms")
+		out = bdProxiedMemFail(t, bd, p.dir, "memories", "recall", "dolt-phantoms")
 		if !strings.Contains(out, "No memory with key") {
 			t.Errorf("expected 'No memory with key' on missing recall, got: %s", out)
 		}
@@ -129,7 +129,7 @@ func TestProxiedServerMemory(t *testing.T) {
 
 		bdProxiedMem(t, bd, p.dir, "remember", "the auth module uses JWT not sessions", "--key", "auth-jwt")
 
-		// A bare existing key READS instead of writing (= bd recall).
+		// A bare existing key READS instead of writing (= bd memories recall).
 		stdout, stderr, err := bdProxiedRunBuffers(t, bd, p.dir, "remember", "auth-jwt")
 		if err != nil {
 			t.Fatalf("bare-existing-key remember should recall, got error: %v\n%s%s", err, stdout, stderr)

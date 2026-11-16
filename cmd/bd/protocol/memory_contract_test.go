@@ -2,7 +2,8 @@
 //
 // M1 (model). A memory is a (key, value) pair in a namespace separate from
 // issues, with the surface: bd remember / bd memories (list, search) /
-// bd recall <key> / bd forget <key>. This file pins that CRUD surface at the
+// bd memories recall <key> / bd forget <key> (upstream: bd recall <key>; brain
+// moved it under memories so the root name is the ranking verb). This file pins that CRUD surface at the
 // CLI level — the four verbs, the round trip through the store, and the
 // post-forget disappearance.
 //
@@ -35,9 +36,9 @@ func TestProtocol_MemoryCRUDSurface(t *testing.T) {
 	w.run("remember", text, "--key", key)
 
 	// Read by key.
-	recalled := w.run("recall", key)
+	recalled := w.run("memories", "recall", key)
 	if !strings.Contains(recalled, text) {
-		t.Errorf("bd recall %s did not return the stored value (§M1):\n%s", key, recalled)
+		t.Errorf("bd memories recall %s did not return the stored value (§M1):\n%s", key, recalled)
 	}
 
 	// List.
@@ -55,15 +56,15 @@ func TestProtocol_MemoryCRUDSurface(t *testing.T) {
 	// Update in place: same key, new value.
 	const updated = "auth module uses JWT with a 15m TTL"
 	w.run("remember", updated, "--key", key)
-	recalled = w.run("recall", key)
+	recalled = w.run("memories", "recall", key)
 	if !strings.Contains(recalled, updated) {
 		t.Errorf("bd remember --key did not overwrite in place (§M1):\n%s", recalled)
 	}
 
 	// Delete.
 	w.run("forget", key)
-	if _, code := w.runExpectError("recall", key); code == 0 {
-		t.Errorf("bd recall after forget exited 0, want nonzero (§M1/§E2)")
+	if _, code := w.runExpectError("memories", "recall", key); code == 0 {
+		t.Errorf("bd memories recall after forget exited 0, want nonzero (§M1/§E2)")
 	}
 	if list := w.run("memories"); strings.Contains(list, key) {
 		t.Errorf("forgotten key still listed by bd memories (§M1):\n%s", list)

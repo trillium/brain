@@ -16,4 +16,17 @@ Examples:
 
 ```
 bd memories [search] [flags]
+bd memories [command]
+```
+
+## bd memories recall
+
+Retrieve the full content of a memory by its key.
+
+Examples:
+  bd memories recall dolt-phantoms
+  bd memories recall auth-jwt
+
+```
+bd memories recall <key> [flags]
 ```
