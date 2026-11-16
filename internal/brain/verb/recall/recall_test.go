@@ -197,24 +197,38 @@ func TestQueryTerms(t *testing.T) {
 	}
 }
 
-func TestRank_CountedFormMatchesTextForm(t *testing.T) {
+func TestRank_ShortTermsStayExact(t *testing.T) {
 	t.Parallel()
-	text := []recall.Doc{
-		{ID: "a", Title: "x", Body: []string{"kokoro kokoro daemon"}, Comments: []string{"kokoro"}, Length: 30},
-		{ID: "b", Title: "x", Body: []string{"daemon"}, Length: 30},
+	hits := recall.Rank([]recall.Doc{
+		{ID: "goal", Title: "x", Body: []string{"goal"}},
+		{ID: "go", Title: "x", Body: []string{"go"}},
+	}, "go")
+	if got := ids(hits); !reflect.DeepEqual(got, []string{"go"}) {
+		t.Errorf("short exact query matched %v, want [go]", got)
 	}
-	counted := []recall.Doc{
-		{ID: "a", Title: "x", BodyTerms: map[string]float64{"kokoro": 2, "daemon": 1},
-			CommentTerms: map[string]float64{"kokoro": 1}, CommentCount: 1, Length: 30},
-		{ID: "b", Title: "x", BodyTerms: map[string]float64{"daemon": 1}, Length: 30},
+}
+
+func TestRank_StemsOverlappingPrefixesRemainDistinct(t *testing.T) {
+	t.Parallel()
+	hits := recall.Rank([]recall.Doc{
+		{ID: "both", Title: "x", Body: []string{"code coding"}},
+		{ID: "coding", Title: "x", Body: []string{"coding"}},
+	}, "code coding")
+	if got := ids(hits); !reflect.DeepEqual(got, []string{"both", "coding"}) {
+		t.Errorf("overlapping query terms ranked %v, want [both coding]", got)
 	}
-	ht := recall.Rank(text, "kokoro daemon")
-	hc := recall.Rank(counted, "kokoro daemon")
-	if !reflect.DeepEqual(ht, hc) {
-		t.Errorf("text form %+v\ncounted form %+v", ht, hc)
+	if hits[0].Score <= hits[1].Score {
+		t.Errorf("exact code occurrence did not improve rank: %+v", hits)
 	}
-	if len(hc) == 0 || hc[0].ID != "a" || hc[0].Comments != 1 ||
-		!reflect.DeepEqual(hc[0].Matched, []string{"body", "comment"}) {
-		t.Errorf("counted top hit = %+v", hc)
+}
+
+func TestRank_NonASCIITokensUseCharacterLengths(t *testing.T) {
+	t.Parallel()
+	hits := recall.Rank([]recall.Doc{
+		{ID: "accented", Title: "café", Length: 4},
+		{ID: "plain", Title: "café", Length: 5},
+	}, "café")
+	if got := ids(hits); !reflect.DeepEqual(got, []string{"accented", "plain"}) {
+		t.Errorf("character-length ranking = %v, want [accented plain]", got)
 	}
 }
