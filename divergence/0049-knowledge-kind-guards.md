@@ -2,10 +2,10 @@
 id: 0049
 title: refuse claim, close and blocks edges on knowledge beads, with --force for triage
 isc: [ISC-112, ISC-113, ISC-116]
-status: landed
+status: proposed
 created: 2026-11-16
 updated: 2026-11-16
-commits: []                        # the commit on fm/task-fable-t1-20261116 that carries this doc
+commits: []
 touches:
   - internal/types/types.go
   - internal/types/types_test.go
@@ -68,9 +68,8 @@ in the kind model and asked for a guard with a `--force` escape for triage
   `cannot <verb> <id>: it is a knowledge bead (issue_type=knowledge), and
   knowledge is never claimed, closed or put on the blocking graph; pass
   --force to do it anyway`. It matches `errKnowledgeKind` with `errors.Is`.
-  An issue the guard cannot read (an external ref, a cross-store id, a
-  wisp) is not a verdict: the edge or verb passes to the write, which owns
-  the existence check.
+  Intentional `external:` references pass through, but an unreadable or
+  unresolved endpoint refuses a `blocks` edge unless `--force` is passed.
 - `bd close` refuses a knowledge bead inside the same not-yet-closed branch
   as the pinned and gate checks, on both the direct and the proxied route,
   so a re-close of a knowledge bead that was closed before the guard stays
