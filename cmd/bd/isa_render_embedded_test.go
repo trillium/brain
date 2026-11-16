@@ -76,10 +76,11 @@ func insertISARowFull(t *testing.T, db *sql.DB, id, title, slug, phase string, m
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
 		`INSERT INTO issues
-		 (id, title, slug, status, priority, issue_type,
+		 (id, title, description, design, acceptance_criteria, notes,
+		  slug, status, priority, issue_type,
 		  isa_phase, isa_progress_m, isa_progress_n, isa_effort, isa_mode,
 		  isa_started_at, isa_updated_at)
-		 VALUES (?, ?, ?, 'open', 1, 'isa', ?, ?, ?, 'advanced', 'interactive',
+		 VALUES (?, ?, '', '', '', '', ?, 'open', 1, 'isa', ?, ?, ?, 'advanced', 'interactive',
 		         NOW(), NOW())`,
 		id, title, slug, phase, m, n,
 	)

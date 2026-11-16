@@ -178,6 +178,10 @@ type DependencySQLRepository interface {
 	CycleThroughEdges(ctx context.Context, edges [][2]string) (string, error)
 	GetDependencyRecordsForIssues(ctx context.Context, issueIDs []string) (map[string][]*types.Dependency, error)
 	GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error)
+	// GetDependencyRecordByID returns the one raw edge whose primary id is
+	// depID, across both dependency tables (durable preferred), or nil when no
+	// edge carries that id.
+	GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error)
 
 	// WispSourceIDs returns the subset of ids that are currently wisps, in one
 	// scoped query rather than a probe per id.
@@ -202,6 +206,10 @@ type DependencyUseCase interface {
 	GetBlockingInfo(ctx context.Context, issueIDs []string) (BlockingInfo, error)
 	IsBlocked(ctx context.Context, issueID string) (bool, []string, error)
 	GetForIssueIDs(ctx context.Context, ids []string) (map[string][]*types.Dependency, error)
+	// GetByID returns the one edge whose primary id is depID — the edge id
+	// `bd list --include-deps` emits — from whichever plane holds it, or nil
+	// when no edge carries that id.
+	GetByID(ctx context.Context, depID string) (*types.Dependency, error)
 	DetectCycles(ctx context.Context) ([][]*types.Issue, error)
 	// DetectCycleReport is the shape issueops.CycleDetector publishes; see the
 	// repository method of the same name.
@@ -631,6 +639,17 @@ func (u *dependencyUseCaseImpl) isBlocked(ctx context.Context, id string, useWis
 		return false, nil, fmt.Errorf("IsBlocked %s: %w", id, err)
 	}
 	return blocked, blockers, nil
+}
+
+func (u *dependencyUseCaseImpl) GetByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	if depID == "" {
+		return nil, nil
+	}
+	dep, err := u.depRepo.GetDependencyRecordByID(ctx, depID)
+	if err != nil {
+		return nil, fmt.Errorf("GetByID: %w", err)
+	}
+	return dep, nil
 }
 
 func (u *dependencyUseCaseImpl) DetectCycles(ctx context.Context) ([][]*types.Issue, error) {

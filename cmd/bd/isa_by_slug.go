@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 var isaBySlugCmd = &cobra.Command{
@@ -42,16 +44,18 @@ func runISABySlug(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	db, err := openReadDB()
+	runner, err := openReadTxRunner()
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
 	var id string
-	err = db.QueryRowContext(ctx,
-		"SELECT id FROM issues WHERE slug = ? AND issue_type = 'isa' LIMIT 1",
-		slug,
-	).Scan(&id)
+	err = runner.RunReadSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		return tx.QueryRowContext(ctx,
+			"SELECT id FROM issues WHERE slug = ? AND issue_type = 'isa' LIMIT 1",
+			slug,
+		).Scan(&id)
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			fmt.Fprintf(os.Stderr, "slug not found: %s\n", slug)

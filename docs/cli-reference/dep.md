@@ -139,10 +139,19 @@ bd dep relate <id1> <id2> [flags]
 
 ## bd dep remove
 
-Remove a dependency
+Remove a dependency edge.
+
+Name the edge either by its two endpoints or by its own id:
+
+  bd dep remove &lt;issue-id&gt; &lt;depends-on-id&gt;   # the pair, as bd dep add took it
+  bd dep remove &lt;edge-id&gt;                    # the edge_id from 'bd list --json --include-deps'
+
+An edge id names exactly one stored edge, so neither endpoint is resolved from
+a partial id. Removing a pair that carries no edge succeeds silently, as it
+always has; an edge id that matches nothing is an error.
 
 ```
-bd dep remove [issue-id] [depends-on-id] [flags]
+bd dep remove [issue-id] [depends-on-id] | [edge-id] [flags]
 ```
 
 **Aliases:** rm

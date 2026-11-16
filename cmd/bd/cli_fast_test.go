@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/steveyegge/beads/internal/storage/depid"
 )
 
 // Fast CLI tests converted from scripttest suite
@@ -895,6 +897,90 @@ func TestCLI_DepRemove(t *testing.T) {
 	out := runBDInProcess(t, tmpDir, "dep", "remove", id2, id1)
 	if !strings.Contains(out, "Removed dependency") {
 		t.Errorf("Expected 'Removed dependency', got: %s", out)
+	}
+}
+
+// TestCLI_DepRemoveByEdgeID covers the one-argument form of `bd dep remove`:
+// the edge_id that `bd list --json --include-deps` prints removes exactly that
+// edge, both spellings report the edge id in --json, and an id that names no
+// edge is an error rather than a silent no-op.
+func TestCLI_DepRemoveByEdgeID(t *testing.T) {
+	// Note: Not using t.Parallel() because inProcessMutex serializes execution anyway
+	tmpDir := setupCLITestDB(t)
+
+	var issue1, issue2 map[string]interface{}
+	json.Unmarshal([]byte(runBDInProcess(t, tmpDir, "create", "First", "-p", "1", "--json")), &issue1)
+	json.Unmarshal([]byte(runBDInProcess(t, tmpDir, "create", "Second", "-p", "1", "--json")), &issue2)
+	id1 := issue1["id"].(string)
+	id2 := issue2["id"].(string)
+
+	runBDInProcess(t, tmpDir, "dep", "add", id2, id1)
+
+	type edge struct {
+		ID     string `json:"id"`
+		EdgeID string `json:"edge_id"`
+		Type   string `json:"type"`
+	}
+	listEdges := func() map[string][]edge {
+		t.Helper()
+		var rows []struct {
+			ID           string `json:"id"`
+			Dependencies []edge `json:"dependencies"`
+		}
+		out := runBDInProcess(t, tmpDir, "list", "--json", "--include-deps")
+		if err := json.Unmarshal([]byte(out), &rows); err != nil {
+			t.Fatalf("list --include-deps: %v\n%s", err, out)
+		}
+		got := map[string][]edge{}
+		for _, r := range rows {
+			got[r.ID] = r.Dependencies
+		}
+		return got
+	}
+
+	before := listEdges()
+	if len(before[id2]) != 1 || before[id2][0].ID != id1 {
+		t.Fatalf("edges of %s = %+v, want one edge to %s", id2, before[id2], id1)
+	}
+	edgeID := before[id2][0].EdgeID
+	if edgeID != depid.New(id2, id1) {
+		t.Fatalf("edge_id = %q, want depid.New(%s, %s) = %q", edgeID, id2, id1, depid.New(id2, id1))
+	}
+
+	// Remove by edge id: the pair comes back, with the id, and the edge is gone.
+	out := runBDInProcess(t, tmpDir, "dep", "remove", edgeID, "--json")
+	var removed map[string]interface{}
+	if err := json.Unmarshal([]byte(out), &removed); err != nil {
+		t.Fatalf("dep remove <edge-id> --json: %v\n%s", err, out)
+	}
+	for k, want := range map[string]string{"status": "removed", "issue_id": id2, "depends_on_id": id1, "edge_id": edgeID} {
+		if removed[k] != want {
+			t.Errorf("dep remove <edge-id> --json %s = %v, want %q", k, removed[k], want)
+		}
+	}
+	if after := listEdges(); len(after[id2]) != 0 {
+		t.Errorf("edges of %s after remove by edge id = %+v, want none", id2, after[id2])
+	}
+
+	// A second removal of the same id finds no edge: that is an error, unlike
+	// the two-argument form, which stays silent on a missing pair.
+	stdout, stderr, err := runBDInProcessAllowError(t, tmpDir, "dep", "remove", edgeID)
+	if err == nil {
+		t.Fatalf("dep remove of a missing edge id succeeded; stdout: %s stderr: %s", stdout, stderr)
+	}
+	if all := err.Error() + stdout + stderr; !strings.Contains(all, "no dependency edge with id "+edgeID) {
+		t.Errorf("missing edge id error = %v / %s / %s, want 'no dependency edge with id %s'", err, stdout, stderr, edgeID)
+	}
+
+	// The two-argument form still works and now reports the edge id too.
+	runBDInProcess(t, tmpDir, "dep", "add", id2, id1)
+	out = runBDInProcess(t, tmpDir, "dep", "remove", id2, id1, "--json")
+	removed = nil
+	if err := json.Unmarshal([]byte(out), &removed); err != nil {
+		t.Fatalf("dep remove <pair> --json: %v\n%s", err, out)
+	}
+	if removed["edge_id"] != edgeID {
+		t.Errorf("dep remove <pair> --json edge_id = %v, want %q", removed["edge_id"], edgeID)
 	}
 }
 

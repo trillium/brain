@@ -28,6 +28,13 @@ type DependencyQueryStore interface {
 	// that answers "what does each of these ids block/gate" without a per-id
 	// fan-out. RAW: applies no visibility policy — the caller filters at hydration.
 	GetDependentRecordsForIssues(ctx context.Context, targetIDs []string) (map[string][]*types.Dependency, error)
+	// GetDependencyRecordByID returns the one raw dependency row whose primary
+	// id is depID — the edge id `bd list --include-deps` emits and
+	// `bd dep remove <edge-id>` accepts — across both the durable and wisp
+	// dependency tables (durable preferred), or nil when no edge carries that
+	// id. The returned row's ID field is populated. RAW: applies no visibility
+	// policy.
+	GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error)
 	// CountDependentRecords returns the total number of inbound edges of targetID
 	// (same predicate/scope as GetDependentRecords, depType "" = all), across
 	// both dependency tables, without paging. Callers that want a true total

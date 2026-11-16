@@ -710,7 +710,7 @@ func configCommandCanRunWithoutStore(cmd *cobra.Command, args []string) bool {
 	// and never touches the caller's own store, so requiring a local store
 	// here would only stop the one command whose whole job is to run when
 	// there is no local store at all.
-	if unifyCommandCanRunWithoutStore(cmd) || upgradeCommandCanRunWithoutStore(cmd) {
+	if unifyCommandCanRunWithoutStore(cmd) || upgradeCommandCanRunWithoutStore(cmd) || isFederationBackupVerb(cmd) {
 		return true
 	}
 	if cmd == nil || cmd.Parent() == nil || cmd.Parent().Name() != "config" {
@@ -1388,7 +1388,7 @@ var rootCmd = &cobra.Command{
 
 		// 'brain upgrade' migrates the server's databases itself; opening the
 		// caller's store with this binary would be a migration attempt of its own.
-		if upgradeCommandCanRunWithoutStore(cmd) {
+		if upgradeCommandCanRunWithoutStore(cmd) || isFederationBackupVerb(cmd) {
 			skipsStoreInit = true
 		}
 

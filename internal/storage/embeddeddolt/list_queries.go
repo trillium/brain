@@ -105,6 +105,19 @@ func (s *EmbeddedDoltStore) GetDependentRecordsForIssues(ctx context.Context, ta
 	return result, err
 }
 
+// GetDependencyRecordByID returns the one raw dependency row whose primary id
+// is depID, across both dependency tables, or nil when absent. Delegates to
+// issueops.GetDependencyRecordByIDInTx.
+func (s *EmbeddedDoltStore) GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	var result *types.Dependency
+	err := s.withConn(ctx, false, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetDependencyRecordByIDInTx(ctx, tx, depID)
+		return err
+	})
+	return result, err
+}
+
 func (s *EmbeddedDoltStore) GetDependencyCounts(ctx context.Context, issueIDs []string) (map[string]*types.DependencyCounts, error) {
 	var result map[string]*types.DependencyCounts
 	err := s.withConn(ctx, false, func(tx *sql.Tx) error {

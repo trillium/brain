@@ -71,12 +71,17 @@ func runISAShow(cmd *cobra.Command, args []string) {
 			"Warning: --section is ignored when --json is set; emitting full doc JSON")
 	}
 
-	db, err := openReadDB()
+	runner, err := openReadTxRunner()
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	doc, err := loadISADoc(ctx, db, id)
+	var doc *isashowverb.ISADoc
+	err = runner.RunReadSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		var loadErr error
+		doc, loadErr = loadISADoc(ctx, tx, id)
+		return loadErr
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			FatalErrorRespectJSON("isa not found: %s", id)
@@ -91,20 +96,13 @@ func runISAShow(cmd *cobra.Command, args []string) {
 	emitISAShow(doc)
 }
 
-// openReadDB returns the embedded-Dolt sql.DB from the global store. The
-// command surface is read-only so we don't go through the routing layer
+// openReadTxRunner returns the raw-SQL transaction seam of the global store.
+// The command surface is read-only so we don't go through the routing layer
 // (resolveAndGetIssueWithRouting) — that layer is for writes which need to
-// honor proxy routing. Reads against the local store are fine.
-func openReadDB() (*sql.DB, error) {
-	accessor, ok := storage.UnwrapStore(store).(storage.RawDBAccessor)
-	if !ok {
-		return nil, fmt.Errorf("store does not expose raw DB access")
-	}
-	db := accessor.DB()
-	if db == nil {
-		return nil, fmt.Errorf("store DB is nil")
-	}
-	return db, nil
+// honor proxy routing. Reads against the local store are fine; in proxied
+// mode the ISA verbs are refused before this runs (brain_capability_rows.go).
+func openReadTxRunner() (storage.SQLTxRunner, error) {
+	return sqlTxRunnerFor(store)
 }
 
 // wrongKindError signals that the requested id exists but is not an ISA.
@@ -125,7 +123,7 @@ func (e *wrongKindError) Error() string {
 // Slug is read from issues.slug (added in F1a; F1d will auto-populate).
 // Title is queried but not surfaced in the JSON doc — F1c-2 keeps the wire
 // shape locked to the ISC-16 fields.
-func loadISADoc(ctx context.Context, db *sql.DB, id string) (*isashowverb.ISADoc, error) {
+func loadISADoc(ctx context.Context, db storage.SQLTx, id string) (*isashowverb.ISADoc, error) {
 	var (
 		rowID        string
 		slug         sql.NullString

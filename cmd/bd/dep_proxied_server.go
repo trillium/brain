@@ -360,11 +360,32 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 }
 
 func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []string) error {
-	fromID := args[0]
-	toID := args[1]
-	if strings.HasPrefix(toID, "external:") {
-		if err := validateExternalRef(toID); err != nil {
+	var fromID, toID string
+	if len(args) == 1 {
+		// One argument names the edge by its own id (the edge_id from
+		// `bd list --include-deps`). The row is read in a unit of work opened
+		// only for that read, the way the proxied list route reads edges, and
+		// its endpoints are then removed exactly as a two-argument call would.
+		uw, err := openProxiedListUOW(ctx)
+		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
+		}
+		dep, err := uw.DependencyUseCase().GetByID(ctx, args[0])
+		uw.Close(ctx)
+		if err != nil {
+			return HandleErrorRespectJSON("looking up dependency edge %s: %v", args[0], err)
+		}
+		if dep == nil {
+			return HandleErrorRespectJSON("no dependency edge with id %s", args[0])
+		}
+		fromID, toID = dep.IssueID, dep.DependsOnID
+	} else {
+		fromID = args[0]
+		toID = args[1]
+		if strings.HasPrefix(toID, "external:") {
+			if err := validateExternalRef(toID); err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
 		}
 	}
 
@@ -385,11 +406,7 @@ func runDepRemoveProxiedServer(_ *cobra.Command, ctx context.Context, args []str
 	res := depEdgeFeedback(ctx, fromID, toID, false)
 
 	if jsonOutput {
-		_ = outputJSON(map[string]interface{}{
-			"status":        "removed",
-			"issue_id":      fromID,
-			"depends_on_id": toID,
-		})
+		_ = outputJSON(depRemoveJSON(fromID, toID))
 		return nil
 	}
 
