@@ -6,7 +6,8 @@ autonomous job copied the live server's data directory file by file, left
 three sql-servers running, and broke every store at once (incident
 `~/code/firstmate/data/incidents/2026-08-04-dolt-federation-outage.md`,
 `robots-15qy`, `question-sje`). This verb is the backup that cannot do that:
-it never reads the data directory, and it refuses a destination inside one.
+it never reads the data directory, and it refuses any backup or proof-write
+path inside one.
 
 ```
 bd brain federation-backup --dest /path/outside/every/data/dir
@@ -69,11 +70,15 @@ flowchart LR
 - **No file-level copy of a live data directory, ever.** The only bytes this
   command reads are the backup the server wrote. There is no code path that
   opens `<data-dir>/<db>/.dolt`.
-- **`--dest` is refused** when it is relative, the filesystem root, the home
-  directory, inside a Dolt database (`.dolt/noms` in any ancestor), inside a
-  sql-server data directory (`.doltcfg` in any ancestor, or a database as a
-  child), or inside a registered store's directory. `~/.dolt` alone is Dolt's
-  global config and does not trip it.
+- **All backup and proof-write paths are refused** when they are relative (for
+  `--dest`), the filesystem root or home directory (for `--dest`), inside a
+  Dolt database (`.dolt/noms` in any ancestor), inside a sql-server data
+  directory (`.doltcfg` in any ancestor, or a database as a child), or inside
+  a registered store's directory. This check covers `--dest`, every
+  `<dest>/<database>` backup target, and `--scratch-dir` (including the
+  default `<dest>/.scratch`); it checks both the supplied path and its
+  symlink-resolved path. An existing per-database backup target may not itself
+  be a symlink. `~/.dolt` alone is Dolt's global config and does not trip it.
 - **The live server is touched only by `SHOW DATABASES` and `DOLT_BACKUP`.**
   Both are read-only with respect to the database. The proof server is a
   separate process over a separate directory.
