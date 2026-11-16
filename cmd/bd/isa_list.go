@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	isashowverb "github.com/steveyegge/beads/internal/brain/verb/isashow"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // Flag values for `bd isa-list`. Package-scoped so cobra can bind them in
@@ -61,12 +62,17 @@ type isaListRow struct {
 func runISAList(cmd *cobra.Command, args []string) {
 	ctx := rootCtx
 
-	db, err := openReadDB()
+	runner, err := openReadTxRunner()
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	rows, err := loadISAList(ctx, db, isaListActive)
+	var rows []isaListRow
+	err = runner.RunReadSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		var loadErr error
+		rows, loadErr = loadISAList(ctx, tx, isaListActive)
+		return loadErr
+	})
 	if err != nil {
 		FatalErrorRespectJSON("listing isas: %v", err)
 	}
@@ -82,7 +88,7 @@ func runISAList(cmd *cobra.Command, args []string) {
 // optionally excluding phase='LEARN'. Returns a slice of compact rows in a
 // deterministic order: most-recently-updated first, then id ascending for
 // rows with the same (or NULL) timestamp.
-func loadISAList(ctx context.Context, db *sql.DB, activeOnly bool) ([]isaListRow, error) {
+func loadISAList(ctx context.Context, db storage.SQLTx, activeOnly bool) ([]isaListRow, error) {
 	q := `SELECT id, slug, title, isa_phase, isa_progress_m, isa_progress_n,
 	             isa_effort, isa_updated_at
 	      FROM issues

@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // Flag values for `bd isa-render-pending`.
@@ -81,12 +82,17 @@ type renderPendingEntry struct {
 func runISARenderPending(cmd *cobra.Command, args []string) {
 	ctx := rootCtx
 
-	db, err := openReadDB()
+	runner, err := openReadTxRunner()
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	pending, err := collectRenderPending(ctx, db)
+	var pending []renderPendingEntry
+	err = runner.RunReadSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		var collectErr error
+		pending, collectErr = collectRenderPending(ctx, tx)
+		return collectErr
+	})
 	if err != nil {
 		FatalErrorRespectJSON("listing isa rows: %v", err)
 	}
@@ -103,7 +109,7 @@ func runISARenderPending(cmd *cobra.Command, args []string) {
 // listing. This protects the operator's ability to SEE that a malformed
 // slug exists (so they can fix it via `bd patch <id> --field=slug
 // --value=<good>`).
-func collectRenderPending(ctx context.Context, db *sql.DB) ([]renderPendingEntry, error) {
+func collectRenderPending(ctx context.Context, db storage.SQLTx) ([]renderPendingEntry, error) {
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, slug, isa_updated_at
 		 FROM issues

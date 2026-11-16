@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 	isarenderverb "github.com/steveyegge/beads/internal/brain/verb/isarender"
+	"github.com/steveyegge/beads/internal/storage"
 )
 
 // Flag values for `bd isa-render-all`. The single-id `bd isa-render` verb
@@ -103,12 +104,7 @@ func runISARender(cmd *cobra.Command, args []string) {
 	id := args[0]
 	ctx := rootCtx
 
-	db, err := openReadDB()
-	if err != nil {
-		FatalErrorRespectJSON("opening database: %v", err)
-	}
-
-	outcome, err := renderISAByIDWithDB(ctx, db, id)
+	outcome, err := renderISAByID(ctx, store, id)
 	if err != nil {
 		// Path-traversal and other input-shape errors → exit 2. errors.As
 		// traverses the helper's fmt.Errorf("%w") wrapping, so typed checks
@@ -138,7 +134,7 @@ func runISARender(cmd *cobra.Command, args []string) {
 // loadRenderRow reads the issues row + isa_sections rows for id. Mirrors
 // isa_show.loadISADoc but pulls `title` and uses *string / *time.Time for
 // nullable scalars so the renderer can omit absent keys.
-func loadRenderRow(ctx context.Context, db *sql.DB, id string) (*renderRow, error) {
+func loadRenderRow(ctx context.Context, db storage.SQLTx, id string) (*renderRow, error) {
 	var (
 		rowID, kind  string
 		title        sql.NullString
@@ -346,19 +342,24 @@ func runISARenderAll(cmd *cobra.Command, args []string) {
 		sinceTime = &t
 	}
 
-	db, err := openReadDB()
+	runner, err := openReadTxRunner()
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	ids, err := selectISAIDs(ctx, db, sinceTime)
+	var ids []string
+	err = runner.RunReadSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		var selectErr error
+		ids, selectErr = selectISAIDs(ctx, tx, sinceTime)
+		return selectErr
+	})
 	if err != nil {
 		FatalErrorRespectJSON("listing ISAs: %v", err)
 	}
 
 	anyFailed := false
 	for _, id := range ids {
-		outcome, err := renderISAByIDWithDB(ctx, db, id)
+		outcome, err := renderISAByID(ctx, store, id)
 		if err != nil {
 			anyFailed = true
 			fmt.Printf("%s\t\tfailed: %v\n", id, err)
@@ -381,7 +382,7 @@ func runISARenderAll(cmd *cobra.Command, args []string) {
 // selectISAIDs returns every ISA id, optionally filtered to those touched
 // since the supplied timestamp. Order is by id ASC for stable output across
 // runs.
-func selectISAIDs(ctx context.Context, db *sql.DB, since *time.Time) ([]string, error) {
+func selectISAIDs(ctx context.Context, db storage.SQLTx, since *time.Time) ([]string, error) {
 	var (
 		rows *sql.Rows
 		err  error

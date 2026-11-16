@@ -52,8 +52,8 @@ func bdISABySlugOK(t *testing.T, bd, dir string, args ...string) string {
 func insertISARowWithSlug(t *testing.T, db *sql.DB, id, title, slug string) {
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
-		`INSERT INTO issues (id, title, status, priority, issue_type, slug)
-		 VALUES (?, ?, 'open', 1, 'isa', ?)`,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, slug)
+		 VALUES (?, ?, '', '', '', '', 'open', 1, 'isa', ?)`,
 		id, title, slug,
 	)
 	if err != nil {
@@ -66,8 +66,8 @@ func insertISARowWithSlug(t *testing.T, db *sql.DB, id, title, slug string) {
 func insertNonISARowWithSlug(t *testing.T, db *sql.DB, id, title, slug string) {
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
-		`INSERT INTO issues (id, title, status, priority, issue_type, slug)
-		 VALUES (?, ?, 'open', 1, 'knowledge', ?)`,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, slug)
+		 VALUES (?, ?, '', '', '', '', 'open', 1, 'knowledge', ?)`,
 		id, title, slug,
 	)
 	if err != nil {

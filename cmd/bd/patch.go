@@ -122,7 +122,7 @@ func runPatch(cmd *cobra.Command, args []string) {
 // check is fused into the UPDATE statement (WHERE issue_type='isa') so we
 // never racily UPDATE-then-SELECT.
 func runPatchISA(ctx context.Context, result *RoutedResult, field, value string) {
-	db, kind, err := openWriteDB(result)
+	runner, kind, err := openWriteTxRunner(result)
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
@@ -135,77 +135,97 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 		}
 	}
 
-	// Progress validation needs the current row state. Fetch only when needed.
+	// The progress read (when needed), the gated UPDATE, and the zero-rows
+	// lookup run in one transaction. The callback returns errors rather than
+	// exiting so the transaction is rolled back and the connection released
+	// before the process exits; the mapping to exit codes is below.
 	var (
-		sqlValue interface{} = value
+		noOp       bool
+		actualKind string
 	)
-	switch field {
-	case patchverb.FieldISAProgressM:
-		curN, fetchErr := fetchCurrentProgressN(ctx, db, result.ResolvedID)
-		if fetchErr != nil {
-			FatalErrorRespectJSON("fetching current isa_progress_n: %v", fetchErr)
-		}
-		m, vErr := patchverb.ValidateProgressM(value, curN)
-		if vErr != nil {
-			exitValidation(vErr)
-		}
-		sqlValue = m
-	case patchverb.FieldISAProgressN:
-		curM, fetchErr := fetchCurrentProgressM(ctx, db, result.ResolvedID)
-		if fetchErr != nil {
-			FatalErrorRespectJSON("fetching current isa_progress_m: %v", fetchErr)
-		}
-		n, vErr := patchverb.ValidateProgressN(value, curM)
-		if vErr != nil {
-			exitValidation(vErr)
-		}
-		sqlValue = n
-	}
+	err = runner.RunWriteSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		noOp = false
 
-	// Build and execute the gated UPDATE. We also bump isa_updated_at unless
-	// the field IS isa_updated_at (in which case the caller's value wins).
-	var (
-		setClause string
-		execArgs  []interface{}
-	)
-	if field == patchverb.FieldISAUpdatedAt {
-		setClause = fmt.Sprintf("%s = ?", field)
-		execArgs = []interface{}{sqlValue, result.ResolvedID}
-	} else {
-		setClause = fmt.Sprintf("%s = ?, isa_updated_at = NOW()", field)
-		execArgs = []interface{}{sqlValue, result.ResolvedID}
-	}
-	stmt := fmt.Sprintf("UPDATE issues SET %s WHERE id = ? AND issue_type = 'isa'", setClause)
-
-	res, execErr := db.ExecContext(ctx, stmt, execArgs...)
-	if execErr != nil {
-		FatalErrorRespectJSON("updating %s: %v", field, execErr)
-	}
-	affected, raErr := res.RowsAffected()
-	if raErr != nil {
-		FatalErrorRespectJSON("checking rows affected: %v", raErr)
-	}
-	if affected == 0 {
-		// Three possibilities when an UPDATE matches zero rows:
-		//   1. row does not exist
-		//   2. row exists but issue_type != 'isa' (wrong kind)
-		//   3. row exists, is kind=isa, but Dolt/MySQL reports
-		//      RowsAffected=0 because the new column values equal the existing
-		//      ones AND `isa_updated_at = NOW()` rounds to the same second as
-		//      the previous touch. This is a value-unchanged no-op, not a
-		//      failure — idempotent re-patches (e.g. migration script re-runs)
-		//      legitimately hit this path.
-		// Look up the row to disambiguate.
-		actualKind, lookupErr := fetchIssueKind(ctx, db, result.ResolvedID)
-		if lookupErr != nil {
-			if errors.Is(lookupErr, sql.ErrNoRows) {
-				FatalErrorRespectJSON("issue %s not found", result.ResolvedID)
+		// Progress validation needs the current row state. Fetch only when needed.
+		var sqlValue interface{} = value
+		switch field {
+		case patchverb.FieldISAProgressM:
+			curN, fetchErr := fetchCurrentProgressN(ctx, tx, result.ResolvedID)
+			if fetchErr != nil {
+				return fmt.Errorf("fetching current isa_progress_n: %w", fetchErr)
 			}
-			FatalErrorRespectJSON("verifying issue kind: %v", lookupErr)
+			m, vErr := patchverb.ValidateProgressM(value, curN)
+			if vErr != nil {
+				return vErr
+			}
+			sqlValue = m
+		case patchverb.FieldISAProgressN:
+			curM, fetchErr := fetchCurrentProgressM(ctx, tx, result.ResolvedID)
+			if fetchErr != nil {
+				return fmt.Errorf("fetching current isa_progress_m: %w", fetchErr)
+			}
+			n, vErr := patchverb.ValidateProgressN(value, curM)
+			if vErr != nil {
+				return vErr
+			}
+			sqlValue = n
 		}
-		if actualKind != "isa" {
-			exitValidation(patchverb.WrongKindError(field, actualKind))
+
+		// Build and execute the gated UPDATE. We also bump isa_updated_at unless
+		// the field IS isa_updated_at (in which case the caller's value wins).
+		var setClause string
+		if field == patchverb.FieldISAUpdatedAt {
+			setClause = fmt.Sprintf("%s = ?", field)
+		} else {
+			setClause = fmt.Sprintf("%s = ?, isa_updated_at = NOW()", field)
 		}
+		stmt := fmt.Sprintf("UPDATE issues SET %s WHERE id = ? AND issue_type = 'isa'", setClause)
+
+		res, execErr := tx.ExecContext(ctx, stmt, sqlValue, result.ResolvedID)
+		if execErr != nil {
+			return fmt.Errorf("updating %s: %w", field, execErr)
+		}
+		affected, raErr := res.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("checking rows affected: %w", raErr)
+		}
+		if affected == 0 {
+			// Three possibilities when an UPDATE matches zero rows:
+			//   1. row does not exist
+			//   2. row exists but issue_type != 'isa' (wrong kind)
+			//   3. row exists, is kind=isa, but Dolt/MySQL reports
+			//      RowsAffected=0 because the new column values equal the existing
+			//      ones AND `isa_updated_at = NOW()` rounds to the same second as
+			//      the previous touch. This is a value-unchanged no-op, not a
+			//      failure — idempotent re-patches (e.g. migration script re-runs)
+			//      legitimately hit this path.
+			// Look up the row to disambiguate.
+			k, lookupErr := fetchIssueKind(ctx, tx, result.ResolvedID)
+			if lookupErr != nil {
+				if errors.Is(lookupErr, sql.ErrNoRows) {
+					return lookupErr
+				}
+				return fmt.Errorf("verifying issue kind: %w", lookupErr)
+			}
+			if k != "isa" {
+				return patchverb.WrongKindError(field, k)
+			}
+			noOp = true
+			actualKind = k
+		}
+		return nil
+	})
+	if err != nil {
+		var vErr *patchverb.ValidationError
+		if errors.As(err, &vErr) {
+			exitValidation(vErr)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			FatalErrorRespectJSON("issue %s not found", result.ResolvedID)
+		}
+		FatalErrorRespectJSON("%v", err)
+	}
+	if noOp {
 		// Row exists and IS kind=isa — treat as a successful no-op. Skip the
 		// auto-render below because nothing changed.
 		emitSuccess(result.ResolvedID, field, value, actualKind)
@@ -235,24 +255,33 @@ func runPatchISA(ctx context.Context, result *RoutedResult, field, value string)
 // no-touch on isa_updated_at and the single-statement write — is explicit and
 // auditable.
 func runPatchSlug(ctx context.Context, result *RoutedResult, value string) {
-	db, kind, err := openWriteDB(result)
+	runner, kind, err := openWriteTxRunner(result)
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	res, execErr := db.ExecContext(ctx,
-		"UPDATE issues SET slug = ?, metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.brain_slug', ?) WHERE id = ?",
-		value, value, result.ResolvedID,
-	)
-	if execErr != nil {
-		FatalErrorRespectJSON("updating slug: %v", execErr)
-	}
-	affected, raErr := res.RowsAffected()
-	if raErr != nil {
-		FatalErrorRespectJSON("checking rows affected: %v", raErr)
-	}
-	if affected == 0 {
-		FatalErrorRespectJSON("issue %s not found", result.ResolvedID)
+	err = runner.RunWriteSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		res, execErr := tx.ExecContext(ctx,
+			"UPDATE issues SET slug = ?, metadata = JSON_SET(COALESCE(metadata, JSON_OBJECT()), '$.brain_slug', ?) WHERE id = ?",
+			value, value, result.ResolvedID,
+		)
+		if execErr != nil {
+			return fmt.Errorf("updating slug: %w", execErr)
+		}
+		affected, raErr := res.RowsAffected()
+		if raErr != nil {
+			return fmt.Errorf("checking rows affected: %w", raErr)
+		}
+		if affected == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			FatalErrorRespectJSON("issue %s not found", result.ResolvedID)
+		}
+		FatalErrorRespectJSON("%v", err)
 	}
 
 	commandDidWrite.Store(true)
@@ -339,29 +368,25 @@ func runPatchPassthrough(ctx context.Context, result *RoutedResult, field, value
 	emitSuccess(result.ResolvedID, field, value, kind)
 }
 
-// openWriteDB extracts the *sql.DB from a routed store and returns it
+// openWriteTxRunner returns the raw-SQL transaction seam of a routed store
 // alongside the row's current issue_type (so success output can carry it).
 // We grab kind here once to avoid an extra round-trip on the happy path.
-func openWriteDB(result *RoutedResult) (*sql.DB, string, error) {
-	accessor, ok := storage.UnwrapStore(result.Store).(storage.RawDBAccessor)
-	if !ok {
-		return nil, "", fmt.Errorf("store does not expose raw DB access")
-	}
-	db := accessor.DB()
-	if db == nil {
-		return nil, "", fmt.Errorf("store DB is nil")
+func openWriteTxRunner(result *RoutedResult) (storage.SQLTxRunner, string, error) {
+	runner, err := sqlTxRunnerFor(result.Store)
+	if err != nil {
+		return nil, "", err
 	}
 	kind := ""
 	if result.Issue != nil {
 		kind = string(result.Issue.IssueType)
 	}
-	return db, kind, nil
+	return runner, kind, nil
 }
 
 // fetchCurrentProgressN reads isa_progress_n for the row. COALESCE protects
 // against NULL (uninitialized ISA rows can have NULL progress columns; the
 // invariant treats NULL as 0).
-func fetchCurrentProgressN(ctx context.Context, db *sql.DB, id string) (int, error) {
+func fetchCurrentProgressN(ctx context.Context, db storage.SQLTx, id string) (int, error) {
 	var n sql.NullInt64
 	err := db.QueryRowContext(ctx,
 		"SELECT isa_progress_n FROM issues WHERE id = ?", id,
@@ -376,7 +401,7 @@ func fetchCurrentProgressN(ctx context.Context, db *sql.DB, id string) (int, err
 }
 
 // fetchCurrentProgressM reads isa_progress_m for the row. NULL → 0.
-func fetchCurrentProgressM(ctx context.Context, db *sql.DB, id string) (int, error) {
+func fetchCurrentProgressM(ctx context.Context, db storage.SQLTx, id string) (int, error) {
 	var m sql.NullInt64
 	err := db.QueryRowContext(ctx,
 		"SELECT isa_progress_m FROM issues WHERE id = ?", id,
@@ -393,7 +418,7 @@ func fetchCurrentProgressM(ctx context.Context, db *sql.DB, id string) (int, err
 // fetchIssueKind reads issue_type for the row. Returns sql.ErrNoRows when the
 // row does not exist; the caller distinguishes wrong-kind (exit 2) from
 // not-found (exit 1) on that basis.
-func fetchIssueKind(ctx context.Context, db *sql.DB, id string) (string, error) {
+func fetchIssueKind(ctx context.Context, db storage.SQLTx, id string) (string, error) {
 	var kind string
 	err := db.QueryRowContext(ctx,
 		"SELECT issue_type FROM issues WHERE id = ?", id,
