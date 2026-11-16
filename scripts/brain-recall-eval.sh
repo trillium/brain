@@ -27,10 +27,34 @@ command -v "$wrapper" >/dev/null || { echo "store wrapper '$wrapper' not on PATH
 
 # top_ids <verb> <query> — the first N ids a verb returns, one per line.
 top_ids() {
-  case "$1" in
-    recall) "$wrapper" recall --json --top "$top" "$2" 2>/dev/null | jq -r '.hits[]?.id' ;;
-    search) "$wrapper" search --json --limit "$top" "$2" 2>/dev/null | jq -r '.[]?.id' ;;
+  local verb="$1" query="$2" output status validate ids
+  case "$verb" in
+    recall)
+      validate='type == "object" and (.hits | type == "array")'
+      if output="$("$wrapper" recall --json --top "$top" "$query")"; then status=0; else status=$?; fi
+      ;;
+    search)
+      validate='type == "array"'
+      if output="$("$wrapper" search --json --limit "$top" "$query")"; then status=0; else status=$?; fi
+      ;;
+    *) echo "unknown verb: $verb" >&2; return 2 ;;
   esac
+  if ! printf '%s' "$output" | jq -e "$validate" >/dev/null; then
+    echo "$verb returned invalid JSON" >&2
+    if [ "$status" -ne 0 ]; then
+      return "$status"
+    fi
+    return 1
+  fi
+  ids="$(case "$verb" in
+    recall) printf '%s' "$output" | jq -r '.hits[]?.id' ;;
+    search) printf '%s' "$output" | jq -r '.[]?.id' ;;
+  esac)"
+  if [ "$status" -ne 0 ] && [ -n "$ids" ]; then
+    echo "$verb returned ids with exit status $status" >&2
+    return "$status"
+  fi
+  printf '%s\n' "$ids"
 }
 
 rows=()

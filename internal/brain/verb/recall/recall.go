@@ -47,6 +47,7 @@ const (
 
 // Field names reported in Hit.Matched.
 const (
+	FieldID      = "id"
 	FieldTitle   = "title"
 	FieldBody    = "body"
 	FieldComment = "comment"
@@ -107,7 +108,7 @@ type Hit struct {
 	Kind     string   `json:"kind,omitempty"`
 	Status   string   `json:"status,omitempty"`
 	Priority int      `json:"priority"`
-	Matched  []string `json:"matched"` // which fields matched: title, body, comment, label
+	Matched  []string `json:"matched"` // which fields matched: id, title, body, comment, label
 	Comments int      `json:"comments"`
 }
 
@@ -316,14 +317,18 @@ func stem(w string) string {
 type fieldMask uint8
 
 const (
-	maskTitle fieldMask = 1 << iota
+	maskID fieldMask = 1 << iota
+	maskTitle
 	maskBody
 	maskComment
 	maskLabel
 )
 
 func (m fieldMask) names() []string {
-	out := make([]string, 0, 4)
+	out := make([]string, 0, 5)
+	if m&maskID != 0 {
+		out = append(out, FieldID)
+	}
 	if m&maskTitle != 0 {
 		out = append(out, FieldTitle)
 	}
@@ -508,13 +513,13 @@ func indexDoc(doc *Doc, terms []QueryTerm, qSet map[string]bool, prefixes []stri
 	d.tTerms = map[string]bool{}
 	d.lTerms = map[string]bool{}
 
-	// The id and its tail are indexed as title tokens so `brain recall p20f`
+	// The id and its tail are indexed so `brain recall p20f`
 	// finds project-p20f even though the body never repeats the id.
 	d.title = Tokenize(doc.Title)
 	idTokens := Tokenize(doc.ID)
 	d.length = len(d.title)
 	count(d.title, maskTitle, d.tTerms)
-	count(idTokens, maskTitle, d.tTerms)
+	count(idTokens, maskID, nil)
 
 	for _, text := range doc.Body {
 		toks := Tokenize(text)
