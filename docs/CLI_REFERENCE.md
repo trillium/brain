@@ -290,6 +290,7 @@ Reference for bd Latest. Generated from `bd help --all`.
   - [bd audit record](#bd-audit-record) — Append an audit interaction entry
 - [bd blocked](#bd-blocked) — Show blocked issues
 - [bd brain](#bd-brain) — brain — knowledge graph + task tool on top of bd
+  - [bd brain federation-backup](#bd-brain-federation-backup) — Back every registered store's database up with DOLT_BACKUP and prove each backup on a Dolt server of its own
   - [bd brain link](#bd-brain-link) — Link two brain docs with a typed edge
   - [bd brain new](#bd-brain-new) — Create a new brain doc (kind = task | knowledge | both | isa)
   - [bd brain promote](#bd-brain-promote) — Redirect: did you mean `brain recast &lt;id&gt; --to=&lt;kind&gt;`?
@@ -7613,6 +7614,66 @@ See ISA.md §"Decisions" → "First-Tranche Decisions" → "Decision 5
 ```
 bd brain
 bd brain [command]
+```
+
+#### bd brain federation-backup
+
+Backs the federation up without ever copying the Dolt server's data directory.
+
+For every store in the registry (the stores 'brain stores list' prints) the
+command reads the store's metadata, collects the databases the stores name
+(a shared database is backed up once), confirms each is on the server with
+SHOW DATABASES, and asks the server for a Dolt-native backup of it:
+
+  CALL DOLT_BACKUP('sync-url', 'file://&lt;dest&gt;/&lt;database&gt;')
+
+The server writes the backup; this command never reads the data directory.
+A second run syncs into the same backup, so &lt;dest&gt; stays one backup per
+database. Then each backup is proved:
+
+  - it is laid out as a database on a Dolt sql-server of its own (a free
+    loopback port under --scratch-dir, stopped and removed afterwards);
+  - its dolt_hashof_db, HEAD and every table hash are compared with the
+    state the database had before the sync; when something wrote to the
+    database while the backup ran, the pre-sync HEAD must be in the backup's
+    history instead;
+  - 'bd list' is run by this binary against the copy for every store that
+    lives in the database, the way the store's wrapper would run it.
+
+Each step is timed, and a report is written under &lt;dest&gt;/reports/.
+
+The destination is refused when it lies inside a Dolt database or data
+directory, or inside a registered store's directory. Run the command on the
+server's own machine: a file:// backup is written where the server runs, and
+the proof opens it from there.
+
+Login: --user, else BEADS_DOLT_SERVER_USER, else root; the password from
+BEADS_DOLT_PASSWORD, else the [host:port] entry of the beads credentials
+file. The login must be allowed to run DOLT_BACKUP.
+
+```
+bd brain federation-backup [flags]
+```
+
+**Aliases:** fedbackup
+
+**Flags:**
+
+```
+      --all-databases        also back up databases on the server that no registered store names
+      --bd-bin string        bd binary that runs 'bd list' against each copy (default: this binary)
+      --dest string          directory the backups go to, on the server's machine, outside every data directory (required)
+      --dolt-bin string      dolt binary for the proof server (default "dolt")
+      --host string          Dolt sql-server host (default "127.0.0.1")
+      --json                 print the report as JSON
+      --keep-scratch         keep the proof server's data directory afterwards
+      --port int             Dolt sql-server port (default 3307)
+      --registry string      store registry to iterate (default ~/.config/brain/stores.yaml)
+      --scratch-dir string   where a backup is laid out on a Dolt server of its own; same filesystem as --dest so it is cloned, not copied (default: <dest>/.scratch, removed afterwards)
+      --skip-verify          take the backups without proving them (the report says so)
+      --store strings        only these registered stores (repeatable; default: every store in the registry)
+      --timeout duration     overall time budget (default 12h0m0s)
+      --user string          login on the server (default BEADS_DOLT_SERVER_USER, then root)
 ```
 
 #### bd brain link
