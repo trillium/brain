@@ -14,12 +14,15 @@
 package recall
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"math"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unicode"
 	"unicode/utf8"
 )
@@ -180,28 +183,60 @@ func (v *Verb) Run(ctx context.Context, args Args) (Result, error) {
 // Tokenize lowercases text, splits on anything that is not a letter or digit,
 // drops one-character pieces, and applies a light English suffix stem so that
 // "comments", "commented" and "commenting" all land on "comment". It is the
-// one tokenizer for both the corpus and the query, so the two always agree.
+// one tokenizer for both the corpus and the query, so the two always agree:
+// the ranker streams the same scanner over the corpus without materialising
+// the slice.
 func Tokenize(text string) []string {
 	var out []string
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() == 0 {
-			return
-		}
-		if tok := stem(cur.String()); runeLen(tok) >= 2 {
-			out = append(out, tok)
-		}
-		cur.Reset()
-	}
-	for _, r := range text {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			cur.WriteRune(unicode.ToLower(r))
-			continue
-		}
-		flush()
-	}
-	flush()
+	scanTokens(text, nil, func(tok []byte) { out = append(out, string(tok)) })
 	return out
+}
+
+// scanWords calls fn once per maximal run of letters and digits in text,
+// lowercased. The slice handed to fn is scratch, valid only during the call;
+// buf is the scratch to reuse and the grown buffer is returned so a caller
+// scanning many strings allocates once.
+func scanWords(text string, buf []byte, fn func(word []byte)) []byte {
+	buf = buf[:0]
+	for i := 0; i < len(text); {
+		c := text[i]
+		if c < utf8.RuneSelf {
+			i++
+			switch {
+			case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+				buf = append(buf, c)
+				continue
+			case c >= 'A' && c <= 'Z':
+				buf = append(buf, c+('a'-'A'))
+				continue
+			}
+		} else {
+			r, size := utf8.DecodeRuneInString(text[i:])
+			i += size
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				buf = utf8.AppendRune(buf, unicode.ToLower(r))
+				continue
+			}
+		}
+		if len(buf) > 0 {
+			fn(buf)
+			buf = buf[:0]
+		}
+	}
+	if len(buf) > 0 {
+		fn(buf)
+	}
+	return buf
+}
+
+// scanTokens is scanWords followed by the stem and the two-character floor:
+// exactly the tokens Tokenize would return, streamed.
+func scanTokens(text string, buf []byte, fn func(tok []byte)) []byte {
+	return scanWords(text, buf, func(word []byte) {
+		if tok := stemBytes(word); utf8.RuneCount(tok) >= 2 {
+			fn(tok)
+		}
+	})
 }
 
 // QueryTerm is one distinct query token with the substring a source may
@@ -209,10 +244,12 @@ func Tokenize(text string) []string {
 type QueryTerm struct {
 	// Token is the stemmed token the ranker scores.
 	Token string
-	// Like is the longest common prefix of the raw word and its stem, so a
-	// `LOWER(col) LIKE '%like%'` (or a case-insensitive regex) built from it
-	// keeps every row Rank could score: both "policies" and "policy"
-	// survive a filter built from "polic". Lowercase alphanumeric only.
+	// Like is the longest prefix shared by the raw word, its stem, and
+	// every corpus word that stems to the same token, so a filter built from
+	// it (a `LOWER(col) LIKE '%like%'`, a case-insensitive regex, or a
+	// word-start test) keeps every word Rank could score: "policies",
+	// "policy" and "vocabularies" all survive filters built from "polic"
+	// and "vocabular". Lowercase alphanumeric only.
 	Like string
 }
 
@@ -221,13 +258,8 @@ type QueryTerm struct {
 func QueryTerms(query string) []QueryTerm {
 	var out []QueryTerm
 	at := map[string]int{}
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() == 0 {
-			return
-		}
-		raw := cur.String()
-		cur.Reset()
+	scanWords(query, nil, func(word []byte) {
+		raw := string(word)
 		if runeLen(raw) < 2 {
 			return
 		}
@@ -235,11 +267,13 @@ func QueryTerms(query string) []QueryTerm {
 		if runeLen(tok) < 2 {
 			return
 		}
-		n := 0
-		for n < len(raw) && n < len(tok) && raw[n] == tok[n] {
-			n++
+		like := commonPrefix(raw, tok)
+		// A corpus word ending in "ies" stems to this token's "y" form
+		// ("vocabularies" to "vocabulary"), and shares only the stem minus
+		// that "y" with it, so the filter must stop before the "y" too.
+		if strings.HasSuffix(tok, "y") && runeLen(tok) >= 3 {
+			like = commonPrefix(like, tok[:len(tok)-1])
 		}
-		like := raw[:n]
 		if runeLen(like) < 2 {
 			like = raw
 		}
@@ -251,16 +285,17 @@ func QueryTerms(query string) []QueryTerm {
 		}
 		at[tok] = len(out)
 		out = append(out, QueryTerm{Token: tok, Like: like})
-	}
-	for _, r := range query {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			cur.WriteRune(unicode.ToLower(r))
-			continue
-		}
-		flush()
-	}
-	flush()
+	})
 	return out
+}
+
+// commonPrefix answers the longest common byte prefix of a and b.
+func commonPrefix(a, b string) string {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return a[:n]
 }
 
 // LikeTerms answers the distinct Like substrings of QueryTerms, minus any
@@ -296,22 +331,41 @@ func LikeTerms(query string) []string {
 // stem strips a handful of English suffixes when a reasonably long stem
 // remains. It is deliberately crude: recall matches, it does not parse.
 func stem(w string) string {
+	return string(stemBytes([]byte(w)))
+}
+
+// stemBytes is stem over a scratch slice. It may write into w's backing
+// array (the "ies" case overwrites in place) and returns the stemmed slice.
+// Lengths are character counts, not byte counts, so a non-ASCII word is held
+// to the same floor as an ASCII one.
+func stemBytes(w []byte) []byte {
 	switch {
-	case strings.HasSuffix(w, "ies") && runeLen(w) > 4:
-		return w[:len(w)-3] + "y"
-	case strings.HasSuffix(w, "sses") && runeLen(w) > 5:
+	case bytes.HasSuffix(w, sufIES) && utf8.RuneCount(w) > 4:
+		return append(w[:len(w)-3], 'y')
+	case bytes.HasSuffix(w, sufSSES) && utf8.RuneCount(w) > 5:
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "ing") && runeLen(w) > 6:
+	case bytes.HasSuffix(w, sufING) && utf8.RuneCount(w) > 6:
 		return w[:len(w)-3]
-	case strings.HasSuffix(w, "ed") && runeLen(w) > 5:
+	case bytes.HasSuffix(w, sufED) && utf8.RuneCount(w) > 5:
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "es") && runeLen(w) > 4 && !strings.HasSuffix(w, "ses"):
+	case bytes.HasSuffix(w, sufES) && utf8.RuneCount(w) > 4 && !bytes.HasSuffix(w, sufSES):
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") && runeLen(w) > 3:
+	case bytes.HasSuffix(w, sufS) && !bytes.HasSuffix(w, sufSS) && utf8.RuneCount(w) > 3:
 		return w[:len(w)-1]
 	}
 	return w
 }
+
+var (
+	sufIES  = []byte("ies")
+	sufSSES = []byte("sses")
+	sufING  = []byte("ing")
+	sufED   = []byte("ed")
+	sufES   = []byte("es")
+	sufSES  = []byte("ses")
+	sufS    = []byte("s")
+	sufSS   = []byte("ss")
+)
 
 // fieldMask records which fields of a doc held a match.
 type fieldMask uint8
@@ -345,15 +399,17 @@ func (m fieldMask) names() []string {
 }
 
 // indexed is the per-doc term view the ranker scores. Only the query's terms
-// are counted, so the index is as small as the query, not the corpus.
+// are counted, so the index is as small as the query, not the corpus. Term
+// slots are indexed by the query term's position in Rank's term list.
 type indexed struct {
-	doc    *Doc
-	length int                // tokens across all fields
-	tf     map[string]float64 // weighted term frequency per query term
-	mask   fieldMask
-	title  []string // title tokens, for the phrase bonus
-	tTerms map[string]bool
-	lTerms map[string]bool
+	doc     *Doc
+	length  int       // tokens across all fields
+	tf      []float64 // weighted term frequency per query term
+	matched bool      // any tf slot is non-zero
+	mask    fieldMask
+	title   []string // title tokens, for the phrase bonus
+	tTerms  []bool   // query terms found in the title
+	lTerms  []bool   // query terms found among the labels
 }
 
 // Rank scores every doc against the query and returns all docs with a
@@ -364,55 +420,62 @@ func Rank(docs []Doc, query string) []Hit {
 		return nil
 	}
 	qTokens := make([]string, 0, len(terms))
-	qSet := make(map[string]bool, len(terms))
-	for _, t := range terms {
+	slot := make(map[string]int, len(terms))
+	for i, t := range terms {
 		qTokens = append(qTokens, t.Token)
-		qSet[t.Token] = true
+		slot[t.Token] = i
 	}
 	// Prefix expansion applies to query tokens of at least four characters:
 	// "tailnet" should also pick up "tailnets"-like words the stemmer missed
 	// and "kokoro" should match "kokoro82m". Shorter tokens stay exact to
 	// keep "go" from matching "goal" and "god".
-	prefixes := make([]string, 0, len(qTokens))
-	for _, t := range qTokens {
+	var prefixes []prefixTerm
+	for i, t := range qTokens {
 		if runeLen(t) >= 4 {
-			prefixes = append(prefixes, t)
+			prefixes = append(prefixes, prefixTerm{text: []byte(t), slot: i})
 		}
 	}
 
+	// Index in parallel. Docs vary from a one-line task to a design note with
+	// a hundred comments, so workers pull the next doc from a shared counter
+	// rather than splitting the slice into equal ranges: no worker idles
+	// while another finishes a run of long documents.
 	idx := make([]indexed, len(docs))
-	var wg sync.WaitGroup
-	workers := 8
-	if len(docs) < workers {
-		workers = 1
+	workers := runtime.NumCPU()
+	if workers > len(docs) {
+		workers = len(docs)
 	}
-	chunk := (len(docs) + workers - 1) / workers
+	var next atomic.Int64
+	var wg sync.WaitGroup
 	for w := 0; w < workers; w++ {
-		lo, hi := w*chunk, (w+1)*chunk
-		if hi > len(docs) {
-			hi = len(docs)
-		}
-		if lo >= hi {
-			break
-		}
 		wg.Add(1)
-		go func(lo, hi int) {
+		go func() {
 			defer wg.Done()
-			for i := lo; i < hi; i++ {
-				idx[i] = indexDoc(&docs[i], terms, qSet, prefixes)
+			ix := indexer{slot: slot, prefixes: prefixes, nTerms: len(terms), phrase: len(qTokens) > 1}
+			for {
+				i := int(next.Add(1) - 1)
+				if i >= len(docs) {
+					return
+				}
+				idx[i] = ix.index(&docs[i])
 			}
-		}(lo, hi)
+		}()
 	}
 	wg.Wait()
 
 	// Document frequency per query term, and the average length, both over
 	// the corpus the caller handed in (after the kind filter).
-	df := make(map[string]int, len(qTokens))
+	df := make([]int, len(terms))
 	totalLen := 0
 	for i := range idx {
 		totalLen += idx[i].length
-		for t := range idx[i].tf {
-			df[t]++
+		if !idx[i].matched {
+			continue
+		}
+		for t, f := range idx[i].tf {
+			if f > 0 {
+				df[t]++
+			}
 		}
 	}
 	n := float64(len(docs))
@@ -420,8 +483,8 @@ func Rank(docs []Doc, query string) []Hit {
 	if avgLen == 0 {
 		avgLen = 1
 	}
-	idf := make(map[string]float64, len(qTokens))
-	for _, t := range qTokens {
+	idf := make([]float64, len(terms))
+	for t := range qTokens {
 		d := float64(df[t])
 		idf[t] = math.Log(1 + (n-d+0.5)/(d+0.5))
 	}
@@ -433,23 +496,29 @@ func Rank(docs []Doc, query string) []Hit {
 	hits := make([]scoredHit, 0, len(idx))
 	for i := range idx {
 		d := &idx[i]
-		if len(d.tf) == 0 {
+		if !d.matched {
 			continue
 		}
 		score := 0.0
 		norm := k1 * (1 - b + b*float64(d.length)/avgLen)
 		for t, f := range d.tf {
-			score += idf[t] * (f * (k1 + 1)) / (f + norm)
+			if f > 0 {
+				score += idf[t] * (f * (k1 + 1)) / (f + norm)
+			}
 		}
-		for t := range d.tTerms {
-			score += titleTermBonus * idf[t]
+		for t, ok := range d.tTerms {
+			if ok {
+				score += titleTermBonus * idf[t]
+			}
 		}
-		for t := range d.lTerms {
-			score += labelTermBonus * idf[t]
+		for t, ok := range d.lTerms {
+			if ok {
+				score += labelTermBonus * idf[t]
+			}
 		}
 		if len(qTokens) > 1 && containsPhrase(d.title, qTokens) {
 			for _, t := range qTokens {
-				score += titlePhraseBonus * idf[t]
+				score += titlePhraseBonus * idf[slot[t]]
 			}
 		}
 		if score <= 0 {
@@ -483,58 +552,79 @@ func Rank(docs []Doc, query string) []Hit {
 	return result
 }
 
-// indexDoc tokenizes one doc and counts the query terms it holds. A token
-// that exactly equals a query term counts 1; a token that merely starts with
-// a query prefix counts prefixWeight toward that term.
-func indexDoc(doc *Doc, terms []QueryTerm, qSet map[string]bool, prefixes []string) indexed {
-	d := indexed{doc: doc, tf: map[string]float64{}}
-	count := func(tokens []string, mask fieldMask, terms map[string]bool) {
-		for _, tok := range tokens {
-			if qSet[tok] {
-				d.tf[tok]++
+// prefixTerm is a query token long enough for prefix expansion, with the
+// term slot its partial matches count toward.
+type prefixTerm struct {
+	text []byte
+	slot int
+}
+
+// indexer counts query terms in one doc at a time. One lives per worker: the
+// scratch buffer is reused across every string the worker tokenizes, so
+// indexing a 34 MB corpus allocates per doc, not per token.
+type indexer struct {
+	slot     map[string]int
+	prefixes []prefixTerm
+	nTerms   int
+	phrase   bool
+	buf      []byte
+}
+
+// index tokenizes one doc and counts the query terms it holds. A token that
+// exactly equals a query term counts 1; a token that merely starts with a
+// query prefix counts prefixWeight toward that term.
+func (ix *indexer) index(doc *Doc) indexed {
+	d := indexed{
+		doc:    doc,
+		tf:     make([]float64, ix.nTerms),
+		tTerms: make([]bool, ix.nTerms),
+		lTerms: make([]bool, ix.nTerms),
+	}
+	count := func(text string, mask fieldMask, terms []bool) {
+		ix.buf = scanTokens(text, ix.buf, func(tok []byte) {
+			d.length++
+			// string(tok) in a map index does not allocate.
+			if s, ok := ix.slot[string(tok)]; ok {
+				d.tf[s]++
+				d.matched = true
 				d.mask |= mask
 				if terms != nil {
-					terms[tok] = true
+					terms[s] = true
 				}
-				continue
+				return
 			}
-			for _, p := range prefixes {
-				if runeLen(tok) > runeLen(p) && strings.HasPrefix(tok, p) {
-					d.tf[p] += prefixWeight
+			for _, p := range ix.prefixes {
+				if len(tok) > len(p.text) && bytes.HasPrefix(tok, p.text) {
+					d.tf[p.slot] += prefixWeight
+					d.matched = true
 					d.mask |= mask
 					if terms != nil {
-						terms[p] = true
+						terms[p.slot] = true
 					}
 					break
 				}
 			}
-		}
+		})
 	}
-	d.tTerms = map[string]bool{}
-	d.lTerms = map[string]bool{}
 
 	// The id and its tail are indexed so `brain recall p20f`
 	// finds project-p20f even though the body never repeats the id.
-	d.title = Tokenize(doc.Title)
-	idTokens := Tokenize(doc.ID)
-	d.length = len(d.title)
-	count(d.title, maskTitle, d.tTerms)
-	count(idTokens, maskID, nil)
+	count(doc.Title, maskTitle, d.tTerms)
+	if ix.phrase {
+		d.title = Tokenize(doc.Title)
+	}
+	idLen := d.length
+	count(doc.ID, maskID, nil)
+	d.length = idLen // the id is matchable but not part of the doc's length
 
 	for _, text := range doc.Body {
-		toks := Tokenize(text)
-		d.length += len(toks)
-		count(toks, maskBody, nil)
+		count(text, maskBody, nil)
 	}
 	for _, text := range doc.Comments {
-		toks := Tokenize(text)
-		d.length += len(toks)
-		count(toks, maskComment, nil)
+		count(text, maskComment, nil)
 	}
 	for _, label := range doc.Labels {
-		toks := Tokenize(label)
-		d.length += len(toks)
-		count(toks, maskLabel, d.lTerms)
+		count(label, maskLabel, d.lTerms)
 	}
 	if doc.Length > 0 {
 		d.length = doc.Length

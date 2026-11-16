@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/brain/verb/recall"
@@ -171,10 +172,41 @@ func TestLikeTerms(t *testing.T) {
 		{"commented comments", []string{"comment"}},
 		{"brain-se7t x", []string{"brain", "se7t"}},
 		{"Kokoro TTS", []string{"kokoro", "tts"}},
+		// "vocabularies" stems to "vocabulary" but never contains it.
+		{"vocabulary", []string{"vocabular"}},
+		{"vocabularies vocabulary", []string{"vocabular"}},
+		{"by", []string{"by"}},
 	}
 	for _, tt := range tests {
 		if got := recall.LikeTerms(tt.in); !reflect.DeepEqual(got, tt.want) {
 			t.Errorf("LikeTerms(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}
+
+// Every corpus word Rank can score must begin with one of the query's Like
+// substrings: that is the contract a source's prefilter relies on.
+func TestLikeTerms_CoverEveryScorableWord(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ query, word string }{
+		{"vocabulary", "Vocabularies"},
+		{"policies", "policy"},
+		{"policy", "policies"},
+		{"comment", "commenting"},
+		{"tailnet", "tailnets"},
+		{"day", "daies"},
+	} {
+		if hits := recall.Rank([]recall.Doc{{ID: "d", Body: []string{tc.word}}}, tc.query); len(hits) != 1 {
+			t.Fatalf("Rank(%q) over %q found nothing", tc.query, tc.word)
+		}
+		covered := false
+		for _, like := range recall.LikeTerms(tc.query) {
+			if strings.HasPrefix(strings.ToLower(tc.word), like) {
+				covered = true
+			}
+		}
+		if !covered {
+			t.Errorf("LikeTerms(%q) = %v does not cover scorable word %q", tc.query, recall.LikeTerms(tc.query), tc.word)
 		}
 	}
 }

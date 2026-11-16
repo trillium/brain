@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -19,7 +20,7 @@ import (
 //
 // Ranking lives in internal/brain/verb/recall (the BrainVerb seam). This
 // file reads the corpus from Dolt, applies the wrapper's namespace scope,
-// and renders the result. It is read-only: four SELECTs, no transaction,
+// and renders the result. It is read-only: SELECTs only, no transaction,
 // no writes, so CheckReadonly is not called.
 //
 // Why Dolt and not the exfil markdown (idea-y0d proposed the markdown): the
@@ -29,14 +30,35 @@ import (
 // recall, and the database is the only place every one of them lives.
 //
 // Why the reads are shaped the way they are: the shared server sits on the
-// tailnet, and the brain store's comments alone are ~24MB, so pulling every
-// body for every query costs seconds of transfer (and a common word like
-// "phone" still matches 14MB of comments). Instead the server sends metadata
-// and character lengths for every bead, then sends body and comment text only
-// for rows matching the ranker's broad query prefilter. The pure ranker
-// tokenizes that candidate text itself, so its exact, stem, and prefix rules
-// remain the single definition of what a match is. The five reads run
-// concurrently.
+// tailnet and the brain store's comments alone are 24 MB, so the cost of a
+// query is the text it moves, not the regex it runs. The pure ranker
+// tokenizes text itself, so its exact, stem and prefix rules stay the single
+// definition of a match; the loader's job is to hand it every word that
+// could match, and as little else as possible. Measured 2026-11-16 on the
+// live brain store (3,608 beads, 1,539 comments), a cold run for a query of
+// common words that touches three comments in four:
+//
+//   - Only rows passing a broad REGEXP_LIKE prefilter on the query terms
+//     ship anything; metadata and CHAR_LENGTH document lengths ship for
+//     every bead. The prefilter is decisive for rare words (load 0.4 to
+//     0.6 s against 1.2 to 1.6 s without it).
+//   - Of a passing row, only the words that begin with a query term cross
+//     the wire: the server runs one word-boundary REGEXP_REPLACE
+//     (recallKeepPattern) that blanks every other word. Shipping the full
+//     text of the same rows, compressed and split eight ways, took 1.9 to
+//     2.5 s; shipping the candidate words takes 0.7 to 0.8 s. The ranker
+//     then applies its exact/stem/prefix rules to those words, so "go"
+//     still does not match "goal": the server trims, it never decides.
+//   - The text reads go over a separate pool that asks for MySQL protocol
+//     compression (dolt.DoltStore.BulkReadDB) and are split into
+//     recallCommentParts and recallBodyParts streams by CRC32(id), all
+//     concurrent, so the server's regex work spreads over its cores.
+//
+// Counting matches on the server was measured and rejected: one
+// word-boundary REGEXP_REPLACE per term costs about 1.2 s per term per
+// table (5 s for a five-word query), and the plain REPLACE counting the
+// first version used matched substrings (go in goal), which the review
+// rounds ruled out.
 var brainRecallCmd = &cobra.Command{
 	Use:   "recall <query>",
 	Short: "BM25-ranked search over full bead bodies and comments",
@@ -90,6 +112,14 @@ Examples:
 		if db == nil {
 			return HandleErrorRespectJSON("brain recall: raw database handle is unavailable")
 		}
+		if opener, ok := storage.UnwrapStore(store).(recallBulkReader); ok {
+			bulk, err := opener.BulkReadDB(recallReadStreams)
+			if err != nil {
+				return HandleErrorRespectJSON("brain recall: %v", err)
+			}
+			defer bulk.Close()
+			db = bulk
+		}
 
 		src := recallverb.SourceFunc(func(ctx context.Context) ([]recallverb.Doc, error) {
 			return loadRecallCorpus(ctx, db, namespaceWide, recallverb.LikeTerms(query))
@@ -116,6 +146,20 @@ Examples:
 		return nil
 	},
 }
+
+// recallBulkReader is the store seam for the compressed, wider read pool
+// (dolt.DoltStore.BulkReadDB). A store without it is read on its own pool.
+type recallBulkReader interface {
+	BulkReadDB(maxConns int) (*sql.DB, error)
+}
+
+// The text reads are partitioned by CRC32(id) into this many concurrent
+// streams each; the metadata, label and comment-length reads add three more.
+const (
+	recallCommentParts = 8
+	recallBodyParts    = 4
+	recallReadStreams  = recallCommentParts + recallBodyParts + 3
+)
 
 // recallPrefixes answers the `id LIKE ?` patterns a read should carry. Empty
 // means unscoped: wide mode, or a database that is not unified.
@@ -151,14 +195,31 @@ func recallScope(idCol string, patterns []string) (string, []any) {
 const recallBodyExpr = "CONCAT_WS(' ', COALESCE(description,''), COALESCE(design,''), " +
 	"COALESCE(notes,''), COALESCE(acceptance_criteria,''), COALESCE(close_reason,''))"
 
+// recallKeepPattern builds the regex the text streams hand to REGEXP_REPLACE
+// so that only words which could match the query reach the client. A word
+// is a maximal run of letters and digits, the same unit the ranker's
+// tokenizer uses; it survives when it begins with one of the query's Like
+// substrings (case-insensitive), and every other word, and every run of
+// non-word characters, is replaced by a single space. The ranker still
+// applies its own exact, stem and prefix rules to what arrives, so this
+// trims the transfer without changing which words count.
+func recallKeepPattern(likes []string) string {
+	quoted := make([]string, 0, len(likes))
+	for _, l := range likes {
+		quoted = append(quoted, regexp.QuoteMeta(l))
+	}
+	return `(?i)(?<![\p{L}\p{N}])(?!(?:` + strings.Join(quoted, "|") + `))[\p{L}\p{N}]+|[^\p{L}\p{N}]+`
+}
+
 // loadRecallCorpus reads every bead in scope (id, title, kind, status,
 // priority, text length), every label, every bead's comment count and
 // length, and — for the beads whose body or comments pass the broad query
-// prefilter — the text that the pure ranker must tokenize. The five reads run
-// concurrently on the pool's connections.
+// prefilter — the text that the pure ranker must tokenize. The text reads
+// are partitioned by CRC32(id); every read runs concurrently on db.
 func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string) ([]recallverb.Doc, error) {
 	patterns := recallPrefixes(ctx, db, wide)
 	regex := strings.Join(likes, "|")
+	keep := recallKeepPattern(likes)
 
 	type labelRow struct {
 		id, label string
@@ -172,8 +233,8 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	}
 	var (
 		docs     []recallverb.Doc
-		bodies   []textRow
-		comments []textRow
+		bodies   = make([][]textRow, recallBodyParts)
+		comments = make([][]textRow, recallCommentParts)
 		labels   []labelRow
 		clens    []lenRow
 	)
@@ -192,6 +253,16 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 			return nil, fmt.Errorf("recall: read %s: %w", what, err)
 		}
 		return out, nil
+	}
+	// textWhere builds the WHERE clause of one text stream: namespace scope,
+	// the stream's CRC32 slice, then the query prefilter.
+	textWhere := func(idCol, textExpr string, parts, part int) (string, []any) {
+		where, args := recallScope(idCol, patterns)
+		if where != "" {
+			where += " AND "
+		}
+		where += "MOD(CRC32(id), ?) = ? AND REGEXP_LIKE(" + textExpr + ", ?, 'i')"
+		return " WHERE " + where, append(args, parts, part, regex)
 	}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -219,24 +290,23 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		}
 		return nil
 	})
-	g.Go(func() error {
-		scope, args := recallScope("id", patterns)
-		if scope != "" {
-			scope += " AND "
-		}
-		q := "SELECT id, " + recallBodyExpr + " FROM issues WHERE " +
-			scope + "REGEXP_LIKE(" + recallBodyExpr + ", ?, 'i')"
-		rows, err := db.QueryContext(gctx, q, append(args, regex)...)
-		if err != nil {
-			return fmt.Errorf("recall: read bodies: %w", err)
-		}
-		out, err := scanText(rows, "body")
-		if err != nil {
-			return err
-		}
-		bodies = out
-		return nil
-	})
+	for part := range bodies {
+		g.Go(func() error {
+			where, args := textWhere("id", recallBodyExpr, recallBodyParts, part)
+			rows, err := db.QueryContext(gctx,
+				"SELECT id, REGEXP_REPLACE("+recallBodyExpr+", ?, ' ') FROM issues"+where,
+				append([]any{keep}, args...)...)
+			if err != nil {
+				return fmt.Errorf("recall: read bodies: %w", err)
+			}
+			out, err := scanText(rows, "body")
+			if err != nil {
+				return err
+			}
+			bodies[part] = out
+			return nil
+		})
+	}
 	g.Go(func() error {
 		where, args := recallScope("issue_id", patterns)
 		if where != "" {
@@ -282,24 +352,23 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		}
 		return nil
 	})
-	g.Go(func() error {
-		scope, args := recallScope("issue_id", patterns)
-		if scope != "" {
-			scope += " AND "
-		}
-		q := "SELECT issue_id, text FROM comments WHERE " +
-			scope + "REGEXP_LIKE(text, ?, 'i')"
-		rows, err := db.QueryContext(gctx, q, append(args, regex)...)
-		if err != nil {
-			return fmt.Errorf("recall: read comments: %w", err)
-		}
-		out, err := scanText(rows, "comment")
-		if err != nil {
-			return err
-		}
-		comments = out
-		return nil
-	})
+	for part := range comments {
+		g.Go(func() error {
+			where, args := textWhere("issue_id", "text", recallCommentParts, part)
+			rows, err := db.QueryContext(gctx,
+				"SELECT issue_id, REGEXP_REPLACE(text, ?, ' ') FROM comments"+where,
+				append([]any{keep}, args...)...)
+			if err != nil {
+				return fmt.Errorf("recall: read comments: %w", err)
+			}
+			out, err := scanText(rows, "comment")
+			if err != nil {
+				return err
+			}
+			comments[part] = out
+			return nil
+		})
+	}
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
@@ -308,9 +377,11 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	for i := range docs {
 		index[docs[i].ID] = i
 	}
-	for _, r := range bodies {
-		if i, ok := index[r.id]; ok {
-			docs[i].Body = append(docs[i].Body, r.text)
+	for _, part := range bodies {
+		for _, r := range part {
+			if i, ok := index[r.id]; ok {
+				docs[i].Body = append(docs[i].Body, r.text)
+			}
 		}
 	}
 	for _, r := range labels {
@@ -325,9 +396,11 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 			docs[i].CommentCount = r.comments
 		}
 	}
-	for _, r := range comments {
-		if i, ok := index[r.id]; ok {
-			docs[i].Comments = append(docs[i].Comments, r.text)
+	for _, part := range comments {
+		for _, r := range part {
+			if i, ok := index[r.id]; ok {
+				docs[i].Comments = append(docs[i].Comments, r.text)
+			}
 		}
 	}
 	return docs, nil

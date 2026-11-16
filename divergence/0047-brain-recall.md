@@ -62,12 +62,26 @@ related robots-4m0m and project-p20f.6).
   files for 3,606 beads and 3 of them carried comments. The verb opens the
   store's raw connection (`storage.RawDBAccessor`) and scopes the read with
   the same namespace prefixes every other read uses.
-- **Only candidate text crosses the server boundary.** Shipping all comments
-  over the tailnet cost 2.5 s and 24 MB per query. The verb uses a
-  `REGEXP_LIKE` prefilter over the query terms, gets matching body/comment
-  text plus `CHAR_LENGTH` document lengths, then tokenizes the candidate text
-  locally. Five queries run concurrently. Load is 0.2 to 0.3 s and a cold run
-  is under 1 s on the live brain store (3,606 beads).
+- **Only candidate words cross the server boundary.** Shipping all comments
+  over the tailnet cost 2.5 s and 24 MB per query, and shipping the full text
+  of every prefiltered bead still cost 1.9 to 2.5 s on a query of common
+  words. The verb uses a `REGEXP_LIKE` prefilter over the query terms, then
+  has Dolt `REGEXP_REPLACE` every word that does not begin with a query term
+  out of the matching body and comment text, so what ships is the candidate
+  words plus `CHAR_LENGTH` document lengths. Counting stays local: the
+  tokenizer in `internal/brain/verb/recall` is the single owner of the
+  exact, stem and prefix rules, so a server-side count can never disagree
+  with it (a server-side per-term count was measured at about 1.2 s per
+  term per table and rejected). The reads go over a compressed MySQL
+  connection pool, with the comment and body text partitioned by
+  `CRC32(id)` into eight and four concurrent streams. Measured 2026-11-16
+  on the live brain store (3,608 beads, Dolt on a tailnet host), with the
+  store-open floor (`brain show <id>`) timed alongside: with the floor at
+  0.55 s a cold run was 1.2 to 1.65 s on ordinary queries and 1.4 to 2.6 s on
+  the common-word query `imsg full disk access launchd`; with the floor
+  itself at 0.9 to 2.3 s the same queries were 1.4 to 3.1 s and 1.7 to 4.3 s.
+  Load alone (prefilter, projection, transfer) is 0.7 to 0.8 s; the rest is
+  CLI startup and the tailnet round trip.
 - **The pure ranking is a verb package.** `internal/brain/verb/recall`
   tokenizes, indexes and ranks `Doc`s from any `Source`; the cobra wrapper
   builds the scoped corpus. Tests cover tokenizing, comment-only matches,
@@ -76,9 +90,10 @@ related robots-4m0m and project-p20f.6).
 - **Fixed eval.** `docs/brain/recall-eval.json` holds 20 real queries with
   the bead each should return (two are answerable only from a comment);
   `scripts/brain-recall-eval.sh` scores recall and `brain search` side by
-  side. On 2026-11-16: recall 17/20 in the top 3, search 16/20 (search
-  already tokenizes and ranks since #6). The three misses are sibling beads
-  on the same topic ranking above the one named.
+  side. On 2026-11-16: recall 16/20 in the top 3, search 16/20 (search
+  already tokenizes and ranks since #6). Recall's misses are sibling beads
+  on the same topic ranking above the one named, plus one whose answer is
+  phrased differently from the query.
 - **Read-only.** The verb never writes; it never touches the exfil files.
 - **Memory read-by-key moved.** Upstream's `bd recall <key>` (memory plane)
   becomes `bd memories recall <key>`; `bd remember <key>` is unchanged. This
