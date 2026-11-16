@@ -330,18 +330,8 @@ func checkFederationDest(dest string, storePaths []string) error {
 	if home, err := os.UserHomeDir(); err == nil && dest == filepath.Clean(home) {
 		return errors.New("--dest must not be the home directory itself")
 	}
-	// A Dolt database holds .dolt/noms; a sql-server data directory holds
-	// .doltcfg or databases. ~/.dolt alone is Dolt's global config, not data.
-	for dir := dest; ; dir = filepath.Dir(dir) {
-		if isDoltDatabaseDir(dir) {
-			return fmt.Errorf("--dest %s is inside the Dolt database %s: a backup must go outside every database and data directory", dest, dir)
-		}
-		if _, err := os.Lstat(filepath.Join(dir, ".doltcfg")); err == nil {
-			return fmt.Errorf("--dest %s is inside %s, a Dolt sql-server data directory (.doltcfg present): a backup must go outside every data directory", dest, dir)
-		}
-		if filepath.Dir(dir) == dir {
-			break
-		}
+	if err := checkFederationWritePath("--dest", dest, storePaths); err != nil {
+		return err
 	}
 	if entries, err := os.ReadDir(dest); err == nil {
 		for _, e := range entries {
@@ -350,18 +340,79 @@ func checkFederationDest(dest string, storePaths []string) error {
 			}
 		}
 	}
+	return nil
+}
+
+func checkFederationWritePath(label, path string, storePaths []string) error {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s %s: %w", label, path, err)
+	}
+	path = filepath.Clean(path)
+	resolved, err := resolveFederationPath(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s %s: %w", label, path, err)
+	}
+	for _, candidate := range []string{path, resolved} {
+		for dir := candidate; ; dir = filepath.Dir(dir) {
+			if isDoltDatabaseDir(dir) {
+				return fmt.Errorf("%s %s is inside the Dolt database %s: a backup must go outside every database and data directory", label, path, dir)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, ".doltcfg")); err == nil {
+				return fmt.Errorf("%s %s is inside %s, a Dolt sql-server data directory (.doltcfg present): a backup must go outside every data directory", label, path, dir)
+			}
+			if filepath.Dir(dir) == dir {
+				break
+			}
+		}
+	}
 	for _, p := range storePaths {
-		p = filepath.Clean(p)
+		p, err = resolveFederationPath(p)
+		if err != nil {
+			return fmt.Errorf("resolving registered store %s: %w", p, err)
+		}
 		for _, root := range []string{p, filepath.Dir(p)} {
 			if root == "" || root == string(filepath.Separator) {
 				continue
 			}
-			if dest == root || strings.HasPrefix(dest, root+string(filepath.Separator)) {
-				return fmt.Errorf("--dest %s is inside the registered store directory %s", dest, root)
+			for _, candidate := range []string{path, resolved} {
+				if candidate == root || strings.HasPrefix(candidate, root+string(filepath.Separator)) {
+					return fmt.Errorf("%s %s is inside the registered store directory %s", label, path, root)
+				}
 			}
 		}
 	}
 	return nil
+}
+
+func checkFederationBackupTarget(dest, database string, storePaths []string) error {
+	target := filepath.Join(dest, database)
+	if info, err := os.Lstat(target); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("backup target %s must not be a symlink", target)
+	}
+	return checkFederationWritePath("backup target", target, storePaths)
+}
+
+func resolveFederationPath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	path = filepath.Clean(path)
+	for existing := path; ; existing = filepath.Dir(existing) {
+		if resolved, err := filepath.EvalSymlinks(existing); err == nil {
+			rel, err := filepath.Rel(existing, path)
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(resolved, rel), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if filepath.Dir(existing) == existing {
+			return "", fmt.Errorf("no existing ancestor")
+		}
+	}
 }
 
 // isDoltDatabaseDir reports whether dir is a Dolt database (.dolt/noms).
@@ -456,7 +507,10 @@ func compareFedState(want, got fedState, changed, headInHistory bool) []string {
 // fedBackupDatabase asks the server for a backup of d and records the state
 // it holds. The pre-sync state is read first; the hash is read again after,
 // so a write during the sync is known (Changed) and the proof adapts.
-func fedBackupDatabase(ctx context.Context, ep brainupgrade.Endpoint, dest string, d *fedDatabase) error {
+func fedBackupDatabase(ctx context.Context, ep brainupgrade.Endpoint, dest string, storePaths []string, d *fedDatabase) error {
+	if err := checkFederationBackupTarget(dest, d.Name, storePaths); err != nil {
+		return err
+	}
 	url, err := brainupgrade.BackupURL(dest, d.Name)
 	if err != nil {
 		return err
@@ -725,6 +779,9 @@ func runFederationBackup(cmd *cobra.Command, _ []string) error {
 	if scratchBase == "" {
 		scratchBase = filepath.Join(rep.Dest, ".scratch")
 	}
+	if err := checkFederationWritePath("--scratch-dir", scratchBase, paths); err != nil {
+		return err
+	}
 	bdBin := fedBackupBDBin
 	if bdBin == "" {
 		if bdBin, err = os.Executable(); err != nil {
@@ -785,7 +842,7 @@ func runFederationBackup(cmd *cobra.Command, _ []string) error {
 			continue
 		}
 		_, _ = fmt.Fprintf(out, "%s: backing up (%s) to %s\n", d.Name, who, filepath.Join(rep.Dest, d.Name))
-		if err := fedBackupDatabase(ctx, ep, rep.Dest, d); err != nil {
+		if err := fedBackupDatabase(ctx, ep, rep.Dest, paths, d); err != nil {
 			d.Status, d.Error = "failed", err.Error()
 			rep.Failures = append(rep.Failures, fmt.Sprintf("%s: %s", d.Name, err))
 			_, _ = fmt.Fprintf(out, "%s: FAILED: %v\n", d.Name, err)

@@ -164,6 +164,11 @@ func TestCheckFederationDest(t *testing.T) {
 	storeBeads := mk("data", "person", ".beads")
 	mk("dotdolt-config-only", ".dolt") // ~/.dolt holds Dolt's global config, never a database
 	fine := mk("backups")
+	unsafeBackup := mk("server", "data", "brain_unified", ".dolt", "noms")
+	if err := os.Symlink(unsafeBackup, filepath.Join(fine, "brain_unified")); err != nil {
+		t.Fatal(err)
+	}
+	unsafeScratch := filepath.Join(root, "server", "data", "scratch")
 
 	cases := []struct {
 		name, dest, want string
@@ -179,6 +184,7 @@ func TestCheckFederationDest(t *testing.T) {
 		{"beside a global config dir", filepath.Join(root, "dotdolt-config-only", "backups"), ""},
 		{"fine", fine, ""},
 		{"fine, not yet created", filepath.Join(fine, "new"), ""},
+		{"scratch inside the data dir", unsafeScratch, "sql-server data directory"},
 	}
 	for _, c := range cases {
 		err := checkFederationDest(c.dest, []string{storeBeads})
@@ -190,6 +196,9 @@ func TestCheckFederationDest(t *testing.T) {
 		case c.want != "" && !strings.Contains(err.Error(), c.want):
 			t.Errorf("%s: error %q lacks %q", c.name, err, c.want)
 		}
+	}
+	if err := checkFederationBackupTarget(fine, "brain_unified", []string{storeBeads}); err == nil {
+		t.Fatal("a symlinked per-database backup target must be refused")
 	}
 }
 
