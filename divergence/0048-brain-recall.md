@@ -62,18 +62,17 @@ related robots-4m0m and project-p20f.6).
   files for 3,606 beads and 3 of them carried comments. The verb opens the
   store's raw connection (`storage.RawDBAccessor`) and scopes the read with
   the same namespace prefixes every other read uses.
-- **Bodies never leave the server.** Shipping all comments over the tailnet
-  cost 2.5 s and 24 MB per query. Instead the verb asks the server to count:
-  a `REGEXP_LIKE` prefilter over the query terms, then per-term
-  `CHAR_LENGTH(t) - CHAR_LENGTH(REPLACE(t, term, ''))` over `LOWER(text)`,
-  plus `CHAR_LENGTH` sums for document length. Five queries run
-  concurrently. Load is 0.2 to 0.3 s and a cold run is under 1 s on the live
-  brain store (3,606 beads). `BRAIN_RECALL_TIMING=1` prints the phase laps.
+- **Only candidate text crosses the server boundary.** Shipping all comments
+  over the tailnet cost 2.5 s and 24 MB per query. The verb uses a
+  `REGEXP_LIKE` prefilter over the query terms, gets matching body/comment
+  text plus `CHAR_LENGTH` document lengths, then tokenizes the candidate text
+  locally. Five queries run concurrently. Load is 0.2 to 0.3 s and a cold run
+  is under 1 s on the live brain store (3,606 beads).
 - **The pure ranking is a verb package.** `internal/brain/verb/recall`
   tokenizes, indexes and ranks `Doc`s from any `Source`; the cobra wrapper
-  only builds the counted corpus. Tests cover tokenizing, comment-only
-  matches, title over body, labels, id tokens, tie-breaks, filters and the
-  counted form agreeing with the text form.
+  builds the scoped corpus. Tests cover tokenizing, comment-only matches,
+  title over body, labels, id tokens, tie-breaks, filters, exact short terms,
+  Unicode character lengths, and overlapping stem/prefix terms.
 - **Fixed eval.** `docs/brain/recall-eval.json` holds 20 real queries with
   the bead each should return (two are answerable only from a comment);
   `scripts/brain-recall-eval.sh` scores recall and `brain search` side by
