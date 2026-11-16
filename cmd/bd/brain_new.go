@@ -123,9 +123,10 @@ Examples:
 
 // brainNewStoreAdapter satisfies newverb.IssueCreator by delegating
 // CreateIssue to the global storage.DoltStorage and implementing SetSlug
-// via raw SQL through the RawDBAccessor seam. Mirrors the openWriteDB
-// pattern in cmd/bd/patch.go. Unlike `bd patch --field slug`, this writes
-// only the slug column and leaves metadata.brain_slug untouched.
+// via raw SQL through the storage.SQLTxRunner seam, which both the embedded
+// and the server-mode store provide. Mirrors the openWriteTxRunner pattern
+// in cmd/bd/patch.go. Unlike `bd patch --field slug`, this writes only the
+// slug column and leaves metadata.brain_slug untouched.
 type brainNewStoreAdapter struct {
 	ctx   context.Context
 	inner storage.DoltStorage
@@ -136,19 +137,17 @@ func (a *brainNewStoreAdapter) CreateIssue(ctx context.Context, issue *types.Iss
 }
 
 func (a *brainNewStoreAdapter) SetSlug(ctx context.Context, id, value string) error {
-	accessor, ok := storage.UnwrapStore(a.inner).(storage.RawDBAccessor)
-	if !ok {
-		return fmt.Errorf("store does not expose raw DB access; cannot write slug")
+	runner, err := sqlTxRunnerFor(a.inner)
+	if err != nil {
+		return fmt.Errorf("%w; cannot write slug", err)
 	}
-	db := accessor.DB()
-	if db == nil {
-		return fmt.Errorf("store DB is nil; cannot write slug")
-	}
-	_, err := db.ExecContext(ctx,
-		"UPDATE issues SET slug = ? WHERE id = ?",
-		value, id,
-	)
-	return err
+	return runner.RunWriteSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		_, err := tx.ExecContext(ctx,
+			"UPDATE issues SET slug = ? WHERE id = ?",
+			value, id,
+		)
+		return err
+	})
 }
 
 func init() {

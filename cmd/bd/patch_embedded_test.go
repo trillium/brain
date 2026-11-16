@@ -89,8 +89,8 @@ func withTestDB(t *testing.T, beadsDir string, fn func(*sql.DB)) {
 func insertISARow(t *testing.T, db *sql.DB, id, title string, progressN int) {
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
-		`INSERT INTO issues (id, title, status, priority, issue_type, isa_progress_n)
-		 VALUES (?, ?, 'open', 1, 'isa', ?)`,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, isa_progress_n)
+		 VALUES (?, ?, '', '', '', '', 'open', 1, 'isa', ?)`,
 		id, title, progressN,
 	)
 	if err != nil {
@@ -103,8 +103,8 @@ func insertISARow(t *testing.T, db *sql.DB, id, title string, progressN int) {
 func insertNonISARow(t *testing.T, db *sql.DB, id, title string) {
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
-		`INSERT INTO issues (id, title, status, priority, issue_type)
-		 VALUES (?, ?, 'open', 1, 'knowledge')`,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type)
+		 VALUES (?, ?, '', '', '', '', 'open', 1, 'knowledge')`,
 		id, title,
 	)
 	if err != nil {

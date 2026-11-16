@@ -53,8 +53,8 @@ func bdISAListOK(t *testing.T, bd, dir string, args ...string) string {
 func insertISARowWithPhase(t *testing.T, db *sql.DB, id, title, phase string) {
 	t.Helper()
 	_, err := db.ExecContext(t.Context(),
-		`INSERT INTO issues (id, title, status, priority, issue_type, isa_phase)
-		 VALUES (?, ?, 'open', 1, 'isa', ?)`,
+		`INSERT INTO issues (id, title, description, design, acceptance_criteria, notes, status, priority, issue_type, isa_phase)
+		 VALUES (?, ?, '', '', '', '', 'open', 1, 'isa', ?)`,
 		id, title, phase,
 	)
 	if err != nil {

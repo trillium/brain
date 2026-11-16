@@ -120,12 +120,15 @@ func runISASection(cmd *cobra.Command, args []string) {
 		FatalErrorRespectJSON("%s", err)
 	}
 
-	db, kind, err := openISASectionWriteDB(result)
+	runner, kind, err := openISASectionWriteTxRunner(result)
 	if err != nil {
 		FatalErrorRespectJSON("opening database: %v", err)
 	}
 
-	if err := upsertISASection(ctx, db, result.ResolvedID, sectionName, body); err != nil {
+	err = runner.RunWriteSQLTx(ctx, func(ctx context.Context, tx storage.SQLTx) error {
+		return upsertISASection(ctx, tx, result.ResolvedID, sectionName, body)
+	})
+	if err != nil {
 		// Validation-shaped errors (wrong kind, not found post-resolve) come
 		// back as *isasectionverb.ValidationError or sql.ErrNoRows.
 		var vErr *isasectionverb.ValidationError
@@ -174,43 +177,32 @@ func readISASectionBody() ([]byte, error) {
 	return body, nil
 }
 
-// openISASectionWriteDB extracts the raw *sql.DB from a routed store and the
-// row's current issue_type for the success envelope. Mirrors openWriteDB in
-// patch.go; kept separate so the two verbs can evolve independently.
-func openISASectionWriteDB(result *RoutedResult) (*sql.DB, string, error) {
-	accessor, ok := storage.UnwrapStore(result.Store).(storage.RawDBAccessor)
-	if !ok {
-		return nil, "", fmt.Errorf("store does not expose raw DB access")
-	}
-	db := accessor.DB()
-	if db == nil {
-		return nil, "", fmt.Errorf("store DB is nil")
+// openISASectionWriteTxRunner returns the raw-SQL transaction seam of a
+// routed store and the row's current issue_type for the success envelope.
+// Mirrors openWriteTxRunner in patch.go; kept separate so the two verbs can
+// evolve independently.
+func openISASectionWriteTxRunner(result *RoutedResult) (storage.SQLTxRunner, string, error) {
+	runner, err := sqlTxRunnerFor(result.Store)
+	if err != nil {
+		return nil, "", err
 	}
 	kind := ""
 	if result.Issue != nil {
 		kind = string(result.Issue.IssueType)
 	}
-	return db, kind, nil
+	return runner, kind, nil
 }
 
-// upsertISASection runs the two-statement write in a single transaction:
+// upsertISASection runs the two-statement write on the caller's transaction:
 //  1. UPSERT into isa_sections.
 //  2. UPDATE issues SET isa_updated_at = NOW() WHERE id=? AND issue_type='isa'.
 //
 // If the UPDATE affects zero rows, we look up the row's issue_type. A row
 // with a non-isa kind surfaces as *ValidationError (caller maps to exit 2).
 // A missing row surfaces as sql.ErrNoRows (caller maps to exit 1). In both
-// failure modes the transaction is rolled back, so no isa_sections row is
-// left behind.
-func upsertISASection(ctx context.Context, db *sql.DB, id, section string, body []byte) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	// Always attempt rollback on the unhappy paths. A successful commit makes
-	// rollback a no-op (sql.ErrTxDone), which we deliberately swallow.
-	defer func() { _ = tx.Rollback() }()
-
+// failure modes the returned error makes the store roll the transaction
+// back, so no isa_sections row is left behind.
+func upsertISASection(ctx context.Context, tx storage.SQLTx, id, section string, body []byte) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO isa_sections (issue_id, section_name, body, updated_at)
 		 VALUES (?, ?, ?, NOW())
@@ -254,12 +246,9 @@ func upsertISASection(ctx context.Context, db *sql.DB, id, section string, body 
 			}
 		}
 		// Row exists and IS kind=isa — the touch was a no-op (NOW() collapsed
-		// to the current second). Treat as success and fall through to commit.
+		// to the current second). Treat as success; the store commits.
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
 	return nil
 }
 
