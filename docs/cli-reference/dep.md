@@ -149,7 +149,7 @@ a partial id. Removing a pair that carries no edge succeeds silently, as it
 always has; an edge id that matches nothing is an error.
 
 ```
-bd dep remove [issue-id] [depends-on-id] | remove [edge-id] [flags]
+bd dep remove [issue-id] [depends-on-id] | [edge-id] [flags]
 ```
 
 **Aliases:** rm

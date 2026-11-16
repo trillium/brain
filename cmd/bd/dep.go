@@ -1151,7 +1151,7 @@ func depRemoveJSON(fromID, toID string) map[string]interface{} {
 }
 
 var depRemoveCmd = &cobra.Command{
-	Use:     "remove [issue-id] [depends-on-id] | remove [edge-id]",
+	Use:     "remove [issue-id] [depends-on-id] | [edge-id]",
 	Aliases: []string{"rm"},
 	Short:   "Remove a dependency",
 	Long: `Remove a dependency edge.
