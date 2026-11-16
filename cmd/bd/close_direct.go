@@ -84,6 +84,13 @@ func closeDirectCheckOne(id string, issue *types.Issue, force bool) string {
 		if err := validateIssueClosable(id, issue, actor, force); err != nil {
 			return err.Error()
 		}
+		// A knowledge bead is a fact, and a fact is not finished: refuse the
+		// close unless --force (ISC-112, divergence/0048). Inside the same
+		// not-yet-closed branch, so a re-close of a knowledge bead that was
+		// closed before the guard stays the idempotent no-op it always was.
+		if err := refuseKnowledgeKind("close", id, issue, force); err != nil {
+			return err.Error()
+		}
 	}
 
 	// Gate satisfaction for machine-checkable gates (GH#1467).

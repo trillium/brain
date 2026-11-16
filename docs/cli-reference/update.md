@@ -48,7 +48,7 @@ bd update [id...] [flags]
       --ephemeral                    Mark issue as ephemeral (wisp) - not exported to JSONL
   -e, --estimate int                 Time estimate in minutes (e.g., 60 for 1 hour)
       --external-ref string          External reference (e.g., 'gh-9', 'jira-ABC', Linear URL)
-      --force                        Override two refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), and let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force)
+      --force                        Override three refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force), and let --claim take a knowledge bead (issue_type=knowledge is otherwise never claimed)
       --history                      Clear no-history flag (re-enable Dolt commit history)
       --if-assignee string           Apply the update only if the current assignee equals this value (--if-assignee '' requires unassigned); a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim
       --if-status string             Apply the update only if the current status equals this value; a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim

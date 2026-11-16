@@ -28,6 +28,7 @@ bd dep [command]
 
 ```
   -b, --blocks string    Issue ID that this issue blocks (shorthand for: bd dep add <blocked> <blocker>)
+      --force            Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)
       --no-cycle-check   Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit
 ```
 
@@ -78,6 +79,7 @@ bd dep add [issue-id] [depends-on-id] [flags]
       --blocked-by string   Issue ID that blocks the first issue (alternative to positional arg)
       --depends-on string   Issue ID that the first issue depends on (alias for --blocked-by)
       --file string         Read dependency edges from JSONL file, or '-' for stdin
+      --force               Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)
       --no-cycle-check      Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit
   -t, --type string         Dependency type (blocks|tracks|related|parent-child|discovered-from|until|caused-by|validates|relates-to|supersedes); 'blocked-by' and 'depends-on' are accepted as aliases for 'blocks' (default "blocks")
 ```

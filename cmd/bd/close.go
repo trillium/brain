@@ -497,7 +497,7 @@ func init() {
 	closeCmd.Flags().String("comment", "", "Alias for --reason")
 	_ = closeCmd.Flags().MarkHidden("comment") // Hidden alias for agent/CLI ergonomics
 	closeCmd.Flags().String("reason-file", "", "Read close reason from file (use - for stdin)")
-	closeCmd.Flags().BoolP("force", "f", false, "Force close pinned issues or unsatisfied gates")
+	closeCmd.Flags().BoolP("force", "f", false, "Force close pinned issues, unsatisfied gates or knowledge beads (issue_type=knowledge is otherwise never closed)")
 	closeCmd.Flags().Bool("continue", false, "Auto-advance to next step in molecule")
 	closeCmd.Flags().Bool("no-auto", false, "With --continue, show next step but don't claim it")
 	closeCmd.Flags().Bool("suggest-next", false, "Show newly unblocked issues after closing")

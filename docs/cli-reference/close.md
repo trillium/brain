@@ -32,7 +32,7 @@ bd close [id...] [flags]
 ```
       --claim-next           Automatically claim the next highest priority available issue
       --continue             Auto-advance to next step in molecule
-  -f, --force                Force close pinned issues or unsatisfied gates
+  -f, --force                Force close pinned issues, unsatisfied gates or knowledge beads (issue_type=knowledge is otherwise never closed)
       --no-auto              With --continue, show next step but don't claim it
   -r, --reason string        Reason for closing
       --reason-file string   Read close reason from file (use - for stdin)
