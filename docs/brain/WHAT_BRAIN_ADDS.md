@@ -150,7 +150,7 @@ From the retired ISA (`archive/ISA-v03.md`) and the docs — features named as b
 - **The reconciler** `brain reconcile [--check]` — idempotent markdown rebuild, orphan removal, drift check (ISC-122–125) — unbuilt; `render-all` is the partial answer in daily use today.
 - **Pulse `/brain/*` read-only module** (ISC-130–136) — deferred to v0.3.1 by First-Tranche Decision #3 (Go-only constraint).
 - **v0.2 legacy namespace + `migrate-v02`** (ISC-137–141) — unbuilt.
-- **Kind-sharded verb guards** (`state`/`depends-on`/`file` refusing knowledge kinds, ISC-112–116) — unchecked in the ISA; no separate guard commands exist in the binary.
+- **Kind-sharded verb guards** (ISC-112–116) — partly built. `bd close`, `bd update --claim` and a `blocks` edge from `bd dep` refuse a bead whose `issue_type` is `knowledge` unless `--force` is passed (`divergence/0049`); `both` takes the work verbs and other edge types pass. Not built: `bd ready` still lists knowledge, and `bd update --status closed` and `bd create --deps` bypass the guard.
 - **Atomic prefix `move` verb** — transfer is release-then-claim (two acts; `bd store-prefix release` landed with `divergence/0021`). An atomic move is a named fast-follow, built only if contested transfers actually appear.
 - **Unified-database cutover itself** — proven on copies only; production still runs the per-store federation. No store has been re-pointed.
 

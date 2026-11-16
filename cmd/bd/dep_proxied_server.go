@@ -165,8 +165,15 @@ func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerI
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
+	force, _ := cmd.Flags().GetBool("force")
 
 	edge := issueops.DependencyEdge{IssueID: blockedID, DependsOnID: blockerID, Type: types.DepBlocks}
+	// The knowledge guard (divergence/0049), as an advisory pre-read like the
+	// direct route's: a blocks edge touching a knowledge bead is refused
+	// unless --force.
+	if err := refuseKnowledgeBlocksEdgesProxied(ctx, []issueops.DependencyEdge{edge}, force); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
 	if err := addDependencyEdgesProxied(ctx, []issueops.DependencyEdge{edge}, false); err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
@@ -234,8 +241,14 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
+	force, _ := cmd.Flags().GetBool("force")
 
 	edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
+	// The knowledge guard (divergence/0049): a blocks edge touching a
+	// knowledge bead is refused unless --force; other edge types pass.
+	if err := refuseKnowledgeBlocksEdgesProxied(ctx, []issueops.DependencyEdge{edge}, force); err != nil {
+		return HandleErrorRespectJSON("%v", err)
+	}
 	if err := addDependencyEdgesProxied(ctx, []issueops.DependencyEdge{edge}, false); err != nil {
 		return HandleErrorRespectJSON("%v", err)
 	}
@@ -293,6 +306,20 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
+	force, _ := cmd.Flags().GetBool("force")
+
+	// The knowledge guard (divergence/0049), per line so the refusal names
+	// the line the way the other bulk refusals above do.
+	if !force && hasBlocksEdge(depEdges) {
+		lookup, release := proxiedIssueLookup(ctx)
+		for i, depEdge := range depEdges {
+			if err := refuseKnowledgeBlocksEdge(depEdge, lookup, force); err != nil {
+				release()
+				return HandleErrorRespectJSON("line %d: %v", edges[i].Line, err)
+			}
+		}
+		release()
+	}
 
 	if err := addDependencyEdgesProxied(ctx, depEdges, noCycleCheck); err != nil {
 		return HandleErrorRespectJSON("%v", err)

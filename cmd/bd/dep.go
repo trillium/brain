@@ -201,7 +201,7 @@ Examples:
 			}
 			defer fromCleanup()
 
-			toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, blockerID)
+			toID, toStore, toCleanup, err := resolveIDWithRouting(ctx, store, blockerID)
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
@@ -211,11 +211,19 @@ Examples:
 				return HandleErrorRespectJSON("cannot add dependency: %s is already a child of %s. Children inherit dependency on parent completion via hierarchy. Adding an explicit dependency would create a deadlock", fromID, toID)
 			}
 
+			edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: types.DependencyType(depType)}
+
+			// A fact neither blocks nor is blocked: a blocks edge touching a
+			// knowledge bead is refused unless --force (ISC-113, divergence/0049).
+			force, _ := cmd.Flags().GetBool("force")
+			if err := refuseKnowledgeBlocksEdge(edge, endpointIssueLookup(ctx, fromID, fromStore, toID, toStore), force); err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
+
 			opsCtx, err := issueOpsContext(ctx)
 			if err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
-			edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: types.DependencyType(depType)}
 			if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
@@ -361,6 +369,7 @@ Examples:
 		ctx := rootCtx
 
 		var fromID, toID string
+		var toStore storage.DoltStorage
 
 		isExternalRef := strings.HasPrefix(dependsOnArg, "external:")
 
@@ -381,7 +390,7 @@ Examples:
 			}
 		} else {
 			var toCleanup func()
-			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, dependsOnArg)
+			toID, toStore, toCleanup, err = resolveIDWithRouting(ctx, store, dependsOnArg)
 			if err != nil {
 				srcPrefix := types.ExtractPrefix(fromID)
 				tgtPrefix := types.ExtractPrefix(dependsOnArg)
@@ -410,11 +419,20 @@ Examples:
 			}
 		}
 
+		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
+
+		// A fact neither blocks nor is blocked: a blocks edge touching a
+		// knowledge bead is refused unless --force (ISC-113, divergence/0049).
+		// Other edge types pass; knowledge may carry any link (ISC-116).
+		force, _ := cmd.Flags().GetBool("force")
+		if err := refuseKnowledgeBlocksEdge(edge, endpointIssueLookup(ctx, fromID, fromStore, toID, toStore), force); err != nil {
+			return HandleErrorRespectJSON("%v", err)
+		}
+
 		opsCtx, err := issueOpsContext(ctx)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
-		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
 		if err := addDependencyEdgesDirect(opsCtx, fromStore, []issueops.DependencyEdge{edge}, false); err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
@@ -514,10 +532,11 @@ type bulkDepEdge struct {
 	// Defaulted is true when the line carried no "type" and fell back to
 	// the command-line default (D1 guard: the implicit default is what the
 	// stderr warning targets; explicit per-line types are the user's choice).
-	Defaulted bool
-	Store     storage.DoltStorage
-	StoreKey  string
-	Cleanups  []func()
+	Defaulted      bool
+	Store          storage.DoltStorage
+	StoreKey       string
+	DependsOnStore storage.DoltStorage
+	Cleanups       []func()
 }
 
 func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) error {
@@ -550,6 +569,7 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	}
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
+	force, _ := cmd.Flags().GetBool("force")
 	depEdges := make([]issueops.DependencyEdge, 0, len(resolved))
 	for _, edge := range resolved {
 		// The specificity ladder (hierarchy.priority) is checked before the
@@ -560,11 +580,15 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 				return fmt.Errorf("line %d: %w", edge.Line, err)
 			}
 		}
-		depEdges = append(depEdges, issueops.DependencyEdge{
+		depEdge := issueops.DependencyEdge{
 			IssueID:     edge.IssueID,
 			DependsOnID: edge.DependsOnID,
 			Type:        edge.Type,
-		})
+		}
+		if err := refuseKnowledgeBlocksEdge(depEdge, endpointIssueLookup(rootCtx, edge.IssueID, edge.Store, edge.DependsOnID, edge.DependsOnStore), force); err != nil {
+			return fmt.Errorf("line %d: %w", edge.Line, err)
+		}
+		depEdges = append(depEdges, depEdge)
 	}
 
 	// One request, one transaction, one history entry. The role's
@@ -721,7 +745,7 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 			}
 			current.DependsOnID = edge.DependsOnID
 		} else {
-			toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
+			toID, toStore, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
 			if err != nil {
 				srcPrefix := types.ExtractPrefix(current.IssueID)
 				tgtPrefix := types.ExtractPrefix(edge.DependsOnID)
@@ -734,6 +758,7 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 				}
 			} else {
 				current.Cleanups = append(current.Cleanups, toCleanup)
+				current.DependsOnStore = toStore
 			}
 			current.DependsOnID = toID
 		}
@@ -1614,12 +1639,14 @@ func init() {
 	// dep command shorthand flag
 	depCmd.Flags().StringP("blocks", "b", "", "Issue ID that this issue blocks (shorthand for: bd dep add <blocked> <blocker>)")
 	depCmd.Flags().Bool("no-cycle-check", false, "Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit")
+	depCmd.Flags().Bool("force", false, "Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)")
 
 	depAddCmd.Flags().StringP("type", "t", "blocks", "Dependency type (blocks|tracks|related|parent-child|discovered-from|until|caused-by|validates|relates-to|supersedes); 'blocked-by' and 'depends-on' are accepted as aliases for 'blocks'")
 	depAddCmd.Flags().String("blocked-by", "", "Issue ID that blocks the first issue (alternative to positional arg)")
 	depAddCmd.Flags().String("depends-on", "", "Issue ID that the first issue depends on (alias for --blocked-by)")
 	depAddCmd.Flags().String("file", "", "Read dependency edges from JSONL file, or '-' for stdin")
 	depAddCmd.Flags().Bool("no-cycle-check", false, "Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit")
+	depAddCmd.Flags().Bool("force", false, "Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)")
 
 	// DEPRECATED NO-OP, and it always was one: nothing has ever read this flag,
 	// so a diamond has always been rendered under one parent only. The role's

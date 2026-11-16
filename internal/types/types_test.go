@@ -549,6 +549,34 @@ func TestIssueTypeIsValid(t *testing.T) {
 	}
 }
 
+// TestIssueTypeIsKnowledge pins the kind the work-verb guards refuse
+// (divergence/0049): only the literal knowledge kind. `both` is work that is
+// also knowledge and keeps claim/close/blocks; `isa` and every bd work type
+// are untouched.
+func TestIssueTypeIsKnowledge(t *testing.T) {
+	tests := []struct {
+		issueType IssueType
+		knowledge bool
+	}{
+		{TypeKnowledge, true},
+		{TypeBoth, false},
+		{TypeISA, false},
+		{TypeTask, false},
+		{TypeBug, false},
+		{TypeEpic, false},
+		{TypeDecision, false},
+		{IssueType("Knowledge"), false},
+		{IssueType(""), false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.issueType), func(t *testing.T) {
+			if got := tt.issueType.IsKnowledge(); got != tt.knowledge {
+				t.Errorf("IssueType(%q).IsKnowledge() = %v, want %v", tt.issueType, got, tt.knowledge)
+			}
+		})
+	}
+}
+
 // TestTypeISAStringValue locks in the on-the-wire string value of TypeISA.
 // PAI hooks (and the F1d-2 brain new --kind=isa wiring) compare the kind
 // string against "isa" — drifting this constant would silently break the

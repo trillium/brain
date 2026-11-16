@@ -849,6 +849,16 @@ func (t IssueType) IsValid() bool {
 	return slices.Contains(AllIssueTypes, t)
 }
 
+// IsKnowledge reports whether t is brain's knowledge kind: a fact, not a
+// piece of work. A knowledge bead is never claimed, closed or placed on the
+// blocking graph (ISC-112, ISC-113; divergence/0049), and the cmd/bd guards
+// read this to refuse those verbs without --force. `both` is work that is
+// also knowledge, so it takes the work verbs; `isa` has a lifecycle of its
+// own and is not gated here.
+func (t IssueType) IsKnowledge() bool {
+	return t == TypeKnowledge
+}
+
 // IsBuiltIn returns true for core work types and system-internal types
 // (i.e. TypeEvent). Used during multi-repo hydration to determine trust:
 // - Built-in/internal types: validate (catch typos)

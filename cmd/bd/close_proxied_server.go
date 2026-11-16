@@ -282,6 +282,11 @@ func closeProxiedCheckOne(ctx context.Context, uw uow.UnitOfWork, id string, in 
 		if err := validateIssueClosable(id, current, actor, in.force); err != nil {
 			return err.Error(), nil
 		}
+		// Same knowledge-kind refusal as closeDirectCheckOne, in the same
+		// branch, so both routes spell it one way (divergence/0049).
+		if err := refuseKnowledgeKind("close", id, current, in.force); err != nil {
+			return err.Error(), nil
+		}
 	}
 
 	// The open-children guard is deliberately NOT pre-checked here. It lives in

@@ -513,7 +513,7 @@ bd close [id...] [flags]
 ```
       --claim-next           Automatically claim the next highest priority available issue
       --continue             Auto-advance to next step in molecule
-  -f, --force                Force close pinned issues or unsatisfied gates
+  -f, --force                Force close pinned issues, unsatisfied gates or knowledge beads (issue_type=knowledge is otherwise never closed)
       --no-auto              With --continue, show next step but don't claim it
   -r, --reason string        Reason for closing
       --reason-file string   Read close reason from file (use - for stdin)
@@ -2401,7 +2401,7 @@ bd update [id...] [flags]
       --ephemeral                    Mark issue as ephemeral (wisp) - not exported to JSONL
   -e, --estimate int                 Time estimate in minutes (e.g., 60 for 1 hour)
       --external-ref string          External reference (e.g., 'gh-9', 'jira-ABC', Linear URL)
-      --force                        Override two refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), and let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force)
+      --force                        Override three refusals: let -a/--assignee overwrite another actor's live in_progress claim (use only for abandoned claims — crashed agent, expired lease; prefer bd reclaim), let -s/--status move the issue into closed (or a configured done status) despite open children or a live blocker (same as bd close --force), and let --claim take a knowledge bead (issue_type=knowledge is otherwise never claimed)
       --history                      Clear no-history flag (re-enable Dolt commit history)
       --if-assignee string           Apply the update only if the current assignee equals this value (--if-assignee '' requires unassigned); a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim
       --if-status string             Apply the update only if the current status equals this value; a mismatch writes nothing and exits 13 (vs 1 for other failures). Requires a field update; cannot combine with --claim
@@ -2766,6 +2766,7 @@ bd dep [command]
 
 ```
   -b, --blocks string    Issue ID that this issue blocks (shorthand for: bd dep add <blocked> <blocker>)
+      --force            Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)
       --no-cycle-check   Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit
 ```
 
@@ -2816,6 +2817,7 @@ bd dep add [issue-id] [depends-on-id] [flags]
       --blocked-by string   Issue ID that blocks the first issue (alternative to positional arg)
       --depends-on string   Issue ID that the first issue depends on (alias for --blocked-by)
       --file string         Read dependency edges from JSONL file, or '-' for stdin
+      --force               Add a blocks edge to or from a knowledge bead (issue_type=knowledge is otherwise never blocked or blocking)
       --no-cycle-check      Skip per-edge cycle checks for speed (bulk wiring); bulk --file adds still run one final whole-graph check before commit
   -t, --type string         Dependency type (blocks|tracks|related|parent-child|discovered-from|until|caused-by|validates|relates-to|supersedes); 'blocked-by' and 'depends-on' are accepted as aliases for 'blocks' (default "blocks")
 ```

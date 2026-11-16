@@ -214,6 +214,14 @@ func proxiedUpdateTarget(ctx context.Context, id string, in *updateInput) (*type
 		fmt.Fprintf(os.Stderr, "%s\n", err)
 		return nil, &updateIDFailure{ID: id, Error: err.Error()}
 	}
+	// Same knowledge-kind refusal of --claim as the direct route, read from
+	// the same pre-read every other advisory fence here uses (divergence/0049).
+	if in.claim {
+		if err := refuseKnowledgeClaim(id, current, in.fields, in.force); err != nil {
+			fmt.Fprintf(os.Stderr, "%s\n", err)
+			return nil, &updateIDFailure{ID: id, Error: err.Error()}
+		}
+	}
 	// bd-98s5c: an unguarded assignee update must not silently overwrite
 	// another actor's live claim. Skipped under --if-assignee, whose CAS names
 	// the holder explicitly (park stays possible without --force), and under
