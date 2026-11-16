@@ -7,7 +7,7 @@
 // finds beads whose title or description contain every query token; `recall`
 // ranks every bead by how relevant its whole body is to the query, so a bead
 // that only mentions the thing in a comment, or mentions it many times in a
-// long design note, still surfaces. See divergence/0040-brain-recall.md.
+// long design note, still surfaces. See divergence/0050-brain-recall.md.
 //
 // The package is pure: it ranks a corpus handed to it by a Source. The cmd/bd
 // wrapper is the only place that knows how to read the corpus from Dolt.
