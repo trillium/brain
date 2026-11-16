@@ -1,5 +1,5 @@
 ---
-id: 0047
+id: 0050
 title: brain recall ranks beads with BM25 over full bodies and comments
 isc: []
 status: proposed
@@ -24,7 +24,7 @@ touches:
   - docs/cli-reference/recall.md
   - docs/cli-reference/memories.md
   - README.md
-  - divergence/0047-brain-recall.md
+  - divergence/0050-brain-recall.md
 upstream_rebase_notes: |
   `cmd/bd/memory.go` is an upstream file (the memory plane, upstream commit
   ed8dc5674). The brain edit moves its root `recall` command under
