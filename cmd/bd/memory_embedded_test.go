@@ -18,7 +18,7 @@ import (
 
 // countMemoryDoltCommits reads dolt_log for an embedded workspace. It is how
 // the auto-commit epilogue is observed: a direct-route write that never flags
-// it still answers `bd recall` perfectly well, because the row is in the
+// it still answers `bd memories recall` perfectly well, because the row is in the
 // working set — dolt_log is the only place the difference shows.
 func countMemoryDoltCommits(t *testing.T, beadsDir string) int {
 	t.Helper()
@@ -67,30 +67,30 @@ func bdRememberFail(t *testing.T, bd, dir string, args ...string) string {
 	return string(out)
 }
 
-// bdRecall runs "bd recall" with the given args and returns stdout.
+// bdRecall runs "bd memories recall" with the given args and returns stdout.
 func bdRecall(t *testing.T, bd, dir string, args ...string) string {
 	t.Helper()
-	fullArgs := append([]string{"recall"}, args...)
+	fullArgs := append([]string{"memories", "recall"}, args...)
 	cmd := exec.Command(bd, fullArgs...)
 	cmd.Dir = dir
 	cmd.Env = bdEnv(dir)
 	stdout, stderr, err := runCommandBuffers(t, cmd)
 	if err != nil {
-		t.Fatalf("bd recall %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.String(), stderr.String())
+		t.Fatalf("bd memories recall %s failed: %v\nstdout:\n%s\nstderr:\n%s", strings.Join(args, " "), err, stdout.String(), stderr.String())
 	}
 	return stdout.String()
 }
 
-// bdRecallFail runs "bd recall" expecting failure.
+// bdRecallFail runs "bd memories recall" expecting failure.
 func bdRecallFail(t *testing.T, bd, dir string, args ...string) string {
 	t.Helper()
-	fullArgs := append([]string{"recall"}, args...)
+	fullArgs := append([]string{"memories", "recall"}, args...)
 	cmd := exec.Command(bd, fullArgs...)
 	cmd.Dir = dir
 	cmd.Env = bdEnv(dir)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("expected bd recall %s to fail, but succeeded:\n%s", strings.Join(args, " "), out)
+		t.Fatalf("expected bd memories recall %s to fail, but succeeded:\n%s", strings.Join(args, " "), out)
 	}
 	return string(out)
 }
@@ -576,7 +576,7 @@ func TestEmbeddedMemoryConcurrent(t *testing.T) {
 				key := fmt.Sprintf("w%d-mem%d", worker, i)
 				expected := fmt.Sprintf("worker %d memory %d content", worker, i)
 
-				cmd := exec.Command(bd, "recall", key)
+				cmd := exec.Command(bd, "memories", "recall", key)
 				cmd.Dir = dir
 				cmd.Env = bdEnv(dir)
 				out, err := cmd.CombinedOutput()

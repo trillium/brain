@@ -45,6 +45,10 @@ var brainProxyCapabilityRows = []capabilityRow{
 	brainRefusal("outbox record"),
 	brainRefusal("patch"),
 	brainRefusal("recast"),
+	// recall is the BM25 ranking verb; it reads the raw store, which the
+	// proxied provider does not expose. Memory read-by-key lives at
+	// `memories recall` and stays permitted.
+	brainRefusal("recall"),
 	brainRefusal("related"),
 	brainRefusal("render"),
 	brainRefusal("render-all"),

@@ -1,0 +1,27 @@
+{
+  "store": "brain",
+  "top": 3,
+  "note": "Fixed eval set for `brain recall`: real queries against real brain beads (snapshot 2026-11-16). Each query names the bead a person remembering the thing would want back. Several answers live only in a comment or deep in a body, which is the gap recall exists to close. `targets` lists every acceptable id (duplicates of one note count). Run scripts/brain-recall-eval.sh.",
+  "cases": [
+    {"query": "kokoro speak daemon", "targets": ["brain-uwx74"], "where": "title"},
+    {"query": "talon vocabulary mishear", "targets": ["brain-y4i2"], "where": "body"},
+    {"query": "files below 250 lines", "targets": ["brain-7ee"], "where": "body"},
+    {"query": "TELOS dormant subsystems gate", "targets": ["brain-lrix"], "where": "title"},
+    {"query": "watcher wake queue heartbeat", "targets": ["brain-316ta"], "where": "body"},
+    {"query": "pixelate screenshot imagemagick", "targets": ["brain-eagv"], "where": "body"},
+    {"query": "context tax always loaded imports", "targets": ["brain-vf1l"], "where": "title"},
+    {"query": "data-lang prose highlighter", "targets": ["brain-drrmr"], "where": "body"},
+    {"query": "massage booking hold expiry adapter", "targets": ["brain-8spe7"], "where": "body"},
+    {"query": "fuzzy match client name submission yaml", "targets": ["brain-p7l"], "where": "body"},
+    {"query": "imsg full disk access launchd", "targets": ["brain-z3g1"], "where": "comment"},
+    {"query": "FLAGS.json PULSE.toml drift", "targets": ["brain-wjih"], "where": "body"},
+    {"query": "ONNX acoustic encoder embeddings iphone", "targets": ["brain-mn3v6"], "where": "title"},
+    {"query": "merge deprecated shared quickbooks credentials", "targets": ["brain-9098ec436d35"], "where": "body"},
+    {"query": "RØDE wireless USB sniffing", "targets": ["brain-0067x", "brain-gi1q"], "where": "body"},
+    {"query": "cursorless merged PRs docusaurus tailwind", "targets": ["brain-yrb8", "brain-rc2n"], "where": "body"},
+    {"query": "lance.app alternative app store connect", "targets": ["brain-33hab"], "where": "body"},
+    {"query": "mini3 disk full migration", "targets": ["brain-fmhscout-task-7r1bh"], "where": "body"},
+    {"query": "devicectl tailnet bridge bonjour", "targets": ["brain-fmhscout-mini0-ops-phone-over-tailnet"], "where": "body"},
+    {"query": "eye tracking dwell blink bubble", "targets": ["brain-hrsk4"], "where": "comment"}
+  ]
+}

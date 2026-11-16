@@ -408,7 +408,7 @@ func printForgetResult(key, existing, beadID string) error {
 	return nil
 }
 
-// printRecallResult renders the `bd recall` output (including the not-found
+// printRecallResult renders the `bd memories recall` output (including the not-found
 // SilentExit contract).
 func printRecallResult(key, value string) error {
 	if jsonOutput {
@@ -443,7 +443,7 @@ in every session without manual loading.
 
 The positional arg is the memory CONTENT (the key is auto-generated from it
 unless --key is given). As a convenience, if the arg is a bare key naming an
-existing memory, it is RECALLED instead of stored (same as 'bd recall');
+existing memory, it is RECALLED instead of stored (same as 'bd memories recall');
 a bare key naming nothing is refused. Use --key to store slug-like content.
 
 Each memory also gets a companion knowledge issue holding the same text, so
@@ -457,7 +457,7 @@ Examples:
   bd remember "Dolt phantom DBs hide in three places" --key dolt-phantoms
   bd remember "auth module uses JWT not sessions" --key auth-jwt
   bd remember "prod deploy needs a second approver" --no-bead
-  bd remember dolt-phantoms        # bare existing key: reads it (= bd recall)`,
+  bd remember dolt-phantoms        # bare existing key: reads it (= bd memories recall)`,
 	GroupID:       "setup",
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
@@ -708,16 +708,17 @@ Examples:
 	},
 }
 
-// recallCmd retrieves a specific memory by key.
+// recallCmd retrieves a specific memory by key. It lives under `bd memories`
+// (brain fork): the root `recall` verb is brain's BM25 search over beads
+// (cmd/bd/brain_recall.go), and `bd remember <key>` reads a memory too.
 var recallCmd = &cobra.Command{
 	Use:   "recall <key>",
 	Short: "Retrieve a specific memory",
 	Long: `Retrieve the full content of a memory by its key.
 
 Examples:
-  bd recall dolt-phantoms
-  bd recall auth-jwt`,
-	GroupID:       "setup",
+  bd memories recall dolt-phantoms
+  bd memories recall auth-jwt`,
 	Args:          cobra.ExactArgs(1),
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -756,5 +757,5 @@ func init() {
 	rootCmd.AddCommand(rememberCmd)
 	rootCmd.AddCommand(memoriesCmd)
 	rootCmd.AddCommand(forgetCmd)
-	rootCmd.AddCommand(recallCmd)
+	memoriesCmd.AddCommand(recallCmd)
 }
