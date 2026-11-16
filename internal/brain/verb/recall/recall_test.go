@@ -42,6 +42,7 @@ func TestTokenize(t *testing.T) {
 		{"comments, commented; commenting", []string{"comment", "comment", "comment"}},
 		{"brain-se7t.149", []string{"brain", "se7t", "149"}},
 		{"a I x", nil},
+		{"é éé", []string{"éé"}},
 		{"policies classes", []string{"policy", "class"}},
 	}
 	for _, tt := range tests {
@@ -188,12 +189,51 @@ func TestRank_SourceLengthOverridesTokenCount(t *testing.T) {
 	}
 }
 
+func TestRank_UsesFractionalAverageDocumentLength(t *testing.T) {
+	t.Parallel()
+	hits := recall.Rank([]recall.Doc{
+		{ID: "short", Title: "x", Body: []string{"term"}, Length: 1},
+		{ID: "long", Title: "x", Body: []string{"term"}, Length: 2},
+	}, "term")
+	if got := ids(hits); !reflect.DeepEqual(got, []string{"short", "long"}) {
+		t.Fatalf("order = %v, want [short long]", got)
+	}
+	if hits[0].Score != 0.21 || hits[1].Score != 0.16 {
+		t.Errorf("scores = %v, %v; want 0.21, 0.16", hits[0].Score, hits[1].Score)
+	}
+}
+
+func TestRank_SortsBeforeRounding(t *testing.T) {
+	t.Parallel()
+	hits := recall.Rank([]recall.Doc{
+		{ID: "z-short", Title: "x", Body: []string{"term"}, Length: 100},
+		{ID: "a-long", Title: "x", Body: []string{"term"}, Length: 101},
+	}, "term")
+	if got := ids(hits); !reflect.DeepEqual(got, []string{"z-short", "a-long"}) {
+		t.Errorf("true-score order = %v, want [z-short a-long]", got)
+	}
+	if hits[0].Score != hits[1].Score {
+		t.Errorf("display scores = %v, %v; want equal rounded scores", hits[0].Score, hits[1].Score)
+	}
+}
+
 func TestQueryTerms(t *testing.T) {
 	t.Parallel()
 	got := recall.QueryTerms("Policies policy commented")
 	want := []recall.QueryTerm{{Token: "policy", Like: "polic"}, {Token: "comment", Like: "comment"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("QueryTerms = %v, want %v", got, want)
+	}
+}
+
+func TestRank_TwoRuneTermsDoNotExpandAsPrefixes(t *testing.T) {
+	t.Parallel()
+	if terms := recall.QueryTerms("é"); len(terms) != 0 {
+		t.Errorf("one-rune query terms = %v, want none", terms)
+	}
+	hits := recall.Rank([]recall.Doc{{ID: "prefix", Title: "ééx"}}, "éé")
+	if len(hits) != 0 {
+		t.Errorf("two-rune query matched prefix: %+v", hits)
 	}
 }
 
