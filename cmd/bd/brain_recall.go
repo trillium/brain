@@ -271,6 +271,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx,
 			"SELECT id, COALESCE(title,''), COALESCE(issue_type,''), COALESCE(status,''), COALESCE(priority,0), "+
 				"CHAR_LENGTH(COALESCE(title,'')) + CHAR_LENGTH("+recallBodyExpr+") FROM issues"+where, args...)
@@ -293,6 +294,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	for part := range bodies {
 		g.Go(func() error {
 			where, args := textWhere("id", recallBodyExpr, recallBodyParts, part)
+			// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 			rows, err := db.QueryContext(gctx,
 				"SELECT id, REGEXP_REPLACE("+recallBodyExpr+", ?, ' ') FROM issues"+where,
 				append([]any{keep}, args...)...)
@@ -312,6 +314,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx, "SELECT issue_id, label, CHAR_LENGTH(label) FROM labels"+where, args...)
 		if err != nil {
 			return fmt.Errorf("recall: read labels: %w", err)
@@ -334,6 +337,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx,
 			"SELECT issue_id, COUNT(*), SUM(CHAR_LENGTH(text)) FROM comments"+where+" GROUP BY issue_id", args...)
 		if err != nil {
@@ -355,6 +359,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	for part := range comments {
 		g.Go(func() error {
 			where, args := textWhere("issue_id", "text", recallCommentParts, part)
+			// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 			rows, err := db.QueryContext(gctx,
 				"SELECT issue_id, REGEXP_REPLACE(text, ?, ' ') FROM comments"+where,
 				append([]any{keep}, args...)...)
