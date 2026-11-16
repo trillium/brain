@@ -1031,12 +1031,6 @@ type Transaction interface {
 	// across both dependency tables (same predicate/scope as GetDependentRecords).
 	// SPANS BOTH TIERS: subject to the two-session wisp caveat on the server backend.
 	CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error)
-	// GetDependencyRecordByID returns the one raw dependency row whose primary
-	// id is depID (the edge id `bd list --include-deps` emits), across both
-	// dependency tables, or nil when absent. SPANS BOTH TIERS: subject to the
-	// two-session wisp caveat on the server backend.
-	GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error)
-
 	// IsBlocked reports the denormalized transitive is_blocked flag for one issue
 	// plus its direct blocker ids. Single-tier (routes to the issue's own tier):
 	// read-your-writes on both tiers.

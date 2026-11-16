@@ -3,7 +3,6 @@ package dolt
 import (
 	"testing"
 
-	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -72,19 +71,4 @@ func TestGetDependencyRecordByID(t *testing.T) {
 		}
 	}
 
-	// The transaction role reads the same row.
-	id := depid.New(durable.ID, target.ID)
-	err := store.RunInTransaction(ctx, "test: read dependency by id", func(tx storage.Transaction) error {
-		inTx, err := tx.GetDependencyRecordByID(ctx, id)
-		if err != nil {
-			return err
-		}
-		if inTx == nil || inTx.ID != id {
-			t.Errorf("tx GetDependencyRecordByID(%s) = %+v, want the durable edge", id, inTx)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("tx GetDependencyRecordByID: %v", err)
-	}
 }
