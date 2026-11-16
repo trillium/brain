@@ -230,6 +230,19 @@ func (s *DoltStore) GetDependentRecords(ctx context.Context, targetID string, de
 	return result, err
 }
 
+// GetDependencyRecordByID returns the one raw dependency row whose primary id
+// is depID, across both dependency tables, or nil when absent. Delegates to
+// issueops.GetDependencyRecordByIDInTx.
+func (s *DoltStore) GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	var result *types.Dependency
+	err := s.withReadTx(ctx, func(tx *sql.Tx) error {
+		var err error
+		result, err = issueops.GetDependencyRecordByIDInTx(ctx, tx, depID)
+		return err
+	})
+	return result, err
+}
+
 // CountDependentRecords returns the total inbound-edge count of targetID across
 // both dependency tables. Delegates to issueops.CountDependentRecordsInTx.
 func (s *DoltStore) CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error) {

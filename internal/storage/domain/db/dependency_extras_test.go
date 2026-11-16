@@ -1,6 +1,7 @@
 package db
 
 import (
+	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/domain"
 	"github.com/steveyegge/beads/internal/types"
 )
@@ -35,6 +36,74 @@ func (s *testSuite) TestDependencySQLRepository_Extras() {
 		s.Run("ReturnsOnlyFromWispTable", s.depWispRecsForcedTable)
 		s.Run("PermSourceWithSameIDIgnored", s.depWispRecsIgnoresPerm)
 	})
+	s.Run("GetDependencyRecordByID", func() {
+		s.Run("EmptyOrUnknownIsNil", s.depByIDNil)
+		s.Run("FoundInEitherTableWithID", s.depByIDBothTables)
+		s.Run("UseCaseGetByID", s.depByIDUseCase)
+	})
+}
+
+// ---- GetDependencyRecordByID ----
+
+func (s *testSuite) depByIDNil() {
+	r := s.depRepo()
+	for _, id := range []string{"", "not-an-edge", depid.New("bd-byid-none", "bd-byid-none-2")} {
+		out, err := r.GetDependencyRecordByID(s.Ctx(), id)
+		s.Require().NoError(err)
+		s.Nil(out, "id %q names no edge", id)
+	}
+}
+
+func (s *testSuite) depByIDBothTables() {
+	s.seedIssueRow("bd-byid-src")
+	s.seedIssueRow("bd-byid-tgt")
+	s.seedWispRow("bd-byid-wsrc")
+	r := s.depRepo()
+	s.Require().NoError(r.Insert(s.Ctx(), newDep("bd-byid-src", "bd-byid-tgt", types.DepBlocks), "tester", domain.DepInsertOpts{}))
+	s.Require().NoError(r.Insert(s.Ctx(),
+		newDep("bd-byid-wsrc", "bd-byid-tgt", types.DepRelated), "tester",
+		domain.DepInsertOpts{UseWispsTable: true}))
+
+	durableID := depid.New("bd-byid-src", "bd-byid-tgt")
+	out, err := r.GetDependencyRecordByID(s.Ctx(), durableID)
+	s.Require().NoError(err)
+	s.Require().NotNil(out, "durable edge must be found by its id")
+	s.Equal(durableID, out.ID)
+	s.Equal("bd-byid-src", out.IssueID)
+	s.Equal("bd-byid-tgt", out.DependsOnID)
+	s.Equal(types.DepBlocks, out.Type)
+
+	wispID := depid.New("bd-byid-wsrc", "bd-byid-tgt")
+	out, err = r.GetDependencyRecordByID(s.Ctx(), wispID)
+	s.Require().NoError(err)
+	s.Require().NotNil(out, "wisp-table edge must be found by its id")
+	s.Equal(wispID, out.ID)
+	s.Equal("bd-byid-wsrc", out.IssueID)
+	s.Equal(types.DepRelated, out.Type)
+
+	// The id is directional: the reverse pair is a different, absent edge.
+	out, err = r.GetDependencyRecordByID(s.Ctx(), depid.New("bd-byid-tgt", "bd-byid-src"))
+	s.Require().NoError(err)
+	s.Nil(out)
+}
+
+func (s *testSuite) depByIDUseCase() {
+	s.seedIssueRow("bd-byid-uc-src")
+	s.seedIssueRow("bd-byid-uc-tgt")
+	s.Require().NoError(s.depRepo().Insert(s.Ctx(), newDep("bd-byid-uc-src", "bd-byid-uc-tgt", types.DepBlocks), "tester", domain.DepInsertOpts{}))
+
+	uc := s.depUseCase()
+	id := depid.New("bd-byid-uc-src", "bd-byid-uc-tgt")
+	out, err := uc.GetByID(s.Ctx(), id)
+	s.Require().NoError(err)
+	s.Require().NotNil(out)
+	s.Equal(id, out.ID)
+	s.Equal("bd-byid-uc-src", out.IssueID)
+	s.Equal("bd-byid-uc-tgt", out.DependsOnID)
+
+	none, err := uc.GetByID(s.Ctx(), "")
+	s.Require().NoError(err)
+	s.Nil(none)
 }
 
 // ---- GetTree ----

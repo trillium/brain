@@ -1417,7 +1417,7 @@ bd list [flags]
       --format string                Output format: 'digraph' (for golang.org/x/tools/cmd/digraph), 'dot' (Graphviz), or Go template
       --has-metadata-key string      Filter issues that have this metadata key set
       --id string                    Filter by specific issue IDs (comma-separated, e.g., bd-1,bd-5,bd-10)
-      --include-deps                 With --json, add a dependencies array ({id, type} per outgoing edge) to each row from one batched query; ignored for text output
+      --include-deps                 With --json, add a dependencies array ({id, edge_id, type} per outgoing edge; id is the target, edge_id the edge's own id for 'bd dep remove <edge-id>') to each row from one batched query; ignored for text output
       --include-ephemeral            Include ephemeral wisp-plane rows in output (normally hidden)
       --include-gates                Include gate issues in output (normally hidden)
       --include-infra                Include infrastructure beads (agent/role/message) in output
@@ -2875,10 +2875,19 @@ bd dep relate <id1> <id2>
 
 #### bd dep remove
 
-Remove a dependency
+Remove a dependency edge.
+
+Name the edge either by its two endpoints or by its own id:
+
+  bd dep remove &lt;issue-id&gt; &lt;depends-on-id&gt;   # the pair, as bd dep add took it
+  bd dep remove &lt;edge-id&gt;                    # the edge_id from 'bd list --json --include-deps'
+
+An edge id names exactly one stored edge, so neither endpoint is resolved from
+a partial id. Removing a pair that carries no edge succeeds silently, as it
+always has; an edge id that matches nothing is an error.
 
 ```
-bd dep remove [issue-id] [depends-on-id]
+bd dep remove [issue-id] [depends-on-id] | [edge-id]
 ```
 
 **Aliases:** rm

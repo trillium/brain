@@ -1031,7 +1031,6 @@ type Transaction interface {
 	// across both dependency tables (same predicate/scope as GetDependentRecords).
 	// SPANS BOTH TIERS: subject to the two-session wisp caveat on the server backend.
 	CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error)
-
 	// IsBlocked reports the denormalized transitive is_blocked flag for one issue
 	// plus its direct blocker ids. Single-tier (routes to the issue's own tier):
 	// read-your-writes on both tiers.
