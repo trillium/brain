@@ -32,13 +32,12 @@ import (
 // Why the reads are shaped the way they are: the shared server sits on the
 // tailnet, and the brain store's comments alone are ~24MB, so pulling every
 // body for every query costs seconds of transfer (and a common word like
-// "phone" still matches 14MB of comments). Instead the server counts: for
-// every bead it ships metadata and text length (cheap), and for the beads
-// whose body or comments contain a query term (recall.LikeTerms, as one
-// case-insensitive regex) it ships how many characters each term's
-// occurrences cover. No body or comment text crosses the wire, and BM25
-// gets the same term frequencies it would have counted itself (substring
-// counts, so "speaker" counts for "speak"). The five reads run concurrently.
+// "phone" still matches 14MB of comments). Instead the server sends metadata
+// and character lengths for every bead, then sends body and comment text only
+// for rows matching the ranker's broad query prefilter. The pure ranker
+// tokenizes that candidate text itself, so its exact, stem, and prefix rules
+// remain the single definition of what a match is. The five reads run
+// concurrently.
 var brainRecallCmd = &cobra.Command{
 	Use:   "recall <query>",
 	Short: "BM25-ranked search over full bead bodies and comments",
@@ -150,32 +149,14 @@ func recallScope(idCol string, patterns []string) (string, []any) {
 	return "(" + strings.Join(ors, " OR ") + ")", args
 }
 
-// recallCountSelect builds the per-term substring counts of a lowercased
-// text column `t`: CHAR_LENGTH(t) - CHAR_LENGTH(REPLACE(t, term, ”)) is
-// the number of characters the term's occurrences cover; the loader divides
-// by the term's length. SUM-wrapped when grouped.
-func recallCountSelect(likes []string, grouped bool) (string, []any) {
-	cols := make([]string, len(likes))
-	args := make([]any, len(likes))
-	for i, l := range likes {
-		expr := "CHAR_LENGTH(t) - CHAR_LENGTH(REPLACE(t, ?, ''))"
-		if grouped {
-			expr = "SUM(" + expr + ")"
-		}
-		cols[i] = expr
-		args[i] = l
-	}
-	return strings.Join(cols, ", "), args
-}
-
 const recallBodyExpr = "CONCAT_WS(' ', COALESCE(description,''), COALESCE(design,''), " +
 	"COALESCE(notes,''), COALESCE(acceptance_criteria,''), COALESCE(close_reason,''))"
 
 // loadRecallCorpus reads every bead in scope (id, title, kind, status,
 // priority, text length), every label, every bead's comment count and
-// length, and — for the beads whose body or comments contain a query term —
-// how many times each term occurs. No body or comment text crosses the
-// wire. The five reads run concurrently on the pool's connections.
+// length, and — for the beads whose body or comments pass the broad query
+// prefilter — the text that the pure ranker must tokenize. The five reads run
+// concurrently on the pool's connections.
 func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string) ([]recallverb.Doc, error) {
 	t0 := time.Now()
 	lap := func(what string) {
@@ -187,11 +168,11 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	lap("scope")
 	regex := strings.Join(likes, "|")
 
-	type labelRow struct{ id, label string }
-	type countRow struct {
-		id     string
-		counts map[string]float64
+	type labelRow struct {
+		id, label string
+		chars     int
 	}
+	type textRow struct{ id, text string }
 	type lenRow struct {
 		id       string
 		comments int
@@ -199,32 +180,19 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	}
 	var (
 		docs     []recallverb.Doc
-		bodies   []countRow
-		comments []countRow
+		bodies   []textRow
+		comments []textRow
 		labels   []labelRow
 		clens    []lenRow
 	)
 
-	scanCounts := func(rows *sql.Rows, what string) ([]countRow, error) {
+	scanText := func(rows *sql.Rows, what string) ([]textRow, error) {
 		defer rows.Close()
-		var out []countRow
-		raw := make([]int64, len(likes))
-		dest := make([]any, 0, len(likes)+1)
+		var out []textRow
 		for rows.Next() {
-			var id string
-			dest = dest[:0]
-			dest = append(dest, &id)
-			for i := range raw {
-				dest = append(dest, &raw[i])
-			}
-			if err := rows.Scan(dest...); err != nil {
+			var r textRow
+			if err := rows.Scan(&r.id, &r.text); err != nil {
 				return nil, fmt.Errorf("recall: scan %s: %w", what, err)
-			}
-			r := countRow{id: id, counts: make(map[string]float64, len(likes))}
-			for i, l := range likes {
-				if raw[i] > 0 {
-					r.counts[l] = float64(raw[i]) / float64(len(l))
-				}
 			}
 			out = append(out, r)
 		}
@@ -265,14 +233,13 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if scope != "" {
 			scope += " AND "
 		}
-		sel, selArgs := recallCountSelect(likes, false)
-		q := "SELECT id, " + sel + " FROM (SELECT id, LOWER(" + recallBodyExpr + ") AS t FROM issues WHERE " +
-			scope + "REGEXP_LIKE(" + recallBodyExpr + ", ?, 'i')) x"
-		rows, err := db.QueryContext(gctx, q, append(selArgs, append(args, regex)...)...)
+		q := "SELECT id, " + recallBodyExpr + " FROM issues WHERE " +
+			scope + "REGEXP_LIKE(" + recallBodyExpr + ", ?, 'i')"
+		rows, err := db.QueryContext(gctx, q, append(args, regex)...)
 		if err != nil {
 			return fmt.Errorf("recall: read bodies: %w", err)
 		}
-		out, err := scanCounts(rows, "body")
+		out, err := scanText(rows, "body")
 		if err != nil {
 			return err
 		}
@@ -285,14 +252,14 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
-		rows, err := db.QueryContext(gctx, "SELECT issue_id, label FROM labels"+where, args...)
+		rows, err := db.QueryContext(gctx, "SELECT issue_id, label, CHAR_LENGTH(label) FROM labels"+where, args...)
 		if err != nil {
 			return fmt.Errorf("recall: read labels: %w", err)
 		}
 		defer rows.Close()
 		for rows.Next() {
 			var r labelRow
-			if err := rows.Scan(&r.id, &r.label); err != nil {
+			if err := rows.Scan(&r.id, &r.label, &r.chars); err != nil {
 				return fmt.Errorf("recall: scan label: %w", err)
 			}
 			labels = append(labels, r)
@@ -332,14 +299,13 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if scope != "" {
 			scope += " AND "
 		}
-		sel, selArgs := recallCountSelect(likes, true)
-		q := "SELECT issue_id, " + sel + " FROM (SELECT issue_id, LOWER(text) AS t FROM comments WHERE " +
-			scope + "REGEXP_LIKE(text, ?, 'i')) x GROUP BY issue_id"
-		rows, err := db.QueryContext(gctx, q, append(selArgs, append(args, regex)...)...)
+		q := "SELECT issue_id, text FROM comments WHERE " +
+			scope + "REGEXP_LIKE(text, ?, 'i')"
+		rows, err := db.QueryContext(gctx, q, append(args, regex)...)
 		if err != nil {
 			return fmt.Errorf("recall: read comments: %w", err)
 		}
-		out, err := scanCounts(rows, "comment")
+		out, err := scanText(rows, "comment")
 		if err != nil {
 			return err
 		}
@@ -357,12 +323,13 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	}
 	for _, r := range bodies {
 		if i, ok := index[r.id]; ok {
-			docs[i].BodyTerms = r.counts
+			docs[i].Body = append(docs[i].Body, r.text)
 		}
 	}
 	for _, r := range labels {
 		if i, ok := index[r.id]; ok {
 			docs[i].Labels = append(docs[i].Labels, r.label)
+			docs[i].Length += r.chars
 		}
 	}
 	for _, r := range clens {
@@ -373,7 +340,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 	}
 	for _, r := range comments {
 		if i, ok := index[r.id]; ok {
-			docs[i].CommentTerms = r.counts
+			docs[i].Comments = append(docs[i].Comments, r.text)
 		}
 	}
 	lap("join")

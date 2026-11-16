@@ -67,13 +67,8 @@ type Doc struct {
 	Body     []string
 	Comments []string
 	Labels   []string
-	// Counted form. A source that counts on the server instead of shipping
-	// text (the Dolt loader) fills these: substring occurrences of each
-	// QueryTerm.Like in the body fields and in the comments. A doc may carry
-	// text in Body/Comments or counts here; the ranker adds both.
-	BodyTerms    map[string]float64
-	CommentTerms map[string]float64
-	// CommentCount is reported on the hit when Comments carries no text.
+	// CommentCount is reported on the hit when Comments contains only the
+	// matching comments rather than every comment in the document.
 	CommentCount int
 	// Length is the doc's full-text length in the source's own unit, when
 	// the source did not ship the whole text. Zero means "count my tokens".
@@ -450,9 +445,9 @@ func Rank(docs []Doc, query string) []Hit {
 		if score <= 0 {
 			continue
 		}
-		comments := len(d.doc.Comments)
+		comments := d.doc.CommentCount
 		if comments == 0 {
-			comments = d.doc.CommentCount
+			comments = len(d.doc.Comments)
 		}
 		hits = append(hits, Hit{
 			ID:       d.doc.ID,
@@ -526,17 +521,6 @@ func indexDoc(doc *Doc, terms []QueryTerm, qSet map[string]bool, prefixes []stri
 		toks := Tokenize(label)
 		d.length += len(toks)
 		count(toks, maskLabel, d.lTerms)
-	}
-	// Counted form: the source already counted each term's substring.
-	for _, t := range terms {
-		if f := doc.BodyTerms[t.Like]; f > 0 {
-			d.tf[t.Token] += f
-			d.mask |= maskBody
-		}
-		if f := doc.CommentTerms[t.Like]; f > 0 {
-			d.tf[t.Token] += f
-			d.mask |= maskComment
-		}
 	}
 	if doc.Length > 0 {
 		d.length = doc.Length
