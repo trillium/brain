@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/storage/dolt"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
@@ -1949,8 +1950,9 @@ func TestListIncludeDeps(t *testing.T) {
 				t.Fatalf("skip=%v: row %s missing dependencies", skip, id)
 			}
 			var edges []struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
+				ID     string `json:"id"`
+				EdgeID string `json:"edge_id"`
+				Type   string `json:"type"`
 			}
 			if err := json.Unmarshal(rawDeps, &edges); err != nil {
 				t.Fatalf("edges: %v", err)
@@ -1961,6 +1963,11 @@ func TestListIncludeDeps(t *testing.T) {
 			got[id] = map[string]string{}
 			for _, e := range edges {
 				got[id][e.ID] = e.Type
+				// Every edge carries its own id: the deterministic key the
+				// row was stored under, so `bd dep remove <edge_id>` finds it.
+				if want := depid.New(id, e.ID); e.EdgeID != want {
+					t.Errorf("skip=%v: edge %s -> %s edge_id = %q, want %q", skip, id, e.ID, e.EdgeID, want)
+				}
 			}
 		}
 		want := map[string]map[string]string{
@@ -1989,5 +1996,20 @@ func TestListIncludeDeps(t *testing.T) {
 	}
 	if listCmd.Flags().Lookup("include-deps") == nil {
 		t.Error("--include-deps flag missing on bd list")
+	}
+}
+
+// TestDependencyEdgeID pins the edge-id rule for --include-deps: a row that
+// was read with its stored id keeps it, and a row from a read that does not
+// select the id column derives the same value from its natural key.
+func TestDependencyEdgeID(t *testing.T) {
+	t.Parallel()
+	derived := dependencyEdgeID(&types.Dependency{IssueID: "issue-1", DependsOnID: "issue-2"})
+	if want := depid.New("issue-1", "issue-2"); derived != want {
+		t.Errorf("derived edge id = %q, want %q", derived, want)
+	}
+	stored := dependencyEdgeID(&types.Dependency{ID: "stored-id", IssueID: "issue-1", DependsOnID: "issue-2"})
+	if stored != "stored-id" {
+		t.Errorf("stored edge id = %q, want the row's own id", stored)
 	}
 }

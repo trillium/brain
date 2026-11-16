@@ -1,0 +1,41 @@
+
+# bd 1.3.4+brain.0.6.0 (dev), store prefix t.
+# Child (t-2ii) is a child of Epic (t-qq3) and is blocked by Blocker (t-7f7).
+
+# BEFORE this change each edge printed only its target, e.g. {"id": "t-qq3", "type": "parent-child"}.
+# AFTER, every edge also carries its own edge_id:
+
+$ bd list --json --include-deps | jq -c '.[] | {id, title, dependencies}'
+{"id":"t-7f7","title":"Blocker","dependencies":[]}
+{"id":"t-2ii","title":"Child","dependencies":[{"id":"t-7f7","edge_id":"d04682ca-e439-5c37-a8b1-a9d038d1d344","type":"blocks"},{"id":"t-qq3","edge_id":"afae5da7-2f4a-5347-a464-7a317d1caca4","type":"parent-child"}]}
+{"id":"t-qq3","title":"Epic","dependencies":[]}
+
+# NEW: remove the Child -> Blocker edge by its edge_id alone; the reply names the pair it removed.
+$ bd dep remove d04682ca-e439-5c37-a8b1-a9d038d1d344 --json
+{
+  "depends_on_id": "t-7f7",
+  "edge_id": "d04682ca-e439-5c37-a8b1-a9d038d1d344",
+  "issue_id": "t-2ii",
+  "schema_version": 1,
+  "status": "removed"
+}
+
+# Removing the same edge id again is an error, because nothing carries that id any more.
+$ bd dep remove d04682ca-e439-5c37-a8b1-a9d038d1d344
+Error: no dependency edge with id d04682ca-e439-5c37-a8b1-a9d038d1d344
+
+$ bd list --json --include-deps | jq -c '.[] | {id, dependencies}'
+{"id":"t-7f7","dependencies":[]}
+{"id":"t-2ii","dependencies":[{"id":"t-qq3","edge_id":"afae5da7-2f4a-5347-a464-7a317d1caca4","type":"parent-child"}]}
+{"id":"t-qq3","dependencies":[]}
+
+# The two-argument form is unchanged, and its --json reply now reports the edge id too.
+$ bd dep remove t-2ii t-qq3 --json
+{
+  "depends_on_id": "t-qq3",
+  "edge_id": "afae5da7-2f4a-5347-a464-7a317d1caca4",
+  "issue_id": "t-2ii",
+  "schema_version": 1,
+  "status": "removed"
+}
+

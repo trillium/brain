@@ -1409,6 +1409,14 @@ func (t *doltTransaction) GetDependentRecordsForIssues(ctx context.Context, targ
 	return issueops.GetDependentRecordsForIssuesInTx(ctx, t.regularTx, targetIDs)
 }
 
+// GetDependencyRecordByID returns the one raw dependency row carrying depID
+// within the transaction, or nil. Same TWO-SESSION SCOPING as
+// GetDependentRecords: a wisp edge written in this same uncommitted
+// transaction is visible after commit on the server backend.
+func (t *doltTransaction) GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	return issueops.GetDependencyRecordByIDInTx(ctx, t.regularTx, depID)
+}
+
 // CountDependentRecords returns the total inbound-edge count of targetID within
 // the transaction. Same TWO-SESSION SCOPING as GetDependentRecords — the count
 // uses a cross-table NOT-IN subquery that must run on one handle, so on the

@@ -294,6 +294,58 @@ func GetDependentRecordsInTx(ctx context.Context, tx DBTX, targetID, depType str
 	return all, nil
 }
 
+// GetDependencyRecordByIDInTx returns the ONE dependency row whose primary id
+// is depID, or nil when no edge carries that id. It is the inverse of the
+// source- and target-keyed reads above: `bd dep remove <edge-id>` names an
+// edge by the id `bd list --include-deps` printed, and the hash cannot be
+// reversed, so the row has to be looked up.
+//
+// Both dependency tables are scanned, durable first, for the reason
+// GetDependentRecordsInTx gives: depid.New keys the id on (issue_id, target)
+// and omits the table, so an edge that landed in both tables carries ONE id,
+// and the durable row is the authoritative copy. A missing wisp table is "no
+// wisp edges", not an error. The row's ID field is populated, like the
+// dependent reads and unlike the source-keyed ones.
+func GetDependencyRecordByIDInTx(ctx context.Context, tx DBTX, depID string) (*types.Dependency, error) {
+	if depID == "" {
+		return nil, nil
+	}
+	for _, depTable := range []string{"dependencies", "wisp_dependencies"} {
+		dep, err := queryDependencyRecordByIDFromTable(ctx, tx, depTable, depID)
+		if err != nil {
+			if optionalBlockedTable(depTable) && isTableNotExistError(err) {
+				continue
+			}
+			return nil, err
+		}
+		if dep != nil {
+			return dep, nil
+		}
+	}
+	return nil, nil
+}
+
+//nolint:gosec // G201: depTable is a hardcoded constant; depID is bound as a parameter.
+func queryDependencyRecordByIDFromTable(ctx context.Context, tx DBTX, depTable, depID string) (*types.Dependency, error) {
+	rows, err := tx.QueryContext(ctx, fmt.Sprintf(`
+		SELECT id, issue_id, %s AS depends_on_id, type, created_at, created_by, metadata, thread_id
+		FROM %s
+		WHERE id = ?`, DepTargetExpr, depTable), depID)
+	if err != nil {
+		return nil, fmt.Errorf("get dependency record by id from %s: %w", depTable, err)
+	}
+	defer rows.Close()
+
+	var dep *types.Dependency
+	if rows.Next() {
+		dep, err = scanDependentRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("get dependency record by id: scan: %w", err)
+		}
+	}
+	return dep, rows.Err()
+}
+
 //nolint:gosec // G201: depTable is a hardcoded constant; targetID/depType/afterID are bound as parameters.
 func queryDependentRecordsFromTable(ctx context.Context, tx DBTX, depTable, targetID, depType string, limit int, afterID string) ([]*types.Dependency, error) {
 	query := fmt.Sprintf(`

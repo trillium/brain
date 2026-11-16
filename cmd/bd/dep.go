@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/issueops"
@@ -1105,11 +1106,65 @@ Examples:
 	},
 }
 
+// depEdgeRemovalArgs is `bd dep remove`'s resolved input: the exact edge to
+// drop. It is one shape for both spellings of the command — the two-argument
+// (issue-id, depends-on-id) pair and the one-argument edge id — so everything
+// after resolution is shared.
+type depEdgeRemovalArgs struct {
+	fromID string
+	toID   string
+	// exact is set when the edge was named by its id: both endpoints came off
+	// the stored row verbatim and must not go through partial-id resolution.
+	exact bool
+}
+
+// resolveDepEdgeByID looks a dependency edge up by its own id — the `edge_id`
+// `bd list --include-deps` prints — on st, which is the store the command runs
+// against; an edge id is not prefix-routed, because the hash says nothing
+// about which store holds it. A missing edge is an error here rather than the
+// silent success a repeated two-argument removal gets: an id that resolves to
+// nothing is more likely a typo than a replayed teardown.
+func resolveDepEdgeByID(ctx context.Context, st storage.DependencyQueryStore, edgeID string) (*types.Dependency, error) {
+	if st == nil {
+		return nil, fmt.Errorf("no storage available")
+	}
+	dep, err := st.GetDependencyRecordByID(ctx, edgeID)
+	if err != nil {
+		return nil, fmt.Errorf("looking up dependency edge %s: %w", edgeID, err)
+	}
+	if dep == nil {
+		return nil, fmt.Errorf("no dependency edge with id %s", edgeID)
+	}
+	return dep, nil
+}
+
+// depRemoveJSON is the --json confirmation both routes print: the pair that
+// was removed plus the edge's own id, so a caller that removed by pair learns
+// the id and one that removed by id gets the pair back.
+func depRemoveJSON(fromID, toID string) map[string]interface{} {
+	return map[string]interface{}{
+		"status":        "removed",
+		"issue_id":      fromID,
+		"depends_on_id": toID,
+		"edge_id":       depid.New(fromID, toID),
+	}
+}
+
 var depRemoveCmd = &cobra.Command{
-	Use:           "remove [issue-id] [depends-on-id]",
-	Aliases:       []string{"rm"},
-	Short:         "Remove a dependency",
-	Args:          cobra.ExactArgs(2),
+	Use:     "remove [issue-id] [depends-on-id] | remove [edge-id]",
+	Aliases: []string{"rm"},
+	Short:   "Remove a dependency",
+	Long: `Remove a dependency edge.
+
+Name the edge either by its two endpoints or by its own id:
+
+  bd dep remove <issue-id> <depends-on-id>   # the pair, as bd dep add took it
+  bd dep remove <edge-id>                    # the edge_id from 'bd list --json --include-deps'
+
+An edge id names exactly one stored edge, so neither endpoint is resolved from
+a partial id. Removing a pair that carries no edge succeeds silently, as it
+always has; an edge id that matches nothing is an error.`,
+	Args:          cobra.RangeArgs(1, 2),
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -1128,25 +1183,40 @@ var depRemoveCmd = &cobra.Command{
 
 		ctx := rootCtx
 
+		// One argument names the edge by its own id: both endpoints come off
+		// the stored row and skip partial-id resolution entirely.
+		var edge depEdgeRemovalArgs
+		if len(args) == 1 {
+			dep, err := resolveDepEdgeByID(ctx, store, args[0])
+			if err != nil {
+				return HandleErrorRespectJSON("%v", err)
+			}
+			edge = depEdgeRemovalArgs{fromID: dep.IssueID, toID: dep.DependsOnID, exact: true}
+		} else {
+			edge = depEdgeRemovalArgs{fromID: args[0], toID: args[1]}
+		}
+
 		// Resolve partial IDs with routing support. The source issue's store is
 		// mutated by RemoveDependency below, so resolve it write-intent (#4141);
 		// the depends-on target is only resolved by ID and stays read-only
 		// (bd-6dnrw.32, GH#3231).
 		var fromID, toID string
-		fromID, fromStore, fromCleanup, err := resolveIDForMutation(ctx, store, args[0])
+		fromID, fromStore, fromCleanup, err := resolveIDForMutation(ctx, store, edge.fromID)
 		if err != nil {
 			return HandleErrorRespectJSON("%v", err)
 		}
 		defer fromCleanup()
 
-		isExternalRef := strings.HasPrefix(args[1], "external:")
+		isExternalRef := strings.HasPrefix(edge.toID, "external:")
 
-		if isExternalRef {
-			toID = args[1]
+		if edge.exact {
+			toID = edge.toID
+		} else if isExternalRef {
+			toID = edge.toID
 			if err := validateExternalRef(toID); err != nil {
 				return HandleErrorRespectJSON("%v", err)
 			}
-		} else if exact, ok := exactDependencyTarget(ctx, fromStore, fromID, args[1]); ok {
+		} else if exact, ok := exactDependencyTarget(ctx, fromStore, fromID, edge.toID); ok {
 			// Prefer an exact depends_on_id match against raw edge records
 			// before partial-ID resolution (GH#5005). Otherwise
 			// `bd dep remove X 8vezf` resolves to the qualified good edge and
@@ -1154,14 +1224,14 @@ var depRemoveCmd = &cobra.Command{
 			toID = exact
 		} else {
 			var toCleanup func()
-			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, args[1])
+			toID, _, toCleanup, err = resolveIDWithRouting(ctx, store, edge.toID)
 			if err != nil {
 				srcPrefix := types.ExtractPrefix(fromID)
-				tgtPrefix := types.ExtractPrefix(args[1])
+				tgtPrefix := types.ExtractPrefix(edge.toID)
 				if srcPrefix != "" && tgtPrefix != "" && srcPrefix != tgtPrefix {
-					toID = args[1]
+					toID = edge.toID
 				} else {
-					return HandleErrorRespectJSON("resolving dependency ID %s: %v", args[1], err)
+					return HandleErrorRespectJSON("resolving dependency ID %s: %v", edge.toID, err)
 				}
 			} else {
 				defer toCleanup()
@@ -1203,11 +1273,7 @@ var depRemoveCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
-			return outputJSON(map[string]interface{}{
-				"status":        "removed",
-				"issue_id":      fullFromID,
-				"depends_on_id": fullToID,
-			})
+			return outputJSON(depRemoveJSON(fullFromID, fullToID))
 		}
 
 		fmt.Printf("%s Removed dependency: %s → %s\n",

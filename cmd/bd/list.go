@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/steveyegge/beads/internal/metrics"
 	"github.com/steveyegge/beads/internal/storage"
+	"github.com/steveyegge/beads/internal/storage/depid"
 	"github.com/steveyegge/beads/internal/types"
 	"github.com/steveyegge/beads/internal/ui"
 	"github.com/steveyegge/beads/internal/workapi"
@@ -56,9 +57,27 @@ type skipLabelsIssueView struct {
 }
 
 // listDepEdge is one outgoing dependency edge in `bd list --include-deps`.
+//
+// ID is the TARGET issue id (kept, so existing readers of `{id, type}` are
+// unchanged). EdgeID is the dependency row's own primary id — the handle
+// `bd dep remove <edge-id>` takes — so an edge is addressable on its own, the
+// way a Link is, rather than only as the pair of issues it joins.
 type listDepEdge struct {
-	ID   string               `json:"id"`
-	Type types.DependencyType `json:"type"`
+	ID     string               `json:"id"`
+	EdgeID string               `json:"edge_id"`
+	Type   types.DependencyType `json:"type"`
+}
+
+// dependencyEdgeID returns the dependency row's own id. The source-keyed reads
+// behind --include-deps do not select the id column, so it is derived from the
+// edge's natural key exactly as every insert site and the 0050 backfill derive
+// it (depid.New); a read that did populate ID wins, since that is the stored
+// value.
+func dependencyEdgeID(d *types.Dependency) string {
+	if d.ID != "" {
+		return d.ID
+	}
+	return depid.New(d.IssueID, d.DependsOnID)
 }
 
 // listDepsIssueView adds the --include-deps dependencies array to a list row.
@@ -72,7 +91,7 @@ type listDepsIssueView struct {
 func listDepEdges(deps []*types.Dependency) []listDepEdge {
 	edges := make([]listDepEdge, 0, len(deps))
 	for _, d := range deps {
-		edges = append(edges, listDepEdge{ID: d.DependsOnID, Type: d.Type})
+		edges = append(edges, listDepEdge{ID: d.DependsOnID, EdgeID: dependencyEdgeID(d), Type: d.Type})
 	}
 	return edges
 }
@@ -505,7 +524,7 @@ func init() {
 	listCmd.Flags().Bool("no-labels", false, "Filter issues with no labels")
 
 	// Hydration toggle (AD-02). Distinct from --no-labels (filter).
-	listCmd.Flags().Bool("include-deps", false, "With --json, add a dependencies array ({id, type} per outgoing edge) to each row from one batched query; ignored for text output")
+	listCmd.Flags().Bool("include-deps", false, "With --json, add a dependencies array ({id, edge_id, type} per outgoing edge; id is the target, edge_id the edge's own id for 'bd dep remove <edge-id>') to each row from one batched query; ignored for text output")
 	listCmd.Flags().Bool("skip-labels", false,
 		"Skip label hydration. The labels field in output will be empty regardless "+
 			"of actual labels. Use only when the caller does not depend on label data. "+

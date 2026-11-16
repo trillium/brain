@@ -357,6 +357,12 @@ func (t *embeddedTransaction) GetDependentRecordsForIssues(ctx context.Context, 
 	return issueops.GetDependentRecordsForIssuesInTx(ctx, t.tx, targetIDs)
 }
 
+// GetDependencyRecordByID returns the one raw dependency row carrying depID
+// within the transaction, or nil. Mirrors EmbeddedDoltStore.GetDependencyRecordByID.
+func (t *embeddedTransaction) GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	return issueops.GetDependencyRecordByIDInTx(ctx, t.tx, depID)
+}
+
 // CountDependentRecords returns the total inbound-edge count of targetID within
 // the transaction. Mirrors EmbeddedDoltStore.CountDependentRecords.
 func (t *embeddedTransaction) CountDependentRecords(ctx context.Context, targetID string, depType string) (int, error) {

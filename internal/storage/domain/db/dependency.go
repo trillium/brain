@@ -999,6 +999,17 @@ func (r *dependencySQLRepositoryImpl) GetDependencyRecordsForIssues(ctx context.
 	return out, nil
 }
 
+func (r *dependencySQLRepositoryImpl) GetDependencyRecordByID(ctx context.Context, depID string) (*types.Dependency, error) {
+	if depID == "" {
+		return nil, nil
+	}
+	dep, err := issueops.GetDependencyRecordByIDInTx(ctx, r.runner, depID)
+	if err != nil {
+		return nil, fmt.Errorf("db: DependencySQLRepository.GetDependencyRecordByID: %w", err)
+	}
+	return dep, nil
+}
+
 func (r *dependencySQLRepositoryImpl) GetWispDependencyRecordsForIDs(ctx context.Context, wispIDs []string) (map[string][]*types.Dependency, error) {
 	if len(wispIDs) == 0 {
 		return map[string][]*types.Dependency{}, nil
