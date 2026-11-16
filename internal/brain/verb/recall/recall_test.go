@@ -92,6 +92,9 @@ func TestRank_IDTokenMatches(t *testing.T) {
 	if len(hits) == 0 || hits[0].ID != "brain-t4" {
 		t.Fatalf("querying by id should rank that bead first, got %v", ids(hits))
 	}
+	if !reflect.DeepEqual(hits[0].Matched, []string{"id"}) {
+		t.Errorf("id-only matched fields = %v, want [id]", hits[0].Matched)
+	}
 }
 
 func TestRank_NoMatchIsEmpty(t *testing.T) {

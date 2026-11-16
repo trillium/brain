@@ -21,7 +21,7 @@ fits. Words need not all match; the ones that do decide the rank. All
 statuses are searched, closed beads included.
 
 Each hit prints its score, status icon, id, kind, title, and which fields
-matched (title, body, comment, label). --json emits the same as an object
+matched (id, title, body, comment, label). --json emits the same as an object
 with query, tokens, corpus size and hits. No hit at all exits non-zero.
 
 --kind filters on the bead's issue_type exactly (knowledge, task, isa,
