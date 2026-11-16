@@ -10,7 +10,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The knowledge-kind guard (ISC-112, ISC-113; divergence/0048).
+// The knowledge-kind guard (ISC-112, ISC-113; divergence/0049).
 //
 // brain stores facts and work on one issues table, told apart by issue_type:
 // `knowledge` is a fact, `task` and bd's other work types are work, `both` is

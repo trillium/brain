@@ -10,7 +10,7 @@ import (
 	"github.com/steveyegge/beads/issueops"
 )
 
-// The knowledge-kind guard (divergence/0048) is one helper every work verb
+// The knowledge-kind guard (divergence/0049) is one helper every work verb
 // calls, so its verdict is pinned once here: a knowledge bead refuses, a
 // `both` bead and every work kind pass, an unknown issue is not a verdict,
 // and --force waives it.

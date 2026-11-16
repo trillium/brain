@@ -550,7 +550,7 @@ func TestIssueTypeIsValid(t *testing.T) {
 }
 
 // TestIssueTypeIsKnowledge pins the kind the work-verb guards refuse
-// (divergence/0048): only the literal knowledge kind. `both` is work that is
+// (divergence/0049): only the literal knowledge kind. `both` is work that is
 // also knowledge and keeps claim/close/blocks; `isa` and every bd work type
 // are untouched.
 func TestIssueTypeIsKnowledge(t *testing.T) {

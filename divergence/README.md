@@ -139,4 +139,5 @@ A relative markdown link back to the record this commit advances. Always include
 | [0045](0045-github-sync-pairings.md) | pair a store with a github repository and choose the sync direction | proposed |
 | [0046](0046-github-sync-project-scope.md) | scope a github sync to one project's items and send them to that project's repository | proposed |
 | [0047](0047-federation-backup.md) | back every registered store's database up with DOLT_BACKUP and prove each backup on a Dolt server of its own | proposed |
-| [0048](0048-knowledge-kind-guards.md) | refuse claim, close and blocks edges on knowledge beads, with --force for triage | landed |
+| [0048](0048-dependency-edge-ids.md) | give dependency edges their own id in list --include-deps and dep remove | proposed |
+| [0049](0049-knowledge-kind-guards.md) | refuse claim, close and blocks edges on knowledge beads, with --force for triage | landed |

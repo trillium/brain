@@ -490,7 +490,7 @@ pointless).`,
 			}
 
 			// A claim takes work; a knowledge bead is a fact, not work, so
-			// --claim refuses it unless --force (ISC-112, divergence/0048).
+			// --claim refuses it unless --force (ISC-112, divergence/0049).
 			// A policy refusal, so it exits 1, not 13.
 			if claimFlag {
 				if err := refuseKnowledgeKind("claim", id, issue, forceFlag); err != nil {

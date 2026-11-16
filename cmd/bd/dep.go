@@ -214,7 +214,7 @@ Examples:
 			edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: types.DependencyType(depType)}
 
 			// A fact neither blocks nor is blocked: a blocks edge touching a
-			// knowledge bead is refused unless --force (ISC-113, divergence/0048).
+			// knowledge bead is refused unless --force (ISC-113, divergence/0049).
 			force, _ := cmd.Flags().GetBool("force")
 			if err := refuseKnowledgeBlocksEdge(edge, endpointIssueLookup(ctx, fromID, fromStore, toID, toStore), force); err != nil {
 				return HandleErrorRespectJSON("%v", err)
@@ -422,7 +422,7 @@ Examples:
 		edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
 
 		// A fact neither blocks nor is blocked: a blocks edge touching a
-		// knowledge bead is refused unless --force (ISC-113, divergence/0048).
+		// knowledge bead is refused unless --force (ISC-113, divergence/0049).
 		// Other edge types pass; knowledge may carry any link (ISC-116).
 		force, _ := cmd.Flags().GetBool("force")
 		if err := refuseKnowledgeBlocksEdge(edge, endpointIssueLookup(ctx, fromID, fromStore, toID, toStore), force); err != nil {
@@ -570,7 +570,7 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 	force, _ := cmd.Flags().GetBool("force")
 	// The knowledge guard reads both ends of every blocks edge from the one
-	// store the whole file resolved to (divergence/0048); a blocker that lives
+	// store the whole file resolved to (divergence/0049); a blocker that lives
 	// elsewhere is not readable here and passes to the write.
 	knowledgeLookup := storeIssueLookup(rootCtx, targetStore)
 	depEdges := make([]issueops.DependencyEdge, 0, len(resolved))

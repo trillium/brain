@@ -168,7 +168,7 @@ func runDepBlocksProxiedServer(cmd *cobra.Command, ctx context.Context, blockerI
 	force, _ := cmd.Flags().GetBool("force")
 
 	edge := issueops.DependencyEdge{IssueID: blockedID, DependsOnID: blockerID, Type: types.DepBlocks}
-	// The knowledge guard (divergence/0048), as an advisory pre-read like the
+	// The knowledge guard (divergence/0049), as an advisory pre-read like the
 	// direct route's: a blocks edge touching a knowledge bead is refused
 	// unless --force.
 	if err := refuseKnowledgeBlocksEdgesProxied(ctx, []issueops.DependencyEdge{edge}, force); err != nil {
@@ -244,7 +244,7 @@ func runDepAddProxiedServer(cmd *cobra.Command, ctx context.Context, args []stri
 	force, _ := cmd.Flags().GetBool("force")
 
 	edge := issueops.DependencyEdge{IssueID: fromID, DependsOnID: toID, Type: dt}
-	// The knowledge guard (divergence/0048): a blocks edge touching a
+	// The knowledge guard (divergence/0049): a blocks edge touching a
 	// knowledge bead is refused unless --force; other edge types pass.
 	if err := refuseKnowledgeBlocksEdgesProxied(ctx, []issueops.DependencyEdge{edge}, force); err != nil {
 		return HandleErrorRespectJSON("%v", err)
@@ -308,7 +308,7 @@ func runDepAddBulkProxied(cmd *cobra.Command, ctx context.Context, file, default
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 	force, _ := cmd.Flags().GetBool("force")
 
-	// The knowledge guard (divergence/0048), per line so the refusal names
+	// The knowledge guard (divergence/0049), per line so the refusal names
 	// the line the way the other bulk refusals above do.
 	if !force && hasBlocksEdge(depEdges) {
 		lookup, release := proxiedIssueLookup(ctx)

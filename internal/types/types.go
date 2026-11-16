@@ -851,7 +851,7 @@ func (t IssueType) IsValid() bool {
 
 // IsKnowledge reports whether t is brain's knowledge kind: a fact, not a
 // piece of work. A knowledge bead is never claimed, closed or placed on the
-// blocking graph (ISC-112, ISC-113; divergence/0048), and the cmd/bd guards
+// blocking graph (ISC-112, ISC-113; divergence/0049), and the cmd/bd guards
 // read this to refuse those verbs without --force. `both` is work that is
 // also knowledge, so it takes the work verbs; `isa` has a lifecycle of its
 // own and is not gated here.

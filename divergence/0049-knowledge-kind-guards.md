@@ -1,5 +1,5 @@
 ---
-id: 0048
+id: 0049
 title: refuse claim, close and blocks edges on knowledge beads, with --force for triage
 isc: [ISC-112, ISC-113, ISC-116]
 status: landed
@@ -24,7 +24,7 @@ touches:
   - docs/cli-reference/dep.md
   - docs/cli-reference/update.md
   - docs/brain/WHAT_BRAIN_ADDS.md
-  - divergence/0048-knowledge-kind-guards.md
+  - divergence/0049-knowledge-kind-guards.md
 upstream_rebase_notes: |
   `cmd/bd/knowledge_guard.go` and its two test files are brain-only. The
   other cmd/bd files are upstream files with one brain hunk each: a

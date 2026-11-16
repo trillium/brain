@@ -283,7 +283,7 @@ func closeProxiedCheckOne(ctx context.Context, uw uow.UnitOfWork, id string, in 
 			return err.Error(), nil
 		}
 		// Same knowledge-kind refusal as closeDirectCheckOne, in the same
-		// branch, so both routes spell it one way (divergence/0048).
+		// branch, so both routes spell it one way (divergence/0049).
 		if err := refuseKnowledgeKind("close", id, current, in.force); err != nil {
 			return err.Error(), nil
 		}

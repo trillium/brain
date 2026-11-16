@@ -9,7 +9,7 @@ import (
 	"github.com/steveyegge/beads/internal/types"
 )
 
-// The knowledge-kind guard (divergence/0048) on the direct route, end to end
+// The knowledge-kind guard (divergence/0049) on the direct route, end to end
 // through the real RunE functions against a real store: close, claim and a
 // blocks edge refuse a knowledge bead before any write, --force lets each
 // through, and a `both` bead is work and takes every verb.
