@@ -399,7 +399,7 @@ func Rank(docs []Doc, query string) []Hit {
 		go func(lo, hi int) {
 			defer wg.Done()
 			for i := lo; i < hi; i++ {
-				idx[i] = indexDoc(&docs[i], terms, qSet, prefixes)
+				idx[i] = indexDoc(&docs[i], qSet, prefixes)
 			}
 		}(lo, hi)
 	}
@@ -486,7 +486,7 @@ func Rank(docs []Doc, query string) []Hit {
 // indexDoc tokenizes one doc and counts the query terms it holds. A token
 // that exactly equals a query term counts 1; a token that merely starts with
 // a query prefix counts prefixWeight toward that term.
-func indexDoc(doc *Doc, terms []QueryTerm, qSet map[string]bool, prefixes []string) indexed {
+func indexDoc(doc *Doc, qSet map[string]bool, prefixes []string) indexed {
 	d := indexed{doc: doc, tf: map[string]float64{}}
 	count := func(tokens []string, mask fieldMask, terms map[string]bool) {
 		for _, tok := range tokens {

@@ -200,6 +200,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx,
 			"SELECT id, COALESCE(title,''), COALESCE(issue_type,''), COALESCE(status,''), COALESCE(priority,0), "+
 				"CHAR_LENGTH(COALESCE(title,'')) + CHAR_LENGTH("+recallBodyExpr+") FROM issues"+where, args...)
@@ -224,6 +225,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if scope != "" {
 			scope += " AND "
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		q := "SELECT id, " + recallBodyExpr + " FROM issues WHERE " +
 			scope + "REGEXP_LIKE(" + recallBodyExpr + ", ?, 'i')"
 		rows, err := db.QueryContext(gctx, q, append(args, regex)...)
@@ -242,6 +244,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx, "SELECT issue_id, label, CHAR_LENGTH(label) FROM labels"+where, args...)
 		if err != nil {
 			return fmt.Errorf("recall: read labels: %w", err)
@@ -264,6 +267,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if where != "" {
 			where = " WHERE " + where
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		rows, err := db.QueryContext(gctx,
 			"SELECT issue_id, COUNT(*), SUM(CHAR_LENGTH(text)) FROM comments"+where+" GROUP BY issue_id", args...)
 		if err != nil {
@@ -287,6 +291,7 @@ func loadRecallCorpus(ctx context.Context, db *sql.DB, wide bool, likes []string
 		if scope != "" {
 			scope += " AND "
 		}
+		// #nosec G202 -- query structure comes only from fixed expressions and scoped placeholders.
 		q := "SELECT issue_id, text FROM comments WHERE " +
 			scope + "REGEXP_LIKE(text, ?, 'i')"
 		rows, err := db.QueryContext(gctx, q, append(args, regex)...)

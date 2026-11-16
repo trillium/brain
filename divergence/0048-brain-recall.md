@@ -66,7 +66,7 @@ related robots-4m0m and project-p20f.6).
   over the tailnet cost 2.5 s and 24 MB per query. The verb uses a
   `REGEXP_LIKE` prefilter over the query terms, gets matching body/comment
   text plus `CHAR_LENGTH` document lengths, then tokenizes the candidate text
-  locally. Five queries run concurrently. Load is 0.2 to 0.3 s and a cold run
+  locally. Five reads run concurrently. Load is 0.2 to 0.3 s and a cold run
   is under 1 s on the live brain store (3,606 beads).
 - **The pure ranking is a verb package.** `internal/brain/verb/recall`
   tokenizes, indexes and ranks `Doc`s from any `Source`; the cobra wrapper
