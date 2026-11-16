@@ -161,7 +161,7 @@ const (
 	recallReadStreams  = recallCommentParts + recallBodyParts + 3
 )
 
-// recallPrefixes answers the `id LIKE ?` patterns a read should carry. Empty
+// recallPrefixes answers the namespace prefixes a read should carry. Empty
 // means unscoped: wide mode, or a database that is not unified.
 func recallPrefixes(ctx context.Context, db *sql.DB, wide bool) []string {
 	if wide {
@@ -171,23 +171,19 @@ func recallPrefixes(ctx context.Context, db *sql.DB, wide bool) []string {
 	if !unified {
 		return nil
 	}
-	out := make([]string, 0, len(prefixes))
-	for _, p := range prefixes {
-		out = append(out, strings.TrimSuffix(p, "-")+"-%")
-	}
-	return out
+	return prefixes
 }
 
 // recallScope builds the namespace clause on idCol: "" when unscoped.
-func recallScope(idCol string, patterns []string) (string, []any) {
-	if len(patterns) == 0 {
+func recallScope(idCol string, prefixes []string) (string, []any) {
+	if len(prefixes) == 0 {
 		return "", nil
 	}
-	ors := make([]string, len(patterns))
-	args := make([]any, len(patterns))
-	for i, p := range patterns {
-		ors[i] = idCol + " LIKE ?"
-		args[i] = p
+	ors := make([]string, len(prefixes))
+	args := make([]any, len(prefixes))
+	for i, prefix := range prefixes {
+		ors[i] = idCol + " LIKE ? ESCAPE '!'"
+		args[i] = strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(strings.TrimSuffix(prefix, "-")+"-") + "%"
 	}
 	return "(" + strings.Join(ors, " OR ") + ")", args
 }
