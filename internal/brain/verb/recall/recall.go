@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Name is the verb's name on the brain command tree.
@@ -186,7 +187,7 @@ func Tokenize(text string) []string {
 		if cur.Len() == 0 {
 			return
 		}
-		if tok := stem(cur.String()); len(tok) >= 2 {
+		if tok := stem(cur.String()); runeLen(tok) >= 2 {
 			out = append(out, tok)
 		}
 		cur.Reset()
@@ -226,11 +227,11 @@ func QueryTerms(query string) []QueryTerm {
 		}
 		raw := cur.String()
 		cur.Reset()
-		if len(raw) < 2 {
+		if runeLen(raw) < 2 {
 			return
 		}
 		tok := stem(raw)
-		if len(tok) < 2 {
+		if runeLen(tok) < 2 {
 			return
 		}
 		n := 0
@@ -238,11 +239,11 @@ func QueryTerms(query string) []QueryTerm {
 			n++
 		}
 		like := raw[:n]
-		if len(like) < 2 {
+		if runeLen(like) < 2 {
 			like = raw
 		}
 		if i, ok := at[tok]; ok {
-			if len(like) < len(out[i].Like) {
+			if runeLen(like) < runeLen(out[i].Like) {
 				out[i].Like = like
 			}
 			return
@@ -295,17 +296,17 @@ func LikeTerms(query string) []string {
 // remains. It is deliberately crude: recall matches, it does not parse.
 func stem(w string) string {
 	switch {
-	case strings.HasSuffix(w, "ies") && len(w) > 4:
+	case strings.HasSuffix(w, "ies") && runeLen(w) > 4:
 		return w[:len(w)-3] + "y"
-	case strings.HasSuffix(w, "sses") && len(w) > 5:
+	case strings.HasSuffix(w, "sses") && runeLen(w) > 5:
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "ing") && len(w) > 6:
+	case strings.HasSuffix(w, "ing") && runeLen(w) > 6:
 		return w[:len(w)-3]
-	case strings.HasSuffix(w, "ed") && len(w) > 5:
+	case strings.HasSuffix(w, "ed") && runeLen(w) > 5:
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "es") && len(w) > 4 && !strings.HasSuffix(w, "ses"):
+	case strings.HasSuffix(w, "es") && runeLen(w) > 4 && !strings.HasSuffix(w, "ses"):
 		return w[:len(w)-2]
-	case strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") && len(w) > 3:
+	case strings.HasSuffix(w, "s") && !strings.HasSuffix(w, "ss") && runeLen(w) > 3:
 		return w[:len(w)-1]
 	}
 	return w
@@ -369,7 +370,7 @@ func Rank(docs []Doc, query string) []Hit {
 	// keep "go" from matching "goal" and "god".
 	prefixes := make([]string, 0, len(qTokens))
 	for _, t := range qTokens {
-		if len(t) >= 4 {
+		if runeLen(t) >= 4 {
 			prefixes = append(prefixes, t)
 		}
 	}
@@ -410,7 +411,7 @@ func Rank(docs []Doc, query string) []Hit {
 		}
 	}
 	n := float64(len(docs))
-	avgLen := totalLen / len(docs)
+	avgLen := float64(totalLen) / float64(len(docs))
 	if avgLen == 0 {
 		avgLen = 1
 	}
@@ -420,14 +421,18 @@ func Rank(docs []Doc, query string) []Hit {
 		idf[t] = math.Log(1 + (n-d+0.5)/(d+0.5))
 	}
 
-	hits := make([]Hit, 0, len(idx))
+	type scoredHit struct {
+		hit   Hit
+		score float64
+	}
+	hits := make([]scoredHit, 0, len(idx))
 	for i := range idx {
 		d := &idx[i]
 		if len(d.tf) == 0 {
 			continue
 		}
 		score := 0.0
-		norm := k1 * (1 - b + b*float64(d.length)/float64(avgLen))
+		norm := k1 * (1 - b + b*float64(d.length)/avgLen)
 		for t, f := range d.tf {
 			score += idf[t] * (f * (k1 + 1)) / (f + norm)
 		}
@@ -449,24 +454,28 @@ func Rank(docs []Doc, query string) []Hit {
 		if comments == 0 {
 			comments = len(d.doc.Comments)
 		}
-		hits = append(hits, Hit{
+		hits = append(hits, scoredHit{score: score, hit: Hit{
 			ID:       d.doc.ID,
-			Score:    round2(score),
 			Title:    d.doc.Title,
 			Kind:     d.doc.Kind,
 			Status:   d.doc.Status,
 			Priority: d.doc.Priority,
 			Matched:  d.mask.names(),
 			Comments: comments,
-		})
+		}})
 	}
 	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].Score != hits[j].Score {
-			return hits[i].Score > hits[j].Score
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
 		}
-		return hits[i].ID < hits[j].ID
+		return hits[i].hit.ID < hits[j].hit.ID
 	})
-	return hits
+	result := make([]Hit, len(hits))
+	for i := range hits {
+		hits[i].hit.Score = round2(hits[i].score)
+		result[i] = hits[i].hit
+	}
+	return result
 }
 
 // indexDoc tokenizes one doc and counts the query terms it holds. A token
@@ -485,7 +494,7 @@ func indexDoc(doc *Doc, terms []QueryTerm, qSet map[string]bool, prefixes []stri
 				continue
 			}
 			for _, p := range prefixes {
-				if len(tok) > len(p) && strings.HasPrefix(tok, p) {
+				if runeLen(tok) > runeLen(p) && strings.HasPrefix(tok, p) {
 					d.tf[p] += prefixWeight
 					d.mask |= mask
 					if terms != nil {
@@ -548,3 +557,5 @@ outer:
 func round2(f float64) float64 {
 	return math.Round(f*100) / 100
 }
+
+func runeLen(s string) int { return utf8.RuneCountInString(s) }
