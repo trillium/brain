@@ -493,7 +493,7 @@ pointless).`,
 			// --claim refuses it unless --force (ISC-112, divergence/0049).
 			// A policy refusal, so it exits 1, not 13.
 			if claimFlag {
-				if err := refuseKnowledgeKind("claim", id, issue, forceFlag); err != nil {
+				if err := refuseKnowledgeClaim(id, issue, updates, forceFlag); err != nil {
 					fmt.Fprintf(os.Stderr, "%s\n", err)
 					recordFailure(id, err.Error())
 					closeIfUnmutated(result)

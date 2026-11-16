@@ -532,10 +532,11 @@ type bulkDepEdge struct {
 	// Defaulted is true when the line carried no "type" and fell back to
 	// the command-line default (D1 guard: the implicit default is what the
 	// stderr warning targets; explicit per-line types are the user's choice).
-	Defaulted bool
-	Store     storage.DoltStorage
-	StoreKey  string
-	Cleanups  []func()
+	Defaulted      bool
+	Store          storage.DoltStorage
+	StoreKey       string
+	DependsOnStore storage.DoltStorage
+	Cleanups       []func()
 }
 
 func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) error {
@@ -569,10 +570,6 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 
 	noCycleCheck, _ := cmd.Flags().GetBool("no-cycle-check")
 	force, _ := cmd.Flags().GetBool("force")
-	// The knowledge guard reads both ends of every blocks edge from the one
-	// store the whole file resolved to (divergence/0049); a blocker that lives
-	// elsewhere is not readable here and passes to the write.
-	knowledgeLookup := storeIssueLookup(rootCtx, targetStore)
 	depEdges := make([]issueops.DependencyEdge, 0, len(resolved))
 	for _, edge := range resolved {
 		// The specificity ladder (hierarchy.priority) is checked before the
@@ -588,7 +585,7 @@ func addBulkDependencies(cmd *cobra.Command, file string, defaultType string) er
 			DependsOnID: edge.DependsOnID,
 			Type:        edge.Type,
 		}
-		if err := refuseKnowledgeBlocksEdge(depEdge, knowledgeLookup, force); err != nil {
+		if err := refuseKnowledgeBlocksEdge(depEdge, endpointIssueLookup(rootCtx, edge.IssueID, edge.Store, edge.DependsOnID, edge.DependsOnStore), force); err != nil {
 			return fmt.Errorf("line %d: %w", edge.Line, err)
 		}
 		depEdges = append(depEdges, depEdge)
@@ -748,7 +745,7 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 			}
 			current.DependsOnID = edge.DependsOnID
 		} else {
-			toID, _, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
+			toID, toStore, toCleanup, err := resolveIDWithRouting(ctx, store, edge.DependsOnID)
 			if err != nil {
 				srcPrefix := types.ExtractPrefix(current.IssueID)
 				tgtPrefix := types.ExtractPrefix(edge.DependsOnID)
@@ -761,6 +758,7 @@ func validateBulkDepEdges(ctx context.Context, edges []bulkDepEdge) ([]bulkDepEd
 				}
 			} else {
 				current.Cleanups = append(current.Cleanups, toCleanup)
+				current.DependsOnStore = toStore
 			}
 			current.DependsOnID = toID
 		}

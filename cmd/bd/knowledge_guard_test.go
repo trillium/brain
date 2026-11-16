@@ -58,15 +58,24 @@ func TestKnowledgeKindErrorMessage(t *testing.T) {
 }
 
 // Only a blocks edge is work (ISC-113); every other edge type is a link
-// knowledge may carry (ISC-116). Both ends are read, and an end the lookup
-// cannot read passes.
+// knowledge may carry (ISC-116). Both ends are read; an unresolved endpoint
+// fails closed, while an intentional external reference passes.
 func TestRefuseKnowledgeBlocksEdge(t *testing.T) {
 	issues := map[string]*types.Issue{
 		"brain-k1": {ID: "brain-k1", IssueType: types.TypeKnowledge},
 		"bd-t1":    {ID: "bd-t1", IssueType: types.TypeTask},
 		"bd-t2":    {ID: "bd-t2", IssueType: types.TypeTask},
 	}
-	lookup := func(id string) *types.Issue { return issues[id] }
+	lookup := func(id string) (*types.Issue, error) {
+		if IsExternalRef(id) {
+			return nil, nil
+		}
+		issue, ok := issues[id]
+		if !ok {
+			return nil, errors.New("issue store is unavailable")
+		}
+		return issue, nil
+	}
 
 	tests := []struct {
 		name  string
@@ -80,7 +89,7 @@ func TestRefuseKnowledgeBlocksEdge(t *testing.T) {
 		{"--force waives the blocks guard", issueops.DependencyEdge{IssueID: "bd-t1", DependsOnID: "brain-k1", Type: types.DepBlocks}, true, ""},
 		{"related to knowledge passes", issueops.DependencyEdge{IssueID: "bd-t1", DependsOnID: "brain-k1", Type: types.DepRelated}, false, ""},
 		{"parent-child with knowledge passes", issueops.DependencyEdge{IssueID: "brain-k1", DependsOnID: "bd-t1", Type: types.DepParentChild}, false, ""},
-		{"unreadable blocker passes", issueops.DependencyEdge{IssueID: "bd-t1", DependsOnID: "elsewhere-9", Type: types.DepBlocks}, false, ""},
+		{"unreadable blocker refuses", issueops.DependencyEdge{IssueID: "bd-t1", DependsOnID: "elsewhere-9", Type: types.DepBlocks}, false, "cannot block on elsewhere-9: cannot verify whether it is a knowledge bead:"},
 		{"external ref passes", issueops.DependencyEdge{IssueID: "bd-t1", DependsOnID: "external:gh-1", Type: types.DepBlocks}, false, ""},
 	}
 	for _, tt := range tests {
@@ -99,6 +108,17 @@ func TestRefuseKnowledgeBlocksEdge(t *testing.T) {
 				t.Errorf("refusal = %q, want prefix %q", err.Error(), tt.want)
 			}
 		})
+	}
+}
+
+func TestProxiedBlocksRefusesUnreadableEndpoint(t *testing.T) {
+	claimRoleFixture(t, &types.Issue{ID: "bd-t1"}, issueops.UpdateResult{}, nil)
+
+	err := refuseKnowledgeBlocksEdgesProxied(context.Background(), []issueops.DependencyEdge{{
+		IssueID: "bd-t1", DependsOnID: "foreign-k1", Type: types.DepBlocks,
+	}}, false)
+	if err == nil || !strings.HasPrefix(err.Error(), "cannot block bd-t1: cannot verify whether it is a knowledge bead:") {
+		t.Fatalf("refusal = %v, want unreadable-endpoint refusal", err)
 	}
 }
 
@@ -142,6 +162,25 @@ func TestProxiedClaimForceTakesKnowledgeBead(t *testing.T) {
 	}
 	if !p.lifecycle.request.Claim || p.lifecycle.request.IssueID != "brain-k1" {
 		t.Errorf("request = %+v, want the forced claim of brain-k1", p.lifecycle.request)
+	}
+}
+
+func TestProxiedClaimRefusesRequestedKnowledgeKind(t *testing.T) {
+	before := &types.Issue{ID: "bd-t1", Status: types.StatusOpen, IssueType: types.TypeTask}
+	p := claimRoleFixture(t, before, issueops.UpdateResult{}, nil)
+
+	got, fail, err := applyUpdateProxiedOne(context.Background(), "bd-t1", &updateInput{
+		claim:  true,
+		fields: map[string]any{"issue_type": string(types.TypeKnowledge)},
+	})
+	if err != nil || got != nil || fail == nil {
+		t.Fatalf("issue = %+v, fail = %+v, err = %v; want knowledge refusal", got, fail, err)
+	}
+	if !strings.HasPrefix(fail.Error, "cannot claim bd-t1:") {
+		t.Errorf("failure = %q, want the knowledge refusal", fail.Error)
+	}
+	if p.lifecycle.request.IssueID != "" {
+		t.Errorf("the refused claim reached the lifecycle: %+v", p.lifecycle.request)
 	}
 }
 

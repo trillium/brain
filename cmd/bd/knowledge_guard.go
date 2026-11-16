@@ -57,21 +57,39 @@ func refuseKnowledgeKind(verb, id string, issue *types.Issue, force bool) error 
 	return &knowledgeKindError{verb: verb, id: id}
 }
 
-// refuseKnowledgeBlocksEdge applies the guard to one dependency edge. Only a
-// `blocks` edge is work: every other type (related, parent-child,
-// discovered-from, brain's own extends/learned-from) is a link knowledge may
-// carry (ISC-116). Both ends are checked — a fact can neither be blocked
-// nor block — through lookup, which answers nil for an id this process
-// cannot read (an external ref, a wisp, a cross-store id); nil is not a
-// verdict and the edge passes to the write.
-func refuseKnowledgeBlocksEdge(edge issueops.DependencyEdge, lookup func(id string) *types.Issue, force bool) error {
+func refuseKnowledgeClaim(id string, issue *types.Issue, updates map[string]interface{}, force bool) error {
+	if requestedType, ok := updates["issue_type"].(string); ok && types.IssueType(requestedType).IsKnowledge() {
+		return refuseKnowledgeKind("claim", id, &types.Issue{IssueType: types.TypeKnowledge}, force)
+	}
+	return refuseKnowledgeKind("claim", id, issue, force)
+}
+
+type knowledgeEndpointError struct {
+	verb string
+	id   string
+	err  error
+}
+
+func (e *knowledgeEndpointError) Error() string {
+	return fmt.Sprintf("cannot %s %s: cannot verify whether it is a knowledge bead: %v; pass --force to add the blocks edge anyway", e.verb, e.id, e.err)
+}
+
+func refuseKnowledgeBlocksEdge(edge issueops.DependencyEdge, lookup func(id string) (*types.Issue, error), force bool) error {
 	if force || edge.Type != types.DepBlocks {
 		return nil
 	}
-	if err := refuseKnowledgeKind("block", edge.IssueID, lookup(edge.IssueID), force); err != nil {
+	issue, err := lookup(edge.IssueID)
+	if err != nil {
+		return &knowledgeEndpointError{verb: "block", id: edge.IssueID, err: err}
+	}
+	if err := refuseKnowledgeKind("block", edge.IssueID, issue, force); err != nil {
 		return err
 	}
-	return refuseKnowledgeKind("block on", edge.DependsOnID, lookup(edge.DependsOnID), force)
+	issue, err = lookup(edge.DependsOnID)
+	if err != nil {
+		return &knowledgeEndpointError{verb: "block on", id: edge.DependsOnID, err: err}
+	}
+	return refuseKnowledgeKind("block on", edge.DependsOnID, issue, force)
 }
 
 // hasBlocksEdge reports whether any edge is one the guard would read, so a
@@ -85,59 +103,60 @@ func hasBlocksEdge(edges []issueops.DependencyEdge) bool {
 	return false
 }
 
-// storeIssueLookup is the direct route's lookup: one store, read by id. An
-// id the store does not hold (or cannot read as an issue) answers nil.
-func storeIssueLookup(ctx context.Context, st storage.DoltStorage) func(id string) *types.Issue {
-	return func(id string) *types.Issue {
-		if st == nil || IsExternalRef(id) {
-			return nil
+func storeIssueLookup(ctx context.Context, st storage.DoltStorage) func(id string) (*types.Issue, error) {
+	return func(id string) (*types.Issue, error) {
+		if IsExternalRef(id) {
+			return nil, nil
+		}
+		if st == nil {
+			return nil, errors.New("issue store is unavailable")
 		}
 		issue, err := st.GetIssue(ctx, id)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		return issue
+		if issue == nil {
+			return nil, errors.New("issue lookup returned no issue")
+		}
+		return issue, nil
 	}
 }
 
-// endpointIssueLookup is the direct route's lookup for a two-store edge: the
-// dependent is read from its own (write-intent) store and the blocker from
-// the store its routing resolved, which may be nil when the id was carried
-// across without resolving (a foreign prefix the fallback accepted).
-func endpointIssueLookup(ctx context.Context, fromID string, fromStore storage.DoltStorage, toID string, toStore storage.DoltStorage) func(id string) *types.Issue {
+func endpointIssueLookup(ctx context.Context, fromID string, fromStore storage.DoltStorage, toID string, toStore storage.DoltStorage) func(id string) (*types.Issue, error) {
 	from, to := storeIssueLookup(ctx, fromStore), storeIssueLookup(ctx, toStore)
-	return func(id string) *types.Issue {
+	return func(id string) (*types.Issue, error) {
 		switch id {
 		case fromID:
 			return from(id)
 		case toID:
 			return to(id)
 		}
-		return nil
+		return nil, errors.New("edge endpoint could not be resolved")
 	}
 }
 
-// proxiedIssueLookup is the proxied route's lookup: one read-only unit of
-// work for every id the guard asks about. release closes it; a provider that
-// cannot open one yields a lookup that answers nil, so the guard stands
-// aside and the write reports the provider's real error.
-func proxiedIssueLookup(ctx context.Context) (lookup func(id string) *types.Issue, release func()) {
+func proxiedIssueLookup(ctx context.Context) (lookup func(id string) (*types.Issue, error), release func()) {
 	if uowProvider == nil {
-		return func(string) *types.Issue { return nil }, func() {}
+		return func(string) (*types.Issue, error) {
+			return nil, errors.New("proxied-server UOW provider not initialized")
+		}, func() {}
 	}
 	uw, err := uowProvider.NewUOW(ctx)
 	if err != nil {
-		return func(string) *types.Issue { return nil }, func() {}
+		return func(string) (*types.Issue, error) { return nil, fmt.Errorf("open unit of work: %w", err) }, func() {}
 	}
-	return func(id string) *types.Issue {
+	return func(id string) (*types.Issue, error) {
 		if IsExternalRef(id) {
-			return nil
+			return nil, nil
 		}
 		issue, err := uw.IssueUseCase().GetIssue(ctx, id)
 		if err != nil {
-			return nil
+			return nil, err
 		}
-		return issue
+		if issue == nil {
+			return nil, errors.New("issue lookup returned no issue")
+		}
+		return issue, nil
 	}, func() { uw.Close(ctx) }
 }
 

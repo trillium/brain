@@ -75,9 +75,10 @@ in the kind model and asked for a guard with a `--force` escape for triage
   as the pinned and gate checks, on both the direct and the proxied route,
   so a re-close of a knowledge bead that was closed before the guard stays
   the idempotent no-op it was. `-f/--force` waives it.
-- `bd update --claim` refuses a knowledge bead on both routes as a per-id
-  policy failure (exit 1, never the guard-mismatch 13). Plain field edits
-  pass; `--force` waives it.
+- `bd update --claim` refuses a knowledge bead, including one requested by
+  `--type knowledge` in the same update, on both routes as a per-id policy
+  failure (exit 1, never the guard-mismatch 13). Plain field edits pass;
+  `--force` waives it.
 - `bd dep add`, `bd dep --blocks` and `bd dep add --file` refuse a `blocks`
   edge whose either end is a knowledge bead, on both routes; the bulk form
   names the line. `related`, `parent-child`, `discovered-from`, brain's own
@@ -86,6 +87,12 @@ in the kind model and asked for a guard with a `--force` escape for triage
 - The guard is a command-layer policy, like the template and pinned fences
   beside it, not an engine rule: `bd batch`, the GitHub sync and the
   molecule auto-close still write through the store untouched.
+- A blocks endpoint that cannot be read by its route fails closed unless
+  `--force`, rather than letting an unresolved cross-store knowledge bead
+  onto the blocking graph. The remaining concurrent-retype window between
+  this command-layer preflight and its write is a known limitation; a
+  follow-up should decide whether the shared write contract needs a
+  conditional knowledge-kind predicate.
 - Help text on the three `--force` flags, the regenerated CLI reference
   pages, and the WHAT_BRAIN_ADDS line that said no guard existed.
 - Tests: the kind predicate in `internal/types`; the helper's verdict table,

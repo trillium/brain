@@ -102,6 +102,24 @@ func TestParityClaimForceTakesKnowledgeBead(t *testing.T) {
 	}
 }
 
+func TestParityClaimRefusesRequestedKnowledgeKind(t *testing.T) {
+	env := newParityEnv(t)
+	env.seed("test-kg5a", "Work becoming a fact", nil)
+
+	env.setFlags(updateCmd, map[string]string{"claim": "true", "type": "knowledge"})
+	res := env.run(updateCmd, "test-kg5a")
+	if res.exitCode != 1 {
+		t.Fatalf("exit = %d, want 1; stderr=%q", res.exitCode, res.stderr)
+	}
+	if !strings.Contains(res.stderr, "cannot claim test-kg5a: it is a knowledge bead") {
+		t.Errorf("stderr = %q, want the knowledge refusal", res.stderr)
+	}
+	got := env.get("test-kg5a")
+	if got.IssueType != types.TypeTask || got.Status != types.StatusOpen || got.Assignee != "" {
+		t.Errorf("issue = %+v, want unchanged task", got)
+	}
+}
+
 // Plain field edits on a knowledge bead are not work verbs and pass without
 // --force: the guard reads only --claim.
 func TestParityUpdateWithoutClaimEditsKnowledgeBead(t *testing.T) {

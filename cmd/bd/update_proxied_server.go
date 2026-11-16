@@ -217,7 +217,7 @@ func proxiedUpdateTarget(ctx context.Context, id string, in *updateInput) (*type
 	// Same knowledge-kind refusal of --claim as the direct route, read from
 	// the same pre-read every other advisory fence here uses (divergence/0049).
 	if in.claim {
-		if err := refuseKnowledgeKind("claim", id, current, in.force); err != nil {
+		if err := refuseKnowledgeClaim(id, current, in.fields, in.force); err != nil {
 			fmt.Fprintf(os.Stderr, "%s\n", err)
 			return nil, &updateIDFailure{ID: id, Error: err.Error()}
 		}
