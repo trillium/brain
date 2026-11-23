@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/steveyegge/beads/internal/brain/exfiltrator"
+	"github.com/steveyegge/beads/internal/storage"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -56,6 +59,11 @@ configured exfil root.
 Beads carrying the "marked-for-deletion" label (their rendered file was
 deleted, not yet reviewed) are skipped with a named status line — a
 re-render never silently clears the mark.
+
+Failed exfil writes and removals are journaled (<root>/entries/.dirty.jsonl)
+and counted by 'bd stores doctor'. render-all replays journaled removals,
+then clears each record once its file is repaired or its bead is confirmed
+deleted.
 
 For each issue, one tab-separated line is printed to stdout:
   <id>\t<path>\t<status>
@@ -144,6 +152,10 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 		FatalErrorRespectJSON("exfiltration is disabled (cannot resolve root)")
 	}
 
+	if err := replayFailedRemovals(ctx, exf); err != nil {
+		FatalErrorRespectJSON("replaying failed removals: %v", err)
+	}
+
 	it, err := store.IterIssues(ctx, "", types.IssueFilter{})
 	if err != nil {
 		FatalErrorRespectJSON("iterating issues: %v", err)
@@ -155,16 +167,19 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 		ok      int
 		failed  int
 	)
+	rendered := make(map[string]bool)
 	for it.Next(ctx) {
 		issue := it.Value()
 		if issue == nil {
 			continue
 		}
 		path := renderTargetPath(exf, issue)
+		rendered[issue.ID] = false
 		if err := exf.Render(ctx, issue); err != nil {
 			// Marked-for-deletion beads skip rather than fail — the mark
 			// is a pending human review, not corruption.
 			if exfiltrator.IsSkipMarked(err) {
+				rendered[issue.ID] = true
 				results = append(results, renderAllResult{
 					ID:     issue.ID,
 					Path:   path,
@@ -188,6 +203,7 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 			continue
 		}
 		ok++
+		rendered[issue.ID] = true
 		results = append(results, renderAllResult{
 			ID:     issue.ID,
 			Path:   path,
@@ -199,6 +215,9 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 	}
 	if err := it.Err(); err != nil {
 		FatalErrorRespectJSON("iterating issues: %v", err)
+	}
+	if err := reconcileDirtyRenders(ctx, exf, rendered, issueConfirmedDeleted); err != nil {
+		FatalErrorRespectJSON("reconciling failed exfiltrations: %v", err)
 	}
 
 	total := ok + failed
@@ -222,6 +241,59 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// replayFailedRemovals retries journaled removals and clears the ones that
+// succeed. It runs before render-all re-renders, so a replayed removal can
+// never untrack or delete a file the same run is about to write.
+func replayFailedRemovals(ctx context.Context, exf exfiltrator.Exfiltrator) error {
+	mx, ok := exf.(*exfiltrator.MarkdownExfiltrator)
+	if !ok {
+		return nil
+	}
+	records, err := exfiltrator.DirtyRecords(mx.Root())
+	if err != nil {
+		return err
+	}
+	var resolved []exfiltrator.DirtyRecord
+	for _, record := range records {
+		if record.Op == "remove" && record.Kind != "" && record.Slug != "" && mx.Remove(ctx, record.ID, record.Kind, record.Slug) == nil {
+			resolved = append(resolved, record)
+		}
+	}
+	return mx.ResolveDirty(resolved)
+}
+
+// reconcileDirtyRenders clears render journal records whose issue was
+// re-rendered (or deliberately skipped) in this run, or is confirmed deleted.
+func reconcileDirtyRenders(ctx context.Context, exf exfiltrator.Exfiltrator, rendered map[string]bool, deleted func(ctx context.Context, id string) bool) error {
+	mx, ok := exf.(*exfiltrator.MarkdownExfiltrator)
+	if !ok {
+		return nil
+	}
+	records, err := exfiltrator.DirtyRecords(mx.Root())
+	if err != nil {
+		return err
+	}
+	var resolved []exfiltrator.DirtyRecord
+	for _, record := range records {
+		if record.Op != "render" {
+			continue
+		}
+		if rendered[record.ID] {
+			resolved = append(resolved, record)
+			continue
+		}
+		if _, iterated := rendered[record.ID]; !iterated && deleted(ctx, record.ID) {
+			resolved = append(resolved, record)
+		}
+	}
+	return mx.ResolveDirty(resolved)
+}
+
+func issueConfirmedDeleted(ctx context.Context, id string) bool {
+	_, err := store.GetIssue(ctx, id)
+	return errors.Is(err, storage.ErrNotFound)
 }
 
 func renderRoot(exf exfiltrator.Exfiltrator) string {

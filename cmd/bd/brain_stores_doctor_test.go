@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 	"github.com/steveyegge/beads/internal/configfile"
 )
 
@@ -268,6 +270,28 @@ func TestDoctorRegistrySentinel(t *testing.T) {
 	}
 	if strings.Contains(doctorRegistrySentinel, " ") {
 		t.Errorf("sentinel %q must not contain spaces — the scheduler splits FAILING STORES on whitespace", doctorRegistrySentinel)
+	}
+}
+
+func TestPrintExfilDriftAggregatesRegisteredStoreRoots(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("BRAIN_KNOWLEDGE_ROOT", filepath.Join(base, "active"))
+	t.Setenv("BEADS_DIR", filepath.Join(base, "active", ".beads"))
+	t.Setenv("BD_NAME", "active")
+	stores := map[string]storeEntry{
+		"task": {Path: filepath.Join(base, "tasks", ".beads")},
+		"idea": {Path: filepath.Join(base, "shared", ".beads")},
+	}
+	for name, id := range map[string]string{"task": "task-1", "idea": "idea-2"} {
+		root := filepath.Dir(stores[name].Path)
+		if err := exfiltrator.NewMarkdownExfiltrator(root, nil).RecordDrift(exfiltrator.DirtyRecord{ID: id, Op: "render"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out bytes.Buffer
+	printExfilDrift(&out, exfilDriftRoots(stores))
+	if got := out.String(); !strings.Contains(got, "2 brain markdown") || !strings.Contains(got, "task-1") || !strings.Contains(got, "idea-2") {
+		t.Fatalf("doctor drift output = %q", got)
 	}
 }
 

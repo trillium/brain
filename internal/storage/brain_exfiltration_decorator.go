@@ -22,6 +22,8 @@ package storage
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 	"github.com/steveyegge/beads/internal/types"
@@ -158,9 +160,9 @@ func (d *BrainExfiltrationDecorator) UpdateIssueType(ctx context.Context, id str
 //   - oldKind or oldSlug is empty (the snapshot didn't resolve), or
 //   - the exfiltrator is nil (passthrough mode).
 //
-// Remove failures are intentionally swallowed: the storage mutation
-// already succeeded and the reconciler is the documented safety net for
-// any orphan file (divergence/0012 § Decisions #5).
+// Remove failures are not returned (the storage mutation already
+// succeeded and the reconciler is the safety net, divergence/0012
+// § Decisions #5) but are logged and journaled via recordDrift.
 func (d *BrainExfiltrationDecorator) applyKindTransitionCleanup(ctx context.Context, id string, oldKind types.IssueType, oldSlug string, newKind types.IssueType) {
 	if d.exf == nil || oldSlug == "" || oldKind == "" {
 		return
@@ -168,7 +170,9 @@ func (d *BrainExfiltrationDecorator) applyKindTransitionCleanup(ctx context.Cont
 	if oldKind == newKind {
 		return
 	}
-	_ = d.exf.Remove(ctx, id, oldKind, oldSlug)
+	if err := d.exf.Remove(ctx, id, oldKind, oldSlug); err != nil {
+		d.recordDrift(id, "remove", oldKind, oldSlug, err)
+	}
 }
 
 // CloseIssue closes an issue and re-renders.
@@ -271,7 +275,21 @@ func (d *BrainExfiltrationDecorator) renderByID(ctx context.Context, id string) 
 	if err != nil {
 		return
 	}
-	_ = d.exf.Render(ctx, issue)
+	if err := d.exf.Render(ctx, issue); err != nil && !exfiltrator.IsSkipMarked(err) {
+		d.recordDrift(id, "render", "", "", err)
+	}
+}
+
+// recordDrift warns on stderr and, when the exfiltrator supports it,
+// appends the issue id to the dirty journal the reconciler drains. The
+// original mutation result is never affected.
+func (d *BrainExfiltrationDecorator) recordDrift(id, op string, kind types.IssueType, slug string, cause error) {
+	fmt.Fprintf(os.Stderr, "warning: brain markdown %s failed for %s (file is stale until reconcile): %v\n", op, id, cause)
+	if r, ok := d.exf.(exfiltrator.DriftRecorder); ok {
+		if err := r.RecordDrift(exfiltrator.DirtyRecord{ID: id, Op: op, Kind: kind, Slug: slug, Error: cause.Error()}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not journal drift for %s: %v\n", id, err)
+		}
+	}
 }
 
 // snapshotKindAndSlug returns the current (kind, slug) for id from the

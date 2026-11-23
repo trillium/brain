@@ -914,3 +914,47 @@ func TestBrainExfDecorator_AddIssueComment_RendersCommentTrail(t *testing.T) {
 		t.Errorf("render-all reconciliation must reproduce the comment trail")
 	}
 }
+
+type driftExf struct {
+	recordingExf
+	drift []exfiltrator.DirtyRecord
+}
+
+func (d *driftExf) RecordDrift(record exfiltrator.DirtyRecord) error {
+	d.drift = append(d.drift, record)
+	return nil
+}
+
+func TestRecordDriftJournalsRenderAndRemoveFailures(t *testing.T) {
+	exf := &driftExf{recordingExf: recordingExf{renderErr: errors.New("disk full"), removeErr: errors.New("perm")}}
+	d := NewBrainExfiltrationDecorator(nil, exf)
+	d.recordDrift("x-1", "render", "", "", exf.renderErr)
+	d.recordDrift("x-2", "remove", "task", "old-slug", exf.removeErr)
+	if len(exf.drift) != 2 || exf.drift[0].Op != "render" || exf.drift[0].ID != "x-1" {
+		t.Fatalf("drift = %v", exf.drift)
+	}
+	if got := exf.drift[1]; got.Op != "remove" || got.ID != "x-2" || got.Kind != "task" || got.Slug != "old-slug" {
+		t.Fatalf("remove drift = %#v", got)
+	}
+	// Non-recorder exfiltrator must not panic.
+	NewBrainExfiltrationDecorator(nil, &recordingExf{}).recordDrift("x-3", "render", "", "", errors.New("e"))
+}
+
+func TestRenderByIDDoesNotJournalMarkedForDeletionSkip(t *testing.T) {
+	store := newFakeBrainStore()
+	exf := &driftExf{recordingExf: recordingExf{renderErr: &exfiltrator.SkipMarkedError{ID: "B-1"}}}
+	d := &BrainExfiltrationDecorator{DoltStorage: store, inner: store, exf: exf}
+	if err := d.CreateIssue(context.Background(), brainIssue("B-1", "marked", types.TypeTask), "tester"); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if len(exf.drift) != 0 {
+		t.Fatalf("marked skip journaled as drift: %#v", exf.drift)
+	}
+	exf.renderErr = errors.New("disk full")
+	if err := d.CreateIssue(context.Background(), brainIssue("B-2", "real failure", types.TypeTask), "tester"); err != nil {
+		t.Fatalf("CreateIssue: %v", err)
+	}
+	if len(exf.drift) != 1 || exf.drift[0].ID != "B-2" {
+		t.Fatalf("drift = %#v", exf.drift)
+	}
+}

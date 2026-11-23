@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 )
 
 // defaultStoreProbeTimeout bounds a single store read so one wedged store
@@ -143,6 +145,9 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
 		fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
 		os.Exit(1)
+	}
+	if !storesDoctorJSON {
+		printExfilDrift(os.Stderr, exfilDriftRoots(stores))
 	}
 	if len(stores) == 0 {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
@@ -505,4 +510,44 @@ func init() {
 		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
 
 	brainStoresCmd.AddCommand(brainStoresDoctorCmd)
+}
+
+// exfilDriftRoots returns the render roots whose dirty journals doctor reads:
+// the active store's root plus each registered store's own directory, which is
+// where its wrapper pins BRAIN_KNOWLEDGE_ROOT.
+func exfilDriftRoots(stores map[string]storeEntry) []string {
+	roots := map[string]struct{}{}
+	if root := brainKnowledgeRoot(); root != "" {
+		roots[root] = struct{}{}
+	}
+	for _, entry := range stores {
+		if entry.Path == "" {
+			continue
+		}
+		roots[filepath.Dir(entry.Path)] = struct{}{}
+	}
+	result := make([]string, 0, len(roots))
+	for root := range roots {
+		result = append(result, root)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// printExfilDrift reports how many issues have a markdown render that failed
+// and is stale until reconcile (the exfiltrator's dirty journal). Silent when
+// there is no drift.
+func printExfilDrift(w io.Writer, roots []string) {
+	var ids []string
+	for _, root := range roots {
+		dirty, err := exfiltrator.DirtyIDs(root)
+		if err != nil {
+			fmt.Fprintf(w, "warning: cannot read exfiltration dirty journal under %s: %v\n", root, err)
+			continue
+		}
+		ids = append(ids, dirty...)
+	}
+	if len(ids) > 0 {
+		fmt.Fprintf(w, "warning: %d brain markdown file(s) stale after failed render/remove: %s\n", len(ids), strings.Join(ids, ", "))
+	}
 }
