@@ -195,7 +195,9 @@ separate database.
 > original id becomes an open conflict bead - see
 > [brain-collision-duplication-records.md](brain-collision-duplication-records.md)
 > and [divergence/0028](../../divergence/0028-brain-unify-conflict-beads.md).
-> The text below is kept as the record of what the first build did.
+> Identical copies also become a conflict when the loser holds child rows the
+> winner lacks, or the copies have a column on one side only. The text below is
+> kept as the record of what the first build did.
 
 Unification makes one table hold what were N primary keys. The live federation
 already contains duplicates: **123 ids exist in more than one participating

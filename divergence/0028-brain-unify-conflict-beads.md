@@ -76,7 +76,9 @@ id is not retired as a tombstone, it stays a real bead.
     is symmetric;
   - links other beads hold to the original id are untouched, so they now reach
     the conflict bead;
-  - identical copies are unchanged: one bead, the other copy's rows skipped.
+  - identical copies are unchanged: one bead, the other copy's rows skipped -
+    but only when the losing copy holds no child rows the winner lacks and the
+    copies have no one-sided columns; otherwise they are a conflict.
 - **Child rows get new keys when the two copies share them.** In the real data
   the brain store's copy of a bead was copied from the other store's, so the
   two copies' `events` and `dependencies` rows carry the **same uuid primary
