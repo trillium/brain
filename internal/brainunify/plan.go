@@ -110,6 +110,13 @@ var bookkeepingColumns = map[string]bool{
 	"updated_at":   true,
 }
 
+// ChildRowsColumnPrefix names the pseudo-columns that carry the row digests of
+// one child table for a copy of a duplicated id (comma-joined, sorted). They sit
+// beside the issues columns in IDCopy.Row so the bead's labels, comments,
+// dependencies and events are compared along with it - see lostChildColumns for
+// how they differ from an ordinary column.
+const ChildRowsColumnPrefix = "child_rows:"
+
 // Reason values of an identical duplicate, recorded in the
 // brain_unify_collisions table. They say how the copy that stays was chosen;
 // the copies are identical, so the choice does not change any content.
@@ -363,7 +370,8 @@ func resolveCollision(id string, namespaces map[string]Namespace, group []IDCopy
 		if cp.ContentHash != c.WinnerHash {
 			c.Divergent = true
 		}
-		if cols := differingColumns(winnerRow, cp.Row); len(cols) > 0 {
+		cols := mergeSorted(differingColumns(winnerRow, cp.Row), lostChildColumns(winnerRow, cp.Row))
+		if len(cols) > 0 {
 			c.Divergent = true
 			c.DifferingColumns = mergeSorted(c.DifferingColumns, cols)
 			for _, col := range cols {
@@ -401,18 +409,61 @@ func resolveCollision(id string, namespaces map[string]Namespace, group []IDCopy
 // differingColumns returns the columns on which two read rows disagree,
 // sorted. It returns nil when either row was not read in full, because then
 // nothing can honestly be claimed about the comparison.
+//
+// A column that only one side has is a disagreement when its value there is
+// not empty: stores built at different schema versions carry different
+// columns, and ignoring a one-sided column would call a copy holding real
+// data identical to a copy that cannot hold it, then skip the first.
 func differingColumns(a, b map[string]string) []string {
 	if a == nil || b == nil {
 		return nil
 	}
+	seen := map[string]bool{}
 	var out []string
 	for col, av := range a {
-		bv, ok := b[col]
-		if !ok {
+		if strings.HasPrefix(col, ChildRowsColumnPrefix) {
 			continue
 		}
-		if av != bv {
+		seen[col] = true
+		if bv, ok := b[col]; !ok {
+			if av != "" {
+				out = append(out, col)
+			}
+		} else if av != bv {
 			out = append(out, col)
+		}
+	}
+	for col, bv := range b {
+		if !seen[col] && bv != "" && !strings.HasPrefix(col, ChildRowsColumnPrefix) {
+			out = append(out, col)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// lostChildColumns names the child tables in which the losing copy holds a row
+// the kept copy lacks. Skipping the loser skips its child rows with it, so those
+// rows would be gone; a loser whose rows the winner holds too loses nothing, and
+// a winner with extra rows is no loss either, so neither makes a difference.
+func lostChildColumns(winner, loser map[string]string) []string {
+	if winner == nil || loser == nil {
+		return nil
+	}
+	var out []string
+	for col, lv := range loser {
+		if !strings.HasPrefix(col, ChildRowsColumnPrefix) || lv == "" {
+			continue
+		}
+		have := map[string]bool{}
+		for _, h := range strings.Split(winner[col], ",") {
+			have[h] = true
+		}
+		for _, h := range strings.Split(lv, ",") {
+			if !have[h] {
+				out = append(out, col)
+				break
+			}
 		}
 	}
 	sort.Strings(out)

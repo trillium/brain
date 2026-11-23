@@ -847,9 +847,21 @@ func (r *Replayer) collectStore(ctx context.Context, src SourceFacts, w *replayW
 		}
 		switch tp.Scope {
 		default:
-			ids, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
+			ids, unscoped, err := conn.DiffScopeValues(ctx, base.Hash, tp.Table, tp.ScopeColumn)
 			if err != nil {
 				return sc, fmt.Errorf("refusing to replay: store %s table %s: %w", src.Namespace, tp.Table, err)
+			}
+			if unscoped {
+				// A row with no scope value names no bead, so the beads it touched cannot
+				// be listed and the table would be skipped as unchanged while the
+				// merged database lacked the row. Before the repoint the whole table
+				// is reloaded; after it the merged database holds writes that a
+				// reload would erase, so the replay refuses rather than skip.
+				if r.opts.ProtectAfter != "" {
+					return sc, fmt.Errorf("refusing to replay: store %s table %s changed rows that have no %s, so they cannot be attributed to a bead and a catch-up after the repoint cannot carry them", src.Namespace, tp.Table, tp.ScopeColumn)
+				}
+				sc.reload(tp, false)
+				sc.changed = true
 			}
 			if len(ids) == 0 {
 				continue
@@ -1202,7 +1214,7 @@ func (r *Replayer) reloadBeadTable(ctx context.Context, tx *sql.Tx, w *replayWor
 			// ones the current decision still wants (a bead protected since is out)
 			rows = rows[:0:0]
 			for _, row := range f.rows {
-				if allowed[cellText(row[scopeIdx])] {
+				if id := cellText(row[scopeIdx]); allowed[id] {
 					rows = append(rows, row)
 				}
 			}
@@ -1247,6 +1259,12 @@ type fetchedRows struct {
 // inserts, so it is short and rarely loses its commit to a concurrent write.
 func (r *Replayer) fetchBeadRows(ctx context.Context, w *replayWork, tp TablePlan, ids []string, full bool) ([]fetchedRows, error) {
 	var out []fetchedRows
+	// After the repoint the merged database is written to directly. A child row
+	// the source already held when it was last read was copied then, so its
+	// absence from the merged database means a client deleted it there; only
+	// rows the source gained since are carried over. Re-inserting the others
+	// resurrected labels, comments, dependencies and events that were deleted.
+	newOnly := r.opts.ProtectAfter != "" && tp.Scope != ScopeIssues && !full
 	for _, src := range r.plan.Sources {
 		has, err := r.source.HasTable(ctx, src.Database, tp.Table)
 		if err != nil {
@@ -1287,6 +1305,11 @@ func (r *Replayer) fetchBeadRows(ctx context.Context, w *replayWork, tp TablePla
 				if err != nil {
 					return nil, fmt.Errorf("refusing to replay: reading store %s table %s: %w", src.Namespace, tp.Table, err)
 				}
+				if newOnly {
+					if rows, err = r.rowsAddedSinceBase(ctx, w, src, tp, cols, clause, args, rows); err != nil {
+						return nil, err
+					}
+				}
 				if err := take(rows); err != nil {
 					return nil, err
 				}
@@ -1295,6 +1318,47 @@ func (r *Replayer) fetchBeadRows(ctx context.Context, w *replayWork, tp TablePla
 		out = append(out, f)
 	}
 	return out, nil
+}
+
+// rowsAddedSinceBase drops, from the rows a source holds for some beads now, the
+// ones it already held at the commit the last read of it recorded. A row is the
+// same row when every column it carries is: one the source changed since is new.
+// A source with no recorded commit, or a table that did not exist at it, has no
+// older rows to drop.
+func (r *Replayer) rowsAddedSinceBase(ctx context.Context, w *replayWork, src SourceFacts, tp TablePlan, cols []string, clause string, args []any, rows [][]any) ([][]any, error) {
+	base, ok := w.bases[src.Namespace]
+	if !ok || base.Hash == "" || len(rows) == 0 {
+		return rows, nil
+	}
+	older, err := r.source.ReadRowsAsOf(ctx, src.Database, tp.Table, cols, base.Hash, clause, args...)
+	if err != nil {
+		// The table did not exist at that commit: every row is new.
+		return rows, nil
+	}
+	had := make(map[string]bool, len(older))
+	for _, row := range older {
+		had[rowKey(row)] = true
+	}
+	kept := rows[:0:0]
+	for _, row := range rows {
+		if !had[rowKey(row)] {
+			kept = append(kept, row)
+		}
+	}
+	return kept, nil
+}
+
+// rowKey renders a row's cells so two reads of the same row compare equal.
+func rowKey(row []any) string {
+	cells := make([]string, len(row))
+	for i, v := range row {
+		if v == nil {
+			cells[i] = "\x00NULL"
+			continue
+		}
+		cells[i] = cellText(v)
+	}
+	return strings.Join(cells, "\x1f")
 }
 
 // prefetch reads the rows every bead-scoped reload of the decided work will need.

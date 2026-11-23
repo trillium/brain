@@ -293,3 +293,82 @@ func reflectDeepEqual(a, b []string) bool {
 	}
 	return true
 }
+
+func TestDifferingColumnsOneSidedValueIsADifference(t *testing.T) {
+	// Schema skew: alpha's issues table has no notes column, beta's copy of the
+	// same id carries text in it. Skipping the one-sided column called the pair
+	// identical and could drop the only copy of the text.
+	alpha := map[string]string{"id": "shr-9", "title": "same", "content_hash": "h"}
+	beta := map[string]string{"id": "shr-9", "title": "same", "content_hash": "h", "notes": "IMPORTANT NOTE"}
+	for name, got := range map[string][]string{
+		"beta holds the extra column":  differingColumns(alpha, beta),
+		"alpha holds the extra column": differingColumns(beta, alpha),
+	} {
+		if !reflectDeepEqual(got, []string{"notes"}) {
+			t.Errorf("%s: differing columns = %v, want [notes]", name, got)
+		}
+	}
+	// An empty one-sided column carries nothing, so it is not a difference.
+	beta["notes"] = ""
+	if got := differingColumns(alpha, beta); len(got) != 0 {
+		t.Errorf("an empty one-sided column differs = %v, want none", got)
+	}
+}
+
+func TestBuildPlanSchemaSkewDuplicateIsAConflict(t *testing.T) {
+	copies := map[string][]IDCopy{
+		"shr-9": {
+			{Source: "alpha", ContentHash: "h", Row: map[string]string{"id": "shr-9", "title": "t", "content_hash": "h"}},
+			{Source: "beta", ContentHash: "h", Row: map[string]string{"id": "shr-9", "title": "t", "content_hash": "h", "notes": "IMPORTANT NOTE"}},
+		},
+	}
+	facts := []SourceFacts{
+		{Namespace: "alpha", Database: "alpha", Reachable: true, BeadCount: 1, DeclaredPrefixes: []string{"shr"}, Prefixes: map[string]int64{"shr": 1}},
+		{Namespace: "beta", Database: "beta", Reachable: true, BeadCount: 1, DeclaredPrefixes: []string{"shr"}, Prefixes: map[string]int64{"shr": 1}},
+	}
+	c := BuildPlan(facts, copies).Collisions[0]
+	if !c.Divergent || !c.DataColumnsDiffer || c.Resolution != ResolutionConflict {
+		t.Errorf("schema-skewed duplicate: divergent=%v data=%v resolution=%q, want a data conflict", c.Divergent, c.DataColumnsDiffer, c.Resolution)
+	}
+}
+
+func TestBuildPlanDuplicateWhoseLoserHoldsChildRowsTheWinnerLacksIsAConflict(t *testing.T) {
+	// The issues rows are identical; the copy that would be skipped also carries
+	// a label and a comment. Calling that pair identical skipped the copy with
+	// its child rows, and the build and verify both passed.
+	row := func(extra map[string]string) map[string]string {
+		r := map[string]string{"id": "shr-9", "title": "t", "content_hash": "h"}
+		for k, v := range extra {
+			r[ChildRowsColumnPrefix+k] = v
+		}
+		return r
+	}
+	facts := []SourceFacts{
+		{Namespace: "alpha", Database: "alpha", Reachable: true, BeadCount: 1, DeclaredPrefixes: []string{"shr"}, Prefixes: map[string]int64{"shr": 1}},
+		{Namespace: "beta", Database: "beta", Reachable: true, BeadCount: 1, DeclaredPrefixes: []string{"shr"}, Prefixes: map[string]int64{"shr": 1}},
+	}
+	plan := func(alpha, beta map[string]string) Collision {
+		copies := map[string][]IDCopy{"shr-9": {
+			{Source: "alpha", ContentHash: "h", Row: alpha},
+			{Source: "beta", ContentHash: "h", Row: beta},
+		}}
+		return BuildPlan(facts, copies).Collisions[0]
+	}
+	// alpha owns the prefix's name here, so it wins; beta is the loser.
+	facts[0].DeclaredPrefixes = []string{"shr"}
+	facts[1].DeclaredPrefixes = nil
+
+	c := plan(row(nil), row(map[string]string{"labels": "aa11", "comments": "bb22"}))
+	want := []string{ChildRowsColumnPrefix + "comments", ChildRowsColumnPrefix + "labels"}
+	if !c.Divergent || !c.DataColumnsDiffer || !reflectDeepEqual(c.DifferingColumns, want) {
+		t.Errorf("loser with child rows the winner lacks: divergent=%v data=%v columns=%v, want a data conflict on %v", c.Divergent, c.DataColumnsDiffer, c.DifferingColumns, want)
+	}
+	// Same child rows on both sides, or a loser that is a subset of the winner,
+	// lose nothing when the loser is skipped.
+	if c := plan(row(map[string]string{"labels": "aa11"}), row(map[string]string{"labels": "aa11"})); c.Divergent {
+		t.Errorf("identical child rows must not be a conflict: %v", c.DifferingColumns)
+	}
+	if c := plan(row(map[string]string{"labels": "aa11,cc33"}), row(map[string]string{"labels": "aa11"})); c.Divergent {
+		t.Errorf("a loser that is a subset of the winner loses nothing: %v", c.DifferingColumns)
+	}
+}

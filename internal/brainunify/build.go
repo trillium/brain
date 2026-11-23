@@ -333,7 +333,20 @@ func Discover(ctx context.Context, source *readOnlySource, reg Registry) (Discov
 			}
 			row, err := source.IssueRow(ctx, db, id)
 			if err != nil {
-				continue
+				// A copy that cannot be read in full cannot be compared, and a
+				// comparison that falls back to the id and timestamps calls two
+				// different beads identical. Refuse rather than guess.
+				return Discovery{}, fmt.Errorf("reading the copy of duplicated id %s in %s: %w", id, db, err)
+			}
+			// The child rows are part of the copy: two copies whose issues rows
+			// agree but whose labels, comments, dependencies or events do not
+			// are not identical, and skipping one would drop the difference.
+			children, err := source.ChildDigests(ctx, db, id)
+			if err != nil {
+				return Discovery{}, fmt.Errorf("reading the child rows of duplicated id %s in %s: %w", id, db, err)
+			}
+			for table, digest := range children {
+				row[ChildRowsColumnPrefix+table] = digest
 			}
 			group[i].Row = row
 		}

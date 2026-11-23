@@ -165,14 +165,15 @@ func TestRecordStorePrefixFreshClaim(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT `store`, owner_reason FROM brain_store_prefixes WHERE prefix = ?")).
 		WithArgs("proto").
 		WillReturnError(sql.ErrNoRows)
+	// The event table is provisioned BEFORE the ownership row is written (the
+	// DDL commits the open transaction on Dolt), so the INSERT, the live bead
+	// count and the 'claim' event all sit in one transaction — before the
+	// allowed_prefixes smoothing.
+	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, ?, '', '', 0, 0)")).
 		WithArgs("proto", "task", "operator-added").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	// The claim appends its event in the SAME transaction: the event table
-	// is provisioned idempotently, the live bead count is observed now, and
-	// the 'claim' event lands — before the allowed_prefixes smoothing.
-	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM issues WHERE id = ? OR id LIKE CONCAT(?, '-%')")).
 		WithArgs("proto", "proto").
 		WillReturnRows(rowsOf(t, "COUNT(*)", []string{"2"}))
