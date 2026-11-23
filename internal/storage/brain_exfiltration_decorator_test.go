@@ -917,22 +917,25 @@ func TestBrainExfDecorator_AddIssueComment_RendersCommentTrail(t *testing.T) {
 
 type driftExf struct {
 	recordingExf
-	drift []string
+	drift []exfiltrator.DirtyRecord
 }
 
-func (d *driftExf) RecordDrift(id, op string, _ error) error {
-	d.drift = append(d.drift, op+":"+id)
+func (d *driftExf) RecordDrift(record exfiltrator.DirtyRecord) error {
+	d.drift = append(d.drift, record)
 	return nil
 }
 
 func TestRecordDriftJournalsRenderAndRemoveFailures(t *testing.T) {
 	exf := &driftExf{recordingExf: recordingExf{renderErr: errors.New("disk full"), removeErr: errors.New("perm")}}
 	d := NewBrainExfiltrationDecorator(nil, exf)
-	d.recordDrift("x-1", "render", exf.renderErr)
-	d.recordDrift("x-2", "remove", exf.removeErr)
-	if len(exf.drift) != 2 || exf.drift[0] != "render:x-1" || exf.drift[1] != "remove:x-2" {
+	d.recordDrift("x-1", "render", "", "", exf.renderErr)
+	d.recordDrift("x-2", "remove", "task", "old-slug", exf.removeErr)
+	if len(exf.drift) != 2 || exf.drift[0].Op != "render" || exf.drift[0].ID != "x-1" {
 		t.Fatalf("drift = %v", exf.drift)
 	}
+	if got := exf.drift[1]; got.Op != "remove" || got.ID != "x-2" || got.Kind != "task" || got.Slug != "old-slug" {
+		t.Fatalf("remove drift = %#v", got)
+	}
 	// Non-recorder exfiltrator must not panic.
-	NewBrainExfiltrationDecorator(nil, &recordingExf{}).recordDrift("x-3", "render", errors.New("e"))
+	NewBrainExfiltrationDecorator(nil, &recordingExf{}).recordDrift("x-3", "render", "", "", errors.New("e"))
 }

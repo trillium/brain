@@ -63,13 +63,19 @@ func (p storeSlugPersister) SetSlug(ctx context.Context, issueID, slug string) e
 // exfiltration entirely" (defensive; the decorator passes through
 // when constructed with a nil exfiltrator).
 func brainKnowledgeRoot() string {
+	return brainKnowledgeRootForStore(os.Getenv("BEADS_DIR"), os.Getenv("BD_NAME"))
+}
+
+// brainKnowledgeRootForStore resolves the root for a registry entry using the
+// same environment override and namespace rule as the active store.
+func brainKnowledgeRootForStore(beadsDir, namespace string) string {
 	if env := os.Getenv("BRAIN_KNOWLEDGE_ROOT"); env != "" {
 		return env
 	}
-	if beadsDir := os.Getenv("BEADS_DIR"); beadsDir != "" {
+	if beadsDir != "" {
 		if parent := filepath.Dir(beadsDir); parent != "" && parent != "." && parent != "/" {
-			if ns := os.Getenv("BD_NAME"); ns != "" && filepath.Base(parent) != ns {
-				return filepath.Join(parent, ns)
+			if namespace != "" && filepath.Base(parent) != namespace {
+				return filepath.Join(parent, namespace)
 			}
 			return parent
 		}

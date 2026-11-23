@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,7 +135,6 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	binCheck := checkInstalledBinary()
 	if !storesDoctorJSON {
 		printBinaryCheck(os.Stderr, binCheck)
-		printExfilDrift(os.Stderr, brainKnowledgeRoot())
 	}
 	// Read the registry exactly as recorded and probe each entry as it stands:
 	// an entry whose path names another home, or no longer exists, is reported
@@ -145,6 +145,9 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 		fmt.Fprintf(os.Stderr, "Error: loading registry: %v\n", err)
 		fmt.Fprintf(os.Stderr, "FAILING STORES: %s\n", doctorRegistrySentinel)
 		os.Exit(1)
+	}
+	if !storesDoctorJSON {
+		printExfilDrift(os.Stderr, exfilDriftRoots(stores))
 	}
 	if len(stores) == 0 {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
@@ -512,14 +515,33 @@ func init() {
 // printExfilDrift reports how many issues have a markdown render that failed
 // and is stale until reconcile (the exfiltrator's dirty journal). Silent when
 // there is no drift.
-func printExfilDrift(w io.Writer, root string) {
-	if root == "" {
-		return
+func exfilDriftRoots(stores map[string]storeEntry) []string {
+	roots := map[string]struct{}{}
+	if root := brainKnowledgeRoot(); root != "" {
+		roots[root] = struct{}{}
 	}
-	ids, err := exfiltrator.DirtyIDs(root)
-	if err != nil {
-		fmt.Fprintf(w, "warning: cannot read exfiltration dirty journal: %v\n", err)
-		return
+	for name, entry := range stores {
+		if root := brainKnowledgeRootForStore(entry.Path, name); root != "" {
+			roots[root] = struct{}{}
+		}
+	}
+	result := make([]string, 0, len(roots))
+	for root := range roots {
+		result = append(result, root)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func printExfilDrift(w io.Writer, roots []string) {
+	var ids []string
+	for _, root := range roots {
+		dirty, err := exfiltrator.DirtyIDs(root)
+		if err != nil {
+			fmt.Fprintf(w, "warning: cannot read exfiltration dirty journal under %s: %v\n", root, err)
+			continue
+		}
+		ids = append(ids, dirty...)
 	}
 	if len(ids) > 0 {
 		fmt.Fprintf(w, "warning: %d brain markdown file(s) stale after failed render/remove: %s\n", len(ids), strings.Join(ids, ", "))

@@ -171,7 +171,7 @@ func (d *BrainExfiltrationDecorator) applyKindTransitionCleanup(ctx context.Cont
 		return
 	}
 	if err := d.exf.Remove(ctx, id, oldKind, oldSlug); err != nil {
-		d.recordDrift(id, "remove", err)
+		d.recordDrift(id, "remove", oldKind, oldSlug, err)
 	}
 }
 
@@ -276,17 +276,17 @@ func (d *BrainExfiltrationDecorator) renderByID(ctx context.Context, id string) 
 		return
 	}
 	if err := d.exf.Render(ctx, issue); err != nil {
-		d.recordDrift(id, "render", err)
+		d.recordDrift(id, "render", "", "", err)
 	}
 }
 
 // recordDrift warns on stderr and, when the exfiltrator supports it,
 // appends the issue id to the dirty journal the reconciler drains. The
 // original mutation result is never affected.
-func (d *BrainExfiltrationDecorator) recordDrift(id, op string, cause error) {
+func (d *BrainExfiltrationDecorator) recordDrift(id, op string, kind types.IssueType, slug string, cause error) {
 	fmt.Fprintf(os.Stderr, "warning: brain markdown %s failed for %s (file is stale until reconcile): %v\n", op, id, cause)
 	if r, ok := d.exf.(exfiltrator.DriftRecorder); ok {
-		if err := r.RecordDrift(id, op, cause); err != nil {
+		if err := r.RecordDrift(exfiltrator.DirtyRecord{ID: id, Op: op, Kind: kind, Slug: slug, Error: cause.Error()}); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: could not journal drift for %s: %v\n", id, err)
 		}
 	}

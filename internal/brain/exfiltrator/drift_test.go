@@ -5,22 +5,25 @@ import (
 	"testing"
 )
 
-func TestDirtyJournalRecordDirtyDrain(t *testing.T) {
+func TestDirtyJournalResolvesOnlySuccessfullyRepairedRecords(t *testing.T) {
 	root := t.TempDir()
 	m := NewMarkdownExfiltrator(root, nil)
 	if ids, err := DirtyIDs(root); err != nil || len(ids) != 0 {
 		t.Fatalf("empty journal: ids=%v err=%v", ids, err)
 	}
+	var records []DirtyRecord
 	for _, id := range []string{"b-2", "a-1", "b-2"} {
-		if err := m.RecordDrift(id, "render", errors.New("boom")); err != nil {
+		record := DirtyRecord{ID: id, Op: "render", Error: errors.New("boom").Error()}
+		if err := m.RecordDrift(record); err != nil {
 			t.Fatal(err)
 		}
+		records, _ = DirtyRecords(root)
 	}
-	ids, err := DrainDirty(root)
-	if err != nil || len(ids) != 2 || ids[0] != "a-1" || ids[1] != "b-2" {
-		t.Fatalf("drain: ids=%v err=%v", ids, err)
+	if err := m.ResolveDirty([]DirtyRecord{records[0], records[2]}); err != nil {
+		t.Fatal(err)
 	}
-	if ids, _ := DirtyIDs(root); len(ids) != 0 {
-		t.Fatalf("journal not cleared: %v", ids)
+	remaining, err := DirtyRecords(root)
+	if err != nil || len(remaining) != 1 || remaining[0].ID != "a-1" {
+		t.Fatalf("remaining = %#v, err=%v", remaining, err)
 	}
 }

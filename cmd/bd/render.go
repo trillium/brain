@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -155,6 +156,7 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 		ok      int
 		failed  int
 	)
+	rendered := make(map[string]bool)
 	for it.Next(ctx) {
 		issue := it.Value()
 		if issue == nil {
@@ -188,6 +190,7 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 			continue
 		}
 		ok++
+		rendered[issue.ID] = true
 		results = append(results, renderAllResult{
 			ID:     issue.ID,
 			Path:   path,
@@ -199,6 +202,9 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 	}
 	if err := it.Err(); err != nil {
 		FatalErrorRespectJSON("iterating issues: %v", err)
+	}
+	if err := reconcileDirtyExfiltration(ctx, exf, rendered); err != nil {
+		FatalErrorRespectJSON("reconciling failed exfiltrations: %v", err)
 	}
 
 	total := ok + failed
@@ -222,6 +228,33 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 	if failed > 0 {
 		os.Exit(1)
 	}
+}
+
+// reconcileDirtyExfiltration repairs failed removals, then clears only journal
+// records whose removal or later render succeeded in this render-all run.
+func reconcileDirtyExfiltration(ctx context.Context, exf exfiltrator.Exfiltrator, rendered map[string]bool) error {
+	mx, ok := exf.(*exfiltrator.MarkdownExfiltrator)
+	if !ok {
+		return nil
+	}
+	records, err := exfiltrator.DirtyRecords(mx.Root())
+	if err != nil {
+		return err
+	}
+	resolved := make([]exfiltrator.DirtyRecord, 0, len(records))
+	for _, record := range records {
+		switch record.Op {
+		case "remove":
+			if record.Kind != "" && record.Slug != "" && mx.Remove(ctx, record.ID, record.Kind, record.Slug) == nil {
+				resolved = append(resolved, record)
+			}
+		case "render":
+			if rendered[record.ID] {
+				resolved = append(resolved, record)
+			}
+		}
+	}
+	return mx.ResolveDirty(resolved)
 }
 
 func renderRoot(exf exfiltrator.Exfiltrator) string {
