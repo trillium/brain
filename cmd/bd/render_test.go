@@ -51,7 +51,9 @@ func TestReconcileDirtyExfiltrationRepairsRemovalAndClearsSuccessfulRecords(t *t
 	mx := exfiltrator.NewMarkdownExfiltrator(root, nil)
 	remove := exfiltrator.DirtyRecord{ID: "task-1", Op: "remove", Kind: types.IssueType("task"), Slug: "old"}
 	render := exfiltrator.DirtyRecord{ID: "task-2", Op: "render"}
-	for _, record := range []exfiltrator.DirtyRecord{remove, render} {
+	gone := exfiltrator.DirtyRecord{ID: "task-3", Op: "render"}
+	failing := exfiltrator.DirtyRecord{ID: "task-4", Op: "render"}
+	for _, record := range []exfiltrator.DirtyRecord{remove, render, gone, failing} {
 		if err := mx.RecordDrift(record); err != nil {
 			t.Fatal(err)
 		}
@@ -63,13 +65,13 @@ func TestReconcileDirtyExfiltrationRepairsRemovalAndClearsSuccessfulRecords(t *t
 	if err := os.WriteFile(orphan, []byte("orphan"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := reconcileDirtyExfiltration(context.Background(), mx, map[string]bool{render.ID: true}); err != nil {
+	if err := reconcileDirtyExfiltration(context.Background(), mx, map[string]bool{render.ID: true, failing.ID: false}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
 		t.Fatalf("orphan remains: %v", err)
 	}
-	if records, err := exfiltrator.DirtyRecords(root); err != nil || len(records) != 0 {
+	if records, err := exfiltrator.DirtyRecords(root); err != nil || len(records) != 1 || records[0].ID != failing.ID {
 		t.Fatalf("dirty records = %#v, err=%v", records, err)
 	}
 }

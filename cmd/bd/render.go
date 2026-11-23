@@ -163,10 +163,12 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 			continue
 		}
 		path := renderTargetPath(exf, issue)
+		rendered[issue.ID] = false
 		if err := exf.Render(ctx, issue); err != nil {
 			// Marked-for-deletion beads skip rather than fail — the mark
 			// is a pending human review, not corruption.
 			if exfiltrator.IsSkipMarked(err) {
+				rendered[issue.ID] = true
 				results = append(results, renderAllResult{
 					ID:     issue.ID,
 					Path:   path,
@@ -231,7 +233,7 @@ func runRenderAll(_ *cobra.Command, _ []string) {
 }
 
 // reconcileDirtyExfiltration repairs failed removals, then clears only journal
-// records whose removal or later render succeeded in this render-all run.
+// records whose removal, later render, or issue deletion was confirmed in this render-all run.
 func reconcileDirtyExfiltration(ctx context.Context, exf exfiltrator.Exfiltrator, rendered map[string]bool) error {
 	mx, ok := exf.(*exfiltrator.MarkdownExfiltrator)
 	if !ok {
@@ -249,7 +251,7 @@ func reconcileDirtyExfiltration(ctx context.Context, exf exfiltrator.Exfiltrator
 				resolved = append(resolved, record)
 			}
 		case "render":
-			if rendered[record.ID] {
+			if settled, iterated := rendered[record.ID]; settled || !iterated {
 				resolved = append(resolved, record)
 			}
 		}

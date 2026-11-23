@@ -275,7 +275,7 @@ func (d *BrainExfiltrationDecorator) renderByID(ctx context.Context, id string) 
 	if err != nil {
 		return
 	}
-	if err := d.exf.Render(ctx, issue); err != nil {
+	if err := d.exf.Render(ctx, issue); err != nil && !exfiltrator.IsSkipMarked(err) {
 		d.recordDrift(id, "render", "", "", err)
 	}
 }
