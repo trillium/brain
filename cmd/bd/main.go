@@ -764,6 +764,10 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 		return false
 	}
 	switch cmd.Name() {
+	case "status":
+		// The federation monitor probes each store through its own wrapper;
+		// it must work from any directory, including one with no store.
+		return true
 	case "doctor":
 		// The per-store probe must run with no usable caller store. The fleet
 		// proof reads the registry, so it needs a connection unless this machine
