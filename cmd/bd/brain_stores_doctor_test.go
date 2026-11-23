@@ -275,15 +275,15 @@ func TestDoctorRegistrySentinel(t *testing.T) {
 
 func TestPrintExfilDriftAggregatesRegisteredStoreRoots(t *testing.T) {
 	base := t.TempDir()
-	t.Setenv("BRAIN_KNOWLEDGE_ROOT", "")
+	t.Setenv("BRAIN_KNOWLEDGE_ROOT", filepath.Join(base, "active"))
 	t.Setenv("BEADS_DIR", filepath.Join(base, "active", ".beads"))
 	t.Setenv("BD_NAME", "active")
 	stores := map[string]storeEntry{
-		"task": {Path: filepath.Join(base, "task", ".beads")},
+		"task": {Path: filepath.Join(base, "tasks", ".beads")},
 		"idea": {Path: filepath.Join(base, "shared", ".beads")},
 	}
 	for name, id := range map[string]string{"task": "task-1", "idea": "idea-2"} {
-		root := brainKnowledgeRootForStore(stores[name].Path, name)
+		root := filepath.Dir(stores[name].Path)
 		if err := exfiltrator.NewMarkdownExfiltrator(root, nil).RecordDrift(exfiltrator.DirtyRecord{ID: id, Op: "render"}); err != nil {
 			t.Fatal(err)
 		}

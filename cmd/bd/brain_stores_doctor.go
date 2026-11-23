@@ -512,18 +512,19 @@ func init() {
 	brainStoresCmd.AddCommand(brainStoresDoctorCmd)
 }
 
-// printExfilDrift reports how many issues have a markdown render that failed
-// and is stale until reconcile (the exfiltrator's dirty journal). Silent when
-// there is no drift.
+// exfilDriftRoots returns the render roots whose dirty journals doctor reads:
+// the active store's root plus each registered store's own directory, which is
+// where its wrapper pins BRAIN_KNOWLEDGE_ROOT.
 func exfilDriftRoots(stores map[string]storeEntry) []string {
 	roots := map[string]struct{}{}
 	if root := brainKnowledgeRoot(); root != "" {
 		roots[root] = struct{}{}
 	}
-	for name, entry := range stores {
-		if root := brainKnowledgeRootForStore(entry.Path, name); root != "" {
-			roots[root] = struct{}{}
+	for _, entry := range stores {
+		if entry.Path == "" {
+			continue
 		}
+		roots[filepath.Dir(entry.Path)] = struct{}{}
 	}
 	result := make([]string, 0, len(roots))
 	for root := range roots {
@@ -533,6 +534,9 @@ func exfilDriftRoots(stores map[string]storeEntry) []string {
 	return result
 }
 
+// printExfilDrift reports how many issues have a markdown render that failed
+// and is stale until reconcile (the exfiltrator's dirty journal). Silent when
+// there is no drift.
 func printExfilDrift(w io.Writer, roots []string) {
 	var ids []string
 	for _, root := range roots {
