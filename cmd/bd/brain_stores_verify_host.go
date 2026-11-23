@@ -361,7 +361,17 @@ func parseVerifyProbe(stdout string) (verifyProbeResult, error) {
 	if strings.TrimSpace(stdout) == "" {
 		return p, errors.New("no output")
 	}
-	if err := json.Unmarshal([]byte(stdout), &p); err != nil {
+	payload := json.RawMessage(stdout)
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(payload, &envelope); err != nil {
+		return p, fmt.Errorf("unreadable output: %w", err)
+	}
+	if len(envelope.Data) != 0 {
+		payload = envelope.Data
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
 		return p, fmt.Errorf("unreadable output: %w", err)
 	}
 	return p, nil
