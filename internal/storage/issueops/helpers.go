@@ -537,7 +537,7 @@ func ReadConfigPrefix(ctx context.Context, tx DBTX) (string, error) {
 		configPrefix = ""
 	}
 	if resolved, ok := ResolveMintPrefix(sc, configPrefix); ok {
-		return strings.TrimSuffix(resolved, "-"), nil
+		return resolved, nil
 	}
 	yamlPrefix := strings.TrimSpace(config.GetString("issue-prefix"))
 	underscoreYamlPrefix := strings.TrimSpace(config.GetString("issue_prefix"))
@@ -560,13 +560,13 @@ func ReadConfigPrefix(ctx context.Context, tx DBTX) (string, error) {
 func ResolveMintPrefix(sc UnifiedScope, dbPrefix string) (string, bool) {
 	if sc.Store != "" && !sc.Enabled() {
 		if p := strings.TrimSpace(config.GetString("issue-prefix")); p != "" {
-			return p, true
+			return strings.TrimSuffix(p, "-"), true
 		}
 	}
 	if dbPrefix == "" {
 		return "", false
 	}
-	return dbPrefix, true
+	return strings.TrimSuffix(dbPrefix, "-"), true
 }
 
 // ---------------------------------------------------------------------------

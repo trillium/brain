@@ -41,11 +41,14 @@ func TestResolveMintPrefix(t *testing.T) {
 		{"pinned store, no yaml: db value stays", UnifiedScope{Store: "task"}, "", "lifespan", "lifespan", true},
 		{"pinned store, nothing anywhere: no prefix", UnifiedScope{Store: "task"}, "", "", "", false},
 		{"pinned store, no db row, yaml present: yaml mints", UnifiedScope{Store: "task"}, "task", "", "task", true},
+		{"pinned store, yaml suffix is normalized", UnifiedScope{Store: "task"}, "task-", "lifespan", "task", true},
 		// Scoped routing owns the answer: the row is the store's own.
 		{"enabled scope: scoped row wins over yaml", UnifiedScope{Unified: true, Store: "ideas"}, "stale", "idea", "idea", true},
+		{"enabled scope: scoped suffix is normalized", UnifiedScope{Unified: true, Store: "ideas"}, "stale", "idea-", "idea", true},
 		{"enabled scope, row missing: refuse, never yaml", UnifiedScope{Unified: true, Store: "ideas"}, "idea", "", "", false},
 		// No store pinned: the legacy behaviour is untouched.
 		{"no store pinned: db value used", UnifiedScope{}, "other", "gt", "gt", true},
+		{"no store pinned: db suffix is normalized", UnifiedScope{}, "other", "gt-", "gt", true},
 		{"no store pinned, no row: no prefix", UnifiedScope{}, "other", "", "", false},
 	}
 	for _, tc := range cases {
