@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/steveyegge/beads/internal/brain/exfiltrator"
 )
 
 // defaultStoreProbeTimeout bounds a single store read so one wedged store
@@ -133,6 +134,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	binCheck := checkInstalledBinary()
 	if !storesDoctorJSON {
 		printBinaryCheck(os.Stderr, binCheck)
+		printExfilDrift(os.Stderr, brainKnowledgeRoot())
 	}
 	// Read the registry exactly as recorded and probe each entry as it stands:
 	// an entry whose path names another home, or no longer exists, is reported
@@ -505,4 +507,21 @@ func init() {
 		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
 
 	brainStoresCmd.AddCommand(brainStoresDoctorCmd)
+}
+
+// printExfilDrift reports how many issues have a markdown render that failed
+// and is stale until reconcile (the exfiltrator's dirty journal). Silent when
+// there is no drift.
+func printExfilDrift(w io.Writer, root string) {
+	if root == "" {
+		return
+	}
+	ids, err := exfiltrator.DirtyIDs(root)
+	if err != nil {
+		fmt.Fprintf(w, "warning: cannot read exfiltration dirty journal: %v\n", err)
+		return
+	}
+	if len(ids) > 0 {
+		fmt.Fprintf(w, "warning: %d brain markdown file(s) stale after failed render/remove: %s\n", len(ids), strings.Join(ids, ", "))
+	}
 }

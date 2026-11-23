@@ -914,3 +914,25 @@ func TestBrainExfDecorator_AddIssueComment_RendersCommentTrail(t *testing.T) {
 		t.Errorf("render-all reconciliation must reproduce the comment trail")
 	}
 }
+
+type driftExf struct {
+	recordingExf
+	drift []string
+}
+
+func (d *driftExf) RecordDrift(id, op string, _ error) error {
+	d.drift = append(d.drift, op+":"+id)
+	return nil
+}
+
+func TestRecordDriftJournalsRenderAndRemoveFailures(t *testing.T) {
+	exf := &driftExf{recordingExf: recordingExf{renderErr: errors.New("disk full"), removeErr: errors.New("perm")}}
+	d := NewBrainExfiltrationDecorator(nil, exf)
+	d.recordDrift("x-1", "render", exf.renderErr)
+	d.recordDrift("x-2", "remove", exf.removeErr)
+	if len(exf.drift) != 2 || exf.drift[0] != "render:x-1" || exf.drift[1] != "remove:x-2" {
+		t.Fatalf("drift = %v", exf.drift)
+	}
+	// Non-recorder exfiltrator must not panic.
+	NewBrainExfiltrationDecorator(nil, &recordingExf{}).recordDrift("x-3", "render", errors.New("e"))
+}
