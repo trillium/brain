@@ -2,6 +2,7 @@ package issueops
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 
 	"github.com/steveyegge/beads/internal/types"
@@ -121,4 +122,20 @@ func ScopeStaleFilter(ctx context.Context, q DBTX, f types.StaleFilter) types.St
 // legacy database and in wide mode, where the unfiltered query is the answer).
 func StatisticNamespaces(ctx context.Context, q DBTX) []string {
 	return narrowPrefixes(ctx, q)
+}
+
+// NamespaceAllowsIssueID reports whether id is visible to this wrapper. In a
+// narrow unified store, an issue belongs to a namespace only when its ID has
+// one of that store's registered prefixes followed by a dash.
+func NamespaceAllowsIssueID(ctx context.Context, q DBTX, id string) bool {
+	prefixes := narrowPrefixes(ctx, q)
+	if prefixes == nil {
+		return true
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(id, prefix+"-") {
+			return true
+		}
+	}
+	return false
 }

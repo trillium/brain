@@ -557,6 +557,9 @@ func (r *issueSQLRepositoryImpl) Get(ctx context.Context, id string, opts domain
 	if id == "" {
 		return nil, errors.New("db: Get: id must not be empty")
 	}
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, id) {
+		return nil, sql.ErrNoRows
+	}
 	table := pickIssueTable(opts.UseWispsTable)
 	//nolint:gosec // G201: table is one of two hardcoded constants
 	row := r.runner.QueryRowContext(ctx, fmt.Sprintf("SELECT %s FROM %s %s WHERE id = ?",
@@ -572,6 +575,9 @@ func (r *issueSQLRepositoryImpl) Get(ctx context.Context, id string, opts domain
 }
 
 func (r *issueSQLRepositoryImpl) GetByIDs(ctx context.Context, ids []string, opts domain.IssueTableOpts) ([]*types.Issue, error) {
+	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+		return !issueops.NamespaceAllowsIssueID(ctx, r.runner, id)
+	})
 	table := pickIssueTable(opts.UseWispsTable)
 	var out []*types.Issue
 	err := forEachIDBatch(ids, func(batch []string) error {
@@ -606,6 +612,9 @@ func (r *issueSQLRepositoryImpl) GetByIDs(ctx context.Context, ids []string, opt
 func (r *issueSQLRepositoryImpl) Exists(ctx context.Context, id string, opts domain.IssueTableOpts) (bool, error) {
 	if id == "" {
 		return false, errors.New("db: Exists: id must not be empty")
+	}
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, id) {
+		return false, nil
 	}
 	table := pickIssueTable(opts.UseWispsTable)
 	//nolint:gosec // G201: table is one of two hardcoded constants
@@ -942,10 +951,12 @@ func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWispsWithCounts(ctx contex
 // repository's transaction, so the unit-of-work provider and the two store
 // backends read the plane through one function.
 func (r *issueSQLRepositoryImpl) SearchWispsPlane(ctx context.Context, query string, filter types.IssueFilter) ([]*types.Issue, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	return issueops.SearchWispsPlaneInTx(ctx, r.runner, query, filter)
 }
 
 func (r *issueSQLRepositoryImpl) SearchIssueIDs(ctx context.Context, query string, filter types.IssueFilter) ([]string, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	return issueops.SearchIssueIDsInTx(ctx, r.runner, query, filter)
 }
 
@@ -1086,6 +1097,9 @@ func (r *issueSQLRepositoryImpl) RecomputeIsBlockedAfterDelete(ctx context.Conte
 }
 
 func (r *issueSQLRepositoryImpl) AsOf(ctx context.Context, id, ref string) (*types.Issue, error) {
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, id) {
+		return nil, sql.ErrNoRows
+	}
 	return issueops.AsOfInTx(ctx, r.runner, id, ref)
 }
 
@@ -1214,6 +1228,9 @@ func (r *issueSQLRepositoryImpl) CountIssuesByGroup(ctx context.Context, filter 
 }
 
 func (r *issueSQLRepositoryImpl) History(ctx context.Context, id string) ([]*storage.HistoryEntry, error) {
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, id) {
+		return nil, nil
+	}
 	out, err := issueops.HistoryInTx(ctx, r.runner, id)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.History: %w", err)
@@ -1222,6 +1239,9 @@ func (r *issueSQLRepositoryImpl) History(ctx context.Context, id string) ([]*sto
 }
 
 func (r *issueSQLRepositoryImpl) IterEvents(ctx context.Context, id string, limit int) (storage.Iter[types.Event], error) {
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, id) {
+		return storage.NewSliceIter([]*types.Event{}), nil
+	}
 	events, err := issueops.GetEventsInTx(ctx, r.runner, id, limit)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.IterEvents: %w", err)

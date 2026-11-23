@@ -115,3 +115,35 @@ func TestScopeWorkFilterPinsCustomStatusesInBothModes(t *testing.T) {
 		}
 	}
 }
+
+func TestNamespaceAllowsIssueID(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("narrow unified reads reject foreign IDs", func(t *testing.T) {
+		pinScope(t, UnifiedScope{Unified: true, Store: "task"})
+		pinWide(t, false)
+		mock, db := newMock(t)
+		expectPrefixes(mock, "task", "task", "tsk")
+		if NamespaceAllowsIssueID(ctx, db, "other-1") {
+			t.Fatal("foreign issue ID was allowed")
+		}
+		expectPrefixes(mock, "task", "task", "tsk")
+		if !NamespaceAllowsIssueID(ctx, db, "tsk-1") {
+			t.Fatal("registered issue prefix was rejected")
+		}
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("wide and legacy reads permit IDs", func(t *testing.T) {
+		for _, sc := range []UnifiedScope{{Unified: true, Store: "task"}, {}} {
+			pinScope(t, sc)
+			pinWide(t, true)
+			_, db := newMock(t)
+			if !NamespaceAllowsIssueID(ctx, db, "other-1") {
+				t.Fatal("unscoped read rejected an ID")
+			}
+		}
+	})
+}
