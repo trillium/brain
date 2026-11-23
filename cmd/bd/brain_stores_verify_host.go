@@ -293,11 +293,15 @@ func verifyBdIdentity(ctx context.Context, bdPath string, timeout time.Duration,
 	if err != nil && strings.TrimSpace(stdout) == "" {
 		return b
 	}
+	payload, err := unwrapVerifyJSON(stdout)
+	if err != nil {
+		return b
+	}
 	var v struct {
 		Version string `json:"version"`
 		Brain   string `json:"brain"`
 	}
-	if json.Unmarshal([]byte(stdout), &v) != nil {
+	if json.Unmarshal(payload, &v) != nil {
 		return b
 	}
 	b.Version, b.Brain = v.Version, v.Brain
@@ -358,23 +362,31 @@ type verifyProbeResult struct {
 // non-zero but still prints the JSON, so the body, not the exit code, decides.
 func parseVerifyProbe(stdout string) (verifyProbeResult, error) {
 	var p verifyProbeResult
+	payload, err := unwrapVerifyJSON(stdout)
+	if err != nil {
+		return p, err
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return p, fmt.Errorf("unreadable output: %w", err)
+	}
+	return p, nil
+}
+
+func unwrapVerifyJSON(stdout string) (json.RawMessage, error) {
 	if strings.TrimSpace(stdout) == "" {
-		return p, errors.New("no output")
+		return nil, errors.New("no output")
 	}
 	payload := json.RawMessage(stdout)
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(payload, &envelope); err != nil {
-		return p, fmt.Errorf("unreadable output: %w", err)
+		return nil, fmt.Errorf("unreadable output: %w", err)
 	}
 	if len(envelope.Data) != 0 {
 		payload = envelope.Data
 	}
-	if err := json.Unmarshal(payload, &p); err != nil {
-		return p, fmt.Errorf("unreadable output: %w", err)
-	}
-	return p, nil
+	return payload, nil
 }
 
 func firstLines(s string, n int) string {

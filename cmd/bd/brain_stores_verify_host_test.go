@@ -87,7 +87,11 @@ func probeJSONOwned(mint, db string, owned bool) string {
 }
 
 func envelopedProbeJSON(mint, db string) string {
-	b, _ := json.Marshal(map[string]any{"schema_version": JSONSchemaVersion, "data": json.RawMessage(probeJSON(mint, db))})
+	return envelopedJSON(probeJSON(mint, db))
+}
+
+func envelopedJSON(body string) string {
+	b, _ := json.Marshal(map[string]any{"schema_version": JSONSchemaVersion, "data": json.RawMessage(body)})
 	return string(b)
 }
 
@@ -128,6 +132,17 @@ func TestVerifyHostAcceptsEnvelopedProbe(t *testing.T) {
 	}, &calls))
 	if !rep.OK || len(rep.Failing) != 0 {
 		t.Fatalf("enveloped probe reported failures: %+v", rep.Checks)
+	}
+}
+
+func TestVerifyHostAcceptsEnvelopedVersion(t *testing.T) {
+	home := verifyHome(t, map[string]string{"task": "task"})
+	var calls []string
+	rep := verifyHost(context.Background(), home, "/bin/bd", time.Second, fakeRun(envelopedJSON(brainVersion), map[string]string{
+		"task": probeJSON("task", "lifespan"),
+	}, &calls))
+	if !rep.OK || len(rep.Failing) != 0 {
+		t.Fatalf("enveloped version reported failures: %+v", rep.Checks)
 	}
 }
 
