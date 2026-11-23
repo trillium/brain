@@ -60,6 +60,11 @@ Beads carrying the "marked-for-deletion" label (their rendered file was
 deleted, not yet reviewed) are skipped with a named status line — a
 re-render never silently clears the mark.
 
+Failed exfil writes and removals are journaled (<root>/entries/.dirty.jsonl)
+and counted by 'bd stores doctor'. render-all replays journaled removals,
+then clears each record once its file is repaired or its bead is confirmed
+deleted.
+
 For each issue, one tab-separated line is printed to stdout:
   <id>\t<path>\t<status>
 
