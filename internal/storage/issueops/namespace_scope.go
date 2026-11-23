@@ -128,14 +128,24 @@ func StatisticNamespaces(ctx context.Context, q DBTX) []string {
 // narrow unified store, an issue belongs to a namespace only when its ID has
 // one of that store's registered prefixes followed by a dash.
 func NamespaceAllowsIssueID(ctx context.Context, q DBTX, id string) bool {
+	return len(NamespaceFilterIssueIDs(ctx, q, []string{id})) == 1
+}
+
+// NamespaceFilterIssueIDs returns the ids visible to this wrapper, resolving
+// the namespace prefixes once for the whole batch. The input is not modified.
+func NamespaceFilterIssueIDs(ctx context.Context, q DBTX, ids []string) []string {
 	prefixes := narrowPrefixes(ctx, q)
 	if prefixes == nil {
-		return true
+		return ids
 	}
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(id, prefix+"-") {
-			return true
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(id, prefix+"-") {
+				out = append(out, id)
+				break
+			}
 		}
 	}
-	return false
+	return out
 }

@@ -575,9 +575,7 @@ func (r *issueSQLRepositoryImpl) Get(ctx context.Context, id string, opts domain
 }
 
 func (r *issueSQLRepositoryImpl) GetByIDs(ctx context.Context, ids []string, opts domain.IssueTableOpts) ([]*types.Issue, error) {
-	ids = slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
-		return !issueops.NamespaceAllowsIssueID(ctx, r.runner, id)
-	})
+	ids = issueops.NamespaceFilterIssueIDs(ctx, r.runner, ids)
 	table := pickIssueTable(opts.UseWispsTable)
 	var out []*types.Issue
 	err := forEachIDBatch(ids, func(batch []string) error {
