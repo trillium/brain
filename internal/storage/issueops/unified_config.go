@@ -74,7 +74,7 @@ var unifyScopeOverrideForTest func(ctx context.Context, q DBTX) UnifiedScope
 func probeUnifiedScope(ctx context.Context, q DBTX) UnifiedScope {
 	var dbname string
 	if err := q.QueryRowContext(ctx, "select database()").Scan(&dbname); err != nil || dbname == "" {
-		return UnifiedScope{}
+		return UnifiedScope{Store: storeNamespace()}
 	}
 	if v, ok := unifiedScopeCache.Load(dbname); ok {
 		return v.(UnifiedScope)

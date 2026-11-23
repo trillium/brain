@@ -41,7 +41,6 @@ const (
 var (
 	verifyHostJSON    bool
 	verifyHostTimeout time.Duration
-	verifyHostBd      string
 )
 
 // verifyHostRegistryPaths are the registry locations a healthy host carries,
@@ -83,7 +82,6 @@ type verifyBdBuild struct {
 type verifyHostReport struct {
 	OK      bool          `json:"ok"`
 	Home    string        `json:"home"`
-	Bd      verifyBdBuild `json:"bd"`
 	Checks  []verifyCheck `json:"checks"`
 	Stores  []verifyStore `json:"stores"`
 	Failing []string      `json:"failing"`
@@ -139,7 +137,7 @@ object for drift checks; the exit code is the same. Exit codes: 0 verified,
 		if timeout <= 0 {
 			timeout = defaultStoreProbeTimeout
 		}
-		rep := verifyHost(context.Background(), home, verifyHostBdPath(), timeout, execVerifyRunner)
+		rep := verifyHost(context.Background(), home, timeout, execVerifyRunner)
 		writeVerifyHostReport(os.Stdout, os.Stderr, rep, verifyHostJSON)
 		if !rep.OK {
 			os.Exit(1)
@@ -147,27 +145,9 @@ object for drift checks; the exit code is the same. Exit codes: 0 verified,
 	},
 }
 
-// verifyHostBdPath is the bd the wrappers run: BD_BIN when set (the wrappers
-// honor it), else bd on PATH, else this very binary.
-func verifyHostBdPath() string {
-	if verifyHostBd != "" {
-		return verifyHostBd
-	}
-	if v := strings.TrimSpace(os.Getenv("BD_BIN")); v != "" {
-		return v
-	}
-	if p, err := exec.LookPath("bd"); err == nil {
-		return p
-	}
-	if self, err := os.Executable(); err == nil {
-		return self
-	}
-	return "bd"
-}
-
 // verifyHost runs every check against home. It never returns an error: each
 // failure is a finding.
-func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration, run verifyRunner) verifyHostReport {
+func verifyHost(ctx context.Context, home string, timeout time.Duration, run verifyRunner) verifyHostReport {
 	rep := verifyHostReport{Home: home, Checks: []verifyCheck{}, Stores: []verifyStore{}, Failing: []string{}}
 	fail := func(check, store, msg, fix string) {
 		rep.Checks = append(rep.Checks, verifyCheck{Check: check, Store: store, Status: "fail", Message: msg, Fix: fix})
@@ -176,21 +156,7 @@ func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration,
 		rep.Checks = append(rep.Checks, verifyCheck{Check: check, Store: store, Status: "ok", Message: msg})
 	}
 
-	// 1. bd is the brain build.
-	rep.Bd = verifyBdIdentity(ctx, bdPath, timeout, run)
-	if rep.Bd.IsBrain {
-		pass(verifyCheckBdBuild, "", fmt.Sprintf("%s is the brain build (bd %s, brain %s)", rep.Bd.Path, rep.Bd.Version, rep.Bd.Brain))
-	} else {
-		what := "reported no brain version"
-		if rep.Bd.Version == "" {
-			what = "did not answer 'version --json'"
-		}
-		fail(verifyCheckBdBuild, "",
-			fmt.Sprintf("bd at %s is not the brain build (%s): stock bd mints from the database-wide issue_prefix, so every store here mints under that prefix instead of its own", rep.Bd.Path, what),
-			"install the brain build: scripts/install-from-repo.sh in the brain repo")
-	}
-
-	// 2. The registry files exist.
+	// 1. The registry files exist.
 	registryOK := true
 	for _, rel := range verifyHostRegistryPaths {
 		path := filepath.Join(home, rel)
@@ -203,7 +169,7 @@ func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration,
 		pass(verifyCheckRegistry, "", path+" present")
 	}
 
-	// 3 and 4. Each registered store: wrapper present, mint prefix its own.
+	// 2 and 3. Each registered store: wrapper present, is the brain build, and mints its own prefix.
 	stores, registryErr := verifyHostRegistry(home)
 	if registryErr != nil {
 		registryOK = false
@@ -226,7 +192,15 @@ func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration,
 		vs.WrapperFound = true
 		pass(verifyCheckWrapper, name, wrapper+" present")
 
-		if !rep.Bd.IsBrain {
+		wrapperBd := verifyBdIdentity(ctx, wrapper, timeout, run)
+		if !wrapperBd.IsBrain {
+			what := "reported no brain version"
+			if wrapperBd.Version == "" {
+				what = "did not answer 'version --json'"
+			}
+			fail(verifyCheckBdBuild, name,
+				fmt.Sprintf("wrapper %s does not run the brain build (%s): stock bd mints from the database-wide issue_prefix, so this store mints under that prefix instead of its own", wrapper, what),
+				"install the brain build and regenerate this wrapper: 'brain stores rewrite-wrappers'")
 			// Stock bd has no probe verb; the build check already failed, and
 			// a mint here would leave a bead, so the probe is not attempted.
 			rep.Stores = append(rep.Stores, vs)
@@ -433,6 +407,5 @@ func writeVerifyHostReport(stdout, stderr io.Writer, rep verifyHostReport, asJSO
 func init() {
 	brainStoresVerifyHostCmd.Flags().BoolVar(&verifyHostJSON, "json", false, "Emit one structured JSON object (for drift checks); the exit code is unchanged")
 	brainStoresVerifyHostCmd.Flags().DurationVar(&verifyHostTimeout, "timeout", defaultStoreProbeTimeout, "Per-command time limit")
-	brainStoresVerifyHostCmd.Flags().StringVar(&verifyHostBd, "bd", "", "The bd binary wrappers run (default: $BD_BIN, else bd on PATH)")
 	brainStoresCmd.AddCommand(brainStoresVerifyHostCmd)
 }

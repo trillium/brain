@@ -107,7 +107,7 @@ func findCheck(rep verifyHostReport, check, store string) *verifyCheck {
 func TestVerifyHostHealthy(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task", "ideas": "idea"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "/bin/bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"task": probeJSON("task", "lifespan"), "ideas": probeJSON("idea", "lifespan"),
 	}, &calls))
 	if !rep.OK || len(rep.Failing) != 0 {
@@ -127,7 +127,7 @@ func TestVerifyHostHealthy(t *testing.T) {
 func TestVerifyHostAcceptsEnvelopedProbe(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "/bin/bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"task": envelopedProbeJSON("task", "lifespan"),
 	}, &calls))
 	if !rep.OK || len(rep.Failing) != 0 {
@@ -138,7 +138,7 @@ func TestVerifyHostAcceptsEnvelopedProbe(t *testing.T) {
 func TestVerifyHostAcceptsEnvelopedVersion(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "/bin/bd", time.Second, fakeRun(envelopedJSON(brainVersion), map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(envelopedJSON(brainVersion), map[string]string{
 		"task": probeJSON("task", "lifespan"),
 	}, &calls))
 	if !rep.OK || len(rep.Failing) != 0 {
@@ -149,12 +149,12 @@ func TestVerifyHostAcceptsEnvelopedVersion(t *testing.T) {
 func TestVerifyHostStockBd(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "/opt/homebrew/bin/bd", time.Second, fakeRun(stockVersion, nil, &calls))
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(stockVersion, nil, &calls))
 	if rep.OK {
 		t.Fatal("a stock bd host verified")
 	}
 	c := findCheck(rep, verifyCheckBdBuild, "")
-	if c == nil || !strings.Contains(c.Message, "not the brain build") || !strings.Contains(c.Message, "/opt/homebrew/bin/bd") {
+	if c == nil || !strings.Contains(c.Message, "does not run the brain build") || !strings.Contains(c.Message, ".local/bin/task") {
 		t.Fatalf("bd-build finding = %+v", c)
 	}
 	// Stock bd has no probe verb, and a real mint would leave a bead: no wrapper is run.
@@ -165,13 +165,38 @@ func TestVerifyHostStockBd(t *testing.T) {
 	}
 }
 
+func TestVerifyHostProbesWrapperPinnedToBrainBuild(t *testing.T) {
+	home := verifyHome(t, map[string]string{"task": "task"})
+	var calls []string
+	run := func(ctx context.Context, name string, args ...string) (string, string, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if args[0] == "version" {
+			if filepath.Base(name) == "task" {
+				return brainVersion, "", nil
+			}
+			return stockVersion, "", nil
+		}
+		return probeJSON("task", "lifespan"), "", nil
+	}
+
+	rep := verifyHost(context.Background(), home, time.Second, run)
+	if !rep.OK {
+		t.Fatalf("a wrapper pinned to the brain build failed verification: %+v", rep.Checks)
+	}
+	for _, call := range calls {
+		if strings.HasPrefix(call, "bd version") {
+			t.Fatalf("verified PATH bd instead of the wrapper: %s", call)
+		}
+	}
+}
+
 func TestVerifyHostMissingRegistry(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	if err := os.Remove(filepath.Join(home, ".config/trillium-stores/stores.yaml")); err != nil {
 		t.Fatal(err)
 	}
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
 	c := findCheck(rep, verifyCheckRegistry, "")
 	if rep.OK || c == nil || !strings.Contains(c.Message, "trillium-stores/stores.yaml is missing") {
 		t.Fatalf("registry finding = %+v ok=%v", c, rep.OK)
@@ -186,7 +211,7 @@ func TestVerifyHostMissingWrapper(t *testing.T) {
 	// A backup copy of a wrapper is not the wrapper.
 	writeVerifyWrapper(t, home, "robots.bak")
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
 	c := findCheck(rep, verifyCheckWrapper, "robots")
 	if rep.OK || c == nil || !strings.Contains(c.Message, `store "robots" has no executable wrapper`) {
 		t.Fatalf("wrapper finding = %+v ok=%v", c, rep.OK)
@@ -199,7 +224,7 @@ func TestVerifyHostMissingWrapper(t *testing.T) {
 func TestVerifyHostWrongMintPrefix(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task", "robots": "agent"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"task": probeJSON("lifespan", "lifespan"), "robots": probeJSON("agent", "lifespan"),
 	}, &calls))
 	c := findCheck(rep, verifyCheckMint, "task")
@@ -222,7 +247,7 @@ func TestVerifyHostWrongMintPrefix(t *testing.T) {
 func TestVerifyHostRejectsUnownedMintPrefix(t *testing.T) {
 	home := verifyHome(t, map[string]string{"robots": "agent"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"robots": probeJSONOwned("agent", "lifespan", false),
 	}, &calls))
 	c := findCheck(rep, verifyCheckMint, "robots")
@@ -247,7 +272,7 @@ func TestVerifyHostProbesRegistryUnion(t *testing.T) {
 	}
 
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"task": probeJSON("task", "lifespan"), "robots": probeJSON("lifespan", "lifespan"),
 	}, &calls))
 	if rep.OK || findCheck(rep, verifyCheckMint, "robots") == nil {
@@ -258,7 +283,7 @@ func TestVerifyHostProbesRegistryUnion(t *testing.T) {
 func TestVerifyHostProbeFailureAndRefusal(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task", "robots": "agent"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{
 		"robots": `{"error":"unified database refused a storeless mint","db_issue_prefix":"lifespan"}`,
 	}, &calls))
 	if c := findCheck(rep, verifyCheckMint, "task"); c == nil || !strings.Contains(c.Message, "failed") {
@@ -272,7 +297,7 @@ func TestVerifyHostProbeFailureAndRefusal(t *testing.T) {
 func TestVerifyHostProbesOnlyWithReadOnlyVerb(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	var calls []string
-	verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
+	verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("task", "lifespan")}, &calls))
 	for _, c := range calls {
 		if strings.Contains(c, "create") || strings.Contains(c, "delete") || strings.Contains(c, "close") {
 			t.Fatalf("the verification ran a mutating command: %s", c)
@@ -283,7 +308,7 @@ func TestVerifyHostProbesOnlyWithReadOnlyVerb(t *testing.T) {
 func TestVerifyHostReportRendering(t *testing.T) {
 	home := verifyHome(t, map[string]string{"task": "task"})
 	var calls []string
-	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("lifespan", "lifespan")}, &calls))
+	rep := verifyHost(context.Background(), home, time.Second, fakeRun(brainVersion, map[string]string{"task": probeJSON("lifespan", "lifespan")}, &calls))
 
 	var out, errb bytes.Buffer
 	writeVerifyHostReport(&out, &errb, rep, true)

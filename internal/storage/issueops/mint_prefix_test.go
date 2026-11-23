@@ -84,6 +84,26 @@ func TestReadConfigPrefixPinnedStoreBeatsDBWide(t *testing.T) {
 	}
 }
 
+func TestReadConfigPrefixKeepsPinnedStoreWhenDatabaseNameProbeFails(t *testing.T) {
+	t.Setenv("BD_NAME", "task")
+	initYAMLPrefix(t, "task")
+	mock, db := newMock(t)
+	ctx := context.Background()
+	tx := txOf(ctx, t, mock, db)
+	mock.ExpectQuery("select database\\(\\)").WillReturnError(errors.New("transient database-name failure"))
+	mock.ExpectQuery("SELECT value FROM config WHERE `key` = \\?").
+		WithArgs("issue_prefix").
+		WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("lifespan"))
+
+	got, err := ReadConfigPrefix(ctx, tx)
+	if err != nil {
+		t.Fatalf("ReadConfigPrefix: %v", err)
+	}
+	if got != "task" {
+		t.Fatalf("ReadConfigPrefix() = %q, want task", got)
+	}
+}
+
 func TestReadConfigPrefixScopedRowStillWins(t *testing.T) {
 	initYAMLPrefix(t, "stale")
 	pinScope(t, UnifiedScope{Unified: true, Store: "ideas"})
