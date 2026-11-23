@@ -26,17 +26,17 @@ this.
 ## `brain stores verify-host`
 
 ```
-brain stores verify-host [--json] [--bd <path>] [--timeout 20s]
+brain stores verify-host [--json] [--timeout 20s]
 ```
 
 Exit 1, with one `FAIL` line and a fix per cause, when:
 
 | check | fails when |
 | --- | --- |
-| `bd-build` | the bd the wrappers run has no `brain` key in `version --json` |
-| `registry` | `~/.config/brain/stores.yaml` or `~/.config/trillium-stores/stores.yaml` is missing |
+| `bd-build` | the bd a store's own wrapper runs has no `brain` key in `version --json` (checked per wrapper, so a wrapper pinned to a brain binary with `--bd-binary` is still probed) |
+| `registry` | `~/.config/brain/stores.yaml` or `~/.config/trillium-stores/stores.yaml` is missing (stores from both files are checked) |
 | `wrapper` | a store in the registry has no executable `~/.local/bin/<store>` |
-| `mint-prefix` | a dry-run mint through the store's wrapper does not carry that store's prefix; the finding also gives the database `issue_prefix` |
+| `mint-prefix` | a dry-run mint through the store's wrapper does not carry that store's prefix, or carries a prefix the store does not own; the finding also gives the database `issue_prefix` |
 
 The expected prefix is the store's `config.yaml` `issue-prefix`, else its
 `BD_NAME`, else its registry name (a store's prefix is not always its name:

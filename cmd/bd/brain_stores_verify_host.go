@@ -109,7 +109,7 @@ minted as lifespan-… is in the wrong store.
 
 It fails (exit 1, one FAIL line per cause, each with its fix) when:
 
-  - the bd that wrappers run is not the brain build (stock bd mints from the
+  - the bd a store's own wrapper runs is not the brain build (stock bd mints from the
     database-wide issue_prefix, which on the shared database is the template
     store's seed, so every store mints lifespan-…);
   - ~/.config/brain/stores.yaml or ~/.config/trillium-stores/stores.yaml is

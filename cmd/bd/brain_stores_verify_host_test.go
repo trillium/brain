@@ -153,7 +153,7 @@ func TestVerifyHostStockBd(t *testing.T) {
 	if rep.OK {
 		t.Fatal("a stock bd host verified")
 	}
-	c := findCheck(rep, verifyCheckBdBuild, "")
+	c := findCheck(rep, verifyCheckBdBuild, "task")
 	if c == nil || !strings.Contains(c.Message, "does not run the brain build") || !strings.Contains(c.Message, ".local/bin/task") {
 		t.Fatalf("bd-build finding = %+v", c)
 	}
