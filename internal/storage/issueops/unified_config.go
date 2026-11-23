@@ -80,9 +80,15 @@ func probeUnifiedScope(ctx context.Context, q DBTX) UnifiedScope {
 		return v.(UnifiedScope)
 	}
 	var unified int
-	_ = q.QueryRowContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		"select count(*) from information_schema.tables where table_schema = ? and table_name = 'brain_unified_config'",
-		dbname).Scan(&unified)
+		dbname).Scan(&unified); err != nil {
+		// A probe that failed says nothing about the database's shape. Answer
+		// "not routable" for this call only: caching it would pin a transient
+		// error for the life of the process (the failure then reads as a plain
+		// database, and an id would mint from the db-wide prefix).
+		return UnifiedScope{Store: storeNamespace()}
+	}
 	sc := UnifiedScope{Unified: unified > 0, Store: storeNamespace()}
 	if sc.Unified && sc.Store != "" {
 		sc.Store = canonicalStoreName(ctx, q, dbname, sc.Store)

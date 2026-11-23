@@ -75,7 +75,16 @@ func (r *configSQLRepositoryImpl) GetConfig(ctx context.Context, key string) (st
 		if err := issueops.RefuseStorelessMint(ctx, r.runner); err != nil {
 			return "", err
 		}
-		return issueops.GetConfigInTx(ctx, r.runner, key)
+		value, err := issueops.GetConfigInTx(ctx, r.runner, key)
+		if err != nil {
+			return "", err
+		}
+		// The pinned store's own prefix wins over the database-wide row
+		// wherever the scoped row cannot speak for it (see ResolveMintPrefix).
+		if resolved, ok := issueops.ResolveMintPrefix(issueops.UnifiedScopeForTx(ctx, r.runner), value); ok {
+			return resolved, nil
+		}
+		return value, nil
 	}
 	var value string
 	err := r.runner.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", key).Scan(&value)

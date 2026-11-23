@@ -182,6 +182,28 @@ path changes ownership silently.`,
 	SilenceErrors: true,
 }
 
+var storePrefixProbeCmd = &cobra.Command{
+	Use:   "probe",
+	Short: "Show the prefix a create through this wrapper would mint under (writes nothing)",
+	Long: `Resolve, without minting, the id prefix a create through the connected store
+would carry, and report it beside the database-wide issue_prefix.
+
+The prefix is resolved by the same code the create path runs (the store's own
+prefix first, the database-wide issue_prefix only where no store is pinned), so
+what it prints is what 'create' would mint. Nothing is inserted, no id is
+consumed and no transaction commits: a verification can run it on a live store
+and leave no bead behind. 'brain stores verify-host' runs it through every
+store's wrapper to prove the wrapper's store owns the prefix its beads carry.
+
+Exit 0 when a prefix resolved; non-zero when the create path would refuse.`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runStorePrefixProbe(cmd)
+	},
+	SilenceUsage:  true,
+	SilenceErrors: true,
+}
+
 var (
 	storePrefixTargetStore    string
 	storePrefixConfirmRelease bool
@@ -193,6 +215,7 @@ func init() {
 	storePrefixCmd.AddCommand(storePrefixAddCmd)
 	storePrefixCmd.AddCommand(storePrefixReleaseCmd)
 	storePrefixCmd.AddCommand(storePrefixHistoryCmd)
+	storePrefixCmd.AddCommand(storePrefixProbeCmd)
 	storePrefixAddCmd.Flags().StringVar(&storePrefixTargetStore, "store", "",
 		"Store whose namespace claims the prefix (default: the wrapper's BD_NAME)")
 	storePrefixReleaseCmd.Flags().BoolVar(&storePrefixConfirmRelease, "confirm", false,
@@ -218,6 +241,38 @@ func storePrefixDB() (*sql.DB, error) {
 		return nil, fmt.Errorf("the connected store's raw Dolt connection is unavailable")
 	}
 	return db, nil
+}
+
+// runStorePrefixProbe prints the mint probe. A refusal the create path would
+// raise is reported in the probe's error field and as a non-zero exit, so the
+// caller sees the same "no" a create would.
+func runStorePrefixProbe(cmd *cobra.Command) error {
+	db, err := storePrefixDB()
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	probe, err := issueops.ProbeMintPrefix(rootCtx, db)
+	if err != nil {
+		return HandleError("%v", err)
+	}
+	if jsonOutput {
+		outputJSON(probe)
+	} else {
+		fmt.Printf("store:            %s\n", orDash(probe.Store))
+		fmt.Printf("unified:          %t (routed to the store's own row: %t)\n", probe.Unified, probe.Routed)
+		fmt.Printf("mint prefix:      %s\n", orDash(probe.MintPrefix))
+		fmt.Printf("db issue_prefix:  %s\n", orDash(probe.DBIssuePrefix))
+		if probe.Owned != nil {
+			fmt.Printf("namespace owns:   %t\n", *probe.Owned)
+		}
+		if probe.Error != "" {
+			fmt.Printf("refused:          %s\n", probe.Error)
+		}
+	}
+	if probe.Error != "" {
+		os.Exit(1)
+	}
+	return nil
 }
 
 // resolveStorePrefixTarget answers the store whose namespace the command acts
