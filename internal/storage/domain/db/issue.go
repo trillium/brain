@@ -929,10 +929,12 @@ func normalizeUpdateValue(key string, value any) any {
 }
 
 func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWisps(ctx context.Context, query string, filter types.IssueFilter) (domain.SearchPage, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	return r.searchAcrossIssuesAndWisps(ctx, query, filter)
 }
 
 func (r *issueSQLRepositoryImpl) SearchAcrossIssuesAndWispsWithCounts(ctx context.Context, query string, filter types.IssueFilter) (domain.SearchCountsPage, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	return r.searchAcrossIssuesAndWispsWithCounts(ctx, query, filter)
 }
 
@@ -948,10 +950,12 @@ func (r *issueSQLRepositoryImpl) SearchIssueIDs(ctx context.Context, query strin
 }
 
 func (r *issueSQLRepositoryImpl) GetReadyWork(ctx context.Context, filter types.WorkFilter) (domain.SearchPage, error) {
+	filter = issueops.ScopeWorkFilter(ctx, r.runner, filter)
 	return r.getReadyWorkUnion(ctx, filter)
 }
 
 func (r *issueSQLRepositoryImpl) GetReadyWorkWithCounts(ctx context.Context, filter types.WorkFilter) (domain.SearchCountsPage, error) {
+	filter = issueops.ScopeWorkFilter(ctx, r.runner, filter)
 	return r.getReadyWorkWithCountsUnion(ctx, filter)
 }
 
@@ -1131,6 +1135,9 @@ func (r *issueSQLRepositoryImpl) GetNewlyUnblockedByClose(ctx context.Context, c
 }
 
 func (r *issueSQLRepositoryImpl) ClaimReadyIssue(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	// A claim picks a bead out of the ready set, so it reads in the same
+	// namespace the ready listing does.
+	filter = issueops.ScopeWorkFilter(ctx, r.runner, filter)
 	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyIssue: %w", err)
@@ -1139,6 +1146,9 @@ func (r *issueSQLRepositoryImpl) ClaimReadyIssue(ctx context.Context, filter typ
 }
 
 func (r *issueSQLRepositoryImpl) ClaimReadyWisp(ctx context.Context, filter types.WorkFilter, actor string) (*types.Issue, error) {
+	// A claim picks a bead out of the ready set, so it reads in the same
+	// namespace the ready listing does.
+	filter = issueops.ScopeWorkFilter(ctx, r.runner, filter)
 	out, err := issueops.ClaimReadyIssueInTx(ctx, r.runner, filter, actor)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.ClaimReadyWisp: %w", err)
@@ -1147,6 +1157,7 @@ func (r *issueSQLRepositoryImpl) ClaimReadyWisp(ctx context.Context, filter type
 }
 
 func (r *issueSQLRepositoryImpl) GetBlockedIssues(ctx context.Context, filter types.WorkFilter) ([]*types.BlockedIssue, error) {
+	filter = issueops.ScopeWorkFilter(ctx, r.runner, filter)
 	out, err := issueops.GetBlockedIssuesInTx(ctx, r.runner, filter)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.GetBlockedIssues: %w", err)
@@ -1156,14 +1167,23 @@ func (r *issueSQLRepositoryImpl) GetBlockedIssues(ctx context.Context, filter ty
 
 func (r *issueSQLRepositoryImpl) GetStatistics(ctx context.Context) (*types.Statistics, error) {
 	stats := &types.Statistics{}
-	if err := issueops.ScanIssueCountsInTx(ctx, r.runner, stats); err != nil {
+	namespaces := issueops.StatisticNamespaces(ctx, r.runner)
+	if err := issueops.ScanIssueCountsScopedInTx(ctx, r.runner, stats, namespaces); err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.GetStatistics: scan counts: %w", err)
 	}
+	blockedWhere := "is_blocked = 1 AND status <> 'closed' AND status <> 'pinned'"
+	var blockedArgs []any
+	if len(namespaces) > 0 {
+		ors := make([]string, 0, len(namespaces))
+		for _, p := range namespaces {
+			ors = append(ors, "id LIKE ?")
+			blockedArgs = append(blockedArgs, strings.TrimSuffix(p, "-")+"-%")
+		}
+		blockedWhere += " AND (" + strings.Join(ors, " OR ") + ")"
+	}
 	var blocked int
-	if err := r.runner.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM issues
-		WHERE is_blocked = 1 AND status <> 'closed' AND status <> 'pinned'
-	`).Scan(&blocked); err != nil {
+	//nolint:gosec // G202: fixed fragments and ? placeholders only
+	if err := r.runner.QueryRowContext(ctx, "SELECT COUNT(*) FROM issues WHERE "+blockedWhere, blockedArgs...).Scan(&blocked); err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.GetStatistics: count blocked: %w", err)
 	}
 	stats.BlockedIssues = &blocked
@@ -1176,6 +1196,7 @@ func (r *issueSQLRepositoryImpl) GetStatistics(ctx context.Context) (*types.Stat
 }
 
 func (r *issueSQLRepositoryImpl) CountIssues(ctx context.Context, query string, filter types.IssueFilter) (int64, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	n, err := issueops.CountIssuesInTx(ctx, r.runner, query, filter)
 	if err != nil {
 		return 0, fmt.Errorf("db: IssueSQLRepository.CountIssues: %w", err)
@@ -1184,6 +1205,7 @@ func (r *issueSQLRepositoryImpl) CountIssues(ctx context.Context, query string, 
 }
 
 func (r *issueSQLRepositoryImpl) CountIssuesByGroup(ctx context.Context, filter types.IssueFilter, groupBy string) (map[string]int, error) {
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	out, err := issueops.CountIssuesByGroupInTx(ctx, r.runner, filter, groupBy)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.CountIssuesByGroup: %w", err)
@@ -1208,6 +1230,7 @@ func (r *issueSQLRepositoryImpl) IterEvents(ctx context.Context, id string, limi
 }
 
 func (r *issueSQLRepositoryImpl) GetStaleIssues(ctx context.Context, filter types.StaleFilter) ([]*types.Issue, error) {
+	filter = issueops.ScopeStaleFilter(ctx, r.runner, filter)
 	out, err := issueops.GetStaleIssuesInTx(ctx, r.runner, filter)
 	if err != nil {
 		return nil, fmt.Errorf("db: IssueSQLRepository.GetStaleIssues: %w", err)

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,8 +11,7 @@ import (
 
 func TestBrainServeGateRefusesDeclaredHooks(t *testing.T) {
 	beadsDir := t.TempDir()
-	ctx := context.Background()
-	if err := brainServeGate(ctx, beadsDir, nil, false); err != nil {
+	if err := brainServeGate(beadsDir); err != nil {
 		t.Fatalf("a store with no hooks and no database to probe must be served: %v", err)
 	}
 
@@ -25,17 +23,14 @@ func TestBrainServeGateRefusesDeclaredHooks(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "g.toml"), []byte(guard), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, wide := range []bool{false, true} {
-		err := brainServeGate(ctx, beadsDir, nil, wide)
-		if err == nil || !strings.Contains(err.Error(), "could not be guarded") {
-			t.Errorf("wide=%v: a declared guard must refuse the server, got %v", wide, err)
-		}
+	if err := brainServeGate(beadsDir); err == nil || !strings.Contains(err.Error(), "could not be guarded") {
+		t.Errorf("a declared guard must refuse the server, got %v", err)
 	}
 
 	if err := os.WriteFile(filepath.Join(dir, "bad.toml"), []byte("run = = ="), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := brainServeGate(ctx, beadsDir, nil, true); err == nil || !strings.Contains(err.Error(), "unusable") {
+	if err := brainServeGate(beadsDir); err == nil || !strings.Contains(err.Error(), "unusable") {
 		t.Errorf("unusable hook definitions must refuse the server, got %v", err)
 	}
 }
