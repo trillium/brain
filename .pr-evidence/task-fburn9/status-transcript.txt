@@ -1,0 +1,19 @@
+$ brain stores status
+STORE                 TOTAL    OPEN   READY   UPDATED
+ability                 178     178     178         0
+advisor                   0       0       0         0
+applications             15       8       8         0
+assertions              104      97      97         0
+bellbottom                0       0       0         0
+brain                  3666    3393    3389        10
+career                   58      56      56         0
+chatgpt                  21       9       9         0
+chores                    0       0       0         0
+companies                21      21      21         0
+danny                     4       0       0         0
+...
+workflows                10      10      10         0
+year                      1       1       1         0
+FLEET                 39671   28644   28221       250
+64/65 stores reachable; updated = changed in the last 24h0m0s
+FAILING STORES: education

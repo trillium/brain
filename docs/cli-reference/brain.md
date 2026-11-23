@@ -1084,6 +1084,38 @@ name is a store, runs it through 'brain store'. Add to your shell rc:
 bd stores shell-hook [zsh|bash] [flags]
 ```
 
+### bd brain stores status
+
+Show every store in the registry at a glance: total, open and ready beads
+and how many were updated within --recent, plus a fleet roll-up. Stores are
+read through their own CLI wrappers (the same path 'stores doctor' probes), so
+the registry decides what is monitored and a store missing from the shared
+Dolt server shows as down rather than being silently dropped.
+
+With --watch it keeps polling every --interval and prints one line per change
+(counts moved, beads edited, a store going down or coming back), nothing when
+nothing changed — the shape the Monitor tool consumes. --json emits one JSON
+object per poll (a snapshot, then per-change events in watch mode).
+
+Exit codes (without --watch): 0 every store answered, 1 at least one is down
+(with a 'FAILING STORES: &lt;names&gt;' line).
+
+```
+bd stores status [flags]
+```
+
+**Flags:**
+
+```
+      --interval duration   Poll interval for --watch (default 30s)
+      --jobs int            Probe this many stores concurrently (default 8)
+      --json                Emit JSON (a snapshot object; one event object per change with --watch)
+      --polls int           With --watch, stop after this many polls (0 = until interrupted)
+      --recent duration     Window for the 'updated' column (default 24h0m0s)
+      --timeout duration    Per-store read timeout (default 20s)
+      --watch               Keep polling and print one line per change
+```
+
 ### bd brain stores sync
 
 Reconcile this machine with the fleet's store registry.
