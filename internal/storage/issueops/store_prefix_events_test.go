@@ -54,15 +54,17 @@ func TestRecordStorePrefixClaimEventAppendedInSameTx(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT `store`, owner_reason FROM brain_store_prefixes WHERE prefix = ?")).
 		WithArgs("proto").
 		WillReturnError(sql.ErrNoRows)
+	// Provisioning comes FIRST: on Dolt the DDL commits the open transaction, so
+	// provisioning after the INSERT left the ownership row committed without its
+	// event. Then the INSERT, the live count and the claim event all sit in the
+	// transaction the DDL started, so the ownership row and the event land
+	// together or not at all. The event carries the live count (2 wide-only
+	// beads already sit under the fresh claim), not the always-zero row default.
+	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, ?, '', '', 0, 0)")).
 		WithArgs("proto", "task", "operator-added").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	// Provisioning, live count, then the claim event — all inside the caller's
-	// transaction, so the ownership row and the event land together or not at
-	// all. The event carries the live count (2 wide-only beads already sit
-	// under the fresh claim), not the always-zero row default.
-	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM issues WHERE id = ? OR id LIKE CONCAT(?, '-%')")).
 		WithArgs("proto", "proto").
 		WillReturnRows(rowsOf(t, "COUNT(*)", []string{"2"}))
@@ -167,11 +169,11 @@ func TestReleaseThenReclaimByAnotherStore(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT `store`, owner_reason FROM brain_store_prefixes WHERE prefix = ?")).
 		WithArgs("proto").
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
+		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) VALUES (?, ?, ?, '', '', 0, 0)")).
 		WithArgs("proto", "task", "operator-added").
 		WillReturnResult(sqlmock.NewResult(1, 1))
-	mock.ExpectExec(regexp.QuoteMeta("CREATE TABLE IF NOT EXISTS brain_store_prefix_events")).
-		WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM issues WHERE id = ? OR id LIKE CONCAT(?, '-%')")).
 		WithArgs("proto", "proto").
 		WillReturnRows(rowsOf(t, "COUNT(*)", []string{"0"}))

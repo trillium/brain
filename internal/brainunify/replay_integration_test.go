@@ -368,3 +368,121 @@ func wantRefusal(t *testing.T, err error, parts ...string) {
 		}
 	}
 }
+
+// mergedCount counts rows of the merged database with a query.
+func (f *replayFixture) mergedCount(query string, args ...any) int {
+	f.t.Helper()
+	srv, err := StartIsolatedServer(f.ctx, "dolt", f.dataDir)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer func() { _ = srv.Stop() }()
+	db, err := srv.OpenTarget(f.ctx, fixtureMergedDB)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRowContext(f.ctx, query, args...).Scan(&n); err != nil {
+		f.t.Fatalf("%s: %v", query, err)
+	}
+	return n
+}
+
+// TestReplayCarriesRowsWithNoScope: a row of a bead-scoped table whose issue_id
+// is NULL names no bead. The diff could not list it, the table was skipped as
+// unchanged, the replay reported success and the verifier then failed.
+func TestReplayCarriesRowsWithNoScope(t *testing.T) {
+	f := newReplayFixture(t)
+	f.execIn("alpha", "create table interactions (id varchar(36) primary key, issue_id varchar(255), body text not null)")
+	f.execIn("alpha", "insert into interactions values (uuid(), 'alp-1', 'scoped'), (uuid(), NULL, 'unscoped one')")
+	f.commit("alpha", "interactions")
+	f.build()
+	requireNoFailures(t, "right after the build", f.verify(ReferenceLive))
+
+	f.execIn("alpha", "insert into interactions values (uuid(), NULL, 'unscoped two')")
+	f.commit("alpha", "another row with no bead")
+	requireFailures(t, "before the replay", f.verify(ReferenceLive))
+
+	if _, err := f.replay(); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	requireNoFailures(t, "after the replay", f.verify(ReferenceLive))
+	if got := f.mergedCount("select count(*) from interactions where issue_id is null"); got != 2 {
+		t.Errorf("merged holds %d unscoped interactions, want 2", got)
+	}
+}
+
+// TestIdenticalIssueRowWithDifferentChildrenIsAConflict: two stores hold the
+// same bead row, but one also carries a label and a comment. Calling the pair
+// identical skipped that copy with its child rows and every check passed.
+func TestIdenticalIssueRowWithDifferentChildrenIsAConflict(t *testing.T) {
+	f := newReplayFixture(t)
+	f.execIn("gamma", "insert into issues select * from alpha.issues where id='alp-1'")
+	f.execIn("gamma", "insert into labels values ('alp-1', 'only-in-gamma')")
+	f.execIn("gamma", "insert into comments values (uuid(), 'alp-1', 'only in gamma')")
+	f.commit("gamma", "a copy of alp-1 with children alpha lacks")
+
+	_, plan := f.discover()
+	var c *Collision
+	for i := range plan.Collisions {
+		if plan.Collisions[i].ID == "alp-1" {
+			c = &plan.Collisions[i]
+		}
+	}
+	if c == nil {
+		t.Fatalf("alp-1 was not found to be duplicated: %+v", plan.Collisions)
+	}
+	if !c.Divergent || c.Resolution != ResolutionConflict {
+		t.Fatalf("alp-1: divergent=%v resolution=%q, want a conflict (differing columns %v)", c.Divergent, c.Resolution, c.DifferingColumns)
+	}
+	if !contains(c.DifferingColumns, ChildRowsColumnPrefix+"labels") || !contains(c.DifferingColumns, ChildRowsColumnPrefix+"comments") {
+		t.Errorf("differing columns = %v, want the labels and comments the copies disagree on", c.DifferingColumns)
+	}
+	f.build()
+	requireNoFailures(t, "after the build", f.verify(ReferenceLive))
+	if got := f.mergedCount("select count(*) from labels where label = 'only-in-gamma'"); got != 1 {
+		t.Errorf("the label only gamma's copy carried was lost: %d rows", got)
+	}
+}
+
+// TestPostRepointCatchUpDoesNotResurrectDeletedChildRows: after the repoint the
+// merged database is written to. A label a client deleted there came back when a
+// straggler writer touched the same bead in the old source, because the catch-up
+// re-inserted the source's child rows for it.
+func TestPostRepointCatchUpDoesNotResurrectDeletedChildRows(t *testing.T) {
+	f := newReplayFixture(t)
+	f.build()
+	f.mergedSQL("delete from labels where issue_id = 'alp-2'")
+	if got := f.mergedCount("select count(*) from labels where issue_id = 'alp-2'"); got != 0 {
+		t.Fatalf("setup: label still in merged: %d", got)
+	}
+
+	// A straggler write to the old source touches the same bead and a new one.
+	f.execIn("alpha", "update issues set title='straggler', updated_at=now() where id='alp-2'")
+	f.execIn("alpha", "insert into labels values ('alp-2', 'late')")
+	f.bead("alpha", "alp-9", "created in the old source after the repoint")
+	f.commit("alpha", "straggler")
+
+	source, plan := f.discover()
+	r := NewReplayer(source, plan, ReplayOptions{
+		DataDir: f.dataDir, Database: fixtureMergedDB, DoltBin: "dolt",
+		Host: "127.0.0.1", Port: f.srcSrv.Port,
+		ProtectAfter: "2000-01-01 00:00:00",
+	})
+	if _, err := r.Replay(f.ctx); err != nil {
+		t.Fatalf("post-repoint replay: %v", err)
+	}
+	// Only the label the straggler added since the last read is carried over;
+	// the ones the source already held and a client deleted stay deleted.
+	if got := f.mergedCount("select count(*) from labels where issue_id = 'alp-2' and label <> 'late'"); got != 0 {
+		t.Errorf("the label deleted in merged came back: %d row(s)", got)
+	}
+	if got := f.mergedCount("select count(*) from labels where issue_id = 'alp-2' and label = 'late'"); got != 1 {
+		t.Errorf("the label the straggler added was not carried over: %d row(s)", got)
+	}
+	// A bead the merged database never had still receives its child rows.
+	if got := f.mergedCount("select count(*) from labels where issue_id = 'alp-9'"); got != 1 {
+		t.Errorf("the new bead alp-9 has %d label(s) in merged, want 1", got)
+	}
+}

@@ -209,33 +209,46 @@ func (s *readOnlySource) HasCommit(ctx context.Context, commit string) (bool, er
 // and updates contribute the new value, deletes the old one, and an update
 // that moves a row between beads contributes both.
 //
+// unscoped reports whether any changed row had no value in the column on a
+// side that carries the row (a NULL or empty issue_id). Such a row names no
+// bead, so the list cannot name it; the caller must not read an empty list as
+// "nothing changed" when unscoped is true.
+//
 // It reads only WHICH beads changed. The rows a replay writes are re-read from
 // the source afterwards through the build's own column encoding, so a diff
 // result never becomes a second implementation of the row encoding.
-func (s *readOnlySource) DiffScopeValues(ctx context.Context, fromCommit, table, column string) ([]string, error) {
-	stmt := fmt.Sprintf("select `from_%s`, `to_%s` from dolt_diff(%s, 'WORKING', %s)",
+func (s *readOnlySource) DiffScopeValues(ctx context.Context, fromCommit, table, column string) (values []string, unscoped bool, err error) {
+	stmt := fmt.Sprintf("select `from_%s`, `to_%s`, diff_type from dolt_diff(%s, 'WORKING', %s)",
 		column, column, quoteLiteral(fromCommit), quoteLiteral(table))
 	rows, err := s.query(ctx, stmt)
 	if err != nil {
-		return nil, fmt.Errorf("diffing %s against commit %s: %w", table, fromCommit, err)
+		return nil, false, fmt.Errorf("diffing %s against commit %s: %w", table, fromCommit, err)
 	}
 	defer rows.Close()
 	seen := map[string]bool{}
 	for rows.Next() {
 		var from, to any
-		if err := rows.Scan(&from, &to); err != nil {
-			return nil, fmt.Errorf("scanning the diff of %s: %w", table, err)
+		var kind string
+		if err := rows.Scan(&from, &to, &kind); err != nil {
+			return nil, false, fmt.Errorf("scanning the diff of %s: %w", table, err)
 		}
-		for _, v := range []any{from, to} {
+		// An added row has no "from" side and a removed row no "to" side; only a
+		// side the row actually has can be missing its scope value.
+		for side, v := range map[string]any{"from": from, "to": to} {
+			if (side == "from" && kind == "added") || (side == "to" && kind == "removed") {
+				continue
+			}
 			if t := diffText(v); t != "" {
 				seen[t] = true
+			} else {
+				unscoped = true
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("reading the diff of %s: %w", table, err)
+		return nil, false, fmt.Errorf("reading the diff of %s: %w", table, err)
 	}
-	return sortedKeys(seen), nil
+	return sortedKeys(seen), unscoped, nil
 }
 
 // diffAdded is the diff_type of a table created since the from commit.
@@ -821,6 +834,80 @@ func (s *readOnlySource) MetadataValue(ctx context.Context, database, key string
 // gained a column the template lacks is reported by the caller rather than
 // failing mid-insert with an opaque SQL error.
 
+// ChildDigests fingerprints, table by table, the child rows that hang off one
+// bead: its labels, comments, dependencies, events and every other table keyed
+// by the bead's id. Each table maps to the sorted, comma-joined digests of its
+// rows, so two copies can be compared as sets. Only tables that hold at least
+// one such row appear, so an absent entry and an empty table agree.
+//
+// A duplicated id is called identical on its issues row alone unless these are
+// compared too; the copy that loses is skipped together with its child rows,
+// and a label or comment only that copy carried would vanish with no record.
+//
+// A single surrogate key column (comments.id, events.id) is left out of the
+// digest: the same comment minted in two stores carries two different ids, and
+// counting it would call every pair of copies different.
+func (s *readOnlySource) ChildDigests(ctx context.Context, database, id string) (map[string]string, error) {
+	tables, err := s.BaseTables(ctx, database)
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]string{}
+	for _, t := range tables {
+		if strings.HasPrefix(t, NamespacedPrefix) || contains(brainTables, t) {
+			continue
+		}
+		if _, isBead := beadTables[t]; isBead {
+			continue
+		}
+		cols, err := s.Columns(ctx, database, t)
+		if err != nil {
+			return nil, err
+		}
+		pk, err := s.PrimaryKeys(ctx, database, t)
+		if err != nil {
+			return nil, err
+		}
+		scope, scopeCol := Classify(t, cols, pk)
+		if scope != ScopeIssueChild || scopeCol == "" {
+			continue
+		}
+		use := make([]string, 0, len(cols))
+		for _, c := range cols {
+			if len(pk) == 1 && pk[0] == c && c != scopeCol {
+				continue
+			}
+			use = append(use, c)
+		}
+		rows, err := s.ReadRows(ctx, database, t, use, "`"+scopeCol+"` = ?", id)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) == 0 {
+			continue
+		}
+		rendered := make([]string, 0, len(rows))
+		for _, r := range rows {
+			cells := make([]string, len(r))
+			for i, v := range r {
+				if v == nil {
+					cells[i] = "\x00NULL"
+					continue
+				}
+				cells[i] = fmt.Sprint(v)
+			}
+			rendered = append(rendered, strings.Join(cells, "\x1f"))
+		}
+		hashes := make([]string, len(rendered))
+		for i, r := range rendered {
+			hashes[i] = shortDigest(r)
+		}
+		sort.Strings(hashes)
+		out[t] = strings.Join(hashes, ",")
+	}
+	return out, nil
+}
+
 // IssueRow is one bead read in full, as a column/value map with every value
 // rendered as a string. Reading the whole row is what lets a duplicated id be
 // compared field by field: a differing content_hash column says the two copies
@@ -895,6 +982,15 @@ type CopyRowsResult struct {
 // writes and the bytes the fingerprints digest come from one rendering of the
 // value.
 func (s *readOnlySource) ReadRows(ctx context.Context, database, table string, cols []string, where string, args ...any) ([][]any, error) {
+	return s.readRows(ctx, database, table, cols, "", where, args...)
+}
+
+// ReadRowsAsOf is ReadRows against the table as it stood at a commit.
+func (s *readOnlySource) ReadRowsAsOf(ctx context.Context, database, table string, cols []string, commit, where string, args ...any) ([][]any, error) {
+	return s.readRows(ctx, database, table, cols, commit, where, args...)
+}
+
+func (s *readOnlySource) readRows(ctx context.Context, database, table string, cols []string, asOf, where string, args ...any) ([][]any, error) {
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("no columns to read from %s.%s", database, table)
 	}
@@ -903,6 +999,9 @@ func (s *readOnlySource) ReadRows(ctx context.Context, database, table string, c
 		return nil, err
 	}
 	stmt := fmt.Sprintf("select %s from `%s`.`%s`", copySelectList(cols, jsonCols), database, table)
+	if asOf != "" {
+		stmt += " as of " + quoteLiteral(asOf)
+	}
 	if where != "" {
 		stmt += " where " + where
 	}

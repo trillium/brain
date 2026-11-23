@@ -110,13 +110,14 @@ const storePrefixEventsDDL = `CREATE TABLE IF NOT EXISTS brain_store_prefix_even
 )`
 
 // EnsureStorePrefixEventsTable provisions the append-only event table on a
-// unified database that predates it. It is called inside the same transaction
-// that changes ownership, so on Dolt — where schema changes are transactional
-// — the table exists exactly when the first event lands, and nothing is
-// provisioned on a legacy (per-store) database where no ownership record
-// exists. Callers that open their own transaction should call it inside that
-// transaction, never after: an event row must never land without the table
-// existing, and this is what makes claim events complete from adoption onward.
+// unified database that predates it. Nothing is provisioned on a legacy
+// (per-store) database where no ownership record exists.
+//
+// Call it BEFORE the first write of an ownership change and never between that
+// write and the event append: on Dolt the CREATE TABLE commits the transaction
+// it runs in, so a write made before it is committed on its own and the event
+// that should accompany it lands in a different transaction. An event row must
+// also never land without the table existing.
 func EnsureStorePrefixEventsTable(ctx context.Context, q DBTX) error {
 	sc := UnifiedScopeForTx(ctx, q)
 	if !sc.Unified {
@@ -358,6 +359,15 @@ func RecordStorePrefix(ctx context.Context, q DBTX, store, prefix, reason string
 			prefix, rowOwner, rowReason, store, rowOwner)
 	}
 
+	// The events table is provisioned BEFORE the ownership row is written. On
+	// Dolt a CREATE TABLE commits the transaction it runs in and the statements
+	// after it run in a new one, so provisioning between the INSERT and the
+	// event append left the INSERT committed alone: a failure after the DDL
+	// kept the owner and lost its claim event. With the DDL first, the INSERT
+	// and the event are both in the transaction that follows it.
+	if err := EnsureStorePrefixEventsTable(ctx, q); err != nil {
+		return out, err
+	}
 	if _, err := q.ExecContext(ctx,
 		"INSERT INTO brain_store_prefixes (`prefix`,`store`,`owner_reason`,`declared_by`,`observed_by`,`bead_count`,`ambiguous`) "+
 			"VALUES (?, ?, ?, '', '', 0, 0)", prefix, store, reason); err != nil {
@@ -365,13 +375,6 @@ func RecordStorePrefix(ctx context.Context, q DBTX, store, prefix, reason string
 	}
 	out.Owner, out.Reason = store, reason
 
-	// The event table is provisioned (idempotent) inside this same
-	// transaction, so an existing unified database predating the table gets
-	// it exactly when its first event lands — and the event lands or the
-	// whole claim rolls back, never one without the other.
-	if err := EnsureStorePrefixEventsTable(ctx, q); err != nil {
-		return out, err
-	}
 	liveCount, err := liveStorePrefixBeadCount(ctx, q, prefix)
 	if err != nil {
 		return out, err
