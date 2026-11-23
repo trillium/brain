@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/steveyegge/beads/internal/storage/dberrors"
+	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -36,6 +37,10 @@ func buildDescendantsPred(table, alias, cteName string, clauses []string, args [
 }
 
 func (r *issueSQLRepositoryImpl) GetDescendants(ctx context.Context, rootID string, filter types.IssueFilter) ([]*types.Issue, error) {
+	if !issueops.NamespaceAllowsIssueID(ctx, r.runner, rootID) {
+		return nil, nil
+	}
+	filter = issueops.ScopeIssueFilter(ctx, r.runner, filter)
 	levelFilter := filter
 	levelFilter.ParentID = nil
 	levelFilter.Limit = 0

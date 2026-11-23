@@ -28,7 +28,6 @@ package dolt
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 
 	"github.com/steveyegge/beads/internal/storage/issueops"
 	"github.com/steveyegge/beads/internal/types"
@@ -47,24 +46,20 @@ const (
 	NamespaceReadWide
 )
 
-// namespaceReadScope holds the process-wide read mode. Set once at command
-// startup from the --wide flag; tests may pin it around individual reads.
-var namespaceReadScope atomic.Int32
-
 // SetNamespaceReadScope pins the process-wide read mode. Calling it before
 // the first read is the contract; mid-run flips remain supported for tests.
+// The mode lives in issueops so the unit-of-work provider's issue repository,
+// which `bd serve` answers from, reads the same one.
 func SetNamespaceReadScope(m NamespaceReadScope) {
-	namespaceReadScope.Store(int32(m))
+	issueops.SetNamespaceReadWide(m == NamespaceReadWide)
 }
 
 // namespaceReadScopeNow answers the active read mode.
 func namespaceReadScopeNow() NamespaceReadScope {
-	switch NamespaceReadScope(namespaceReadScope.Load()) {
-	case NamespaceReadWide:
+	if issueops.NamespaceReadWide() {
 		return NamespaceReadWide
-	default:
-		return NamespaceReadNarrow
 	}
+	return NamespaceReadNarrow
 }
 
 // readScopeWide reports whether the active mode is wide.
@@ -115,32 +110,7 @@ func (s *DoltStore) narrowPrefixes(ctx context.Context) ([]string, bool) {
 // owns on the unified database. unified=false means the connected database is
 // not unified (or could not be probed) and no scoping should be applied.
 func resolveNamespacePrefixes(ctx context.Context, q issueops.DBTX) ([]string, bool) {
-	sc := issueops.UnifiedScopeForTx(ctx, q)
-	if !sc.Unified || sc.Store == "" {
-		return nil, false
-	}
-	prefixes := []string{sc.Store}
-	rows, err := q.QueryContext(ctx,
-		"SELECT prefix FROM brain_store_prefixes WHERE `store` = ?", sc.Store)
-	if err == nil {
-		defer rows.Close()
-		var found []string
-		for rows.Next() {
-			var p string
-			if err := rows.Scan(&p); err != nil {
-				found = nil
-				break
-			}
-			found = append(found, p)
-		}
-		if err := rows.Err(); err != nil {
-			found = nil
-		}
-		if len(found) > 0 {
-			prefixes = found
-		}
-	}
-	return prefixes, true
+	return issueops.ResolveNamespacePrefixes(ctx, q)
 }
 
 // scopeNamespaces pins an issue-read filter to the wrapper's namespaces on

@@ -278,7 +278,7 @@ func runServe() error {
 	}
 	// Brain: the provider arm serves beneath every brain layer of the store.
 	if db.source == serveSourceProvider {
-		if err := brainServeGate(rootCtx, info.BeadsDir, store, namespaceWide); err != nil {
+		if err := brainServeGate(info.BeadsDir); err != nil {
 			return HandleError("bd serve: %v", err)
 		}
 	}
