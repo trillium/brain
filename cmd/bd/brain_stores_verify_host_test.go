@@ -81,6 +81,11 @@ func probeJSON(mint, db string) string {
 	return string(b)
 }
 
+func probeJSONOwned(mint, db string, owned bool) string {
+	b, _ := json.Marshal(map[string]any{"store": "x", "mint_prefix": mint, "db_issue_prefix": db, "owned": owned})
+	return string(b)
+}
+
 func findCheck(rep verifyHostReport, check, store string) *verifyCheck {
 	for i := range rep.Checks {
 		if rep.Checks[i].Check == check && rep.Checks[i].Store == store && rep.Checks[i].Status == "fail" {
@@ -180,6 +185,42 @@ func TestVerifyHostWrongMintPrefix(t *testing.T) {
 	}
 	if len(rep.Failing) != 1 || rep.Failing[0] != "mint-prefix:task" {
 		t.Fatalf("failing = %v", rep.Failing)
+	}
+}
+
+func TestVerifyHostRejectsUnownedMintPrefix(t *testing.T) {
+	home := verifyHome(t, map[string]string{"robots": "agent"})
+	var calls []string
+	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+		"robots": probeJSONOwned("agent", "lifespan", false),
+	}, &calls))
+	c := findCheck(rep, verifyCheckMint, "robots")
+	if rep.OK || c == nil || !strings.Contains(c.Message, "unowned prefix") {
+		t.Fatalf("an unowned mint prefix verified: %+v", rep.Checks)
+	}
+}
+
+func TestVerifyHostProbesRegistryUnion(t *testing.T) {
+	home := verifyHome(t, map[string]string{"task": "task"})
+	robots := filepath.Join(home, "data", "robots", ".beads")
+	if err := os.MkdirAll(robots, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(robots, "config.yaml"), []byte("issue-prefix: agent\nBD_NAME: robots\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeVerifyWrapper(t, home, "robots")
+	registry := "stores:\n  task:\n    path: " + filepath.Join(home, "data", "task", ".beads") + "\n  robots:\n    path: " + robots + "\n"
+	if err := os.WriteFile(filepath.Join(home, ".config", "trillium-stores", "stores.yaml"), []byte(registry), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls []string
+	rep := verifyHost(context.Background(), home, "bd", time.Second, fakeRun(brainVersion, map[string]string{
+		"task": probeJSON("task", "lifespan"), "robots": probeJSON("lifespan", "lifespan"),
+	}, &calls))
+	if rep.OK || findCheck(rep, verifyCheckMint, "robots") == nil {
+		t.Fatalf("store found only in the second registry was not verified: %+v", rep.Checks)
 	}
 }
 

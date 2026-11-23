@@ -166,8 +166,8 @@ func TestProbeMintPrefix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProbeMintPrefix: %v", err)
 		}
-		if got.MintPrefix != "task" || got.DBIssuePrefix != "lifespan" || got.SampleID != "task-probe" {
-			t.Fatalf("probe = %+v, want mint task / db lifespan / sample task-probe", got)
+		if got.MintPrefix != "task" || got.DBIssuePrefix != "lifespan" {
+			t.Fatalf("probe = %+v, want mint task / db lifespan", got)
 		}
 		if got.Error != "" {
 			t.Fatalf("probe carried an error: %s", got.Error)
@@ -228,6 +228,27 @@ func TestProbeMintPrefix(t *testing.T) {
 		}
 		if got.MintPrefix != "idea" || got.Owned == nil || !*got.Owned || !got.Routed {
 			t.Fatalf("probe = %+v, want routed, mint idea, owned", got)
+		}
+	})
+
+	t.Run("unified store whose namespace does not own the prefix is refused", func(t *testing.T) {
+		initYAMLPrefix(t, "")
+		pinScope(t, UnifiedScope{Unified: true, Store: "robots"})
+		mock, db := newMock(t)
+		tx := txOf(ctx, t, mock, db)
+		mock.ExpectQuery("SELECT value FROM config WHERE `key` = \\?").WithArgs("issue_prefix").
+			WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("lifespan"))
+		mock.ExpectQuery("SELECT value FROM brain_unified_config WHERE `store` = \\? AND `key` = \\?").WithArgs("robots", "issue_prefix").
+			WillReturnRows(sqlmock.NewRows([]string{"value"}).AddRow("agent"))
+		mock.ExpectQuery("SELECT prefix FROM brain_store_prefixes").WithArgs("robots").
+			WillReturnRows(sqlmock.NewRows([]string{"prefix"}).AddRow("robot"))
+
+		got, err := ProbeMintPrefix(ctx, tx)
+		if err != nil {
+			t.Fatalf("ProbeMintPrefix: %v", err)
+		}
+		if got.Owned == nil || *got.Owned || got.Error == "" {
+			t.Fatalf("probe = %+v, want unowned refusal", got)
 		}
 	})
 }

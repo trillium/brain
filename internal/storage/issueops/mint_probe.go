@@ -26,9 +26,6 @@ type MintProbe struct {
 	// DBIssuePrefix is the database-wide config.issue_prefix, the value stock bd
 	// mints from. It is reported so a disagreement shows its cause.
 	DBIssuePrefix string `json:"db_issue_prefix"`
-	// SampleID is the id shape the create would produce for the prefix; it is
-	// built, never inserted.
-	SampleID string `json:"sample_id"`
 	// Owned reports whether the pinned namespace owns MintPrefix on the unified
 	// database (the same check every create runs). Absent off the unified database.
 	Owned *bool `json:"owned,omitempty"`
@@ -59,13 +56,12 @@ func ProbeMintPrefix(ctx context.Context, q DBTX) (MintProbe, error) {
 		return p, nil
 	}
 	p.MintPrefix = prefix
-	p.SampleID = prefix + "-probe"
 	if sc.Unified && sc.Store != "" {
-		owned, err := namespaceOwnsPrefix(ctx, q, sc.Store, prefix)
-		if err != nil {
-			return p, fmt.Errorf("checking namespace ownership of %q: %w", prefix, err)
-		}
+		owned, err := validateNamespacePrefix(ctx, q, sc.Store, prefix, prefix+"-probe")
 		p.Owned = &owned
+		if err != nil {
+			p.Error = err.Error()
+		}
 	}
 	return p, nil
 }

@@ -204,7 +204,11 @@ func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration,
 	}
 
 	// 3 and 4. Each registered store: wrapper present, mint prefix its own.
-	stores := verifyHostRegistry(home)
+	stores, registryErr := verifyHostRegistry(home)
+	if registryErr != nil {
+		registryOK = false
+		fail(verifyCheckRegistry, "", registryErr.Error(), "reconcile the registry files: 'brain stores sync'")
+	}
 	if len(stores) == 0 && registryOK {
 		fail(verifyCheckRegistry, "", "the registry lists no stores", "register this host's stores: 'brain stores sync'")
 	}
@@ -248,6 +252,9 @@ func verifyHost(ctx context.Context, home, bdPath string, timeout time.Duration,
 		case probe.Error != "":
 			fail(verifyCheckMint, name, fmt.Sprintf("a dry-run mint through %s was refused: %s (database issue_prefix %q)", wrapper, probe.Error, probe.DBIssuePrefix),
 				fmt.Sprintf("run '%s store-prefix probe' to see the refusal", name))
+		case probe.Owned != nil && !*probe.Owned:
+			fail(verifyCheckMint, name, fmt.Sprintf("a dry-run mint through %s carries unowned prefix %q (database issue_prefix %q)", wrapper, probe.MintPrefix, probe.DBIssuePrefix),
+				fmt.Sprintf("claim prefix %q for %s with 'bd store-prefix add %s'", probe.MintPrefix, name, probe.MintPrefix))
 		case probe.MintPrefix != vs.ExpectedPrefix:
 			fail(verifyCheckMint, name, fmt.Sprintf("a dry-run mint through %s carries prefix %q, want %q (database issue_prefix %q)", wrapper, probe.MintPrefix, vs.ExpectedPrefix, probe.DBIssuePrefix),
 				fmt.Sprintf("install the brain build and reprovision this wrapper (BD_NAME=%s); the database issue_prefix is shared state and is not changed here", probe.Store))
@@ -298,17 +305,26 @@ func verifyBdIdentity(ctx context.Context, bdPath string, timeout time.Duration,
 	return b
 }
 
-// verifyHostRegistry reads the stores this host must serve: the brain registry,
-// else the shared name. A registry that cannot be read yields none (the
-// registry check reports why).
-func verifyHostRegistry(home string) map[string]storeEntry {
+func verifyHostRegistry(home string) (map[string]storeEntry, error) {
+	all := make(map[string]storeEntry)
+	var errs []error
 	for _, rel := range verifyHostRegistryPaths {
 		stores, found, err := readStoresFile(filepath.Join(home, rel))
-		if found && err == nil && len(stores) > 0 {
-			return stores
+		if !found || err != nil {
+			if err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		for name, entry := range stores {
+			if prior, exists := all[name]; exists && prior != entry {
+				errs = append(errs, fmt.Errorf("registry entries for store %q disagree", name))
+				continue
+			}
+			all[name] = entry
 		}
 	}
-	return nil
+	return all, errors.Join(errs...)
 }
 
 // verifyExpectedPrefix is the prefix a store's beads must carry: the
@@ -334,6 +350,7 @@ type verifyProbeResult struct {
 	Store         string `json:"store"`
 	MintPrefix    string `json:"mint_prefix"`
 	DBIssuePrefix string `json:"db_issue_prefix"`
+	Owned         *bool  `json:"owned"`
 	Error         string `json:"error"`
 }
 
