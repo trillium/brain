@@ -167,58 +167,73 @@ var brainStoresAddCmd = &cobra.Command{
 	Use:   "add <name> <beads-dir>",
 	Short: "Register a store in the brain federation registry",
 	Args:  cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		name := strings.ToLower(strings.TrimSpace(args[0]))
 		beadsDir := expandPath(args[1])
 
 		if err := validateStoreName("store name", name); err != nil {
-			FatalError("%v", err)
+			return err
 		}
 
 		stores, err := loadStoresRegistry()
 		if err != nil {
-			FatalError("loading registry: %v", err)
+			return fmt.Errorf("loading registry: %w", err)
 		}
 		entry := stores[name] // preserve any existing about blurb on re-add
-		entry.Path = beadsDir
-		stores[name] = entry
-		if err := saveStoresRegistry(stores); err != nil {
-			FatalError("saving registry: %v", err)
-		}
-
-		// Telegraph it: a registered store the fleet cannot learn of exists on
-		// one machine only. Under $HOME/data it goes into the shared registry.
-		epochNote := ""
+		var registryEntry *storeregistry.Entry
+		var registryDB *sql.DB
+		localOnlyNote := ""
 		if db, adopted := registryWriteTarget(rootCtx); adopted {
 			if rel, ok := homeRelativeDir(beadsDir); ok {
 				e := storeregistry.Entry{Name: name, Kind: storeregistry.KindStore, Store: name, State: storeregistry.StateActive,
 					RelPath: rel, WrapperKind: detectWrapperKindFor(name, filepath.Dir(beadsDir)), About: entry.About, EditBack: entry.EditBack}
 				if e.Validate() == nil {
-					// The identity row rides in the same transaction as the entry, so a
-					// registered store can never be one no other machine can create.
-					meta := registryMeta()
-					meta.InTx = identityBackfillInTx([]storeregistry.Entry{e})
-					if res, merr := storeregistry.Mutate(rootCtx, db, meta, storeregistry.PlanCreate(e)); merr != nil {
-						fmt.Fprintf(os.Stderr, "warning: store registered locally only; the shared registry refused it: %v\n", merr)
-					} else {
-						epochNote = syncThisMachine(rootCtx, db, res.Epoch)
+					if err := requireLocalProjectIDs([]storeregistry.Entry{e}); err != nil {
+						return err
 					}
+					registryEntry, registryDB = &e, db
 				} else {
-					fmt.Fprintf(os.Stderr, "note: %q is registered on this machine only (%v)\n", name, e.Validate())
+					localOnlyNote = fmt.Sprintf("note: %q is registered on this machine only (%v)\n", name, e.Validate())
 				}
 			} else {
-				fmt.Fprintf(os.Stderr, "note: %q is registered on this machine only (its path is not under $HOME)\n", name)
+				localOnlyNote = fmt.Sprintf("note: %q is registered on this machine only (its path is not under $HOME)\n", name)
 			}
+		}
+		entry.Path = beadsDir
+		stores[name] = entry
+		if err := saveStoresRegistry(stores); err != nil {
+			return fmt.Errorf("saving registry: %w", err)
+		}
+
+		// Telegraph it: a registered store the fleet cannot learn of exists on
+		// one machine only. Under $HOME/data it goes into the shared registry.
+		epochNote := ""
+		if registryDB != nil {
+			e := *registryEntry
+			if e.Validate() == nil {
+				// The identity row rides in the same transaction as the entry, so a
+				// registered store can never be one no other machine can create.
+				meta := registryMeta()
+				meta.InTx = identityBackfillInTx([]storeregistry.Entry{e})
+				if res, merr := storeregistry.Mutate(rootCtx, registryDB, meta, storeregistry.PlanCreate(e)); merr != nil {
+					fmt.Fprintf(os.Stderr, "warning: store registered locally only; the shared registry refused it: %v\n", merr)
+				} else {
+					epochNote = syncThisMachine(rootCtx, registryDB, res.Epoch)
+				}
+			}
+		} else if localOnlyNote != "" {
+			fmt.Fprint(os.Stderr, localOnlyNote)
 		}
 
 		if jsonOutput {
 			outputJSON(map[string]string{"name": name, "path": beadsDir, "registry": epochNote})
-			return
+			return nil
 		}
 		fmt.Printf("%s Registered store %q → %s\n", ui.RenderPass("✓"), name, beadsDir)
 		if epochNote != "" {
 			fmt.Printf("    %s\n", epochNote)
 		}
+		return nil
 	},
 }
 

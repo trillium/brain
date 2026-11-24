@@ -51,6 +51,23 @@ func localProjectID(beadsDir string) string {
 	return strings.TrimSpace(cfg.ProjectID)
 }
 
+func missingLocalProjectIDError(e storeregistry.Entry) error {
+	return fmt.Errorf("cannot register store %q: %s/metadata.json has no project_id; add the store's project_id to that file and retry", e.Store, e.RelPath)
+}
+
+func requireLocalProjectIDs(entries []storeregistry.Entry) error {
+	home, _ := os.UserHomeDir()
+	for _, e := range entries {
+		if e.Kind != storeregistry.KindStore || e.State != storeregistry.StateActive {
+			continue
+		}
+		if localProjectID(filepath.Join(home, filepath.FromSlash(e.RelPath))) == "" {
+			return missingLocalProjectIDError(e)
+		}
+	}
+	return nil
+}
+
 // ensureProjectIDTx writes the `_project_id` row for store inside the caller's
 // transaction, only when no row exists. An existing row with the same value is
 // a no-op; one with a different value is reported as conflict (the existing
@@ -93,7 +110,7 @@ func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, s
 			}
 			pid := localProjectID(filepath.Join(home, filepath.FromSlash(e.RelPath)))
 			if pid == "" {
-				return fmt.Errorf("cannot register store %q: %s/metadata.json has no project_id; add the store's project_id to that file and retry", e.Store, e.RelPath)
+				return missingLocalProjectIDError(e)
 			}
 			if _, _, err := ensureProjectIDTx(ctx, tx, e.Store, pid); err != nil {
 				return err
@@ -266,10 +283,27 @@ func runDoctorRepairIdentity(ctx context.Context) {
 	}
 }
 
-// applyIdentityFindings folds registry stores with no identity row into the
-// doctor's per-store results as FAILs naming the store and the repair.
-func applyIdentityFindings(results []storeHealth, problems []identityProblem) []storeHealth {
-	for _, p := range problems {
+// identityAudit collects the shared database identity check for a doctor run.
+type identityAudit struct {
+	Problems   []identityProblem
+	Unverified bool
+}
+
+func identityAuditFor(ctx context.Context, db storeregistry.DBTX, entries []storeregistry.Entry, relayClient bool) identityAudit {
+	if relayClient {
+		return identityAudit{Unverified: true}
+	}
+	if db == nil {
+		return identityAudit{}
+	}
+	return identityAudit{Problems: identityProblems(ctx, db, entries)}
+}
+
+func (a identityAudit) apply(results []storeHealth) []storeHealth {
+	if a.Unverified {
+		return append(results, storeHealth{Name: "__identity__", Probe: "registry", Status: "fail", Reason: "identity unverified (relay client)"})
+	}
+	for _, p := range a.Problems {
 		reason := fmt.Sprintf("registered but has no _project_id row in the shared database (no other machine can create it); repair: %s", p.Repair)
 		found := false
 		for i := range results {
@@ -289,20 +323,29 @@ func applyIdentityFindings(results []storeHealth, problems []identityProblem) []
 	return results
 }
 
-// localIdentityProblems reads this machine's view of the shared registry and
-// returns the stores with no identity row. Machines that cannot read the
-// database (clients, unreachable) report none: the check is best effort.
-func localIdentityProblems(ctx context.Context) []identityProblem {
+func (a identityAudit) fleetFindings() []string {
+	if a.Unverified {
+		return []string{"FAIL identity unverified (relay client)"}
+	}
+	findings := make([]string, 0, len(a.Problems))
+	for _, p := range a.Problems {
+		findings = append(findings, "FAIL "+p.String())
+	}
+	return findings
+}
+
+// localIdentityAudit reads this machine's view of the shared registry.
+func localIdentityAudit(ctx context.Context) identityAudit {
 	if _, isClient := clientSourceIfConfigured(); isClient {
-		return nil
+		return identityAuditFor(ctx, nil, nil, true)
 	}
 	db, err := registryDBFunc()
 	if err != nil || db == nil {
-		return nil
+		return identityAudit{}
 	}
 	snap, found, err := storeregistry.ReadSnapshot(ctx, db)
 	if err != nil || !found {
-		return nil
+		return identityAudit{}
 	}
-	return identityProblems(ctx, db, snap.Entries)
+	return identityAuditFor(ctx, db, snap.Entries, false)
 }

@@ -167,8 +167,8 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	if idCtx == nil {
 		idCtx = context.Background()
 	}
-	identityFindings := localIdentityProblems(idCtx)
-	if len(stores) == 0 && len(identityFindings) == 0 {
+	identityAudit := localIdentityAudit(idCtx)
+	if len(stores) == 0 && len(identityAudit.Problems) == 0 && !identityAudit.Unverified {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
 		return
 	}
@@ -221,7 +221,7 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	}
 	wg.Wait()
 	// A registered store with no _project_id row is unsyncable on every other machine.
-	results = applyIdentityFindings(results, identityFindings)
+	results = identityAudit.apply(results)
 	elapsed := time.Since(started)
 
 	tally := tallyStoreHealth(results)

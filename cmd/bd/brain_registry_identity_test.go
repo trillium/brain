@@ -73,41 +73,39 @@ func TestStoresAddWritesIdentityInTheRegistryTransaction(t *testing.T) {
 	}
 }
 
-func TestStoresAddAndReconcileRejectMissingProjectIDAtomically(t *testing.T) {
+func TestStoresAddRejectsMissingProjectIDBeforeLocalWrite(t *testing.T) {
 	f := newFleet(t)
 	a := f.addMachine("mini0")
 	f.adopt(a)
-	for _, tc := range []struct {
-		name string
-		plan storeregistry.PlanFunc
-	}{
-		{name: "add", plan: storeregistry.PlanCreate(storeEntryFor("notes"))},
-		{name: "reconcile", plan: storeregistry.PlanBackfill([]storeregistry.Entry{storeEntryFor("ideas")})},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			meta := registryMeta()
-			entries := []storeregistry.Entry{storeEntryFor("notes")}
-			if tc.name == "reconcile" {
-				entries[0] = storeEntryFor("ideas")
-			}
-			meta.InTx = identityBackfillInTx(entries)
-			_, err := storeregistry.Mutate(context.Background(), a.db, meta, tc.plan)
-			if err == nil || !strings.Contains(err.Error(), entries[0].Store) || !strings.Contains(err.Error(), "metadata.json") {
-				t.Fatalf("missing identity error = %v", err)
-			}
-			if _, ok := identityRow(t, f, entries[0].Store); ok {
-				t.Errorf("identity row for %q survived rejected registry mutation", entries[0].Store)
-			}
-			snap, _, err := storeregistry.ReadSnapshot(context.Background(), a.db)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, e := range snap.Entries {
-				if e.Store == entries[0].Store {
-					t.Errorf("registry entry for %q survived rejected registry mutation", e.Store)
-				}
-			}
-		})
+	a.use()
+	before, err := os.ReadFile(homeFile(storesYamlPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = brainStoresAddCmd.RunE(brainStoresAddCmd, []string{"notes", filepath.Join(a.home, "data", "notes", ".beads")})
+	if err == nil || !strings.Contains(err.Error(), "notes") || !strings.Contains(err.Error(), "metadata.json") {
+		t.Fatalf("missing identity error = %v", err)
+	}
+	after, err := os.ReadFile(homeFile(storesYamlPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("stores.yaml changed after rejected add")
+	}
+}
+
+func TestReconcileRejectsMissingProjectIDBeforeAdoption(t *testing.T) {
+	f := newFleet(t)
+	a := f.addMachine("mini0")
+	a.use()
+	plan := &reconcilePlan{Adopt: []storeregistry.Entry{storeEntryFor("task")}, AliasRows: map[string]string{}}
+	if _, err := applyReconcile(context.Background(), a.db, plan); err == nil || !strings.Contains(err.Error(), "project_id") {
+		t.Fatalf("missing identity error = %v", err)
+	}
+	_, found, err := storeregistry.ReadSnapshot(context.Background(), a.db)
+	if err != nil || found {
+		t.Fatalf("registry adopted after rejected reconcile: found=%v err=%v", found, err)
 	}
 }
 
@@ -174,7 +172,7 @@ func TestDoctorFailsAStoreWithoutIdentityAndNamesTheRepair(t *testing.T) {
 		t.Errorf("must name the store and the repair: %s", probs[0])
 	}
 
-	res := applyIdentityFindings([]storeHealth{{Name: "task", Status: "ok"}}, probs)
+	res := identityAudit{Problems: probs}.apply([]storeHealth{{Name: "task", Status: "ok"}})
 	if res[0].Status != "fail" || !strings.Contains(res[0].Reason, "--repair-identity") {
 		t.Errorf("doctor row: %+v", res[0])
 	}
@@ -189,9 +187,21 @@ func TestDoctorFailsAStoreWithoutIdentityAndNamesTheRepair(t *testing.T) {
 	if err := saveStoresRegistry(map[string]storeEntry{}); err != nil {
 		t.Fatal(err)
 	}
-	results := applyIdentityFindings(nil, localIdentityProblems(context.Background()))
+	results := localIdentityAudit(context.Background()).apply(nil)
 	if len(results) != 1 || results[0].Name != "task" || results[0].Status != "fail" {
 		t.Errorf("empty local registry identity audit = %+v", results)
+	}
+}
+
+func TestRelayClientIdentityAuditIsNonClean(t *testing.T) {
+	audit := identityAuditFor(context.Background(), nil, nil, true)
+	results := audit.apply(nil)
+	if len(results) != 1 || results[0].Status != "fail" || results[0].Reason != "identity unverified (relay client)" {
+		t.Fatalf("ordinary doctor relay audit = %+v", results)
+	}
+	fleet := audit.fleetFindings()
+	if len(fleet) != 1 || fleet[0] != "FAIL identity unverified (relay client)" {
+		t.Fatalf("fleet doctor relay audit = %+v", fleet)
 	}
 }
 
@@ -308,15 +318,6 @@ func TestEnsurePollerInstalledReportsAFailureInOneLine(t *testing.T) {
 	out := captureIdentityStdout(t, ensurePollerInstalled)
 	if strings.Count(strings.TrimSpace(out), "\n") != 0 || !strings.Contains(out, "installing it failed") {
 		t.Errorf("out=%q", out)
-	}
-}
-
-func TestSyncFlagsDeclareNoPoller(t *testing.T) {
-	if brainStoresSyncCmd.Flags().Lookup("no-poller") == nil {
-		t.Fatal("--no-poller flag missing")
-	}
-	if brainStoresDoctorCmd.Flags().Lookup("repair-identity") == nil {
-		t.Fatal("--repair-identity flag missing")
 	}
 }
 

@@ -329,10 +329,10 @@ func runFleetDoctor(ctx context.Context, src registrySource, db storeregistry.DB
 	}
 	if db != nil {
 		rep.Consistent = registryConsistencyProblems(ctx, db, snap.Entries)
-		for _, p := range identityProblems(ctx, db, snap.Entries) {
-			rep.Consistent = append(rep.Consistent, "FAIL "+p.String())
-		}
 	}
+	role, _ := src.Role()
+	identityAudit := identityAuditFor(ctx, db, snap.Entries, db == nil && role == "client")
+	rep.Consistent = append(rep.Consistent, identityAudit.fleetFindings()...)
 
 	self := machineName()
 	results := make([]fleetMachineResult, len(roster))
