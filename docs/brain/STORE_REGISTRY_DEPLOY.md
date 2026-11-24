@@ -68,7 +68,7 @@ rollback.
 | 7 | apply | `brain stores sync` | `converged at epoch 1 (55 stores)`; backup dir printed only if something was replaced | `sh <backup>/restore.sh` (links created are just symlinks; `rm` them) |
 | 8 | prove | `brain stores verify --probe 3` | `converged` | |
 | 9 | roster | write `~/.config/brain/fleet.yaml` (`machines: [{name: mini0}, {name: mini1}, {name: macbook}]`, `ssh:` targets as `~/.ssh/config` knows them) | `brain stores doctor --fleet --machines mini0` converged | delete the file |
-| 10 | poller | `brain stores poller print` (read it), `brain stores poller install --dry-run`, then `brain stores poller install` | `brain stores poller status` → `installed=true loaded=true`; after 5 minutes `~/Library/Logs/brain/stores-sync.log` shows no error and `brain stores epoch` shows the applied epoch current | `brain stores poller uninstall` (sync stays available by hand and on every command) |
+| 10 | poller | `brain stores poller print` (read it), then `brain stores poller status` | the sync in step 7 installed it: `installed=true loaded=true`; after 5 minutes `~/Library/Logs/brain/stores-sync.log` shows no error and `brain stores epoch` shows the applied epoch current | `brain stores poller uninstall` (sync stays available by hand and on every command) |
 | 11 | bridge | apply the bridge patch (see the PR) and `launchctl kickstart -k gui/$UID/<bridge label>`; optionally `~/.config/brain/sync.d/10-bridge` containing that kickstart line, `chmod +x` | `bridge_info` shows the stores and `stores_epoch` | restore the bridge's `config.ts` copy |
 | 12 | shell hook (optional) | add `eval "$(brain stores shell-hook zsh)"` to `~/.zshrc` | typing a registry store with no wrapper runs it | remove the line |
 
