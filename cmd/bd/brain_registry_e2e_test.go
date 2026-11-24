@@ -50,6 +50,14 @@ func newFleet(t *testing.T) *fleet {
 	f := &fleet{t: t, srv: regtest.New(t)}
 	orig := registryDBFunc
 	t.Cleanup(func() { registryDBFunc = orig })
+	// No test touches launchd: the poller reads as loaded, and a machine's
+	// poller is "installed" when its plist exists in its temp HOME.
+	origLoaded, origInstall := pollerLoaded, installPollerFn
+	pollerLoaded = func() bool { return true }
+	installPollerFn = func(string, int, bool, bool) (string, error) {
+		return "", fmt.Errorf("a test must not install a launch agent")
+	}
+	t.Cleanup(func() { pollerLoaded, installPollerFn = origLoaded, origInstall })
 	return f
 }
 
@@ -67,6 +75,7 @@ func (f *fleet) addMachine(name string) *machine {
 	mustWrite(f.t, filepath.Join(m.home, "data/tasks/.beads/metadata.json"), "{}\n", 0o644)
 	mustWrite(f.t, filepath.Join(m.home, ".config/brain/store-host.env"),
 		"export BEADS_DOLT_SERVER_HOST=127.0.0.1\nexport BEADS_DOLT_SERVER_PORT=3307\n", 0o644)
+	mustWrite(f.t, filepath.Join(m.home, "Library/LaunchAgents", pollerLabel+".plist"), "<plist/>\n", 0o644)
 	mustWrite(f.t, filepath.Join(m.home, ".local/bin/task"), "#!/bin/sh\n# Brain federation wrapper — hand written\nexec bd \"$@\"\n", 0o755)
 	if err := os.Symlink(filepath.Join(m.home, ".local/bin/task"), filepath.Join(m.home, ".pi/agent/bin/task")); err != nil {
 		f.t.Fatal(err)

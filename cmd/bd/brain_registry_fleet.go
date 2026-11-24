@@ -167,6 +167,47 @@ type fleetReport struct {
 // asleepWindow: an unreachable machine whose last acknowledgement is at the
 // current epoch missed nothing, however long ago it spoke.
 func classifyFleetMachine(m fleetMember, snap storeregistry.Snapshot, ack *storeregistry.Machine, rep *verifyReport, runErr error) fleetMachineResult {
+	r := classifyFleetMachineEpoch(m, snap, ack, rep, runErr)
+	if rep == nil || runErr != nil {
+		return r
+	}
+	// The poller is what keeps an idle machine converging; a machine without it
+	// sits at its last epoch and nothing notices (incident 2026-11-24).
+	if problem := pollerProblem(rep); problem != "" {
+		fix := "on " + m.Name + ": brain stores poller install"
+		switch r.Verdict {
+		case verdictConverged:
+			r.Verdict = verdictDrifted
+			r.Detail = fmt.Sprintf("epoch %d is current but %s", rep.AppliedEpoch, problem)
+			r.Fix = fix
+		default:
+			r.Detail += "; " + problem
+			if r.Fix != "" {
+				r.Fix += " ; " + fix
+			} else {
+				r.Fix = fix
+			}
+		}
+	}
+	return r
+}
+
+// pollerProblem names why a reachable machine's poller is not doing its job
+// ("" when it is, or when the machine has no launchd to run one).
+func pollerProblem(rep *verifyReport) string {
+	if rep.OS != "" && rep.OS != "darwin" {
+		return ""
+	}
+	switch {
+	case !rep.PollerLoaded:
+		return "the sync poller (" + pollerLabel + ") is not installed"
+	case rep.PollerActive != nil && !*rep.PollerActive:
+		return "the sync poller (" + pollerLabel + ") is installed but not loaded"
+	}
+	return ""
+}
+
+func classifyFleetMachineEpoch(m fleetMember, snap storeregistry.Snapshot, ack *storeregistry.Machine, rep *verifyReport, runErr error) fleetMachineResult {
 	r := fleetMachineResult{Name: m.Name, SSH: m.SSH, Report: rep}
 	if ack != nil {
 		r.LastAck = fmt.Sprintf("%s at epoch %d", ack.CheckedAt, ack.AppliedEpoch)
@@ -286,6 +327,9 @@ func runFleetDoctor(ctx context.Context, src registrySource, db storeregistry.DB
 	}
 	if db != nil {
 		rep.Consistent = registryConsistencyProblems(ctx, db, snap.Entries)
+		for _, p := range identityProblems(ctx, db, snap.Entries) {
+			rep.Consistent = append(rep.Consistent, "FAIL "+p.String())
+		}
 	}
 
 	self := machineName()

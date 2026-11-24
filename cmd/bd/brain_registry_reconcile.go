@@ -387,6 +387,9 @@ func applyReconcile(ctx context.Context, db *sql.DB, plan *reconcilePlan) (store
 			return nil
 		}
 	}
+	// Every adopted store gets its identity row from this machine's metadata.json
+	// in the same transaction (never overwriting a row the database has).
+	meta.InTx = chainInTx(meta.InTx, identityBackfillInTx(all))
 	res, err := storeregistry.Mutate(ctx, db, meta, storeregistry.PlanBackfill(all))
 	if err != nil {
 		return res, fmt.Errorf("writing the registry: %w", err)

@@ -8,6 +8,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -160,50 +161,71 @@ var brainStoresPollerPrintCmd = &cobra.Command{
 	},
 }
 
+// installPoller writes the launch agent and (unless noLoad) loads it. wrapper
+// "" means ~/.local/bin/brain. It returns the one-line summary to print.
+func installPoller(wrapper string, interval int, noLoad, dryRun bool) (string, error) {
+	home, _ := os.UserHomeDir()
+	body, err := renderPollerPlist(home, wrapper, interval)
+	if err != nil {
+		return "", err
+	}
+	if wrapper == "" {
+		wrapper = filepath.Join(home, ".local", "bin", "brain")
+	}
+	plist := pollerPlistFile()
+	logDir := filepath.Join(home, pollerLogDirPath)
+	if dryRun {
+		return fmt.Sprintf("would write %s\nwould create %s\nwould run: launchctl bootstrap gui/%d %s\n", plist, logDir, os.Getuid(), plist), nil
+	}
+	if runtime.GOOS != "darwin" && !noLoad {
+		return "", errors.New("launchd is macOS only; use --no-load to just write the plist")
+	}
+	if st, err := os.Stat(wrapper); err != nil || st.Mode()&0o111 == 0 {
+		return "", fmt.Errorf("%s is not an executable wrapper; pass --wrapper <path to the brain wrapper>", wrapper)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return "", fmt.Errorf("creating %s: %v", logDir, err)
+	}
+	if err := writeFileAtomic(plist, []byte(body), 0o644); err != nil {
+		return "", fmt.Errorf("writing %s: %v", plist, err)
+	}
+	if noLoad {
+		return fmt.Sprintf("wrote %s (not loaded)\n", plist), nil
+	}
+	domain := "gui/" + strconv.Itoa(os.Getuid())
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", domain+"/"+pollerLabel).Run() // reload cleanly
+	if out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", domain, plist).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("launchctl bootstrap failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return fmt.Sprintf("installed %s (every %ds and at load); log: %s/stores-sync.log\n", pollerLabel, interval, logDir), nil
+}
+
+// installPollerFn is what 'brain stores sync' calls to self-install the poller.
+// Tests replace it (nothing in the tests may touch launchd).
+var installPollerFn = installPoller
+
+// pollerLoaded reports whether launchd has the poller loaded. Tests replace it.
+var pollerLoaded = func() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+pollerLabel).Run() == nil
+}
+
 var brainStoresPollerInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Install and load the launch agent on this machine",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, _ []string) {
-		home, _ := os.UserHomeDir()
-		body, err := renderPollerPlist(home, pollerWrapper, pollerInterval)
+		msg, err := installPoller(pollerWrapper, pollerInterval, pollerNoLoad, pollerDryRun)
 		if err != nil {
 			FatalError("%v", err)
 		}
-		wrapper := pollerWrapper
-		if wrapper == "" {
-			wrapper = filepath.Join(home, ".local", "bin", "brain")
-		}
-		plist := pollerPlistFile()
-		logDir := filepath.Join(home, pollerLogDirPath)
-		if pollerDryRun {
-			fmt.Printf("would write %s\nwould create %s\nwould run: launchctl bootstrap gui/%d %s\n", plist, logDir, os.Getuid(), plist)
-			return
-		}
-		if runtime.GOOS != "darwin" && !pollerNoLoad {
-			FatalError("launchd is macOS only; use --no-load to just write the plist")
-		}
-		if st, err := os.Stat(wrapper); err != nil || st.Mode()&0o111 == 0 {
-			FatalError("%s is not an executable wrapper; pass --wrapper <path to the brain wrapper>", wrapper)
-		}
-		if err := os.MkdirAll(logDir, 0o755); err != nil {
-			FatalError("creating %s: %v", logDir, err)
-		}
-		if err := writeFileAtomic(plist, []byte(body), 0o644); err != nil {
-			FatalError("writing %s: %v", plist, err)
-		}
-		if pollerNoLoad {
-			fmt.Printf("wrote %s (not loaded)\n", plist)
-			return
-		}
-		domain := "gui/" + strconv.Itoa(os.Getuid())
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = exec.CommandContext(ctx, "launchctl", "bootout", domain+"/"+pollerLabel).Run() // reload cleanly
-		if out, err := exec.CommandContext(ctx, "launchctl", "bootstrap", domain, plist).CombinedOutput(); err != nil {
-			FatalError("launchctl bootstrap failed: %v: %s", err, strings.TrimSpace(string(out)))
-		}
-		fmt.Printf("installed %s (every %ds and at load); log: %s/stores-sync.log\n", pollerLabel, pollerInterval, logDir)
+		fmt.Print(msg)
 	},
 }
 
@@ -235,12 +257,7 @@ var brainStoresPollerStatusCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, _ []string) {
 		installed := pollerInstalled()
-		loaded := false
-		if runtime.GOOS == "darwin" {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			loaded = exec.CommandContext(ctx, "launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())+"/"+pollerLabel).Run() == nil
-		}
+		loaded := pollerLoaded()
 		applied, _ := readAppliedState()
 		if jsonOutput {
 			_ = outputJSON(map[string]any{"installed": installed, "loaded": loaded, "label": pollerLabel, "applied_epoch": applied.Epoch, "applied_at": applied.AppliedAt})

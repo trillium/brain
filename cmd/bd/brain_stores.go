@@ -194,7 +194,11 @@ var brainStoresAddCmd = &cobra.Command{
 				e := storeregistry.Entry{Name: name, Kind: storeregistry.KindStore, Store: name, State: storeregistry.StateActive,
 					RelPath: rel, WrapperKind: detectWrapperKindFor(name, filepath.Dir(beadsDir)), About: entry.About, EditBack: entry.EditBack}
 				if e.Validate() == nil {
-					if res, merr := storeregistry.Mutate(rootCtx, db, registryMeta(), storeregistry.PlanCreate(e)); merr != nil {
+					// The identity row rides in the same transaction as the entry, so a
+					// registered store can never be one no other machine can create.
+					meta := registryMeta()
+					meta.InTx = identityBackfillInTx([]storeregistry.Entry{e})
+					if res, merr := storeregistry.Mutate(rootCtx, db, meta, storeregistry.PlanCreate(e)); merr != nil {
 						fmt.Fprintf(os.Stderr, "warning: store registered locally only; the shared registry refused it: %v\n", merr)
 					} else {
 						epochNote = syncThisMachine(rootCtx, db, res.Epoch)

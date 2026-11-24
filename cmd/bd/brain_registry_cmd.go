@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -34,11 +35,12 @@ import (
 var storesLocalOnly bool
 
 var (
-	syncDryRun  bool
-	syncQuiet   bool
-	syncMachine string
-	syncTrigger string
-	syncWait    time.Duration
+	syncDryRun   bool
+	syncQuiet    bool
+	syncMachine  string
+	syncTrigger  string
+	syncWait     time.Duration
+	syncNoPoller bool
 
 	verifyProbe int
 )
@@ -78,6 +80,12 @@ its ~/.pi/agent/bin link. 'sync' computes the difference and applies it.
   - A removed store leaves a tombstone; each machine removes only its own
     generated wrapper and link. Database rows and data directories stay.
 
+A machine that does not have the launchd poller installed gets it installed by
+this command (one line says so); --no-poller skips that. A store the database
+holds no project identity for ('the database has no project identity for X') is
+repaired with 'brain stores doctor --repair-identity' on a machine that has X's
+metadata.json; the sync error says so.
+
 Triggers: the launchd poller (every 5 minutes and at load), the ride-along on
 every bd/brain command, and create/rename/remove on the machine that made the
 change. --dry-run prints the plan and changes nothing.
@@ -98,6 +106,9 @@ func runBrainStoresSync(cmd *cobra.Command, _ []string) {
 	ctx := rootCtx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if !syncDryRun && !syncNoPoller {
+		ensurePollerInstalled()
 	}
 	src, err := registrySourceForCommand()
 	if err != nil {
@@ -126,6 +137,27 @@ func runBrainStoresSync(cmd *cobra.Command, _ []string) {
 	}
 }
 
+// ensurePollerInstalled installs the launchd poller on a machine that does not
+// have it (a machine without one sits at its last epoch and nothing notices).
+// It prints a single line saying what it did; --no-poller skips it. A machine
+// where launchd is not available is left alone.
+func ensurePollerInstalled() {
+	if runtime.GOOS != "darwin" || pollerInstalled() {
+		return
+	}
+	out := os.Stdout
+	if jsonOutput {
+		out = os.Stderr
+	}
+	msg, err := installPollerFn("", pollerDefaultSecs, false, false)
+	if err != nil {
+		fmt.Fprintf(out, "poller: %s is not installed here and installing it failed (%s); fix and run 'brain stores poller install', or pass --no-poller to skip\n", pollerLabel, firstErrLine(err))
+		return
+	}
+	_ = msg
+	fmt.Fprintf(out, "poller: %s was not installed on this machine; installed it so this machine keeps converging (pass --no-poller to skip)\n", pollerLabel)
+}
+
 // ---------------------------------------------------------------------------
 // verify
 // ---------------------------------------------------------------------------
@@ -149,7 +181,11 @@ type verifyReport struct {
 	Probes        []storeHealth       `json:"probes,omitempty"`
 	BdVersion     string              `json:"bd_version"`
 	PollerLoaded  bool                `json:"poller_installed"`
-	Error         string              `json:"error,omitempty"`
+	// PollerActive is whether launchd has the poller loaded (nil: an older
+	// binary that did not report it). OS lets the fleet view skip non-launchd hosts.
+	PollerActive *bool  `json:"poller_loaded,omitempty"`
+	OS           string `json:"os,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 // Converged reports whether the machine matches the registry it read.
@@ -177,7 +213,9 @@ func buildVerifyReport(ctx context.Context, src registrySource, probes int) veri
 	applied, _ := readAppliedState()
 	v := verifyReport{Machine: machine, Role: role, Relay: relay, BdVersion: Version,
 		AppliedEpoch: applied.Epoch, AppliedDigest: applied.Digest, Source: "database",
-		Missing: map[string][]string{}, PollerLoaded: pollerInstalled()}
+		Missing: map[string][]string{}, PollerLoaded: pollerInstalled(), OS: runtime.GOOS}
+	active := pollerLoaded()
+	v.PollerActive = &active
 	if role == "client" {
 		v.Source = "relay"
 	}
@@ -693,6 +731,7 @@ func init() {
 	brainStoresSyncCmd.Flags().BoolVar(&syncQuiet, "quiet", false, "Print only when something changed or failed (for the poller's log)")
 	brainStoresSyncCmd.Flags().StringVar(&syncMachine, "machine", "", "Run the sync on this fleet machine over ssh (default: this machine)")
 	brainStoresSyncCmd.Flags().StringVar(&syncTrigger, "trigger", "manual", "What started this run (recorded for the log: timer, manual, ...)")
+	brainStoresSyncCmd.Flags().BoolVar(&syncNoPoller, "no-poller", false, "Do not install the launchd poller when this machine lacks it")
 	brainStoresSyncCmd.Flags().DurationVar(&syncWait, "wait", 30*time.Second, "How long to wait for another sync running here")
 	brainStoresVerifyCmd.Flags().IntVar(&verifyProbe, "probe", 0, "Also read through the wrappers of the newest N stores")
 	brainStoresRegistryReportCmd.Flags().StringVar(&registryReportJSON, "machine-json", "", "The machine report as JSON")
@@ -710,8 +749,8 @@ func registryLocalVerb(args []string) bool {
 	var words []string
 	fleet := false
 	for _, a := range args {
-		if a == "--fleet" {
-			fleet = true
+		if a == "--fleet" || a == "--repair-identity" {
+			fleet = true // acts on this machine's files, from wherever it is run
 		}
 		if strings.HasPrefix(a, "-") {
 			continue
