@@ -51,8 +51,15 @@ func localProjectID(beadsDir string) string {
 	return strings.TrimSpace(cfg.ProjectID)
 }
 
-func missingLocalProjectIDError(e storeregistry.Entry) error {
-	return fmt.Errorf("cannot register store %q: %s/metadata.json has no project_id; add the store's project_id to that file and retry", e.Store, e.RelPath)
+func missingLocalProjectIDError(store, beadsDir string) error {
+	return fmt.Errorf("cannot register store %q: %s/metadata.json has no project_id; add the store's project_id to that file and retry", store, beadsDir)
+}
+
+func requireLocalProjectID(store, beadsDir string) error {
+	if localProjectID(beadsDir) == "" {
+		return missingLocalProjectIDError(store, beadsDir)
+	}
+	return nil
 }
 
 func requireLocalProjectIDs(entries []storeregistry.Entry) error {
@@ -61,8 +68,8 @@ func requireLocalProjectIDs(entries []storeregistry.Entry) error {
 		if e.Kind != storeregistry.KindStore || e.State != storeregistry.StateActive {
 			continue
 		}
-		if localProjectID(filepath.Join(home, filepath.FromSlash(e.RelPath))) == "" {
-			return missingLocalProjectIDError(e)
+		if err := requireLocalProjectID(e.Store, filepath.Join(home, filepath.FromSlash(e.RelPath))); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -110,7 +117,7 @@ func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, s
 			}
 			pid := localProjectID(filepath.Join(home, filepath.FromSlash(e.RelPath)))
 			if pid == "" {
-				return missingLocalProjectIDError(e)
+				return missingLocalProjectIDError(e.Store, filepath.Join(home, filepath.FromSlash(e.RelPath)))
 			}
 			if _, _, err := ensureProjectIDTx(ctx, tx, e.Store, pid); err != nil {
 				return err

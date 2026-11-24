@@ -1,9 +1,8 @@
 package main
 
 // The launchd poller: the backstop that keeps an idle machine converged. It
-// runs 'brain stores sync' at load and every five minutes. Installing it is a
-// deliberate, per-machine act (see docs/brain/STORE_REGISTRY.md); nothing in
-// the build or the tests installs it.
+// runs 'brain stores sync' at load and every five minutes. Sync installs it
+// automatically when missing; pass --no-poller to skip that installation.
 
 import (
 	"bytes"

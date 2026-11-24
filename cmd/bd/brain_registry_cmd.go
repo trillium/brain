@@ -34,6 +34,8 @@ import (
 // storesLocalOnly (--local-only) keeps a lifecycle verb off the shared registry.
 var storesLocalOnly bool
 
+var syncExit = os.Exit
+
 var (
 	syncDryRun   bool
 	syncQuiet    bool
@@ -101,7 +103,8 @@ Exit codes: 0 converged (or nothing adopted yet), 1 partial (items listed),
 
 func runBrainStoresSync(cmd *cobra.Command, _ []string) {
 	if syncMachine != "" && syncMachine != machineName() {
-		os.Exit(runFleetMachineSync(cmd.Context(), syncMachine, syncDryRun, syncNoPoller))
+		syncExit(runFleetMachineSync(cmd.Context(), syncMachine, syncDryRun, syncNoPoller))
+		return
 	}
 	ctx := rootCtx
 	if ctx == nil {

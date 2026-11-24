@@ -174,6 +174,9 @@ var brainStoresAddCmd = &cobra.Command{
 		if err := validateStoreName("store name", name); err != nil {
 			return err
 		}
+		if err := requireLocalProjectID(name, beadsDir); err != nil {
+			return err
+		}
 
 		stores, err := loadStoresRegistry()
 		if err != nil {
@@ -188,9 +191,6 @@ var brainStoresAddCmd = &cobra.Command{
 				e := storeregistry.Entry{Name: name, Kind: storeregistry.KindStore, Store: name, State: storeregistry.StateActive,
 					RelPath: rel, WrapperKind: detectWrapperKindFor(name, filepath.Dir(beadsDir)), About: entry.About, EditBack: entry.EditBack}
 				if e.Validate() == nil {
-					if err := requireLocalProjectIDs([]storeregistry.Entry{e}); err != nil {
-						return err
-					}
 					registryEntry, registryDB = &e, db
 				} else {
 					localOnlyNote = fmt.Sprintf("note: %q is registered on this machine only (%v)\n", name, e.Validate())

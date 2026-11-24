@@ -78,20 +78,40 @@ func TestStoresAddRejectsMissingProjectIDBeforeLocalWrite(t *testing.T) {
 	a := f.addMachine("mini0")
 	f.adopt(a)
 	a.use()
-	before, err := os.ReadFile(homeFile(storesYamlPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = brainStoresAddCmd.RunE(brainStoresAddCmd, []string{"notes", filepath.Join(a.home, "data", "notes", ".beads")})
-	if err == nil || !strings.Contains(err.Error(), "notes") || !strings.Contains(err.Error(), "metadata.json") {
-		t.Fatalf("missing identity error = %v", err)
-	}
-	after, err := os.ReadFile(homeFile(storesYamlPath))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Error("stores.yaml changed after rejected add")
+	for _, tc := range []struct {
+		name  string
+		dir   string
+		setup func(*testing.T)
+	}{
+		{name: "adopted", dir: filepath.Join(a.home, "data", "notes", ".beads")},
+		{name: "registry off", dir: filepath.Join(a.home, "data", "notes", ".beads"), setup: func(t *testing.T) { t.Setenv(envRegistryOff, "off") }},
+		{name: "local only", dir: filepath.Join(a.home, "data", "notes", ".beads"), setup: func(t *testing.T) {
+			old := storesLocalOnly
+			storesLocalOnly = true
+			t.Cleanup(func() { storesLocalOnly = old })
+		}},
+		{name: "outside home", dir: filepath.Join(t.TempDir(), ".beads")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.setup != nil {
+				tc.setup(t)
+			}
+			before, err := os.ReadFile(homeFile(storesYamlPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = brainStoresAddCmd.RunE(brainStoresAddCmd, []string{"notes", tc.dir})
+			if err == nil || !strings.Contains(err.Error(), "notes") || !strings.Contains(err.Error(), "metadata.json") {
+				t.Fatalf("missing identity error = %v", err)
+			}
+			after, err := os.ReadFile(homeFile(storesYamlPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Error("stores.yaml changed after rejected add")
+			}
+		})
 	}
 }
 
@@ -321,19 +341,34 @@ func TestEnsurePollerInstalledReportsAFailureInOneLine(t *testing.T) {
 	}
 }
 
-func TestFleetSyncForwardsNoPoller(t *testing.T) {
+func TestFleetSyncCommandForwardsNoPoller(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv(envMachine, "laptop")
 	mustWrite(t, filepath.Join(home, fleetRosterPath), "machines:\n  - name: mini0\n", 0o644)
 	orig := sshFleetRunner
 	t.Cleanup(func() { sshFleetRunner = orig })
+	origExit := syncExit
+	t.Cleanup(func() { syncExit = origExit })
+	t.Cleanup(func() {
+		syncMachine, syncDryRun, syncNoPoller = "", false, false
+		_ = brainStoresSyncCmd.Flags().Set("machine", "")
+		_ = brainStoresSyncCmd.Flags().Set("dry-run", "false")
+		_ = brainStoresSyncCmd.Flags().Set("no-poller", "false")
+	})
 	var got []string
 	sshFleetRunner = func(_ context.Context, _ fleetMember, args ...string) ([]byte, error) {
 		got = append([]string(nil), args...)
 		return nil, nil
 	}
-	if code := runFleetMachineSync(context.Background(), "mini0", true, true); code != 0 {
-		t.Fatalf("sync exit = %d", code)
+	exitCode := -1
+	syncExit = func(code int) { exitCode = code }
+	brainStoresSyncCmd.SetArgs([]string{"--machine", "mini0", "--dry-run", "--no-poller"})
+	if err := brainStoresSyncCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("sync exit = %d", exitCode)
 	}
 	if strings.Join(got, " ") != "stores sync --dry-run --no-poller" {
 		t.Errorf("remote sync arguments = %q", got)
