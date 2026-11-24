@@ -105,9 +105,7 @@ func ensureProjectIDTx(ctx context.Context, tx storeregistry.DBTX, store, projec
 }
 
 // identityBackfillInTx returns an InTx hook that backfills, for every store
-// entry given, the identity row from this machine's metadata.json. Conflicts
-// are left for 'doctor --repair-identity' to report; they never fail the
-// registry write.
+// entry given, the identity row from this machine's metadata.json.
 func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, storeregistry.DBTX) error {
 	home, _ := os.UserHomeDir()
 	return func(ctx context.Context, tx storeregistry.DBTX) error {
@@ -119,8 +117,12 @@ func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, s
 			if pid == "" {
 				return missingLocalProjectIDError(e.Store, filepath.Join(home, filepath.FromSlash(e.RelPath)))
 			}
-			if _, _, err := ensureProjectIDTx(ctx, tx, e.Store, pid); err != nil {
+			_, conflict, err := ensureProjectIDTx(ctx, tx, e.Store, pid)
+			if err != nil {
 				return err
+			}
+			if conflict != "" {
+				return fmt.Errorf("cannot register store %q: its metadata.json project_id %q conflicts with database project_id %q", e.Store, pid, conflict)
 			}
 		}
 		return nil
@@ -308,7 +310,7 @@ func identityAuditFor(ctx context.Context, db storeregistry.DBTX, entries []stor
 
 func (a identityAudit) apply(results []storeHealth) []storeHealth {
 	if a.Unverified {
-		return append(results, storeHealth{Name: "__identity__", Probe: "registry", Status: "fail", Reason: "identity unverified (relay client)"})
+		return append(results, storeHealth{Name: "__identity__", Probe: "registry", Status: "info", Reason: "identity audit skipped (relay client)"})
 	}
 	for _, p := range a.Problems {
 		reason := fmt.Sprintf("registered but has no _project_id row in the shared database (no other machine can create it); repair: %s", p.Repair)
@@ -332,7 +334,7 @@ func (a identityAudit) apply(results []storeHealth) []storeHealth {
 
 func (a identityAudit) fleetFindings() []string {
 	if a.Unverified {
-		return []string{"FAIL identity unverified (relay client)"}
+		return []string{"INFO identity audit skipped (relay client)"}
 	}
 	findings := make([]string, 0, len(a.Problems))
 	for _, p := range a.Problems {

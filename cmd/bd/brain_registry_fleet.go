@@ -371,7 +371,12 @@ func runFleetDoctor(ctx context.Context, src registrySource, db storeregistry.DB
 	wg.Wait()
 	rep.Machines = results
 
-	ok := len(rep.Consistent) == 0
+	ok := true
+	for _, p := range rep.Consistent {
+		if strings.HasPrefix(p, "FAIL ") {
+			ok = false
+		}
+	}
 	var bad []string
 	for _, r := range results {
 		switch r.Verdict {

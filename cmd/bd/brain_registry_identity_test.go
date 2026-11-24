@@ -128,8 +128,10 @@ func TestReconcileRejectsMissingProjectIDBeforeAdoption(t *testing.T) {
 		defer func() { _ = db.Close() }()
 		registryDBFunc = func() (*sql.DB, error) { return db, nil }
 		rootCtx = context.Background()
-		reconcileApply = true
-		brainStoresReconcileCmd.Run(brainStoresReconcileCmd, nil)
+		brainStoresReconcileCmd.SetArgs([]string{"--apply"})
+		if err := brainStoresReconcileCmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
 		t.Fatal("reconcile unexpectedly returned")
 	}
 
@@ -163,7 +165,7 @@ func TestStoresCreateWritesIdentityWithTheEntry(t *testing.T) {
 	}
 }
 
-func TestIdentityBackfillNeverOverwritesAnExistingRow(t *testing.T) {
+func TestIdentityBackfillRejectsAnExistingConflict(t *testing.T) {
 	f := newFleet(t)
 	a := f.addMachine("mini0")
 	f.adopt(a)
@@ -171,11 +173,11 @@ func TestIdentityBackfillNeverOverwritesAnExistingRow(t *testing.T) {
 	writeProjectID(t, a, "notes", "file-id")
 	meta := registryMeta()
 	meta.InTx = identityBackfillInTx([]storeregistry.Entry{storeEntryFor("notes")})
-	if _, err := storeregistry.Mutate(context.Background(), a.db, meta, storeregistry.PlanCreate(storeEntryFor("notes"))); err != nil {
-		t.Fatal(err)
+	if _, err := storeregistry.Mutate(context.Background(), a.db, meta, storeregistry.PlanCreate(storeEntryFor("notes"))); err == nil || !strings.Contains(err.Error(), "conflicts") {
+		t.Fatalf("identity conflict error = %v", err)
 	}
 	if v, _ := identityRow(t, f, "notes"); v != "db-id" {
-		t.Errorf("existing identity overwritten: %q", v)
+		t.Errorf("existing identity changed: %q", v)
 	}
 }
 
@@ -237,14 +239,14 @@ func TestDoctorFailsAStoreWithoutIdentityAndNamesTheRepair(t *testing.T) {
 	}
 }
 
-func TestRelayClientIdentityAuditIsNonClean(t *testing.T) {
+func TestRelayClientIdentityAuditIsInformational(t *testing.T) {
 	audit := identityAuditFor(context.Background(), nil, nil, true)
 	results := audit.apply(nil)
-	if len(results) != 1 || results[0].Status != "fail" || results[0].Reason != "identity unverified (relay client)" {
+	if len(results) != 1 || results[0].Status != "info" || results[0].Reason != "identity audit skipped (relay client)" {
 		t.Fatalf("ordinary doctor relay audit = %+v", results)
 	}
 	fleet := audit.fleetFindings()
-	if len(fleet) != 1 || fleet[0] != "FAIL identity unverified (relay client)" {
+	if len(fleet) != 1 || fleet[0] != "INFO identity audit skipped (relay client)" {
 		t.Fatalf("fleet doctor relay audit = %+v", fleet)
 	}
 }
