@@ -8,15 +8,19 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/steveyegge/beads/internal/storeregistry"
+	"github.com/steveyegge/beads/internal/storeregistry/regtest"
 )
 
 func storeEntryFor(name string) storeregistry.Entry {
@@ -116,12 +120,32 @@ func TestStoresAddRejectsMissingProjectIDBeforeLocalWrite(t *testing.T) {
 }
 
 func TestReconcileRejectsMissingProjectIDBeforeAdoption(t *testing.T) {
+	if port := os.Getenv("BRAIN_RECONCILE_TEST_PORT"); port != "" {
+		db, err := sql.Open("mysql", fmt.Sprintf("root@tcp(127.0.0.1:%s)/%s", port, regtest.Database))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = db.Close() }()
+		registryDBFunc = func() (*sql.DB, error) { return db, nil }
+		rootCtx = context.Background()
+		reconcileApply = true
+		brainStoresReconcileCmd.Run(brainStoresReconcileCmd, nil)
+		t.Fatal("reconcile unexpectedly returned")
+	}
+
 	f := newFleet(t)
 	a := f.addMachine("mini0")
-	a.use()
-	plan := &reconcilePlan{Adopt: []storeregistry.Entry{storeEntryFor("task")}, AliasRows: map[string]string{}}
-	if _, err := applyReconcile(context.Background(), a.db, plan); err == nil || !strings.Contains(err.Error(), "project_id") {
-		t.Fatalf("missing identity error = %v", err)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestReconcileRejectsMissingProjectIDBeforeAdoption$")
+	cmd.Env = append(os.Environ(),
+		"BRAIN_RECONCILE_TEST_PORT="+fmt.Sprint(f.srv.Port()),
+		"HOME="+a.home,
+	)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("reconcile unexpectedly succeeded")
+	}
+	if !strings.Contains(string(out), "project_id") {
+		t.Fatalf("reconcile output = %q", out)
 	}
 	_, found, err := storeregistry.ReadSnapshot(context.Background(), a.db)
 	if err != nil || found {
