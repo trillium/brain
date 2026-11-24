@@ -105,7 +105,9 @@ const defaultFleetCommand = `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local
 // Tests replace it with an in-process fake.
 type fleetRunner func(ctx context.Context, m fleetMember, args ...string) ([]byte, error)
 
-func sshFleetRunner(ctx context.Context, m fleetMember, args ...string) ([]byte, error) {
+var sshFleetRunner = runSSHFleetCommand
+
+func runSSHFleetCommand(ctx context.Context, m fleetMember, args ...string) ([]byte, error) {
 	command := m.Command
 	if command == "" {
 		command = defaultFleetCommand
@@ -501,7 +503,7 @@ func printFleetReport(w interface{ Write([]byte) (int, error) }, rep *fleetRepor
 
 // runFleetMachineSync runs `brain stores sync` on a roster machine over ssh
 // ('brain stores sync --machine NAME').
-func runFleetMachineSync(ctx context.Context, name string, dryRun bool) int {
+func runFleetMachineSync(ctx context.Context, name string, dryRun, noPoller bool) int {
 	roster, err := loadFleetRoster("", []string{name})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brain stores sync --machine %s: %v\n", name, err)
@@ -510,6 +512,9 @@ func runFleetMachineSync(ctx context.Context, name string, dryRun bool) int {
 	args := []string{"stores", "sync"}
 	if dryRun {
 		args = append(args, "--dry-run")
+	}
+	if noPoller {
+		args = append(args, "--no-poller")
 	}
 	tctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()

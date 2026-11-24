@@ -101,7 +101,7 @@ Exit codes: 0 converged (or nothing adopted yet), 1 partial (items listed),
 
 func runBrainStoresSync(cmd *cobra.Command, _ []string) {
 	if syncMachine != "" && syncMachine != machineName() {
-		os.Exit(runFleetMachineSync(cmd.Context(), syncMachine, syncDryRun))
+		os.Exit(runFleetMachineSync(cmd.Context(), syncMachine, syncDryRun, syncNoPoller))
 	}
 	ctx := rootCtx
 	if ctx == nil {

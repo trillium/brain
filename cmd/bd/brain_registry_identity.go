@@ -81,9 +81,9 @@ func ensureProjectIDTx(ctx context.Context, tx storeregistry.DBTX, store, projec
 }
 
 // identityBackfillInTx returns an InTx hook that backfills, for every store
-// entry given, the identity row from this machine's metadata.json (when it has
-// one and the database has no row yet). Conflicts are left for
-// 'doctor --repair-identity' to report; they never fail the registry write.
+// entry given, the identity row from this machine's metadata.json. Conflicts
+// are left for 'doctor --repair-identity' to report; they never fail the
+// registry write.
 func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, storeregistry.DBTX) error {
 	home, _ := os.UserHomeDir()
 	return func(ctx context.Context, tx storeregistry.DBTX) error {
@@ -92,6 +92,9 @@ func identityBackfillInTx(entries []storeregistry.Entry) func(context.Context, s
 				continue
 			}
 			pid := localProjectID(filepath.Join(home, filepath.FromSlash(e.RelPath)))
+			if pid == "" {
+				return fmt.Errorf("cannot register store %q: %s/metadata.json has no project_id; add the store's project_id to that file and retry", e.Store, e.RelPath)
+			}
 			if _, _, err := ensureProjectIDTx(ctx, tx, e.Store, pid); err != nil {
 				return err
 			}

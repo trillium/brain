@@ -73,6 +73,44 @@ func TestStoresAddWritesIdentityInTheRegistryTransaction(t *testing.T) {
 	}
 }
 
+func TestStoresAddAndReconcileRejectMissingProjectIDAtomically(t *testing.T) {
+	f := newFleet(t)
+	a := f.addMachine("mini0")
+	f.adopt(a)
+	for _, tc := range []struct {
+		name string
+		plan storeregistry.PlanFunc
+	}{
+		{name: "add", plan: storeregistry.PlanCreate(storeEntryFor("notes"))},
+		{name: "reconcile", plan: storeregistry.PlanBackfill([]storeregistry.Entry{storeEntryFor("ideas")})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			meta := registryMeta()
+			entries := []storeregistry.Entry{storeEntryFor("notes")}
+			if tc.name == "reconcile" {
+				entries[0] = storeEntryFor("ideas")
+			}
+			meta.InTx = identityBackfillInTx(entries)
+			_, err := storeregistry.Mutate(context.Background(), a.db, meta, tc.plan)
+			if err == nil || !strings.Contains(err.Error(), entries[0].Store) || !strings.Contains(err.Error(), "metadata.json") {
+				t.Fatalf("missing identity error = %v", err)
+			}
+			if _, ok := identityRow(t, f, entries[0].Store); ok {
+				t.Errorf("identity row for %q survived rejected registry mutation", entries[0].Store)
+			}
+			snap, _, err := storeregistry.ReadSnapshot(context.Background(), a.db)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range snap.Entries {
+				if e.Store == entries[0].Store {
+					t.Errorf("registry entry for %q survived rejected registry mutation", e.Store)
+				}
+			}
+		})
+	}
+}
+
 func TestStoresCreateWritesIdentityWithTheEntry(t *testing.T) {
 	f := newFleet(t)
 	a := f.addMachine("mini0")
@@ -146,6 +184,14 @@ func TestDoctorFailsAStoreWithoutIdentityAndNamesTheRepair(t *testing.T) {
 	if rep.Converged || len(rep.Consistent) == 0 || !strings.HasPrefix(rep.Consistent[0], "FAIL ") ||
 		!strings.Contains(rep.Consistent[0], `"task"`) || !strings.Contains(rep.Consistent[0], "--repair-identity") {
 		t.Errorf("fleet doctor: %+v", rep.Consistent)
+	}
+
+	if err := saveStoresRegistry(map[string]storeEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	results := applyIdentityFindings(nil, localIdentityProblems(context.Background()))
+	if len(results) != 1 || results[0].Name != "task" || results[0].Status != "fail" {
+		t.Errorf("empty local registry identity audit = %+v", results)
 	}
 }
 
@@ -271,6 +317,25 @@ func TestSyncFlagsDeclareNoPoller(t *testing.T) {
 	}
 	if brainStoresDoctorCmd.Flags().Lookup("repair-identity") == nil {
 		t.Fatal("--repair-identity flag missing")
+	}
+}
+
+func TestFleetSyncForwardsNoPoller(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	mustWrite(t, filepath.Join(home, fleetRosterPath), "machines:\n  - name: mini0\n", 0o644)
+	orig := sshFleetRunner
+	t.Cleanup(func() { sshFleetRunner = orig })
+	var got []string
+	sshFleetRunner = func(_ context.Context, _ fleetMember, args ...string) ([]byte, error) {
+		got = append([]string(nil), args...)
+		return nil, nil
+	}
+	if code := runFleetMachineSync(context.Background(), "mini0", true, true); code != 0 {
+		t.Fatalf("sync exit = %d", code)
+	}
+	if strings.Join(got, " ") != "stores sync --dry-run --no-poller" {
+		t.Errorf("remote sync arguments = %q", got)
 	}
 }
 
