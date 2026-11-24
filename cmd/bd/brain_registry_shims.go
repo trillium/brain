@@ -566,7 +566,7 @@ func createStoreSkeleton(env shimEnv, a syncAction) error {
 		return fmt.Errorf("reading the project identity of %q: %w", a.project, err)
 	}
 	if pid == "" {
-		return fmt.Errorf("the database has no project identity for %q", a.project)
+		return &missingIdentityError{Store: a.project}
 	}
 	if err := os.MkdirAll(a.Path, 0o700); err != nil {
 		return err

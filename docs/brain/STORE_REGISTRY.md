@@ -77,9 +77,10 @@ unusable on a machine until a sync ran.
 ## Commands
 
 ```sh
-brain stores sync [--dry-run] [--machine NAME] [--quiet] [--json]
+brain stores sync [--dry-run] [--machine NAME] [--quiet] [--no-poller] [--json]
 brain stores verify [--json] [--probe N]        # read-only: this machine, from its real files
 brain stores doctor --fleet [--roster F] [--machines a,b] [--json]
+brain stores doctor --repair-identity
 brain stores reconcile [--apply]                # one-time recovery (below)
 brain stores epoch                              # registry epoch vs applied here
 brain stores registry export|log|report         # inspect the registry
@@ -157,13 +158,16 @@ store list changed (epoch 41 -> 42): running brain stores sync
 
 ## The poller (backstop for idle machines)
 
+`brain stores sync` automatically installs the launchd job when it is missing;
+pass `--no-poller` to skip that on either a local or `--machine` sync.
 `brain stores poller print` shows the launchd job: `RunAtLoad`, every 300 s,
 `~/.local/bin/brain stores sync --quiet --trigger timer`, logs in
 `~/Library/Logs/brain/stores-sync.log` (quiet: only changes and failures are
 written). `poller install` writes
 `~/Library/LaunchAgents/com.brain.stores-sync.plist` and loads it; `uninstall`
-removes it. **Nothing in the build or the tests installs it.** Install per
-machine, see `docs/brain/STORE_REGISTRY_DEPLOY.md`.
+removes it. Repair a registered store that lacks its database identity with
+`brain stores doctor --repair-identity` on a machine holding that store's
+`.beads/metadata.json`; it backfills `_project_id` and never overwrites one.
 
 ## `brain stores doctor --fleet`: proof
 

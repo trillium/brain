@@ -8276,6 +8276,12 @@ brain_fleet_probe_&lt;nonce&gt;; --no-write-probe skips it), backup freshness, r
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
 nothing else.
 
+A registered store with no _project_id row in the shared database is a FAIL
+(no other machine can create it; 'brain stores sync' stops on it). Fix:
+'brain stores doctor --repair-identity' on a machine that has the store's
+.beads/metadata.json; it backfills the row, never overwrites an existing one,
+and refuses and reports when the database and the file disagree.
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -8302,6 +8308,7 @@ bd stores doctor [flags]
       --no-write-probe            With --fleet: skip the per-store write probe (read probes still run)
       --old-host strings          With --fleet: an old/other Dolt server (host:port) to check for orphan beads missing on the live host; repeatable
       --repair                    With --fleet: rewrite drifted wrapper host pins on reachable machines through 'stores rewrite-wrappers' (never installs binaries, edits store-host.env, touches Dolt servers or acts on an unreachable machine)
+      --repair-identity           Backfill the shared database's missing _project_id rows from this machine's store metadata.json (never overwrites a row; reports conflicts)
       --roster string             Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
       --strict                    Exit non-zero on warnings too (missing wrapper, stale registry path)
       --timeout duration          Per-store read timeout (default 20s)
@@ -8748,6 +8755,12 @@ its ~/.pi/agent/bin link. 'sync' computes the difference and applies it.
   - A removed store leaves a tombstone; each machine removes only its own
     generated wrapper and link. Database rows and data directories stay.
 
+A machine that does not have the launchd poller installed gets it installed by
+this command (one line says so); --no-poller skips that. A store the database
+holds no project identity for ('the database has no project identity for X') is
+repaired with 'brain stores doctor --repair-identity' on a machine that has X's
+metadata.json; the sync error says so.
+
 Triggers: the launchd poller (every 5 minutes and at load), the ride-along on
 every bd/brain command, and create/rename/remove on the machine that made the
 change. --dry-run prints the plan and changes nothing.
@@ -8767,6 +8780,7 @@ bd stores sync [flags]
 ```
       --dry-run          Print the plan and change nothing
       --machine string   Run the sync on this fleet machine over ssh (default: this machine)
+      --no-poller        Do not install the launchd poller when this machine lacks it
       --quiet            Print only when something changed or failed (for the poller's log)
       --trigger string   What started this run (recorded for the log: timer, manual, ...) (default "manual")
       --wait duration    How long to wait for another sync running here (default 30s)
@@ -11885,6 +11899,12 @@ brain_fleet_probe_&lt;nonce&gt;; --no-write-probe skips it), backup freshness, r
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
 nothing else.
 
+A registered store with no _project_id row in the shared database is a FAIL
+(no other machine can create it; 'brain stores sync' stops on it). Fix:
+'brain stores doctor --repair-identity' on a machine that has the store's
+.beads/metadata.json; it backfills the row, never overwrites an existing one,
+and refuses and reports when the database and the file disagree.
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -11911,6 +11931,7 @@ bd stores doctor [flags]
       --no-write-probe            With --fleet: skip the per-store write probe (read probes still run)
       --old-host strings          With --fleet: an old/other Dolt server (host:port) to check for orphan beads missing on the live host; repeatable
       --repair                    With --fleet: rewrite drifted wrapper host pins on reachable machines through 'stores rewrite-wrappers' (never installs binaries, edits store-host.env, touches Dolt servers or acts on an unreachable machine)
+      --repair-identity           Backfill the shared database's missing _project_id rows from this machine's store metadata.json (never overwrites a row; reports conflicts)
       --roster string             Roster file (default ~/.config/brain/fleet.yaml, else mini0, mini1, macbook)
       --strict                    Exit non-zero on warnings too (missing wrapper, stale registry path)
       --timeout duration          Per-store read timeout (default 20s)
@@ -12357,6 +12378,12 @@ its ~/.pi/agent/bin link. 'sync' computes the difference and applies it.
   - A removed store leaves a tombstone; each machine removes only its own
     generated wrapper and link. Database rows and data directories stay.
 
+A machine that does not have the launchd poller installed gets it installed by
+this command (one line says so); --no-poller skips that. A store the database
+holds no project identity for ('the database has no project identity for X') is
+repaired with 'brain stores doctor --repair-identity' on a machine that has X's
+metadata.json; the sync error says so.
+
 Triggers: the launchd poller (every 5 minutes and at load), the ride-along on
 every bd/brain command, and create/rename/remove on the machine that made the
 change. --dry-run prints the plan and changes nothing.
@@ -12376,6 +12403,7 @@ bd stores sync [flags]
 ```
       --dry-run          Print the plan and change nothing
       --machine string   Run the sync on this fleet machine over ssh (default: this machine)
+      --no-poller        Do not install the launchd poller when this machine lacks it
       --quiet            Print only when something changed or failed (for the poller's log)
       --trigger string   What started this run (recorded for the log: timer, manual, ...) (default "manual")
       --wait duration    How long to wait for another sync running here (default 30s)

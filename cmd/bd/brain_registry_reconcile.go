@@ -371,11 +371,14 @@ wait) everywhere else.`,
 // the decided entries in one transaction, plus the database aliases a decided
 // name needs.
 func applyReconcile(ctx context.Context, db *sql.DB, plan *reconcilePlan) (storeregistry.Result, error) {
+	all := append(append(append([]storeregistry.Entry{}, plan.Adopt...), plan.Aliases...), plan.Decided...)
+	if err := requireLocalProjectIDs(all); err != nil {
+		return storeregistry.Result{}, err
+	}
 	meta := registryMeta()
 	if _, err := storeregistry.Init(ctx, db, meta); err != nil {
 		return storeregistry.Result{}, fmt.Errorf("adopting the registry: %w", err)
 	}
-	all := append(append(append([]storeregistry.Entry{}, plan.Adopt...), plan.Aliases...), plan.Decided...)
 	if len(plan.AliasRows) > 0 {
 		rows := plan.AliasRows
 		meta.InTx = func(ctx context.Context, tx storeregistry.DBTX) error {
@@ -387,6 +390,9 @@ func applyReconcile(ctx context.Context, db *sql.DB, plan *reconcilePlan) (store
 			return nil
 		}
 	}
+	// Every adopted store gets its identity row from this machine's metadata.json
+	// in the same transaction (never overwriting a row the database has).
+	meta.InTx = chainInTx(meta.InTx, identityBackfillInTx(all))
 	res, err := storeregistry.Mutate(ctx, db, meta, storeregistry.PlanBackfill(all))
 	if err != nil {
 		return res, fmt.Errorf("writing the registry: %w", err)

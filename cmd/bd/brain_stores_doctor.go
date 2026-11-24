@@ -114,6 +114,12 @@ brain_fleet_probe_<nonce>; --no-write-probe skips it), backup freshness, reachab
 wrapper pins on reachable machines through 'stores rewrite-wrappers' and does
 nothing else.
 
+A registered store with no _project_id row in the shared database is a FAIL
+(no other machine can create it; 'brain stores sync' stops on it). Fix:
+'brain stores doctor --repair-identity' on a machine that has the store's
+.beads/metadata.json; it backfills the row, never overwrites an existing one,
+and refuses and reports when the database and the file disagree.
+
 Exit codes:
   0 — every store answered a read
   1 — at least one store failed (or, with --strict, produced a warning)
@@ -126,6 +132,14 @@ no store names are known, so the line carries the __registry__ sentinel.`,
 }
 
 func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
+	if doctorRepairIdentity {
+		ctx := rootCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		runDoctorRepairIdentity(ctx)
+		return
+	}
 	if doctorFleet {
 		runBrainStoresDoctorFleet(cmd)
 		return
@@ -149,7 +163,12 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 	if !storesDoctorJSON {
 		printExfilDrift(os.Stderr, exfilDriftRoots(stores))
 	}
-	if len(stores) == 0 {
+	idCtx := rootCtx
+	if idCtx == nil {
+		idCtx = context.Background()
+	}
+	identityAudit := localIdentityAudit(idCtx)
+	if len(stores) == 0 && len(identityAudit.Problems) == 0 && !identityAudit.Unverified {
 		fmt.Println("No stores registered. Use 'brain stores create <name>' or 'brain stores add <name> <beads-dir>'.")
 		return
 	}
@@ -201,6 +220,8 @@ func runBrainStoresDoctor(cmd *cobra.Command, _ []string) {
 		}(i, name)
 	}
 	wg.Wait()
+	// A registered store with no _project_id row is unsyncable on every other machine.
+	results = identityAudit.apply(results)
 	elapsed := time.Since(started)
 
 	tally := tallyStoreHealth(results)
@@ -506,6 +527,8 @@ func init() {
 		"Probe this many stores concurrently")
 	brainStoresDoctorCmd.Flags().DurationVar(&storesDoctorTimeout, "timeout", defaultStoreProbeTimeout,
 		"Per-store read timeout")
+	brainStoresDoctorCmd.Flags().BoolVar(&doctorRepairIdentity, "repair-identity", false,
+		"Backfill the shared database's missing _project_id rows from this machine's store metadata.json (never overwrites a row; reports conflicts)")
 	brainStoresDoctorCmd.Flags().BoolVar(&storesDoctorStrict, "strict", false,
 		"Exit non-zero on warnings too (missing wrapper, stale registry path)")
 

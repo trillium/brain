@@ -105,7 +105,9 @@ const defaultFleetCommand = `PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local
 // Tests replace it with an in-process fake.
 type fleetRunner func(ctx context.Context, m fleetMember, args ...string) ([]byte, error)
 
-func sshFleetRunner(ctx context.Context, m fleetMember, args ...string) ([]byte, error) {
+var sshFleetRunner = runSSHFleetCommand
+
+func runSSHFleetCommand(ctx context.Context, m fleetMember, args ...string) ([]byte, error) {
 	command := m.Command
 	if command == "" {
 		command = defaultFleetCommand
@@ -167,6 +169,47 @@ type fleetReport struct {
 // asleepWindow: an unreachable machine whose last acknowledgement is at the
 // current epoch missed nothing, however long ago it spoke.
 func classifyFleetMachine(m fleetMember, snap storeregistry.Snapshot, ack *storeregistry.Machine, rep *verifyReport, runErr error) fleetMachineResult {
+	r := classifyFleetMachineEpoch(m, snap, ack, rep, runErr)
+	if rep == nil || runErr != nil {
+		return r
+	}
+	// The poller is what keeps an idle machine converging; a machine without it
+	// sits at its last epoch and nothing notices (incident 2026-11-24).
+	if problem := pollerProblem(rep); problem != "" {
+		fix := "on " + m.Name + ": brain stores poller install"
+		switch r.Verdict {
+		case verdictConverged:
+			r.Verdict = verdictDrifted
+			r.Detail = fmt.Sprintf("epoch %d is current but %s", rep.AppliedEpoch, problem)
+			r.Fix = fix
+		default:
+			r.Detail += "; " + problem
+			if r.Fix != "" {
+				r.Fix += " ; " + fix
+			} else {
+				r.Fix = fix
+			}
+		}
+	}
+	return r
+}
+
+// pollerProblem names why a reachable machine's poller is not doing its job
+// ("" when it is, or when the machine has no launchd to run one).
+func pollerProblem(rep *verifyReport) string {
+	if rep.OS != "" && rep.OS != "darwin" {
+		return ""
+	}
+	switch {
+	case !rep.PollerLoaded:
+		return "the sync poller (" + pollerLabel + ") is not installed"
+	case rep.PollerActive != nil && !*rep.PollerActive:
+		return "the sync poller (" + pollerLabel + ") is installed but not loaded"
+	}
+	return ""
+}
+
+func classifyFleetMachineEpoch(m fleetMember, snap storeregistry.Snapshot, ack *storeregistry.Machine, rep *verifyReport, runErr error) fleetMachineResult {
 	r := fleetMachineResult{Name: m.Name, SSH: m.SSH, Report: rep}
 	if ack != nil {
 		r.LastAck = fmt.Sprintf("%s at epoch %d", ack.CheckedAt, ack.AppliedEpoch)
@@ -287,6 +330,9 @@ func runFleetDoctor(ctx context.Context, src registrySource, db storeregistry.DB
 	if db != nil {
 		rep.Consistent = registryConsistencyProblems(ctx, db, snap.Entries)
 	}
+	role, _ := src.Role()
+	identityAudit := identityAuditFor(ctx, db, snap.Entries, db == nil && role == "client")
+	rep.Consistent = append(rep.Consistent, identityAudit.fleetFindings()...)
 
 	self := machineName()
 	results := make([]fleetMachineResult, len(roster))
@@ -325,7 +371,12 @@ func runFleetDoctor(ctx context.Context, src registrySource, db storeregistry.DB
 	wg.Wait()
 	rep.Machines = results
 
-	ok := len(rep.Consistent) == 0
+	ok := true
+	for _, p := range rep.Consistent {
+		if strings.HasPrefix(p, "FAIL ") {
+			ok = false
+		}
+	}
 	var bad []string
 	for _, r := range results {
 		switch r.Verdict {
@@ -457,7 +508,7 @@ func printFleetReport(w interface{ Write([]byte) (int, error) }, rep *fleetRepor
 
 // runFleetMachineSync runs `brain stores sync` on a roster machine over ssh
 // ('brain stores sync --machine NAME').
-func runFleetMachineSync(ctx context.Context, name string, dryRun bool) int {
+func runFleetMachineSync(ctx context.Context, name string, dryRun, noPoller bool) int {
 	roster, err := loadFleetRoster("", []string{name})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "brain stores sync --machine %s: %v\n", name, err)
@@ -466,6 +517,9 @@ func runFleetMachineSync(ctx context.Context, name string, dryRun bool) int {
 	args := []string{"stores", "sync"}
 	if dryRun {
 		args = append(args, "--dry-run")
+	}
+	if noPoller {
+		args = append(args, "--no-poller")
 	}
 	tctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
