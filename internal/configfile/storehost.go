@@ -21,21 +21,26 @@ import (
 //	BEADS_DOLT_SERVER_HOST=127.0.0.1
 //	BEADS_DOLT_SERVER_PORT=3307
 //
-// Only the brain verbs read it: 'brain stores create' and
+// The brain verbs read it: 'brain stores create' and
 // 'brain stores rewrite-wrappers' refuse up front when it is absent, and the
 // generated store wrappers read it at run time and exit non-zero when it is
-// missing or unusable. Core bd resolution is untouched: the wrappers export the
-// two variables, which bd already honors. Credentials never live here:
-// passwords stay in the environment or in ~/.config/beads/credentials.
+// missing or unusable. A store command also reads it itself, as the default
+// server address below the process environment (ReadStoreHostDefaults), so a
+// wrapper that sources nothing reaches the same server. Core bd resolution is
+// untouched: both paths end in the same variables, which bd already honors.
+// Credentials never live here: passwords stay in the environment or in
+// ~/.config/beads/credentials.
 const (
 	// StoreHostFileName is the basename of the shared store-host config.
 	StoreHostFileName = "store-host.env"
 
-	// StoreHostKeyHost and StoreHostKeyPort are the only keys this file
-	// defines. Other lines are ignored so the file stays usable as a shell
+	// StoreHostKeyHost and StoreHostKeyPort are the keys this file must
+	// define; StoreHostKeyUser is optional (the MySQL user, never a
+	// password). Other lines are ignored so the file stays usable as a shell
 	// fragment.
 	StoreHostKeyHost = "BEADS_DOLT_SERVER_HOST"
 	StoreHostKeyPort = "BEADS_DOLT_SERVER_PORT"
+	StoreHostKeyUser = "BEADS_DOLT_SERVER_USER"
 )
 
 // ErrStoreHostMissing reports that the shared store-host config is not there.
@@ -95,6 +100,76 @@ func ValidateStoreHostFile() error {
 		return nil
 	}
 	return err
+}
+
+// StoreHostDefaults is what the shared file says, key by key, for the reader
+// that treats it as defaults under the process environment. A key the file
+// does not define is empty; Port is kept as written so the caller can export
+// it unchanged.
+type StoreHostDefaults struct {
+	Path string
+	Host string
+	Port string
+	User string
+}
+
+// ReadStoreHostDefaults reads the shared file the way a shell that sources it
+// would see its three keys: each key on its own, with no requirement that host
+// and port both be there, and the last assignment of a key winning. found is
+// false when the file is absent, which is not an error. A value this reader
+// cannot take literally (a port that is not a positive number, or shell syntax
+// such as "${VAR:-x}" that only a shell can expand) is dropped and reported in
+// err alongside the keys that are usable, so one bad line never takes a good
+// host with it.
+func ReadStoreHostDefaults() (d StoreHostDefaults, found bool, err error) {
+	d.Path = DefaultStoreHostPath()
+	if d.Path == "" {
+		return d, false, nil
+	}
+	f, err := os.Open(d.Path) //nolint:gosec // operator-owned config path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return d, false, nil
+		}
+		return d, false, fmt.Errorf("reading %s: %w", d.Path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	targets := []struct {
+		key  string
+		dest *string
+	}{{StoreHostKeyHost, &d.Host}, {StoreHostKeyPort, &d.Port}, {StoreHostKeyUser, &d.User}}
+	problems := make([]error, len(targets))
+	sc := bufio.NewScanner(f)
+	lineNo := 0
+	for sc.Scan() {
+		lineNo++
+		key, value, ok := parseStoreHostLine(sc.Text())
+		if !ok {
+			continue
+		}
+		for i, t := range targets {
+			if key != t.key {
+				continue
+			}
+			*t.dest, problems[i] = value, nil
+			switch {
+			case strings.ContainsAny(value, "$`"):
+				problems[i] = fmt.Errorf("%s:%d: %s=%q needs a shell to expand", d.Path, lineNo, key, value)
+			case key == StoreHostKeyPort:
+				if p, perr := strconv.Atoi(value); perr != nil || p <= 0 {
+					problems[i] = fmt.Errorf("%s:%d: %s=%q is not a valid port", d.Path, lineNo, key, value)
+				}
+			}
+			if problems[i] != nil {
+				*t.dest = ""
+			}
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return StoreHostDefaults{Path: d.Path}, false, fmt.Errorf("reading %s: %w", d.Path, err)
+	}
+	return d, true, errors.Join(problems...)
 }
 
 // loadStoreHostFile reads one store-host file. A missing file (or an

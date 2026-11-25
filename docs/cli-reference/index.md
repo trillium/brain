@@ -32,6 +32,7 @@ These flags apply to all commands:
   -q, --quiet                     Suppress non-essential output (errors only)
       --readonly                  Read-only mode: block write operations (for worker sandboxes)
       --sandbox                   Sandbox mode: disables Dolt auto-push
+      --store-host string         Dolt server for this invocation, as host or host:port. Overrides BEADS_DOLT_SERVER_HOST/BEADS_DOLT_SERVER_PORT, which override this machine's default in ~/.config/brain/store-host.env (read by store commands on a server-backed store)
   -v, --verbose                   Enable verbose/debug output
       --wide                      Wide view: read every store's beads on the unified database (list, search, ready, count, render-all, show-like reads) instead of only this wrapper's own namespace. Default is the narrow view; both modes are deliberate — see 'brain search --federated' for the same wide read bucketed per store.
 ```

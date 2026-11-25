@@ -55,7 +55,8 @@ dolt sql-server -H 0.0.0.0 -P 3307 --remotesapi-port 3310 --data-dir /Users/mini
 
 Each client holds three pieces of local configuration:
 
-1. `~/.config/brain/store-host.env`, sourced by every wrapper below its own pins:
+1. `~/.config/brain/store-host.env`, the machine's default server address. Every
+   store command reads it (see [Where the server address comes from](#where-the-server-address-comes-from)):
 
    ```sh
    export BEADS_DOLT_SERVER_HOST=100.84.99.99
@@ -78,6 +79,71 @@ Each client holds three pieces of local configuration:
 3. Wrappers from the registry: `brain remote unset` (if the machine was an ssh
    client), then `brain registry sync`. A machine with no `remote.yaml` is a
    direct machine, and `sync` writes a server-kind wrapper per store.
+
+### Where the server address comes from
+
+Every machine runs the same `bd` binary and the same store commands. The one
+thing that differs is which Dolt server they talk to, and that is one file per
+machine: `~/.config/brain/store-host.env`.
+
+A store command picks its server in this order, first match wins:
+
+| | source | scope |
+|---|---|---|
+| 1 | `--store-host host[:port]` | this invocation |
+| 2 | `BEADS_DOLT_SERVER_HOST`, `BEADS_DOLT_SERVER_PORT` in the environment | this process and its children |
+| 3 | `~/.config/brain/store-host.env` | this machine |
+| 4 | the store's `metadata.json`, then `config.yaml`, then `127.0.0.1` | what `bd` resolved before the file existed |
+
+```sh
+task list                                    # the machine's default
+BEADS_DOLT_SERVER_HOST=127.0.0.1 task list   # one call against another server
+task --store-host mini0:3307 list            # the same, as a flag
+```
+
+The file holds three keys, `KEY=VALUE` with an optional leading `export`:
+
+| key | required | meaning |
+|---|---|---|
+| `BEADS_DOLT_SERVER_HOST` | yes | host name or address of the Dolt server |
+| `BEADS_DOLT_SERVER_PORT` | yes | its SQL port |
+| `BEADS_DOLT_SERVER_USER` | no | MySQL user; `root` when absent |
+
+The file never holds a password. Passwords stay in `~/.config/beads/credentials`.
+
+Details that decide edge cases:
+
+- **Each key is resolved on its own.** An environment host with no environment
+  port takes the port from the file. `--store-host mini0` with no port does the
+  same.
+- **`bd` reads the file itself.** A store wrapper needs only `BEADS_DIR` and
+  `BD_NAME`; it does not have to source the file. A wrapper that does source it
+  gets the same answer, because sourcing sets the same environment variables.
+- **Only store commands read it.** That means a command run through a store
+  wrapper (the wrapper exports `BD_NAME`) on a store whose `metadata.json` says
+  `dolt_mode: server`, or whose wrapper exports `BEADS_DOLT_SERVER_MODE=1`. A
+  bare `bd` in a project directory and a store with its own embedded Dolt never
+  read it, so the brain's address cannot repoint another database.
+- **No file, no change.** Without the file the order is 1, 2, 4, exactly as
+  before.
+- **A line `bd` cannot use is named and skipped.** Values are read literally. A
+  port that is not a number, or a value with shell syntax such as `${VAR:-x}`,
+  prints `beads: <file>:<line>: BEADS_DOLT_SERVER_PORT="…" is not a valid port; ignored`
+  and the other keys still apply.
+
+`<store> dolt show` prints the host, port and user a command resolved, without
+opening the store.
+
+To give a machine its default from a home-manager configuration, write the file
+there instead of by hand:
+
+```nix
+xdg.configFile."brain/store-host.env".text = ''
+  export BEADS_DOLT_SERVER_HOST=100.84.99.99
+  export BEADS_DOLT_SERVER_PORT=3307
+  export BEADS_DOLT_SERVER_USER=brain_app
+'';
+```
 
 ### Who writes the markdown
 

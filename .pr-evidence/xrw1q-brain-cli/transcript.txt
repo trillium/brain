@@ -1,0 +1,75 @@
+# cat ~/bin/task
+#!/bin/sh
+export BEADS_DIR="$HOME/data/tasks/.beads"
+export BD_NAME=task
+exec "${BD:-bd}" "$@"
+
+## 1. No ~/.config/brain/store-host.env: the store's own setting, as before
+$ task dolt show
+  Host:     127.0.0.1
+  Port:     3399
+  User:     root
+  Mode:     per-project
+
+## 2. The machine's default is written
+$ cat ~/.config/brain/store-host.env
+export BEADS_DOLT_SERVER_HOST=192.0.2.10
+export BEADS_DOLT_SERVER_PORT=3307
+export BEADS_DOLT_SERVER_USER=brain_app
+
+### before this change the binary ignores it (only a wrapper that sourced it saw it)
+$ BD=bd-before task dolt show
+  Host:     127.0.0.1
+  Port:     3399
+  User:     root
+  Mode:     per-project
+
+### after: the same wrapper reaches the machine's default
+$ task dolt show
+  Host:     192.0.2.10
+  Port:     3307
+  User:     brain_app
+  Mode:     per-project
+
+## 3. The environment overrides the file
+$ BEADS_DOLT_SERVER_HOST=192.0.2.20 BEADS_DOLT_SERVER_PORT=3355 task dolt show
+  Host:     192.0.2.20
+  Port:     3355
+  User:     brain_app
+  Mode:     per-project
+
+## 4. --store-host overrides the environment and the file
+$ BEADS_DOLT_SERVER_HOST=192.0.2.20 BEADS_DOLT_SERVER_PORT=3355 task --store-host 192.0.2.30:3311 dolt show
+  Host:     192.0.2.30
+  Port:     3311
+  User:     brain_app
+  Mode:     per-project
+
+## 5. A bare bd is not a store command: the file is not read
+$ BEADS_DIR=~/data/tasks/.beads bd dolt show
+  Host:     127.0.0.1
+  Port:     3399
+  User:     root
+  Mode:     per-project
+
+## 6. A store with its own embedded Dolt is left alone
+$ notes dolt show
+  Mode:     embedded (in-process Dolt engine)
+
+## 7. A bad line is named, the rest of the file still applies (3307 is bd's own default port for a remote host)
+$ cat ~/.config/brain/store-host.env
+export BEADS_DOLT_SERVER_HOST=192.0.2.10
+export BEADS_DOLT_SERVER_PORT=tbd
+
+$ task dolt show
+beads: ~/.config/brain/store-host.env:2: BEADS_DOLT_SERVER_PORT="tbd" is not a valid port; ignored
+  Host:     192.0.2.10
+  Port:     3307
+  User:     root
+  Mode:     per-project
+
+## 8. A flag that is not host[:port] is refused
+$ task --store-host 192.0.2.30:sql dolt show; echo "exit $?"
+Error: --store-host "192.0.2.30:sql": "sql" is not a valid port
+exit 1
+
