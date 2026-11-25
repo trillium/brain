@@ -114,8 +114,8 @@ rewrite-wrappers` for a wrapper pin, `unset BEADS_DOLT_SERVER_HOST` (or
 env-file pin, running through the store wrapper (or `brain stores
 rewrite-wrappers` when the wrapper is missing or stale) when bd ran without it
 and took its address from `metadata.json`, `config.yaml`, the
-`.beads/dolt-server.port` file or the built-in default (core bd never reads
-`store-host.env`; only the wrappers do), the `[host:port]` section of the credentials file (or
+`.beads/dolt-server.port` file or the built-in default (a bare `bd` never reads
+`store-host.env`; a store command does, see [REMOTE.md](REMOTE.md#where-the-server-address-comes-from)), the `[host:port]` section of the credentials file (or
 `BEADS_DOLT_PASSWORD`) to update for a rejected login, `bd dolt start` for an
 unreachable loopback server, and the auto-start log when bd just auto-started
 the server and it still does not answer. A fix never writes a host or port into

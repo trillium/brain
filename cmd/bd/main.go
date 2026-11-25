@@ -974,6 +974,7 @@ func init() {
 	rootCmd.PersistentFlags().BoolVar(&sandboxMode, "sandbox", false, "Sandbox mode: disables Dolt auto-push")
 	rootCmd.PersistentFlags().BoolVar(&readonlyMode, "readonly", false, "Read-only mode: block write operations (for worker sandboxes)")
 	rootCmd.PersistentFlags().BoolVar(&globalFlag, "global", false, "Use the global shared-server database (beads_global)")
+	rootCmd.PersistentFlags().StringVar(&storeHostFlag, storeHostFlagName, "", "Dolt server for this invocation, as host or host:port. Overrides BEADS_DOLT_SERVER_HOST/BEADS_DOLT_SERVER_PORT, which override this machine's default in ~/.config/brain/store-host.env (read by store commands on a server-backed store)")
 	rootCmd.PersistentFlags().StringVar(&doltAutoCommit, "dolt-auto-commit", "", "Dolt auto-commit policy (off|on|batch). 'on': commit after each write. 'batch': defer commits to bd dolt commit; uncommitted changes persist in the working set until then (a live batch-mode bd process also flushes on SIGTERM/SIGHUP, except in proxied-server mode, where bd dolt commit is the only flush point). In proxied-server mode the deferral covers the writes the CLI makes on that route, including config and version metadata; explicit commit points (bd batch, bd mol bond/pour/squash, bd mol wisp create, and the wisp half of bd mol burn) still commit, and a bd serve process on the same database is unaffected. Default: on. Override via config key dolt.auto-commit")
 	rootCmd.PersistentFlags().BoolVar(&cpuProfileEnabled, "cpu-profile", false, "Generate CPU profile for performance analysis")
 	rootCmd.PersistentFlags().StringVar(&memProfilePath, "mem-profile", "", "Write heap profile to FILE on exit (also respects BEADS_MEM_PROFILE)")
@@ -1098,6 +1099,13 @@ var rootCmd = &cobra.Command{
 		// (brain host promote); first, before any state is touched.
 		if err := hostRoleGate(cmd); err != nil {
 			return err
+		}
+
+		// Settle which Dolt server this command talks to (--store-host, then
+		// the environment, then the machine's store-host.env) before anything
+		// below resolves a storage mode, host, port or credential from it.
+		if err := applyStoreHostDefault(cmd); err != nil {
+			return HandleError("%v", err)
 		}
 
 		applyNoColorFlag()
