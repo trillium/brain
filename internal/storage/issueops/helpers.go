@@ -517,21 +517,56 @@ func IsDoltNothingToCommit(err error) bool {
 		(strings.Contains(s, "no changes") && strings.Contains(s, "commit"))
 }
 
-// ReadConfigPrefix reads and normalizes issue_prefix from the config table.
+// ReadConfigPrefix reads and normalizes the prefix a create mints under.
+//
+// The store a wrapper selects (BD_NAME) owns its prefix; the two are one and
+// the same. On the unified database the scoped config row says so. Anywhere
+// the scoped row cannot be consulted — a database that is not unified, or one
+// whose shape could not be probed — the database's plain issue_prefix is
+// whatever the template store happened to seed (the shared brain_unified
+// database seeds "lifespan"), so a wrapper-pinned caller takes the store's own
+// prefix from its config.yaml first; see ResolveMintPrefix.
 func ReadConfigPrefix(ctx context.Context, tx DBTX) (string, error) {
 	var configPrefix string
 	sc := UnifiedScopeForTx(ctx, tx)
 	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), "issue_prefix")...).Scan(&configPrefix)
-	if err == sql.ErrNoRows || configPrefix == "" {
-		yamlPrefix := strings.TrimSpace(config.GetString("issue-prefix"))
-		underscoreYamlPrefix := strings.TrimSpace(config.GetString("issue_prefix"))
-		debug.Logf("Debug: missing config.issue_prefix in database (err=%v, db value=%q, yaml issue-prefix=%q, yaml issue_prefix=%q)\n",
-			err, configPrefix, yamlPrefix, underscoreYamlPrefix)
-		return "", fmt.Errorf("%w: issue_prefix config is missing (run 'bd init --prefix <prefix>' for a new project, or 'bd bootstrap' to clone an existing remote; this check reads the database's config table, so adding 'issue-prefix' to config.yaml does not satisfy it)", storage.ErrNotInitialized)
-	} else if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		return "", fmt.Errorf("failed to get config: %w", err)
 	}
-	return strings.TrimSuffix(configPrefix, "-"), nil
+	if err == sql.ErrNoRows {
+		configPrefix = ""
+	}
+	if resolved, ok := ResolveMintPrefix(sc, configPrefix); ok {
+		return resolved, nil
+	}
+	yamlPrefix := strings.TrimSpace(config.GetString("issue-prefix"))
+	underscoreYamlPrefix := strings.TrimSpace(config.GetString("issue_prefix"))
+	debug.Logf("Debug: missing config.issue_prefix in database (err=%v, db value=%q, yaml issue-prefix=%q, yaml issue_prefix=%q)\n",
+		err, configPrefix, yamlPrefix, underscoreYamlPrefix)
+	return "", fmt.Errorf("%w: issue_prefix config is missing (run 'bd init --prefix <prefix>' for a new project, or 'bd bootstrap' to clone an existing remote; this check reads the database's config table, so adding 'issue-prefix' to config.yaml does not satisfy it)", storage.ErrNotInitialized)
+}
+
+// ResolveMintPrefix answers the prefix a create under scope sc mints with,
+// given the issue_prefix row the scope's config read returned (empty when
+// absent). ok is false when no prefix can be named.
+//
+// A store's prefix is its identity. When a wrapper pinned a store (BD_NAME) and
+// the scoped config row could not speak for it (sc.Enabled() is false), the
+// database-wide issue_prefix is not that store's: on the shared database it is
+// the template store's seed, so minting from it files a bead in the wrong store
+// (m1studio1 minted every task and robots bead as lifespan-). The pinned
+// store's own config.yaml issue-prefix wins there. With no pinned store, or on a
+// scope that routes to the store's own row, the database value is used as before.
+func ResolveMintPrefix(sc UnifiedScope, dbPrefix string) (string, bool) {
+	if sc.Store != "" && !sc.Enabled() {
+		if p := strings.TrimSpace(config.GetString("issue-prefix")); p != "" {
+			return strings.TrimSuffix(p, "-"), true
+		}
+	}
+	if dbPrefix == "" {
+		return "", false
+	}
+	return strings.TrimSuffix(dbPrefix, "-"), true
 }
 
 // ---------------------------------------------------------------------------

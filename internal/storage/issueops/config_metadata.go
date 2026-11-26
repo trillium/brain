@@ -40,6 +40,10 @@ func SetConfigInTx(ctx context.Context, tx DBTX, key, value string) error {
 // GetConfigInTx's documented contract so existing error checks keep working.
 func getConfigValueInTx(ctx context.Context, tx DBTX, key string) (string, error) {
 	sc := UnifiedScopeForTx(ctx, tx)
+	return getConfigValueInScope(ctx, tx, sc, key)
+}
+
+func getConfigValueInScope(ctx context.Context, tx DBTX, sc UnifiedScope, key string) (string, error) {
 	var value string
 	err := tx.QueryRowContext(ctx, sc.configReadQuery(), append(sc.configReadArgs(), key)...).Scan(&value)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -55,6 +59,14 @@ func getConfigValueInTx(ctx context.Context, tx DBTX, key string) (string, error
 // Returns ("", nil) if the key does not exist.
 func GetConfigInTx(ctx context.Context, tx DBTX, key string) (string, error) {
 	value, err := getConfigValueInTx(ctx, tx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return value, err
+}
+
+func GetConfigInScope(ctx context.Context, tx DBTX, sc UnifiedScope, key string) (string, error) {
+	value, err := getConfigValueInScope(ctx, tx, sc, key)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}

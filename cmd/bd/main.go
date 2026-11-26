@@ -777,6 +777,10 @@ func storesCommandCanRunWithoutStore(cmd *cobra.Command) bool {
 			return client
 		}
 		return true
+	case "verify-host":
+		// Reads the registry files and runs each wrapper's own probe; it never
+		// opens the caller's store.
+		return true
 	case "sync", "verify":
 		// A client machine reads the registry through its relay host and
 		// writes only local files: no local store is involved.

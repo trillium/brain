@@ -254,14 +254,19 @@ func namespaceOwnsPrefix(ctx context.Context, q DBTX, store, prefix string) (boo
 // true about the data.
 func ValidateNamespaceOwnership(ctx context.Context, q DBTX, store, id string) error {
 	prefix := beadIDPrefix(id)
+	_, err := validateNamespacePrefix(ctx, q, store, prefix, id)
+	return err
+}
+
+func validateNamespacePrefix(ctx context.Context, q DBTX, store, prefix, id string) (bool, error) {
 	if prefix == store {
-		return nil
+		return true, nil
 	}
 	owned, _ := namespaceOwnsPrefix(ctx, q, store, prefix)
 	if owned {
-		return nil
+		return true, nil
 	}
-	return fmt.Errorf("%w: id %q carries prefix %q, which namespace %q does not own (brain_store_prefixes has no such row for it); "+
+	return false, fmt.Errorf("%w: id %q carries prefix %q, which namespace %q does not own (brain_store_prefixes has no such row for it); "+
 		"to create under this prefix anyway, first claim it for this namespace with 'bd store-prefix add %s'",
 		ErrPrefixOwnership, id, prefix, store, prefix)
 }

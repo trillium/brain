@@ -41,7 +41,7 @@ func registryRideAlongSkipped(cmd *cobra.Command) bool {
 	}
 	for c := cmd; c != nil; c = c.Parent() {
 		switch c.Name() {
-		case "sync", "verify", "doctor", "registry", "reconcile", "poller", "shell-hook", "epoch":
+		case "sync", "verify", "verify-host", "doctor", "registry", "reconcile", "poller", "shell-hook", "epoch":
 			if c.Parent() != nil && c.Parent().Name() == "stores" {
 				return true // these manage or observe the registry themselves
 			}

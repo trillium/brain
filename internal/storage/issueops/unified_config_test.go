@@ -341,23 +341,24 @@ func TestUnifiedScopeWithoutNamespaceDegrades(t *testing.T) {
 	}
 }
 
-// TestProbeFailureDegradesToLegacy pins that a probe error (a non-Dolt or
-// pre-unification database) resolves to the legacy scope, and that the probe
-// answer is memoised per database so later calls issue no extra queries.
+// TestProbeFailureDegradesToLegacy pins that a database-name probe error (a
+// non-Dolt or unavailable database) preserves the wrapper namespace while
+// resolving to the legacy scope for that call.
 func TestProbeFailureDegradesToLegacy(t *testing.T) {
 	unifiedScopeCache = sync.Map{}
+	t.Setenv("BD_NAME", "task")
 	ctx := context.Background()
 	mock, db := newMock(t)
 	tx := txOf(ctx, t, mock, db)
 
 	mock.ExpectQuery("select database\\(\\)").WillReturnError(errors.New("not a dolt server"))
 	sc := probeUnifiedScope(ctx, tx)
-	if sc.Unified || sc.Store != "" {
-		t.Fatalf("probe failure should degrade to legacy, got %+v", sc)
+	if sc.Unified || sc.Store != "task" {
+		t.Fatalf("probe failure should preserve the pinned namespace, got %+v", sc)
 	}
-	// Memoised: the second call issues no further queries.
+	mock.ExpectQuery("select database\\(\\)").WillReturnError(errors.New("not a dolt server"))
 	if sc2 := probeUnifiedScope(ctx, tx); sc2 != sc {
-		t.Fatalf("memoised scope changed: %+v vs %+v", sc2, sc)
+		t.Fatalf("repeated probe scope changed: %+v vs %+v", sc2, sc)
 	}
 	mock.ExpectRollback()
 	if err := tx.Rollback(); err != nil {
